@@ -1,0 +1,50 @@
+# couchd stage 2 - give the DualSense to couchd-input, and to nobody else.
+#
+# NOT INSTALLED by anything automatic. This is a TEMPLATE. See INSTALL.md.
+#
+# Priority 72 is load-bearing: it must run BEFORE 73-seat-late.rules queues
+# the uaccess builtin, so that TAG-="uaccess" actually removes the tag from
+# the queue rather than fighting an ACL that has already been applied.
+# (This is what beats InputPlumber's priority-96 + runtime-chmod race.)
+#
+# MODE is 0660, NOT 0640: evdev force-feedback playback is a write(), and
+# a read-only node makes every rumble upload fail somewhere confusing
+# hours later (SR2, finding F2/F12/F22).
+#
+# Ordering note: 71-dualsense-uaccess.rules currently ADDS uaccess for the
+# real pad. It runs first (71 < 72), so this file's TAG-= undoes it. Do not
+# renumber either file without re-checking that.
+#
+# ---------------------------------------------------------------------------
+# EVDEV + JOYSTICK NODES - scoped by MAC, so the rig can be targeted alone.
+# Substitute __PAD_UNIQ__ with a LOWERCASE MAC:
+#     de:ad:be:ef:fa:ce   the fake-pad rig (E1, E2)
+#     aa:bb:cc:dd:ee:ff   the real pad     (flag day only)
+# ---------------------------------------------------------------------------
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="__PAD_UNIQ__", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
+
+# ---------------------------------------------------------------------------
+# HIDRAW - this is the line that hides the pad from Steam, and it CANNOT be
+# MAC-scoped. There is no `uniq` attribute anywhere in a hidraw device's
+# sysfs ancestry (the hid device exposes only country/report_descriptor), and
+# a hidraw's own uevent carries no HID_UNIQ, so ATTRS{uniq} matches nothing
+# and would silently make the whole rule a no-op. Valve's own
+# 60-steam-input.rules scopes hidraw by KERNELS pattern for the same reason.
+#
+# Consequence, stated plainly: enabling the line below hides EVERY DualSense
+# on the box, fake and real. It therefore stays commented out for E1 (which
+# needs evdev only), and is enabled for E2 and flag day, both of which are
+# already "real pad disconnected, Donnie present" by SR8.
+#
+#SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6*", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
+#
+# If USB is ever used, add the 0003 variant:
+#SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6*", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
+
+# ---------------------------------------------------------------------------
+# THE FINAL, REAL-PAD VERSION (flag day). Uncomment these two, comment the
+# template line above, then run couchd-input-release once to rehearse the
+# rollback BEFORE trusting it.
+# ---------------------------------------------------------------------------
+#SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="aa:bb:cc:dd:ee:ff", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
+#SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6*", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"

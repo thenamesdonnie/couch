@@ -1,0 +1,15 @@
+# couchd stage 2 - the ONE thing ds2000 may do as root without a password.
+#
+# Install as /etc/sudoers.d/couchd (mode 0440, root:root) and ONLY via
+# visudo -c -f: a syntax error in sudoers.d locks the box out of sudo.
+#
+#   sudo install -m 0440 -o root -g root sudoers-couchd /etc/sudoers.d/couchd
+#   sudo visudo -c
+#
+# SR3: rollback must not need a password at 11pm. The scope is one
+# root-owned, root-only-writable script that takes NO arguments, so this
+# grants exactly "put the pad back" and nothing else. If the script were
+# writable by ds2000 this line would be a root shell - INSTALL.md's
+# verification step checks that.
+#
+ds2000 ALL=(root) NOPASSWD: /usr/local/sbin/couchd-input-release

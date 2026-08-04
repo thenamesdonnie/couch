@@ -1,0 +1,72 @@
+# couchd stage 2 - the input fast path. A SYSTEM unit, not a user one.
+#
+# SR1, honestly: there is no no-root mechanism to put a ds2000 process into
+# a group ds2000 is not in (measured - systemd-run --user with
+# SupplementaryGroups= fails EPERM), and adding ds2000 to couchd-input would
+# re-admit Steam, which is the entire thing we are trying to exclude. So the
+# process runs as a dedicated SYSTEM user. Factor 1 restated: no root at
+# RUNTIME; root once at install, and never at rollback.
+#
+# NOT INSTALLED by anything automatic. See INSTALL.md.
+#   sudo install -m 0644 inputproc.service /etc/systemd/system/
+#
+# Rollback: sudo systemctl stop inputproc && sudo couchd-input-release
+#
+[Unit]
+Description=couchd input process - owns the DualSense, presents an X360 pad
+Documentation=file:/home/ds2000/couch/docs/couchd-stage2-design.md
+# Deliberately NO BindsTo=graphical-session.target: it idles safely when X is
+# down, and coupling it to the session would make an X restart look like a
+# controller disconnect to a running game.
+After=systemd-udev-settle.service
+# SR6: a crash IS a controller disconnect to the game, so restart fast, but
+# five failures and it stays down rather than flapping the pad forever.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=couchd-input
+Group=couchd-input
+# /dev/uinput is root:input 0660 on this box; this is why the group is here
+# and it is the only reason.
+SupplementaryGroups=input
+Environment=COUCHD_OWNS=input
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ds2000/couch/couchd/.venv/bin/python /home/ds2000/couch/couchd/inputproc.py --uniq aa:bb:cc:dd:ee:ff --persist-secs 120
+WorkingDirectory=/home/ds2000/couch/couchd
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+KillMode=mixed
+
+# It writes exactly two places, and couchd-input must be able to write both.
+# ~/couch/shadow is ds2000-owned, so it is granted by ACL at install time
+# (INSTALL.md step 6) rather than by loosening this unit.
+ReadWritePaths=/home/ds2000/couch/shadow /tmp
+PrivateTmp=no
+
+# Hardening. It needs /dev access, so ProtectSystem stays at full rather
+# than strict-with-DeviceAllow gymnastics; everything else is closed.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=no
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+# This process sits between the pad and the game: it must never be the
+# reason an input event is late.
+Nice=-5
+IOSchedulingClass=realtime
+IOSchedulingPriority=2
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

@@ -44,6 +44,12 @@ import sys
 import time
 from dataclasses import dataclass, field, replace
 
+# The PS-button arithmetic lives in ONE module (stage-2 design, SR4): stage 1
+# and the stage-2 input process must decide tap-vs-hold identically or the
+# shadow corpus stops being comparable to what the owning process did.
+import gesture
+from gesture import HANDOFF_TIMEOUT, HOLD_SECONDS  # noqa: F401 (re-exported)
+
 HOME = os.path.expanduser('~')
 COUCH = os.path.join(HOME, 'couch')
 SHADOW_DIR = os.path.join(COUCH, 'shadow')
@@ -77,8 +83,10 @@ SNAPSHOT_MIN_GAP = 2.0        # attention-triggered snapshots are rate-limited
 OBSERVER_STALE_SECONDS = 300.0
 
 # -- model constants (ported from the scripts) ----------------------------
-HOLD_SECONDS = 0.9            # pad-home-watcher's hold threshold
-HANDOFF_TIMEOUT = 4.0         # its safety timeout when the release never comes
+# HOLD_SECONDS (0.9, pad-home-watcher's hold threshold) and HANDOFF_TIMEOUT
+# (4.0, its safety timeout when the release never comes) are imported from
+# gesture.py above - SR4's shared module - and re-exported here so every
+# existing importer of couchd.HOLD_SECONDS keeps working.
 GUARD_WINDOW = 6.0            # steam-input-guard's enforcement window
 MISSING_WINDOW_GRACE = 4.0    # C26
 GONE_MISSES = 3               # C26: 3 consecutive misses before "gone"
@@ -92,10 +100,10 @@ REGIONS = ('input_ownership', 'foreground', 'session', 'enforcement',
 LIFECYCLE = ('LAUNCHING', 'STARTED', 'RUNNING', 'MISSING_WINDOW', 'FROZEN',
              'STOPPING', 'STOPPED', UNKNOWN)
 
-EVENT_FORMAT = 'llHHi'        # struct input_event on x86_64
-EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
-EV_KEY = 0x01
-BTN_MODE = 0x13c              # the PS button
+EVENT_FORMAT = gesture.EVENT_FORMAT   # struct input_event on x86_64
+EVENT_SIZE = gesture.EVENT_SIZE
+EV_KEY = gesture.EV_KEY
+BTN_MODE = gesture.BTN_MODE           # the PS button
 PAD_WANTED = 'DualSense Wireless Controller'
 PAD_UNWANTED = re.compile(r'Motion|Touchpad', re.I)
 
@@ -324,9 +332,9 @@ def g_button_down(o):
 def g_hold_reached(o):
     """0.9s measured between KERNEL timestamps (R4). kernel_now is anchored
     on the last kernel event and extrapolated with wall time for the gap, so
-    a held button with no further reports still fires."""
-    return (o.button_down and o.down_since_k is not None
-            and (o.kernel_now - o.down_since_k) >= HOLD_SECONDS)
+    a held button with no further reports still fires. The arithmetic itself
+    is gesture.py's, shared with the stage-2 input process (SR4)."""
+    return gesture.hold_reached(o.button_down, o.down_since_k, o.kernel_now)
 
 
 def g_released(o):
@@ -334,8 +342,8 @@ def g_released(o):
 
 
 def g_released_tap_resume(o):
-    return (not o.button_down and o.press_duration is not None
-            and o.press_duration < HOLD_SECONDS and o.suspended_present)
+    return (not o.button_down and gesture.is_tap(o.press_duration)
+            and o.suspended_present)
 
 
 def g_handoff_emitted(o):
@@ -348,7 +356,7 @@ def g_handoff_overdue(o):
     stuck): the watcher hands over anyway after 4s rather than stranding the
     pad. This is a wall/monotonic deadline, not a kernel one - it exists
     precisely because no further kernel events are coming."""
-    return _since(o, 'gesture') > HANDOFF_TIMEOUT
+    return gesture.handoff_overdue(_since(o, 'gesture'))
 
 
 def g_resume_emitted(o):
@@ -358,7 +366,7 @@ def g_resume_emitted(o):
 
 def g_gesture_stale(o):
     """Nothing pending and the button is up: fall back to idle."""
-    return not o.button_down and _since(o, 'gesture') > HANDOFF_TIMEOUT * 2
+    return gesture.gesture_stale(o.button_down, _since(o, 'gesture'))
 
 
 def g_session_present(o):
@@ -1086,15 +1094,19 @@ class PadObserver:
         self.src = world.src('pad')
         self.fds = {}
         self.present = False
-        self.button_down = False
-        self.down_since_k = None
-        self.last_k = 0.0            # last kernel timestamp seen
-        self.last_k_wall = 0.0       # wall clock when we saw it
-        self.press_duration = None
-        self.press_ended_at = None
+        # ALL the tap/hold arithmetic is gesture.py's, byte for byte the same
+        # module the stage-2 input process runs (SR4).
+        self.tracker = gesture.PressTracker()
         self.first_event_latency = None    # R5: pad-appearance -> first event
-        self.presses = 0                   # cross-checked against Steam's log
         self._appeared_at = None
+
+    # The tracker's state IS the observer's state; these read-only views keep
+    # observe()/write_status() unchanged.
+    button_down = property(lambda self: self.tracker.button_down)
+    down_since_k = property(lambda self: self.tracker.down_since_k)
+    press_duration = property(lambda self: self.tracker.press_duration)
+    press_ended_at = property(lambda self: self.tracker.press_ended_at)
+    presses = property(lambda self: self.tracker.presses)
 
     @staticmethod
     def find_pads():
@@ -1116,9 +1128,7 @@ class PadObserver:
         """Kernel timebase, extrapolated over the gap since the last event.
         All gesture arithmetic stays in this timebase (R4); without the
         extrapolation a held button with no further reports never fires."""
-        if not self.last_k:
-            return time.time()
-        return self.last_k + (time.time() - self.last_k_wall)
+        return self.tracker.kernel_now()
 
     async def run(self, loop):
         while True:
@@ -1164,8 +1174,7 @@ class PadObserver:
                               'event': 'node-close', 'node': path, 'why': why})
         self.present = bool(self.fds)
         if not self.fds:
-            self.button_down = False
-            self.down_since_k = None
+            self.tracker.reset()
 
     def _readable(self, loop, path, fd):
         try:
@@ -1184,7 +1193,7 @@ class PadObserver:
             sec, usec, etype, code, value = struct.unpack_from(EVENT_FORMAT,
                                                               data, off)
             k = sec + usec / 1e6
-            self.last_k, self.last_k_wall = k, time.time()
+            self.tracker.note_event(k)
             self.src.events += 1
             if etype == EV_KEY and code == BTN_MODE:
                 if self._appeared_at is not None:
@@ -1193,16 +1202,7 @@ class PadObserver:
                     self.w.log.write({'kind': 'obs', 'source': 'pad',
                                       'event': 'first-event-latency',
                                       'seconds': round(self.first_event_latency, 3)})
-                self.presses += (1 if value == 1 else 0)
-                if value == 1:
-                    self.button_down = True
-                    self.down_since_k = k
-                elif value == 0:
-                    if self.down_since_k is not None:
-                        self.press_duration = k - self.down_since_k
-                        self.press_ended_at = time.monotonic()
-                    self.button_down = False
-                    self.down_since_k = None
+                self.tracker.feed(k, value)
                 self.w.log.write({'kind': 'obs', 'source': 'pad',
                                   'event': 'BTN_MODE', 'value': value,
                                   'kernel_t': round(k, 6),

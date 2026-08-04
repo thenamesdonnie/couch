@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""A synthetic DualSense on /dev/uhid, for developing stage 2 without the
+real pad (design note S7/SR8, audit item 18).
+
+It is hid-tools' PS5ControllerBluetooth - the kernel HID maintainer's own
+DS5 emulator, complete with the Bluetooth report descriptor, the CRC-signed
+feature reports (0x05 calibration, 0x09 pairing/MAC, 0x20 firmware) and the
+BT byte offsets - subclassed here for three reasons and no others:
+
+  1. a FIXED, obviously-fake MAC, so udev rules, logs and Steam configs can
+     be scoped to the rig and the real pad's AA:BB:CC:DD:EE:FF is never
+     matched by anything we write;
+  2. hid-tools caps `self.buttons` at 12, which silently makes button 13 -
+     BTN_MODE, the PS button, the entire point of this rig - unsendable;
+  3. InputPlumber issue #459's lesson: an UNHANDLED get/set report must
+     return SUCCESS, never an error. hid_playstation asks for things this
+     emulator has no answer for, and an error reply is what makes a driver
+     back off and leave you with a half-bound device.
+
+  fake-pad up                 create it, hold it, print nodes + MAC
+  fake-pad press <btn>        tap (~120ms)
+  fake-pad hold <btn> [secs]  hold (default 1.2s)
+  fake-pad down/release <btn>
+  fake-pad axis <ax> <-1..1>  lx ly rx ry
+  fake-pad dpad <dir>         up down left right center
+  fake-pad status
+  fake-pad quit
+
+  Buttons: square cross circle triangle l1 r1 l2 r2 create options l3 r3 ps
+
+WHY `up` IS WRAPPED IN A SAFETY FRAME (SR8). A uhid DS5 on THIS box is not
+inert. It wakes the TV and forces HDMI 2 (tv-waker polls js*, so its .off
+udev rule is irrelevant), it starts a pad-record recording that pollutes
+the gesture corpus, pad-battery starts reading a battery that does not
+exist, and pad-connect's usable() test - which tests ANY js* - would think
+the real pad is already back and stop trying to reconnect it. So `up`:
+
+  (a) stops tv-waker, pad-record and pad-battery for the duration and puts
+      back exactly the ones that were running, in a finally that runs on
+      SIGTERM/SIGINT too (this is the ONE place stage-2 code runs systemctl);
+  (b) snapshots ~/couch/recordings/ before and asserts it is unchanged after,
+      shouting if it is not;
+  (c) REFUSES to start if a real DualSense is connected - a fake pad while
+      the real one is live is how you lose an evening.
+
+Rollback is: fake-pad quit, or kill it. Everything it touched is restored.
+"""
+import fcntl
+import os
+import re
+import select
+import signal
+import subprocess
+import sys
+import time
+
+VENV = os.path.expanduser('~/couch/couchd/.venv')
+if os.path.isdir(VENV) and sys.prefix != VENV:
+    _site = os.path.join(VENV, 'lib', f'python{sys.version_info.major}.'
+                                      f'{sys.version_info.minor}',
+                         'site-packages')
+    if os.path.isdir(_site):
+        sys.path.insert(0, _site)
+
+# ---------------------------------------------------------------------------
+# The fake MAC. Locally-administered, unmistakably synthetic, and nothing
+# like the real pad's AA:BB:CC:DD:EE:FF at any prefix.
+FAKE_MAC = 'de:ad:be:ef:fa:ce'
+REAL_MAC = 'aa:bb:cc:dd:ee:ff'
+
+FIFO = '/tmp/fake-pad.fifo'
+PIDFILE = '/tmp/fake-pad.pid'
+STATUSFILE = '/tmp/fake-pad.status'
+RECORDINGS = os.path.expanduser('~/couch/recordings')
+INHIBIT_UNITS = ('tv-waker.service', 'pad-record.service', 'pad-battery.service')
+PAD_NAME = 'DualSense Wireless Controller'
+
+# hid-tools' PS5 button indices (its buttons_map), by the names on the pad.
+BUTTONS = {
+    'square': 1, 'cross': 2, 'circle': 3, 'triangle': 4,
+    'l1': 5, 'r1': 6, 'l2': 7, 'r2': 8,
+    'create': 9, 'options': 10, 'l3': 11, 'r3': 12, 'ps': 13,
+}
+AXES = ('lx', 'ly', 'rx', 'ry')
+DPAD = {'up': 0, 'right': 2, 'down': 4, 'left': 6, 'center': 15}
+
+
+def stamp(msg):
+    print(f'{time.strftime("%H:%M:%S")} fake-pad: {msg}', flush=True)
+
+
+# =========================================================================
+# safety frame
+# =========================================================================
+def real_pad_present(fake_mac=FAKE_MAC, procfile='/proc/bus/input/devices'):
+    """A DualSense whose uniq is NOT ours = the real pad. Returns its MAC
+    or None. Pure enough to test with a fixture file."""
+    try:
+        with open(procfile) as f:
+            blocks = f.read().split('\n\n')
+    except OSError:
+        return None
+    for b in blocks:
+        m = re.search(r'N: Name="([^"]*)"', b)
+        if not m or PAD_NAME not in m.group(1):
+            continue
+        u = re.search(r'U: Uniq=(\S*)', b)
+        uniq = (u.group(1) if u else '').lower()
+        if uniq != fake_mac.lower():
+            return uniq or '(no uniq)'
+    return None
+
+
+def unit_active(unit):
+    try:
+        r = subprocess.run(['systemctl', '--user', 'is-active', unit],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == 'active'
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def unit_do(verb, unit):
+    try:
+        subprocess.run(['systemctl', '--user', verb, unit],
+                       capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        stamp(f'systemctl {verb} {unit} failed: {e}')
+
+
+def recordings_snapshot(directory=RECORDINGS):
+    try:
+        return sorted(os.listdir(directory))
+    except OSError:
+        return []
+
+
+def compare_recordings(before, after):
+    """Returns the list of files that appeared. SR8: the corpus must not
+    gain a single file because of a rig run."""
+    return sorted(set(after) - set(before))
+
+
+class SafetyFrame:
+    """Inhibit set in, inhibit set out - on ANY exit, signals included."""
+
+    def __init__(self, units=INHIBIT_UNITS):
+        self.units = units
+        self.restore = []
+        self.recordings_before = []
+
+    def __enter__(self):
+        mac = real_pad_present()
+        if mac:
+            raise SystemExit(
+                f'REFUSING: a real DualSense is connected (uniq {mac}). '
+                f'Disconnect it before running the rig - a fake pad while '
+                f'the real one is live blocks its only reconnect path.')
+        self.recordings_before = recordings_snapshot()
+        for unit in self.units:
+            if unit_active(unit):
+                self.restore.append(unit)
+                unit_do('stop', unit)
+        stamp(f'inhibited: {", ".join(self.restore) or "(none were running)"}')
+        stamp(f'recordings before: {len(self.recordings_before)} file(s)')
+        return self
+
+    def __exit__(self, *exc):
+        for unit in self.restore:
+            unit_do('start', unit)
+        stamp(f'restored: {", ".join(self.restore) or "(nothing to restore)"}')
+        gained = compare_recordings(self.recordings_before,
+                                    recordings_snapshot())
+        if gained:
+            stamp('!' * 60)
+            stamp(f'WARNING: the recordings corpus GAINED {len(gained)} '
+                  f'file(s) during this run: {gained}')
+            stamp('That is corpus pollution (SR8). Delete them before any '
+                  'comparator run.')
+            stamp('!' * 60)
+        else:
+            stamp('recordings unchanged - corpus clean')
+        return False
+
+
+# =========================================================================
+# the device
+# =========================================================================
+def make_device():
+    """Imported lazily so `fake-pad press ...` needs no hid-tools at all."""
+    from hidtools.device.sony_gamepad import PS5ControllerBluetooth
+
+    class FakeDualSense(PS5ControllerBluetooth):
+        def __init__(self):
+            super().__init__()
+            # 1. the fixed fake MAC. self.uniq is both what uhid advertises
+            #    (HID_UNIQ, hence udev's ATTRS{uniq}) and what feature report
+            #    0x09 encodes, which is where hid_playstation reads it from.
+            self.uniq = FAKE_MAC
+            # 2. hid-tools sets range(1, 13) - button 13, BTN_MODE, the PS
+            #    button, would raise InvalidHIDCommunication. The report
+            #    descriptor declares 14 buttons; only this tuple stops us.
+            self.buttons = tuple(range(1, 14))
+            self.unhandled = {'get': 0, 'set': 0, 'output': 0}
+
+        # 3. InputPlumber #459: unhandled reports return SUCCESS.
+        def get_report(self, req, rnum, rtype):
+            err, data = super().get_report(req, rnum, rtype)
+            if err:
+                self.unhandled['get'] += 1
+                return (0, list(data) or [rnum])
+            return (err, data)
+
+        def set_report(self, req, rnum, rtype, data):
+            super().set_report(req, rnum, rtype, data)
+            self.unhandled['set'] += 1
+            return 0
+
+        def output_report(self, data, size, rtype):
+            # hid_playstation's rumble/LED writes land here. Swallowed on
+            # purpose: S3 means we never decode effects anywhere.
+            self.unhandled['output'] += 1
+
+    return FakeDualSense()
+
+
+def wait_ready(dev, seconds=5.0):
+    """S7's success oracle: hid_playstation bound = three input nodes plus a
+    power_supply class. Anything less and the driver did not take it."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        dev.dispatch(10)
+        try:
+            if dev.is_ready():
+                return True
+        except Exception:
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def describe(dev):
+    lines = [f'uniq (MAC):   {dev.uniq}',
+             f'hid sysfs:    {dev.sys_path}']
+    try:
+        lines.append(f'hidraw:       {", ".join(dev.hidraw_nodes) or "(none)"}')
+    except Exception:
+        pass
+    try:
+        nodes = dev.input_nodes
+        lines.append(f'input nodes:  {len(nodes)}')
+        for n in nodes:
+            lines.append(f'  {n.evdev}  {n.name!r}')
+    except Exception as e:
+        lines.append(f'input nodes:  ERROR {e}')
+    try:
+        ps = dev.power_supply_class
+        lines.append(f'power_supply: {"present" if ps else "MISSING"}')
+    except Exception:
+        lines.append('power_supply: MISSING')
+    return '\n'.join(lines)
+
+
+# =========================================================================
+# command handling (FIFO protocol, same shape as vpad)
+# =========================================================================
+class Rig:
+    def __init__(self, dev):
+        self.dev = dev
+        self.state = {'left': (128, 128), 'right': (128, 128),
+                      'hat': 15, 'buttons': {}}
+        self.sent = 0
+
+    def send(self):
+        self.dev.event(left=self.state['left'], right=self.state['right'],
+                       hat_switch=self.state['hat'],
+                       buttons=dict(self.state['buttons']))
+        self.sent += 1
+
+    def button(self, name, value):
+        self.state['buttons'][BUTTONS[name]] = bool(value)
+        self.send()
+
+    def axis(self, name, value):
+        value = max(-1.0, min(1.0, float(value)))
+        raw = int(round((value + 1.0) / 2.0 * 255))
+        raw = max(0, min(255, raw))
+        left, right = list(self.state['left']), list(self.state['right'])
+        {'lx': lambda: left.__setitem__(0, raw),
+         'ly': lambda: left.__setitem__(1, raw),
+         'rx': lambda: right.__setitem__(0, raw),
+         'ry': lambda: right.__setitem__(1, raw)}[name]()
+        self.state['left'], self.state['right'] = tuple(left), tuple(right)
+        self.send()
+
+    def dpad(self, direction):
+        self.state['hat'] = DPAD[direction]
+        self.send()
+
+    def handle(self, line):
+        """Returns False to quit. Every branch is bounded."""
+        parts = line.split()
+        if not parts:
+            return True
+        cmd, args = parts[0], parts[1:]
+        try:
+            if cmd == 'quit':
+                return False
+            if cmd == 'status':
+                self.write_status()
+            elif cmd in ('press', 'hold', 'down', 'release'):
+                name = args[0]
+                if cmd != 'release':
+                    self.button(name, 1)
+                if cmd == 'press':
+                    self.pace(0.12)
+                elif cmd == 'hold':
+                    self.pace(float(args[1]) if len(args) > 1 else 1.2)
+                if cmd != 'down':
+                    self.button(name, 0)
+            elif cmd == 'axis' and args[0] in AXES:
+                self.axis(args[0], args[1])
+            elif cmd == 'dpad' and args[0] in DPAD:
+                self.dpad(args[0])
+            else:
+                stamp(f'bad command: {line}')
+        except (IndexError, KeyError, ValueError) as e:
+            stamp(f'bad command: {line} ({e})')
+        return True
+
+    def pace(self, seconds):
+        """Sleep while still servicing uhid: the kernel asks for feature
+        reports at awkward moments and a 5s driver timeout is the cost of
+        not answering."""
+        end = time.time() + seconds
+        while time.time() < end:
+            self.dev.dispatch(int(min(20, (end - time.time()) * 1000)) or 1)
+
+    def write_status(self):
+        try:
+            with open(STATUSFILE, 'w') as f:
+                f.write(describe(self.dev) + '\n')
+                f.write(f'reports sent: {self.sent}\n')
+                f.write(f'unhandled (returned success): '
+                        f'{self.dev.unhandled}\n')
+        except OSError:
+            pass
+
+
+def daemon():
+    with SafetyFrame():
+        dev = make_device()
+        stamp(f'creating uhid DualSense, uniq={FAKE_MAC}')
+        try:
+            dev.create_kernel_device()
+            if not wait_ready(dev):
+                stamp('WARNING: device did not report ready (3 input nodes + '
+                      'power_supply). hid_playstation may not have bound.')
+            stamp('device up:\n' + describe(dev))
+            serve(Rig(dev))
+        finally:
+            try:
+                dev.destroy()
+            except Exception as e:
+                stamp(f'destroy failed: {e}')
+            stamp('uhid device destroyed')
+            for path in (FIFO, PIDFILE, STATUSFILE):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
+def serve(rig):
+    if os.path.exists(FIFO):
+        os.remove(FIFO)
+    os.mkfifo(FIFO, 0o600)
+    rfd = os.open(FIFO, os.O_RDONLY | os.O_NONBLOCK)
+    wfd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)   # keep it from EOF-ing
+    with open(PIDFILE, 'w') as f:
+        f.write(str(os.getpid()))
+    rig.write_status()
+    stamp(f'listening on {FIFO} (fake-pad quit to stop)')
+
+    stopping = {'now': False}
+
+    def onsig(signum, frame):
+        stopping['now'] = True
+    signal.signal(signal.SIGTERM, onsig)
+    signal.signal(signal.SIGINT, onsig)
+
+    buf = b''
+    poller = select.poll()
+    poller.register(rfd, select.POLLIN)
+    try:
+        while not stopping['now']:
+            rig.dev.dispatch(10)
+            for _fd, _mask in poller.poll(20):
+                try:
+                    chunk = os.read(rfd, 4096)
+                except BlockingIOError:
+                    chunk = b''
+                except OSError:
+                    chunk = b''
+                if not chunk:
+                    continue
+                buf += chunk
+                while b'\n' in buf:
+                    line, buf = buf.split(b'\n', 1)
+                    if not rig.handle(line.decode('utf-8', 'replace').strip()):
+                        stopping['now'] = True
+                        break
+    finally:
+        os.close(rfd)
+        os.close(wfd)
+
+
+def daemon_alive():
+    try:
+        os.kill(int(open(PIDFILE).read()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ('-h', '--help'):
+        sys.exit(__doc__)
+    if args[0] == 'up':
+        if daemon_alive():
+            sys.exit('fake-pad is already up')
+        # Deliberately FOREGROUND: this process holds the device, the safety
+        # frame and the restore path. Backgrounding it would put the inhibit
+        # restore behind a process nobody is watching. Run it in its own
+        # terminal or under `setsid ... &` if you want the shell back.
+        daemon()
+        return
+    if args[0] == 'status':
+        if os.path.exists(STATUSFILE):
+            sys.stdout.write(open(STATUSFILE).read())
+            return
+        sys.exit('fake-pad is not up')
+    if not daemon_alive():
+        sys.exit('fake-pad is not up (run: fake-pad up)')
+    with open(FIFO, 'w') as f:
+        f.write(' '.join(args) + '\n')
+
+
+if __name__ == '__main__':
+    main()

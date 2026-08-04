@@ -1,0 +1,66 @@
+#!/bin/bash
+# couchd stage 2 - ROLLBACK. Gives the DualSense back to ds2000.
+#
+# SR3: rollback must never need Donnie to find the sudo password at 11pm
+# with a dead pad in his hand. This script is root-owned and root-only
+# writable, and the sudoers drop-in (sudoers-couchd) lets ds2000 run THIS
+# ONE SCRIPT with NOPASSWD. It takes no arguments on purpose - there is no
+# way to turn it into a general-purpose root shell.
+#
+# It is idempotent: running it twice, or when nothing is installed, is fine
+# and is never an error.
+#
+#   sudo /usr/local/sbin/couchd-input-release
+#
+# Cheat-sheet line (verbatim, goes on the audit cheat sheet):
+#   pad dead / games see no controller ->  sudo couchd-input-release
+#
+set -u
+
+RULE=/etc/udev/rules.d/72-couchd-own-dualsense.rules
+UNIT=inputproc.service
+
+log() { echo "couchd-input-release: $*"; }
+
+# 1. Stop the owner first. If the rule went away while inputproc still held
+#    EVIOCGRAB, the pad would be un-hidden but still ungrabbable.
+if systemctl list-unit-files "$UNIT" >/dev/null 2>&1; then
+  if systemctl is-active --quiet "$UNIT"; then
+    log "stopping $UNIT"
+    systemctl stop "$UNIT" || log "WARNING: could not stop $UNIT"
+  fi
+fi
+
+# 2. Disarm the rule by renaming it. Declarative, crash-immune: no runtime
+#    chmod to leave behind (this is the InputPlumber #582/#586 failure mode
+#    we specifically designed out).
+if [ -f "$RULE" ]; then
+  mv -f "$RULE" "$RULE.off"
+  log "rule disarmed -> $RULE.off"
+else
+  log "no rule at $RULE (already released)"
+fi
+
+# 3. Reload and re-trigger so the ACLs come back NOW, not at next replug.
+udevadm control --reload-rules || log "WARNING: udevadm reload failed"
+udevadm trigger --subsystem-match=input --subsystem-match=hidraw \
+  || log "WARNING: udevadm trigger failed"
+udevadm settle --timeout=10 || true
+
+# 4. Restore uaccess explicitly for anything still lacking it. The trigger
+#    above normally does this; this is the belt to its braces, and it is
+#    also what makes the script safe to run when udev is being obtuse.
+shopt -s nullglob
+for dev in /dev/input/event* /dev/hidraw*; do
+  name=$(udevadm info --query=property --name="$dev" 2>/dev/null \
+         | sed -n 's/^ID_MODEL=//p')
+  case "$name" in
+    *DualSense*|*Wireless_Controller*)
+      udevadm trigger --action=change "$dev" 2>/dev/null || true
+      ;;
+  esac
+done
+
+log "done - verify with:  getfacl -c /dev/input/eventN"
+log "(expect a user:ds2000:rw- line; if it is absent the pad is still ours)"
+exit 0
