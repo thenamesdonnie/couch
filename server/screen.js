@@ -239,6 +239,13 @@ export function pressKey(name) {
 // switching to a paused game resumes it, exactly like the PS button paths.
 
 const GAME_LAUNCH = path.join(os.homedir(), '.local/bin/game-launch');
+const GUARD = path.join(os.homedir(), '.local/bin/steam-input-guard');
+
+// The desktop is not a window, but it is a destination - the phone has always
+// offered it and the on-TV switcher (script.couch.switcher) needs it in the
+// list it renders. One pseudo-entry here keeps both remotes reading the same
+// menu from the same place.
+const DESKTOP = { id: 'desktop', title: 'Desktop', kodi: false, cls: 'desktop' };
 
 function suspendedFlag() {
   return fs.existsSync('/tmp/game-suspended');
@@ -271,13 +278,32 @@ export async function windows() {
       if ((w.cls || '').startsWith('steam_app')) w.title += ' · paused';
     }
   }
-  return list;
+  return [...list, { ...DESKTOP }];
 }
 
 export async function activateWindow(id) {
-  if (id === 'desktop') return run('python3', [XINPUT, 'showdesktop']);
   const session = gameSessionActive();
   const suspended = suspendedFlag();
+  if (id === 'desktop') {
+    // The desktop hides everything, so a game left running behind it would
+    // be playing to nobody with the pad still routed to it: suspend first,
+    // exactly as picking Kodi does. game-launch suspend is synchronous, but
+    // it leaves a 6s kodi-guard behind that would raise Kodi back over the
+    // desktop a second later - so a zero-length guard supersedes it through
+    // the guard's own SIGTERM handoff rather than a blind kill.
+    if (session && !suspended && await anyGameRunning()) {
+      await run(GAME_LAUNCH, ['suspend']);
+      // game-launch backgrounds its guard, so give it a beat to claim the
+      // pidfile - superseding a guard that has not registered yet would
+      // leave the old one running and fighting for the screen.
+      await new Promise((r) => setTimeout(r, 700));
+      await run(GUARD, ['kodi', '0']).catch(() => { /* nothing to supersede */ });
+    }
+    return run('python3', [XINPUT, 'showdesktop']);
+  }
+  // Anything else is a window, and a window under a shown desktop stays
+  // hidden however politely it is raised.
+  await run('python3', [XINPUT, 'showdesktop', 'off']).catch(() => { /* no wm */ });
   if (id === 'kodi') {
     if (session && !suspended && await anyGameRunning()) {
       gameLaunch('suspend'); // freeze + pad to Kodi + guard, like a PS hold

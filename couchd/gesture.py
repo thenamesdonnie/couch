@@ -27,6 +27,14 @@ import time
 HOLD_SECONDS = 0.9        # PS held this long = "hold" (suspend/handoff)
 HANDOFF_TIMEOUT = 4.0     # release never came: hand over anyway (monotonic)
 
+# Two taps this close together are ONE gesture (the on-TV switcher). Measured
+# release-to-next-press, not press-to-press, so a slow second tap can still
+# arrive inside the window. 0.35s sits above the ~0.25s a comfortable
+# double-tap takes and below the ~0.5s at which two separate presses start to
+# read as separate intents; the hold threshold is untouched by it, and a
+# tap-then-HOLD is always a hold (see is_double_tap).
+DOUBLE_TAP_S = 0.35
+
 # InputPlumber's write_chord_events spacing, ported as earned knowledge:
 # a synthesised press/release pair sent back-to-back is dropped or coalesced
 # by consumers, 80ms apart is seen by everything, release order reversed.
@@ -73,6 +81,35 @@ def is_tap(press_duration, threshold=HOLD_SECONDS):
     return press_duration is not None and press_duration < threshold
 
 
+def within_double_tap(gap, window=DOUBLE_TAP_S):
+    """Release-to-next-press gap short enough for the two to be one gesture.
+
+    `gap` is None before any tap has been completed, which is not a double.
+    """
+    return gap is not None and gap < window
+
+
+def is_double_tap(gap, second_duration, window=DOUBLE_TAP_S, hold=HOLD_SECONDS):
+    """The whole double-tap rule in one predicate.
+
+    A second press counts only if it arrived inside the window AND is itself
+    a tap: a tap followed by a HOLD is a hold (the suspend), never a double.
+    The first press being a tap is the caller's business - the tracker below
+    only arms the window on a completed TAP, so a hold never arms one.
+    """
+    return within_double_tap(gap, window) and is_tap(second_duration, hold)
+
+
+def double_tap_window_over(since_tap, window=DOUBLE_TAP_S):
+    """No second press came: the single tap is final.
+
+    Like handoff_overdue this is a deadline rather than an event, so callers
+    feed it elapsed time in whatever clock they own; the tracker's own arming
+    stays on kernel timestamps (R4).
+    """
+    return since_tap > window
+
+
 def handoff_overdue(since_gesture, timeout=HANDOFF_TIMEOUT):
     """The release never arrived (pad died mid-hold, or the button is stuck).
 
@@ -102,6 +139,7 @@ def chord_schedule(gap=CHORD_GAP):
 #: feed() outcomes
 DOWN = 'down'
 TAP = 'tap'
+DOUBLE_TAP = 'double-tap'
 HOLD_RELEASE = 'hold-release'
 #: poll() outcome
 HOLD = 'hold'
@@ -119,16 +157,22 @@ class PressTracker:
     needs the moment the threshold is crossed, stage 2 does.
     """
 
-    def __init__(self, hold_seconds=HOLD_SECONDS):
+    def __init__(self, hold_seconds=HOLD_SECONDS, double_tap_s=DOUBLE_TAP_S):
         self.hold_seconds = hold_seconds
+        self.double_tap_s = double_tap_s
         self.button_down = False
         self.down_since_k = None
         self.press_duration = None      # last COMPLETED press, seconds
         self.press_ended_at = None      # monotonic when that press ended
         self.presses = 0                # cross-checked against Steam's log
+        self.doubles = 0                # completed double-taps
         self.hold_fired = False         # poll() already announced this hold
         self.last_k = 0.0               # last kernel timestamp seen
         self.last_k_wall = 0.0          # wall clock when we saw it
+        # double-tap bookkeeping, kernel clock throughout (R4). A hold never
+        # arms the window, so tap-then-hold can only ever be a hold.
+        self.last_tap_ended_k = None    # kernel ts of the last completed TAP
+        self.double_armed = False       # this press began inside that window
 
     # -- clock ------------------------------------------------------------
     def note_event(self, k, wall=None):
@@ -142,10 +186,17 @@ class PressTracker:
 
     # -- decisions --------------------------------------------------------
     def feed(self, k, value, mono=None, wall=None):
-        """One BTN_MODE event. Returns DOWN / TAP / HOLD_RELEASE / None.
+        """One BTN_MODE event. Returns DOWN / TAP / DOUBLE_TAP /
+        HOLD_RELEASE / None.
 
         `value` 2 is autorepeat and is deliberately ignored (the kernel does
         not repeat BTN_*, but a synthetic stream might).
+
+        DOUBLE_TAP is a TAP that closed a window opened by the previous tap;
+        callers that only care about "was this press withheld from the pad"
+        must treat it exactly as TAP. `double_armed` stays set through the
+        release so a level-based reader (couchd's Observed) can see WHY the
+        press it is looking at was a double.
         """
         self.note_event(k, wall)
         if value == 1:
@@ -153,6 +204,9 @@ class PressTracker:
             self.down_since_k = k
             self.hold_fired = False
             self.presses += 1
+            gap = (None if self.last_tap_ended_k is None
+                   else k - self.last_tap_ended_k)
+            self.double_armed = within_double_tap(gap, self.double_tap_s)
             return DOWN
         if value == 0:
             if self.down_since_k is not None:
@@ -164,9 +218,30 @@ class PressTracker:
             self.down_since_k = None
             self.hold_fired = False
             if was_hold or not is_tap(self.press_duration, self.hold_seconds):
+                # tap-then-hold: the hold wins, and it disarms the window too.
+                self.last_tap_ended_k = None
+                self.double_armed = False
                 return HOLD_RELEASE
+            if self.double_armed:
+                # Three taps are one double plus one single, never two
+                # overlapping doubles: the window closes when it is used.
+                self.last_tap_ended_k = None
+                self.doubles += 1
+                return DOUBLE_TAP
+            self.last_tap_ended_k = k
             return TAP
         return None
+
+    def double_pending(self, wall=None):
+        """A completed single tap whose window has not run out yet.
+
+        The window is measured in the kernel clock, extrapolated the same way
+        hold detection is, so a tap followed by silence still expires.
+        """
+        if self.button_down or self.last_tap_ended_k is None:
+            return False
+        return not double_tap_window_over(
+            self.kernel_now(wall) - self.last_tap_ended_k, self.double_tap_s)
 
     def poll(self, wall=None):
         """Called on every loop iteration by the owner of the pad. Returns
@@ -192,3 +267,5 @@ class PressTracker:
         self.button_down = False
         self.down_since_k = None
         self.hold_fired = False
+        self.last_tap_ended_k = None
+        self.double_armed = False

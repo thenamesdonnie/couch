@@ -19,6 +19,7 @@ from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
+from gesture import DOUBLE_TAP_S
 from couchd import (GUARDS, HOLD_SECONDS, REGIONS, TRANSITIONS, UNKNOWN,
                     Machine, check_invariants, make_obs, reconcile,
                     resolve_appid, want_pad_owner, freeze_set_agreement)
@@ -280,6 +281,106 @@ def test_pad_dying_mid_hold_still_hands_the_pad_back():
     assert find(got, 'route_pad', 'kodi')
 
 
+# =========================================================================
+# the double-tap switcher gesture
+# =========================================================================
+def _tap(rig, k0, length=0.08, **kw):
+    """One complete tap through the machine: press, then release."""
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0, **kw)
+    return rig.observe(button_down=False, press_duration=length,
+                       kernel_now=k0 + length, **kw)
+
+
+def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
+    """The dialog is Kodi's, so Kodi must own pad and screen before it opens:
+    the whole PS-hold suspend, then show_switcher, in that order."""
+    rig = Rig(session=SESSION, pid_states={200: 'S', 201: 'S'}, joystick=False,
+              top_name='Elden Ring', top_class='steam_app_367520').settle()
+    k0 = 11000.0
+    assert not find(_tap(rig, k0), 'show_switcher'), 'one tap is not a double'
+    assert rig.machine.regions['gesture'] == 'tap-wait'
+    got = _tap(rig, k0 + 0.2, double_armed=True)
+    assert rig.machine.regions['gesture'] == 'double-tap'
+    order = [(i.verb, i.subject) for i in got]
+    assert order == [('freeze', APPID), ('set_flag', 'suspended'),
+                     ('route_pad', 'kodi'), ('show', 'kodi'),
+                     ('close_steam_menu', 'steam'), ('show_switcher', 'tv')]
+    assert find(got, 'freeze')[0].args['pids'] == [200, 201]
+    assert find(got, 'show_switcher')[0].args['suspended_first'] is True
+    rig.observe()
+    assert rig.machine.regions['gesture'] == 'idle'
+
+
+def test_double_tap_with_nothing_running_just_opens_the_switcher():
+    rig = Rig(top_name='Thunar', top_class='Thunar').settle()
+    k0 = 11500.0
+    _tap(rig, k0)
+    got = _tap(rig, k0 + 0.2, double_armed=True)
+    assert verbs(got) == [('show', 'kodi'), ('show_switcher', 'tv')]
+    assert not find(got, 'freeze') and not find(got, 'set_flag')
+    assert find(got, 'show_switcher')[0].args['suspended_first'] is False
+
+
+def test_double_tap_in_big_picture_records_the_suspend_like_a_hold():
+    rig = Rig(session=BP_SESSION, big_picture_window=True, joystick=False,
+              top_name='Big Picture Mode', top_class='steamwebhelper').settle()
+    k0 = 11700.0
+    _tap(rig, k0)
+    got = _tap(rig, k0 + 0.2, double_armed=True)
+    flag = find(got, 'set_flag', 'suspended')
+    assert flag and flag[0].args['value'] == 'bigpicture'
+    assert find(got, 'route_pad', 'kodi') and find(got, 'show_switcher', 'tv')
+
+
+def test_tap_then_hold_is_a_hold_and_never_opens_the_switcher():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
+    k0 = 12000.0
+    _tap(rig, k0)
+    assert rig.machine.regions['gesture'] == 'tap-wait'
+    rig.observe(button_down=True, down_since_k=k0 + 0.2, kernel_now=k0 + 0.2,
+                double_armed=True)
+    assert rig.machine.regions['gesture'] == 'down-again'
+    got = rig.observe(button_down=True, down_since_k=k0 + 0.2,
+                      kernel_now=k0 + 0.2 + HOLD_SECONDS + 1e-6,
+                      double_armed=True)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    assert find(got, 'freeze') and not find(got, 'show_switcher')
+
+
+def test_a_lone_tap_expires_into_idle_and_asks_for_nothing():
+    rig = Rig().settle()
+    got = _tap(rig, 12500.0)
+    assert not got
+    assert rig.machine.regions['gesture'] == 'tap-wait'
+    rig.observe(dt=DOUBLE_TAP_S + 0.05)
+    assert rig.machine.regions['gesture'] == 'idle'
+
+
+def test_a_second_press_after_the_window_is_a_new_first_tap():
+    """The tracker's kernel-exact arming is what decides, not the state: a
+    press that reaches 'down-again' late still releases as a plain tap."""
+    rig = Rig().settle()
+    k0 = 12800.0
+    _tap(rig, k0)
+    got = _tap(rig, k0 + 0.5, double_armed=False)
+    assert not find(got, 'show_switcher')
+    assert rig.machine.regions['gesture'] == 'tap-wait', 're-armed, not fired'
+
+
+def test_a_tap_that_resumes_a_paused_game_cannot_become_a_double():
+    """The first tap already handed the pad back to the game; a Kodi dialog
+    on top of that would be unnavigable, so the switcher stays out of it."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    k0 = 13000.0
+    got = _tap(rig, k0)
+    assert find(got, 'launch'), 'unchanged: a tap still resumes'
+    assert rig.machine.regions['gesture'] == 'tap-resume', 'not tap-wait'
+    rig.observe()                                   # resume decided -> idle
+    got = _tap(rig, k0 + 0.2, double_armed=True)
+    assert not find(got, 'show_switcher')
+
+
 def test_no_repair_intents_while_a_gesture_is_in_flight():
     """Reconciling mid-press is how Kodi gets a phantom held button."""
     rig = Rig(session=SESSION, suspended=APPID, pid_states={},
@@ -488,6 +589,7 @@ class ConsoleModel(RuleBasedStateMachine):
                       big_picture_window=False, steam_route='', ledger={},
                       pad_known=True, pad_present=True, button_down=False,
                       down_since_k=None, press_duration=None,
+                      double_armed=False,
                       flags_known=True, pids_known=True, kodi_known=True,
                       x_known=True, steam_known=True, kodi_window=10000)
         self.violations = []
@@ -539,11 +641,16 @@ class ConsoleModel(RuleBasedStateMachine):
         self.w['steam_route'] = ('... ClientUI, AppID 769' if open_ else
                                  '... Desktop, AppID 413080')
 
-    @rule()
-    def press(self):
+    @rule(armed=st.booleans())
+    def press(self, armed):
+        # `armed` is what the tracker would have decided in kernel time: this
+        # press began inside DOUBLE_TAP_S of the previous tap's release. Left
+        # free so Hypothesis can also produce the impossible orderings (armed
+        # with no preceding tap at all) the model must survive.
         self.kernel += 0.05
         self.w['button_down'] = True
         self.w['down_since_k'] = self.kernel
+        self.w['double_armed'] = armed
 
     @rule(held=st.floats(min_value=0.0, max_value=3.0))
     def release(self, held):
@@ -558,6 +665,7 @@ class ConsoleModel(RuleBasedStateMachine):
         self.w['pad_present'] = False
         self.w['button_down'] = False
         self.w['down_since_k'] = None
+        self.w['double_armed'] = False   # PressTracker.reset() does this
 
     @rule()
     def pad_back(self):

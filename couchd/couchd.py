@@ -191,6 +191,8 @@ class Observed:
     kernel_now: float = 0.0
     press_duration: float = None           # last completed press, seconds
     press_ended_at: float = None           # mono when that press ended
+    double_armed: bool = False             # this press began inside the
+    #                                        double-tap window of the last tap
 
     # model state fed back in (maintained by Machine/daemon)
     regions: dict = field(default_factory=dict)
@@ -244,7 +246,7 @@ def make_obs(**kw):
         steam_known=True, steam_route='', ui_mode=7, ledger={},
         pad_known=True, pad_present=True, button_down=False,
         down_since_k=None, kernel_now=1000.0, press_duration=None,
-        press_ended_at=None,
+        press_ended_at=None, double_armed=False,
         regions={'input_ownership': 'kodi', 'foreground': 'kodi',
                  'session': 'none', 'enforcement': 'none',
                  'gesture': 'idle', 'pad': 'present'},
@@ -262,7 +264,7 @@ def make_obs(**kw):
 # =========================================================================
 VERBS = ('freeze', 'thaw', 'route_pad', 'show', 'close_steam_menu', 'set_flag',
          'clear_flag', 'dismiss', 'launch', 'quit', 'kill', 'iconify',
-         'request_tv_wake')
+         'request_tv_wake', 'show_switcher')
 PID_VERBS = ('freeze', 'thaw', 'quit', 'kill')
 
 
@@ -344,6 +346,33 @@ def g_released(o):
 def g_released_tap_resume(o):
     return (not o.button_down and gesture.is_tap(o.press_duration)
             and o.suspended_present)
+
+
+def g_released_double(o):
+    """The second half of a double-tap: released, itself a tap, and it began
+    inside DOUBLE_TAP_S of the previous tap's release.
+
+    `double_armed` is the tracker's, computed in KERNEL time (R4) - the
+    tap-wait state below only says a second press is plausible, this says it
+    actually was one. The hold transition is tried first in every state that
+    has both, so tap-then-hold is always the hold.
+    """
+    return (not o.button_down and o.double_armed
+            and gesture.is_tap(o.press_duration))
+
+
+def g_double_window_over(o):
+    """No second press came: the single tap is final and we go quiet.
+
+    Monotonic, like the handoff timeout and for the same reason - it is the
+    ABSENCE of an event, so there is no kernel timestamp to measure from. The
+    decision that matters (released_double) stays kernel-exact.
+    """
+    return gesture.double_tap_window_over(_since(o, 'gesture'))
+
+
+def g_switcher_emitted(o):
+    return _recent(o, 'show_switcher|tv|gesture:double-tap-switcher', 3.0)
 
 
 def g_handoff_emitted(o):
@@ -469,7 +498,25 @@ TRANSITIONS = {
                  ('button_down', 'down', 'ps-press')],
         'down': [('hold_reached', 'hold-fired', 'ps-held-0.9s'),
                  ('released_tap_resume', 'tap-resume', 'ps-tap-with-paused-game'),
-                 ('released', 'idle', 'ps-tap-noop')],
+                 ('released', 'tap-wait', 'ps-tap-noop')],
+        # A tap that did nothing (no paused game to resume) is not final until
+        # the double-tap window shuts: a second press inside it is the
+        # switcher gesture, not a new first tap. Nothing is DELAYED by this -
+        # the tap's own action, if it had one, already fired from 'down' - so
+        # the live watcher's tap latency is unchanged.
+        'tap-wait': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
+                     ('button_down', 'down-again', 'second-press-inside-window'),
+                     ('double_window_over', 'idle', 'double-tap-window-expired')],
+        # Reachable ONLY from tap-wait, which is why a double-tap can never
+        # follow a tap that resumed a paused game: that tap goes to
+        # 'tap-resume' instead, and the resume owns the pad from there.
+        'down-again': [('hold_reached', 'hold-fired', 'ps-held-0.9s'),
+                       ('released_double', 'double-tap', 'ps-double-tap'),
+                       ('released_tap_resume', 'tap-resume',
+                        'ps-tap-with-paused-game'),
+                       ('released', 'tap-wait', 'ps-tap-noop')],
+        'double-tap': [('switcher_emitted', 'idle', 'switcher-decided'),
+                       ('gesture_stale', 'idle', 'gesture-abandoned')],
         'hold-fired': [('released', 'handoff-pending', 'ps-released-after-hold'),
                        ('handoff_overdue', 'timed-out', 'release-never-came')],
         'handoff-pending': [('handoff_emitted', 'idle', 'handoff-decided'),
@@ -741,6 +788,75 @@ def reconcile(o):
         out.append(Intent('close_steam_menu', 'steam',
                           {'via': 'vpad-guide', 'window_s': GUARD_WINDOW}, reason,
                           _pred('steam menu not routed', 6.0),
+                          requires=('gesture',), cooldown=3.0))
+
+    if g == 'double-tap':
+        # Two quick taps ask for the on-TV switcher (the Kodi select dialog
+        # script.couch.switcher draws). The dialog is Kodi's, and it has to be
+        # navigable with the stick, so anything actually running is suspended
+        # FIRST - the whole PS-hold path, in the same order - and only then is
+        # the dialog asked for. That order is what the watcher does, so the
+        # differ sees the same sequence from both stacks.
+        #
+        # T5 note (pre-declared, and deliberately EMPTY): unlike R7(a)/R7(b)
+        # this feature lands in BOTH stacks in the same change, so there is no
+        # whitelist entry to write - show_switcher must appear in both streams
+        # or it is a real T4. The one knowingly-different thing is timing, not
+        # decisions: couchd holds the gesture region in 'tap-wait' for
+        # DOUBLE_TAP_S after any no-op tap, and the "no repair while a gesture
+        # is in flight" invariant therefore suppresses drift repairs for that
+        # 350ms; the watcher has no such pause. A repair falling exactly in
+        # that window shows up as LEGACY-ONLY once and is gone by the next 10s
+        # reconcile - triage it T6 (same decision, later), never T4.
+        handed = False
+        if o.session_present and running:
+            out.append(Intent(
+                'freeze', appid,
+                {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
+                 'mode': o.session_mode},
+                'gesture:ps-double-tap',
+                _pred('all game pids in state T', 5.0),
+                requires=('gesture', 'session'), cooldown=3.0))
+            out.append(Intent(
+                'set_flag', 'suspended', {'value': appid},
+                'gesture:ps-double-tap', _pred('/tmp/game-suspended exists', 2.0),
+                requires=('gesture', 'session'), cooldown=3.0))
+            handed = True
+        elif o.session_present and (o.session_mode == 'bigpicture'
+                                    or o.regions.get('foreground') == 'bigpicture'):
+            out.append(Intent(
+                'set_flag', 'suspended', {'value': 'bigpicture', 'pids': []},
+                'gesture:ps-double-tap', _pred('/tmp/game-suspended exists', 2.0),
+                requires=('gesture', 'session'), cooldown=3.0))
+            handed = True
+        if handed:
+            out.append(Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'},
+                              'gesture:ps-double-tap',
+                              _pred('input.enablejoystick true', 2.0),
+                              requires=('gesture', 'input_ownership'), cooldown=3.0))
+            out.append(Intent('show', 'kodi', {'via': 'xlib-restack'},
+                              'gesture:ps-double-tap',
+                              _pred('top window is Kodi', 2.0),
+                              requires=('gesture', 'foreground'), cooldown=3.0))
+            out.append(Intent('close_steam_menu', 'steam',
+                              {'via': 'vpad-guide', 'window_s': GUARD_WINDOW},
+                              'gesture:ps-double-tap',
+                              _pred('steam menu not routed', 6.0),
+                              requires=('gesture',), cooldown=3.0))
+        else:
+            # Nothing to suspend, but the dialog still needs a visible Kodi -
+            # including on the way back from the desktop, which is where this
+            # gesture is most useful.
+            out.append(Intent('show', 'kodi',
+                              {'via': 'xlib-restack', 'showing_desktop': 'off'},
+                              'gesture:double-tap-switcher',
+                              _pred('top window is Kodi', 2.0),
+                              requires=('gesture', 'foreground'), cooldown=3.0))
+        out.append(Intent('show_switcher', 'tv',
+                          {'via': 'kodi-addon:script.couch.switcher',
+                           'suspended_first': handed},
+                          'gesture:double-tap-switcher',
+                          _pred('Kodi select dialog open', 3.0),
                           requires=('gesture',), cooldown=3.0))
 
     if g == 'tap-resume':
@@ -1107,6 +1223,8 @@ class PadObserver:
     press_duration = property(lambda self: self.tracker.press_duration)
     press_ended_at = property(lambda self: self.tracker.press_ended_at)
     presses = property(lambda self: self.tracker.presses)
+    double_armed = property(lambda self: self.tracker.double_armed)
+    doubles = property(lambda self: self.tracker.doubles)
 
     @staticmethod
     def find_pads():
@@ -1208,7 +1326,8 @@ class PadObserver:
                                   'kernel_t': round(k, 6),
                                   'duration': (round(self.press_duration, 3)
                                                if value == 0 and self.press_duration
-                                               else None)})
+                                               else None),
+                                  'double_armed': self.tracker.double_armed})
                 self.w.attention('ps-button')
                 self.src.last_change = time.monotonic()
 
@@ -1917,7 +2036,12 @@ class Couchd:
         self.last_would_do = ([intent.human()] + self.last_would_do)[:3]
         # couchd's own enforcement window: exactly what the old stack does by
         # spawning steam-input-guard after every transition.
-        if intent.reason.startswith(('gesture:hold-release', 'transition:session-ended',
+        # 'gesture:ps-double-tap' is only ever emitted when the double-tap
+        # actually suspended something, which is exactly when the watcher
+        # spawns steam-input-guard - the plain switcher (nothing running)
+        # spawns no guard and so opens no window.
+        if intent.reason.startswith(('gesture:hold-release', 'gesture:ps-double-tap',
+                                     'transition:session-ended',
                                      'reconcile:orphaned-session')):
             self.enforcement_target = 'kodi'
             self.enforcement_until = time.monotonic() + GUARD_WINDOW
@@ -1961,6 +2085,7 @@ class Couchd:
             kernel_now=self.pad.kernel_now(),
             press_duration=self.pad.press_duration,
             press_ended_at=self.pad.press_ended_at,
+            double_armed=self.pad.double_armed,
             regions=dict(self.machine.regions),
             region_since=dict(self.machine.since),
             games=dict(self.machine.games),

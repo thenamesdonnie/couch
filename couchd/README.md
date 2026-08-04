@@ -80,7 +80,13 @@ Nothing else. The unit enforces it: `ProtectSystem=strict` with
   * `foreground` kodi | game | bigpicture | other | unknown
   * `session` none | starting | active | orphaned | ending | unknown
   * `enforcement` none | kodi | game (couchd's model of a guard window)
-  * `gesture` idle | down | hold-fired | handoff-pending | timed-out | tap-resume
+  * `gesture` idle | down | hold-fired | handoff-pending | timed-out |
+    tap-resume | tap-wait | down-again | double-tap — the last three are the
+    double-tap switcher: a no-op tap parks in `tap-wait` for 0.35s
+    (`gesture.DOUBLE_TAP_S`), a second press inside that window is
+    `down-again`, and its release — if it is a tap and not a hold — is
+    `double-tap`, which asks for the on-TV switcher. Nothing is delayed by
+    the wait: a tap's own action, if it had one, already fired from `down`.
   * `pad` present | absent | unknown
 * `games` - appid → lifecycle (`LAUNCHING`/`RUNNING`/`FROZEN`/`MISSING_WINDOW`/
   `STOPPED`…), from Steam's ledger crossed with the process tree.

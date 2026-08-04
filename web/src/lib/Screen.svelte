@@ -325,7 +325,11 @@
         <button class="winrow" onclick={() => activate('kodi')}>
           <Icon name="home" size={18} /><span class="grow">Kodi</span><Icon name="chevron-right" size={16} />
         </button>
-        {#each wins.filter((w) => !w.kodi) as w (w.id)}
+        <!-- Kodi and the desktop have their own rows above and below; the
+             desktop arrives in the list too now (the on-TV switcher renders
+             the list verbatim), so it is filtered out here rather than
+             appearing twice. -->
+        {#each wins.filter((w) => !w.kodi && w.id !== 'desktop') as w (w.id)}
           <button class="winrow" onclick={() => activate(w.id)}>
             <Icon name="screen" size={18} /><span class="grow wintitle">{w.title}</span><Icon name="chevron-right" size={16} />
           </button>

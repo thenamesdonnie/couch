@@ -34,3 +34,4 @@ __pycache__/
 .idea/
 *.swp
 couchd/.venv/
+kodi-addons/**/__pycache__/

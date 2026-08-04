@@ -30,6 +30,11 @@ TOLERANCE = {                       # seconds, per verb, +/- around the legacy e
     'dismiss': 2.0, 'iconify': 2.0,
     'launch': 10.0, 'quit': 10.0, 'set_flag': 10.0, 'clear_flag': 10.0,
     'request_tv_wake': 10.0,
+    # Both stacks gained the double-tap switcher in the same change, so there
+    # is no T5 whitelist entry for it: show_switcher must appear in BOTH
+    # streams or it is a real T4. The watcher fires the addon immediately
+    # after its suspend, couchd emits the intent in the same pass.
+    'show_switcher': 3.0,
 }
 DEFAULT_TOLERANCE = 5.0
 # couchd emits ONE intent per (verb, subject, reason) per cooldown window, so legacy
