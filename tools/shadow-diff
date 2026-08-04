@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""shadow-diff - offline comparison of legacy console intents vs couchd's shadow stream.
+
+Run by hand in the morning. Reads two JSONL intent streams, greedily interval-joins
+them on (verb, canonical subject) inside per-verb tolerance windows, and prints the
+three divergence classes from R2 with an empty T-label column for hand triage.
+
+It NEVER touches the TV, X, Kodi, Steam, the pad or any daemon. Files in, text out.
+
+Examples:
+  tools/shadow-diff                          # today's shadow log + /tmp/legacy-intents.jsonl
+  tools/shadow-diff --date 20260804          # a specific evening
+  tools/shadow-diff corpus/legacy-0804.jsonl # legacy stream copied off /tmp
+  tools/shadow-diff --shadow ~/couch/shadow/couchd-20260804.jsonl --json > diff.json
+  tools/shadow-diff --date 20260804 --no-context   # skip world-snapshot context lines
+
+Triage labels (C10): T1 harness, T2 benign, T3 bug-in-old, T4 bug-in-couchd (the only
+gating bucket), T5 pre-declared, T6 same decision wrong latency.
+"""
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+
+# ---- tunables (edit here; every number is ours to recalibrate, per /build) ----
+TOLERANCE = {                       # seconds, per verb, +/- around the legacy event
+    'freeze': 5.0, 'thaw': 5.0, 'kill': 5.0,
+    'route_pad': 2.0, 'show': 2.0, 'close_steam_menu': 2.0,
+    'dismiss': 2.0, 'iconify': 2.0,
+    'launch': 10.0, 'quit': 10.0, 'set_flag': 10.0, 'clear_flag': 10.0,
+    'request_tv_wake': 10.0,
+}
+DEFAULT_TOLERANCE = 5.0
+PID_SET_VERBS = {'freeze', 'thaw', 'quit', 'kill'}   # R4: pid sets are diffable args
+CONTEXT_VERBS = {'invoked'}          # trigger channels (R4), context not actions
+PERCEPTUAL_BOUND_S = 0.250           # C10/T6 routing+raise bound, p95 gated
+PERCEPTUAL_VERBS = ('route_pad', 'show')
+OBSERVER_BLIND_LIMIT_S = 300.0       # R5 observer-health gate: >5 min blind = INVALID
+GESTURE_ASSOC_S = 5.0                # route_pad <-> gesture release association window
+FLAG_FREEZE_S = 10.0                 # freeze -> set_flag(suspended) pairing window
+BP_HOLD_S = 20.0                     # R7(a) big-picture-hold context lookback
+REAPER_SLACK = 2                     # R5 whitelist: transient reaper children tolerated
+EXPECTED_SOURCES = ('pad', 'flags', 'game_pids', 'x11', 'kodi', 'steam_log')
+IGNORE_ARG_KEYS = {'pids', 'pid_set', 'frozen_pids', 'pid', 'resolver', 'argv',
+                   'snapshot', 't', 'mono', 'seq', 'ts', 'release_t'}
+SECTIONS = ('COUCHD-ONLY', 'LEGACY-ONLY', 'BOTH-BUT-DIFFERENT')
+
+
+# ---- loading -----------------------------------------------------------------
+def load_jsonl(path, notes, label):
+    """Return (records, ok). Missing/partial files degrade to a note, never a crash."""
+    if not path or not os.path.exists(path):
+        notes.append('%s stream MISSING: %s (diff below is not a real comparison)'
+                     % (label, path))
+        return [], False
+    recs, bad = [], 0
+    with open(path, 'r', errors='replace') as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                bad += 1
+                continue
+            if isinstance(r, dict):
+                recs.append(r)
+    if bad:
+        notes.append('%s stream: %d unparseable line(s) skipped (truncated tail?)'
+                     % (label, bad))
+    if not recs:
+        notes.append('%s stream empty: %s' % (label, path))
+    return recs, bool(recs)
+
+
+def as_intent(rec, side):
+    """Normalise a record from either stream into the comparable intent shape."""
+    verb = rec.get('verb')
+    if not verb or rec.get('kind') == 'obs':
+        return None
+    try:
+        t = float(rec.get('t'))
+    except (TypeError, ValueError):
+        return None
+    args = rec.get('args') if isinstance(rec.get('args'), dict) else {}
+    return {'t': t, 'verb': str(verb), 'subject': rec.get('subject'), 'args': args,
+            'side': side, 'origin': rec.get('src') or rec.get('reason') or side,
+            'reason': rec.get('reason'), 'seq': rec.get('seq'), 'raw': rec}
+
+
+def canon(subject):
+    """appids compare as strings; everything case- and whitespace-insensitive."""
+    if subject is None:
+        return ''
+    if isinstance(subject, bool):
+        return str(subject).lower()
+    if isinstance(subject, (int, float)):
+        return str(int(subject))
+    return str(subject).strip().lower()
+
+
+def pid_set(it):
+    """frozenset of pid strings, or None when this intent carries no pid set."""
+    a = it['args']
+    for k in ('pids', 'pid_set', 'frozen_pids'):
+        v = a.get(k)
+        if isinstance(v, list):
+            return frozenset(str(p) for p in v)
+    if a.get('pid') is not None:
+        return frozenset([str(a['pid'])])
+    return None
+
+
+def arg_diff(a, b):
+    """Keys both sides define with different values (volatile keys excluded)."""
+    out = []
+    for k in sorted(set(a['args']) & set(b['args']) - IGNORE_ARG_KEYS):
+        if canon(a['args'][k]) != canon(b['args'][k]):
+            out.append('%s=%s|%s' % (k, a['args'][k], b['args'][k]))
+    return out
+
+
+# ---- matching (greedy interval join, R2) -------------------------------------
+def match(legacy, couchd):
+    """Time-sorted greedy nearest-match. Returns (pairs, legacy_only, couchd_only)."""
+    legacy = sorted(legacy, key=lambda i: i['t'])
+    couchd = sorted(couchd, key=lambda i: i['t'])
+    taken, pairs, l_only = set(), [], []
+    for li in legacy:
+        tol = TOLERANCE.get(li['verb'], DEFAULT_TOLERANCE)
+        best, best_dt = None, None
+        for n, ci in enumerate(couchd):
+            if n in taken or ci['verb'] != li['verb']:
+                continue
+            if canon(ci['subject']) != canon(li['subject']):
+                continue
+            dt = ci['t'] - li['t']
+            if abs(dt) <= tol and (best_dt is None or abs(dt) < abs(best_dt)):
+                best, best_dt = n, dt
+        if best is None:
+            l_only.append(li)
+        else:
+            taken.add(best)
+            pairs.append({'legacy': li, 'couchd': couchd[best], 'offset': best_dt,
+                          'flags': [], 'notes': []})
+    c_only = [ci for n, ci in enumerate(couchd) if n not in taken]
+    return pairs, l_only, c_only
+
+
+def compare_pair(p):
+    """Fill in SET-MISMATCH / ARGS-DIFF flags for a matched pair."""
+    li, ci = p['legacy'], p['couchd']
+    if li['verb'] in PID_SET_VERBS:
+        lp, cp = pid_set(li), pid_set(ci)
+        if lp is None or cp is None:
+            p['notes'].append('pid set absent on %s side' %
+                              ('legacy' if lp is None else 'couchd'))
+        elif lp != cp:
+            p['flags'].append('SET-MISMATCH')
+            p['notes'].append('legacy-only pids=%s couchd-only pids=%s' %
+                              (sorted(lp - cp) or '-', sorted(cp - lp) or '-'))
+    d = arg_diff(li, ci)
+    if d:
+        p['flags'].append('ARGS-DIFF')
+        p['notes'].append(' '.join(d))
+    return p
+
+
+# ---- happens-before assertions (R5, independent of the tolerance windows) -----
+def gesture_releases(obs):
+    """Kernel-timestamped gesture release edges from couchd's obs records."""
+    out = []
+    for r in obs:
+        if r.get('region') != 'gesture' and r.get('source') not in ('gesture', 'pad'):
+            continue
+        ev = str(r.get('event') or r.get('state') or r.get('to') or '')
+        if ev in ('release', 'released', 'up', 'idle'):
+            try:
+                out.append(float(r.get('kt', r.get('t'))))
+            except (TypeError, ValueError):
+                pass
+    return sorted(out)
+
+
+def assertions(couchd_i, legacy_i, obs, pairs):
+    """Returns a list of {'name','ok','detail','intent'} rows."""
+    rows = []
+    rel = gesture_releases(obs)
+    for it in couchd_i:
+        if it['verb'] != 'route_pad' or canon(it['subject']) != 'kodi':
+            continue
+        r = it['args'].get('release_t', it['args'].get('gesture_release_t'))
+        near = [float(r)] if r is not None else \
+            [x for x in rel if abs(x - it['t']) <= GESTURE_ASSOC_S]
+        if not near:
+            rows.append({'name': 'route_pad(kodi) after gesture release', 'ok': None,
+                         'detail': 'no gesture release within %.0fs - unassociated'
+                                   % GESTURE_ASSOC_S, 'intent': it})
+            continue
+        edge = min(near, key=lambda x: abs(x - it['t']))
+        ok = it['t'] >= edge
+        rows.append({'name': 'route_pad(kodi) after gesture release', 'ok': ok,
+                     'detail': 'route_pad %+.3fs relative to release edge'
+                               % (it['t'] - edge), 'intent': None if ok else it})
+    for it in legacy_i + couchd_i:
+        if it['verb'] != 'set_flag':
+            continue
+        flag = canon(it['subject'] or it['args'].get('flag'))
+        if 'suspend' not in flag:
+            continue
+        near = [f for f in legacy_i + couchd_i
+                if f['verb'] == 'freeze' and abs(f['t'] - it['t']) <= FLAG_FREEZE_S]
+        if not near:
+            rows.append({'name': 'freeze before set_flag(suspended)', 'ok': None,
+                         'detail': 'no freeze within %.0fs of the flag (R7(a) shape?)'
+                                   % FLAG_FREEZE_S, 'intent': it})
+            continue
+        first = min(near, key=lambda f: f['t'])
+        ok = first['t'] <= it['t']
+        rows.append({'name': 'freeze before set_flag(suspended)', 'ok': ok,
+                     'detail': 'freeze %+.3fs relative to the flag write'
+                               % (first['t'] - it['t']), 'intent': None if ok else it})
+    for verb in PERCEPTUAL_VERBS:
+        offs = [abs(p['offset']) for p in pairs if p['legacy']['verb'] == verb]
+        if not offs:
+            continue
+        p95 = pct(offs, 95)
+        rows.append({'name': '%s matched-offset p95 <= %dms' % (verb,
+                     PERCEPTUAL_BOUND_S * 1000), 'ok': p95 <= PERCEPTUAL_BOUND_S,
+                     'detail': 'p95=%.0fms over %d matches' % (p95 * 1000, len(offs)),
+                     'intent': None})
+    return rows
+
+
+def pct(vals, p):
+    vals = sorted(vals)
+    if not vals:
+        return 0.0
+    k = (len(vals) - 1) * p / 100.0
+    lo, hi = int(k), min(int(k) + 1, len(vals) - 1)
+    return vals[lo] + (vals[hi] - vals[lo]) * (k - lo)
+
+
+# ---- pre-declared whitelist (R5 + R7) ---------------------------------------
+def bp_hold_context(t, couchd_i, legacy_i):
+    """True when a big-picture hold with no game pids sits just before t (R7(a))."""
+    for it in couchd_i + legacy_i:
+        if not (t - BP_HOLD_S <= it['t'] <= t):
+            continue
+        a = it['args']
+        bp = canon(it['subject']) == 'bigpicture' or \
+            canon(a.get('foreground')) == 'bigpicture' or \
+            canon(a.get('mode')) == 'bigpicture'
+        if bp and it['verb'] in ('freeze', 'hold', 'set_flag', 'show', 'invoked') \
+                and not (pid_set(it) or ()):
+            return True
+    return False
+
+
+def triage(section, li, ci, flags, couchd_i, legacy_i):
+    """Pre-fill the T column where a divergence matches the written-first whitelist."""
+    sides = [x for x in (li, ci) if x]
+    for it in sides:
+        if canon(it['subject']) == 'bigpicture' or \
+                canon(it['args'].get('appid')) == 'bigpicture':
+            return 'T5', 'R7(b) pre-declared: legacy records appid literal ' \
+                         '"bigpicture" (retriage as T3 - real legacy bug)'
+    if section == 'LEGACY-ONLY' and li['verb'] in ('set_flag', 'clear_flag'):
+        return 'T5', 'R5 whitelist: flag verbs are absent from couchd\'s stream'
+    if section == 'BOTH-BUT-DIFFERENT' and 'SET-MISMATCH' in flags:
+        lp, cp = pid_set(li), pid_set(ci)
+        if lp is not None and cp is not None and (lp <= cp or cp <= lp) and \
+                len(lp ^ cp) <= REAPER_SLACK:
+            return 'T5', 'R5 whitelist: gameprocess ledger vs game-pids, transient ' \
+                         'reaper children'
+    if section == 'LEGACY-ONLY' and li['verb'] == 'route_pad' and \
+            canon(li['subject']) != 'kodi' and bp_hold_context(li['t'], couchd_i,
+                                                               legacy_i):
+        return 'T5', 'R7(a) pre-declared: legacy misses /tmp/game-suspended on a pure ' \
+                     'Big Picture hold, reconcile then moves the pad ' \
+                     '(retriage as T3 - real legacy bug)'
+    return '', ''
+
+
+# ---- observer health (R5, independent of diffing) ----------------------------
+def observer_health(obs, window, notes):
+    """Per-source staleness, blind events, absent sources, and the validity verdict."""
+    t0, t1 = window
+    span = max(0.0, t1 - t0)
+    per, blind = {}, []
+    for r in obs:
+        try:
+            t = float(r.get('t'))
+        except (TypeError, ValueError):
+            continue
+        src = str(r.get('source') or r.get('region') or 'unknown')
+        per.setdefault(src, []).append(t)
+        if r.get('event') == 'observer_blind' or r.get('kind') == 'observer_blind' \
+                or r.get('verb') == 'observer_blind':
+            blind.append({'source': src, 't': t,
+                          'duration': float(r.get('duration') or 0.0),
+                          'detail': str(r.get('detail') or r.get('reason') or '')})
+    health, reasons = [], []
+    for src in sorted(set(EXPECTED_SOURCES) | set(per)):
+        ts = sorted(per.get(src, []))
+        if not ts:
+            health.append({'source': src, 'present': False, 'max_gap': span,
+                           'samples': 0})
+            if span > OBSERVER_BLIND_LIMIT_S:
+                reasons.append('source %s absent for the whole %.0fs window' %
+                               (src, span))
+            continue
+        gaps = [ts[0] - t0] + [b - a for a, b in zip(ts, ts[1:])] + [t1 - ts[-1]]
+        mg = max(gaps)
+        health.append({'source': src, 'present': True, 'max_gap': mg,
+                       'samples': len(ts)})
+        if mg > OBSERVER_BLIND_LIMIT_S:
+            reasons.append('source %s stale for %.0fs (limit %.0fs)' %
+                           (src, mg, OBSERVER_BLIND_LIMIT_S))
+    for b in blind:
+        if b['duration'] > OBSERVER_BLIND_LIMIT_S:
+            reasons.append('observer_blind on %s for %.0fs %s' %
+                           (b['source'], b['duration'], b['detail']))
+        else:
+            notes.append('observer_blind on %s at %s (%.0fs) %s' %
+                         (b['source'], fmt_t(b['t']), b['duration'], b['detail']))
+    return {'window': [t0, t1], 'span_s': span, 'sources': health, 'blind': blind,
+            'valid': not reasons, 'reasons': reasons}
+
+
+# ---- report ------------------------------------------------------------------
+def fmt_t(t):
+    try:
+        return datetime.fromtimestamp(t).strftime('%H:%M:%S.%f')[:-3]
+    except (ValueError, OSError, OverflowError):
+        return str(t)
+
+
+def arg_str(it):
+    a, bits = it['args'], []
+    ps = pid_set(it)
+    if ps is not None:
+        bits.append('pids=%d[%s]' % (len(ps), ','.join(sorted(ps)[:4])))
+    for k in ('resolver', 'mode', 'flag', 'appid', 'window', 'scope', 'app'):
+        if k in a:
+            bits.append('%s=%s' % (k, a[k]))
+    if it.get('reason'):
+        bits.append('why=%s' % it['reason'])
+    return ' '.join(bits)[:64]
+
+
+def snapshot_near(snaps, t):
+    prev = [s for s in snaps if float(s.get('t', 0)) <= t]
+    if not prev:
+        return ''
+    s = max(prev, key=lambda x: float(x.get('t', 0)))
+    bits = ['%s=%s' % (k, v) for k, v in sorted(s.items())
+            if k not in ('t', 'kind') and not isinstance(v, (dict, list))]
+    return ('world @%s: ' % fmt_t(float(s.get('t', t)))) + ' '.join(bits[:6])
+
+
+def mkrow(section, li, ci, offset, flags, notes, couchd_i, legacy_i):
+    """One report row, with the T column pre-filled from the whitelist if it hits."""
+    lab, note = triage(section, li, ci, flags, couchd_i, legacy_i)
+    ref = li or ci
+    return {'section': section, 'label': lab, 't': ref['t'], 'verb': ref['verb'],
+            'subject': ref['subject'], 'flags': sorted(set(flags)), 'offset': offset,
+            'args': ' || '.join(arg_str(x) for x in (li, ci) if x),
+            'note': '; '.join([n for n in notes if n] + ([note] if note else [])),
+            'origin': ref['origin']}
+
+
+def build(legacy_path, shadow_path, snapshots_path=None):
+    """Everything the report needs, as plain data (also the --json payload)."""
+    notes = []
+    lrecs, l_ok = load_jsonl(legacy_path, notes, 'legacy')
+    crecs, c_ok = load_jsonl(shadow_path, notes, 'couchd')
+    snaps = []
+    if snapshots_path and os.path.exists(snapshots_path):
+        snaps, _ = load_jsonl(snapshots_path, [], 'snapshots')
+
+    legacy_all = [i for i in (as_intent(r, 'legacy') for r in lrecs) if i]
+    couchd_all = [i for i in (as_intent(r, 'couchd') for r in crecs) if i]
+    obs = [r for r in crecs if r.get('kind') == 'obs']
+    ctx = [i for i in legacy_all + couchd_all if i['verb'] in CONTEXT_VERBS]
+    legacy_i = [i for i in legacy_all if i['verb'] not in CONTEXT_VERBS]
+    couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS]
+    if ctx:
+        notes.append('%d trigger-channel record(s) (%s) held as context, not diffed'
+                     % (len(ctx), ','.join(sorted(CONTEXT_VERBS))))
+
+    pairs, l_only, c_only = match(legacy_i, couchd_i)
+    for p in pairs:
+        compare_pair(p)
+    asserts = assertions(couchd_i, legacy_i, obs, pairs)
+    for a in asserts:                       # an ordering violation gates even in-window
+        if a['ok'] is False and a['intent'] is not None:
+            for p in pairs:
+                if p['couchd'] is a['intent'] or p['legacy'] is a['intent']:
+                    p['flags'].append('ORDER')
+                    p['notes'].append('%s: %s' % (a['name'], a['detail']))
+
+    rows = []
+    for it in c_only:
+        rows.append(mkrow('COUCHD-ONLY', None, it, None, [], [], couchd_i, legacy_i))
+    for it in l_only:
+        rows.append(mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i))
+    for p in pairs:
+        if p['flags']:
+            rows.append(mkrow('BOTH-BUT-DIFFERENT', p['legacy'], p['couchd'],
+                              p['offset'], p['flags'], p['notes'], couchd_i, legacy_i))
+    rows.sort(key=lambda r: (SECTIONS.index(r['section']), r['t']))
+    for r in rows:
+        r['context'] = snapshot_near(snaps, r['t']) if snaps else ''
+
+    verbs = sorted({i['verb'] for i in legacy_i + couchd_i})
+    counts = {v: {s: sum(1 for r in rows if r['section'] == s and r['verb'] == v)
+                  for s in SECTIONS} for v in verbs}
+    offsets = {}
+    for v in verbs:
+        o = [abs(p['offset']) for p in pairs if p['legacy']['verb'] == v]
+        if o:
+            offsets[v] = {'n': len(o), 'min': min(o), 'p50': pct(o, 50),
+                          'p95': pct(o, 95), 'max': max(o)}
+    ts = [i['t'] for i in legacy_all + couchd_all] + \
+         [float(r['t']) for r in obs if isinstance(r.get('t'), (int, float))]
+    window = (min(ts), max(ts)) if ts else (0.0, 0.0)
+    health = observer_health(obs, window, notes)
+    valid = health['valid'] and l_ok and c_ok
+    reasons = list(health['reasons'])
+    if not l_ok:
+        reasons.append('legacy intent stream missing or empty - nothing to compare')
+    if not c_ok:
+        reasons.append('couchd shadow stream missing or empty - nothing to compare')
+    hard = [r for r in rows if 'SET-MISMATCH' in r['flags'] or 'ORDER' in r['flags']]
+    gating = [r for r in hard if r['label'] != 'T5']   # pre-declared = not gating
+    return {'inputs': {'legacy': legacy_path, 'couchd': shadow_path,
+                       'snapshots': snapshots_path if snaps else None},
+            'notes': notes, 'rows': rows, 'matched_clean': len(pairs) - len(
+                [p for p in pairs if p['flags']]),
+            'matched_total': len(pairs), 'counts': counts, 'offsets': offsets,
+            'assertions': [{k: v for k, v in a.items() if k != 'intent'}
+                           for a in asserts],
+            'observer_health': health, 'context_records': len(ctx),
+            'gating_count': len(gating), 'whitelisted_hard': len(hard) - len(gating),
+            'validity': {'verdict': 'VALID' if valid else 'INVALID',
+                         'reasons': reasons}}
+
+
+def render(rep):
+    out = ['couchd shadow-diff  legacy=%s' % rep['inputs']['legacy'],
+           '                    couchd=%s' % rep['inputs']['couchd']]
+    h = rep['observer_health']
+    if h['span_s']:
+        out.append('                    window=%s..%s (%.0f min)' %
+                   (fmt_t(h['window'][0]), fmt_t(h['window'][1]), h['span_s'] / 60.0))
+    for n in rep['notes']:
+        out.append('  ! %s' % n)
+    for sec in SECTIONS:
+        rows = [r for r in rep['rows'] if r['section'] == sec]
+        out += ['', '== %s == (%d)' % (sec, len(rows))]
+        if not rows:
+            out.append('  (none)')
+        for r in rows:
+            off = ' off=%+.3fs' % r['offset'] if r['offset'] is not None else ''
+            flg = ' [%s]' % ','.join(r['flags']) if r['flags'] else ''
+            out.append('  %-3s %s  %s(%s)%s  %s%s' %
+                       (r['label'] or '..', fmt_t(r['t']), r['verb'],
+                        r['subject'], flg, r['args'], off))
+            if r['note']:
+                out.append('        %s' % r['note'])
+            if r['context']:
+                out.append('        %s' % r['context'])
+    out += ['', '== SUMMARY ==',
+            '  matched %d (%d clean, %d differing); gating rows (SET-MISMATCH/ORDER, '
+            'per R4/R5): %d, +%d pre-declared T5 not gating'
+            % (rep['matched_total'], rep['matched_clean'],
+               rep['matched_total'] - rep['matched_clean'], rep['gating_count'],
+               rep['whitelisted_hard'])]
+    out.append('  %-18s %8s %8s %8s' % ('verb', SECTIONS[0][:8], SECTIONS[1][:8],
+                                        'BOTH-DIF'))
+    for v, c in sorted(rep['counts'].items()):
+        if any(c.values()):
+            out.append('  %-18s %8d %8d %8d' % (v, c['COUCHD-ONLY'], c['LEGACY-ONLY'],
+                                                c['BOTH-BUT-DIFFERENT']))
+    out.append('  matched-offset ms (min/p50/p95/max), bound %dms for %s:'
+               % (PERCEPTUAL_BOUND_S * 1000, '/'.join(PERCEPTUAL_VERBS)))
+    for v, o in sorted(rep['offsets'].items()):
+        out.append('    %-16s n=%-3d %6.0f %6.0f %6.0f %6.0f' %
+                   (v, o['n'], o['min'] * 1000, o['p50'] * 1000, o['p95'] * 1000,
+                    o['max'] * 1000))
+    out.append('  happens-before assertions (R5, evaluated outside the windows):')
+    for a in rep['assertions']:
+        mark = 'PASS' if a['ok'] else ('FAIL' if a['ok'] is False else 'n/a ')
+        out.append('    %s %s - %s' % (mark, a['name'], a['detail']))
+    out.append('  observer health:')
+    for s in h['sources']:
+        out.append('    %-12s %s max-gap %5.0fs  n=%d' %
+                   (s['source'], 'present' if s['present'] else 'ABSENT ',
+                    s['max_gap'], s['samples']))
+    out.append('  EVENING VALIDITY: %s' % rep['validity']['verdict'])
+    for r in rep['validity']['reasons']:
+        out.append('    - %s' % r)
+    return '\n'.join(out)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        epilog=__doc__[__doc__.index('Examples:'):],
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('legacy', nargs='?', help='legacy intent JSONL '
+                    '(default /tmp/legacy-intents.jsonl, or a copy off /tmp)')
+    ap.add_argument('--legacy', dest='legacy_opt', help='same, as an option')
+    ap.add_argument('--shadow', help='couchd shadow JSONL (overrides --date)')
+    ap.add_argument('--date', help='evening as YYYYMMDD (default today)')
+    ap.add_argument('--shadow-dir', default=os.path.expanduser('~/couch/shadow'))
+    ap.add_argument('--snapshots', help='world-snapshot JSONL for divergence context')
+    ap.add_argument('--no-context', action='store_true')
+    ap.add_argument('--json', action='store_true', help='machine-readable report')
+    a = ap.parse_args(argv)
+    day = a.date or datetime.now().strftime('%Y%m%d')
+    legacy = a.legacy_opt or a.legacy or '/tmp/legacy-intents.jsonl'
+    shadow = a.shadow or os.path.join(a.shadow_dir, 'couchd-%s.jsonl' % day)
+    snaps = None if a.no_context else (
+        a.snapshots or os.path.join(a.shadow_dir, 'snapshots-%s.jsonl' % day))
+    rep = build(legacy, shadow, snaps)
+    print(json.dumps(rep, indent=1, default=str) if a.json else render(rep))
+    return 0 if rep['validity']['verdict'] == 'VALID' and not rep['gating_count'] else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
