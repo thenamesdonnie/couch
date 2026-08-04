@@ -472,6 +472,20 @@ def say(msg):
     print(line, flush=True)
 
 
+def ff_name(code):
+    """'FF_RUMBLE', not "('FF_EFFECT_MIN', 'FF_RUMBLE')".
+
+    evdev's reverse maps return a TUPLE for any code that has aliases, and
+    FF_RUMBLE (80) collides with FF_EFFECT_MIN, FF_GAIN (96) with
+    FF_MAX_EFFECTS. Log the real name, not the range sentinel.
+    """
+    name = ecodes.FF.get(code, code)
+    if isinstance(name, str):
+        return name
+    real = [n for n in name if not n.endswith(('_MIN', '_MAX', '_MAX_EFFECTS'))]
+    return real[0] if real else name[0]
+
+
 def percentile(values, pct):
     if not values:
         return None
@@ -531,7 +545,7 @@ class InputProc:
                          bustype=VPAD_BUS, max_effects=FF_SLOTS)
         say(f'virtual pad up: {VPAD_NAME} '
             f'{len(caps[ecodes.EV_KEY])}b {len(caps[ecodes.EV_ABS])}a '
-            f'ff={[ecodes.FF[c] for c in ff_codes]} node={self.ui.device.path}')
+            f'ff={[ff_name(c) for c in ff_codes]} node={self.ui.device.path}')
         self.log.write({'kind': 'virtual-pad', 'event': 'created',
                         'name': VPAD_NAME, 'node': self.ui.device.path,
                         'buttons': len(caps[ecodes.EV_KEY]),
@@ -819,9 +833,15 @@ class InputProc:
             self.hold_pending = True
             self.report('press', event='BTN_MODE', value=1,
                         kernel_t=round(k, 6), forwarded=False)
-        elif outcome == gesture.TAP:
+        elif outcome in (gesture.TAP, gesture.DOUBLE_TAP):
+            # A double-tap is still two taps as far as the virtual pad is
+            # concerned: it gets both, spaced as they arrived. Only the
+            # CONSUMER (couchd / the watcher) reads the pair as one gesture,
+            # so nothing here has to know about the switcher.
             self.hold_pending = False
-            self.report('gesture', event='ps-tap',
+            self.report('gesture',
+                        event=('ps-double-tap'
+                               if outcome == gesture.DOUBLE_TAP else 'ps-tap'),
                         held=self.tracker.press_duration, kernel_t=round(k, 6))
             self.inject_tap()
         elif outcome == gesture.HOLD_RELEASE:

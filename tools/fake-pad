@@ -425,11 +425,7 @@ def daemon():
             except Exception as e:
                 stamp(f'destroy failed: {e}')
             stamp('uhid device destroyed')
-            for path in (FIFO, PIDFILE, STATUSFILE):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+            remove_our_files()
 
 
 def serve(rig):
@@ -476,6 +472,28 @@ def serve(rig):
         os.close(wfd)
 
 
+def remove_our_files():
+    """Clean up FIFO/PID/status - but ONLY if they are still ours.
+
+    `fake-pad quit` returns as soon as the line is in the FIFO, so an
+    operator (or a script) doing quit-then-up immediately can have the OLD
+    daemon's teardown delete the NEW daemon's FIFO and pidfile, leaving a
+    rig that is up but unreachable. Checking the pidfile first closes that.
+    """
+    try:
+        owner = int(open(PIDFILE).read())
+    except (OSError, ValueError):
+        owner = os.getpid()          # no pidfile: nothing else can own these
+    if owner != os.getpid():
+        stamp(f'another rig (pid {owner}) owns the fifo now - leaving it alone')
+        return
+    for path in (FIFO, PIDFILE, STATUSFILE):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def daemon_alive():
     try:
         os.kill(int(open(PIDFILE).read()), 0)
@@ -496,7 +514,18 @@ def main():
         # restore behind a process nobody is watching. Run it in its own
         # terminal or under `setsid ... &` if you want the shell back.
         daemon()
-        return
+        # Hard exit. Measured on this box: one rig instance in four finished
+        # its whole teardown - device destroyed, units restored, corpus
+        # checked - and then hung forever in interpreter shutdown, joining a
+        # non-daemon thread stuck in poll(). The only Thread() in the whole
+        # dependency tree is hid-tools' input_nodes dispatcher
+        # (base_device.py:361), which is never joined if the node opens
+        # inside it raise. We do not want a third-party thread's lifetime
+        # deciding whether the operator gets their shell back, and by this
+        # line every last thing we own is already released and verified.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     if args[0] == 'status':
         # Ask the daemon to REFRESH the file first, then read it. Reading it
         # directly returns the snapshot taken at startup, which reports

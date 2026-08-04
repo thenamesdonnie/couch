@@ -685,6 +685,17 @@ def test_rig_can_send_the_ps_button():
 # =========================================================================
 # small helpers
 # =========================================================================
+def test_ff_names_resolve_past_evdev_alias_tuples():
+    """evdev's reverse maps return a TUPLE for aliased codes: FF_RUMBLE (80)
+    collides with FF_EFFECT_MIN and FF_GAIN (96) with FF_MAX_EFFECTS, so the
+    startup line read `ff=[('FF_EFFECT_MIN', 'FF_RUMBLE'), ...]`. E1's success
+    criteria quote the real names."""
+    from evdev import ecodes
+    assert inputproc.ff_name(ecodes.FF_RUMBLE) == 'FF_RUMBLE'
+    assert inputproc.ff_name(ecodes.FF_GAIN) == 'FF_GAIN'
+    assert inputproc.ff_name(ecodes.FF_PERIODIC) == 'FF_PERIODIC'
+
+
 def test_percentiles_for_the_latency_budget():
     """E1 reports p50/p99 against a <10ms p99 budget (SR9)."""
     values = [i / 1000.0 for i in range(1, 101)]
