@@ -13,32 +13,76 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
-## ▶ Resume here
-All shipped and live. Latest **web** build is **2026-08-04 00:45**; the server
-has later server-only changes applied by restart (smart rewind, end-of-stream
-guard, state-aware Screen-tab switcher). The whole console robustness pass is
-live too: `docs/audits/console-robustness-2026-08.md` is the map (failure
-modes, recovery layers, SSH cheat sheet); test rigs preserved in `tools/`
-(psfuzz.py, chaos.py; they need the session's ps-button/vpad in ~/.local/bin).
+## ▶ Resume here (updated 4 Aug 2026, late night — couchd build session)
 
-**Evdev recorder is ARMED (4 Aug):** `pad-record.service` (user unit,
-`tools/pad-record`) passively records every DualSense session to
-`recordings/pad-*.jsonl.gz` — raw events + game-session/suspended markers —
-for the couchd replay suite (charter discipline 2). Auto-starts on pad
-connect, needs nothing from Donnie; verified with a synthetic ps-button tap.
-Disable: `systemctl --user disable --now pad-record`. When git init happens,
-`recordings/` goes in `.gitignore`.
+**READ FIRST: `docs/handoff-2026-08-04.md`** — the phone-readable sheet for
+Donnie (what to test, the one command needed before pad use, the two
+decisions only he can make). This block is the technical version.
 
-**NEXT: Donnie's physical-pad pass from the couch** (the one thing untestable
-remotely - Steam hears the real DualSense over hidraw, which no rig here can
-fake). Try, in Elden Ring: hold PS (game should NOW truly freeze - watch CPU
-drop, this never worked before today), tap on home to resume, tap PS in-game
-(Steam menu opens, tap again closes), then try to break it: spam presses,
-ambiguous ~0.8s presses, presses during transitions. Also: phone Screen tab ->
-switcher -> Kodi mid-game (panic button), and with the TV OFF start a video /
-launch a game from the phone (TV should wake in ~6-8s). If anything sticks
-longer than ~10s, note the time and check /tmp/pad-home.log,
-/tmp/game-launch.log, /tmp/steam-input-guard.log.
+**couch is now a GIT REPO** (standing risk closed). ~20 commits, history
+born clean: all secrets scrubbed to `.env` (`server/config.js` reads env;
+`data/secrets.json` legacy file still on disk, gitignored, deletable once
+healthy), gitleaks-verified. Local only, no remote. `.env.example` current.
+
+**LIVE on the box now** (all reversible; `systemctl --user stop couchd
+pad-record` = back to 4-Aug-green, and that line is cheat-sheet line 1):
+- `couchd.service` — stage-1 SHADOW daemon (`couchd/couchd.py`, 2.2k lines
+  + `x11.py`). 7 observers, orthogonal state regions with `unknown`, pure
+  `reconcile(observed)->intents`, invariants incl. owned-resources leak
+  check, JSONL corpus in `shadow/`, `status.json`, Type=notify + watchdog,
+  crash-loop-safe (Restart=on-failure/RestartSec=10/StartLimitBurst=5).
+  Acts on NOTHING (only RecordingExecutor exists).
+- `pad-record.service` — recorder, fixed: mtime-stamped markers at ~100ms,
+  inline gzip, 14-day retention.
+- Old stack instrumented (R3): watcher/game-launch/guard write machine
+  intents to `/tmp/legacy-intents.jsonl` (log-only edits, behavior same).
+- Phone: `/api/couchd/status` + Screen-tab couchd card.
+- **Double-tap PS → TV switcher** (`script.couch.switcher` Kodi addon,
+  versioned in `kodi-addons/`) and **gesture keybind settings** in Kodi
+  (`couchd/gestureconf.py` is the single source both stacks read; safety
+  rail forces a suspend_to_kodi binding). Both verified live tonight.
+
+**NEXT (in order):**
+1. **Donnie's couch pass** — checklist in the handoff sheet (his original
+   pad checklist + the two new features). Every evening he uses the TV is
+   shadow evidence toward the C9 gates.
+2. **Morning after any evening:** `~/couch/tools/shadow-diff` (offline,
+   never touches the TV). First real run: VALID, 0 divergences.
+3. **Donnie's sudo session** (~10 min, `couchd/stage2/INSTALL.md`):
+   couchd-input group + system user, udev rule (staged `.off`), rollback
+   script + sudoers, inputproc.service, rollback REHEARSAL. Plus fix
+   pad-connect-daemon + tv-waker's any-`js*` checks (see Open decisions).
+4. Then E2 (Steam adopts the virtual pad; daytime, back up
+   `~/.steam/debian-installation/config` first), then stage-2 flag day.
+
+**Deferred to a daytime window:** psfuzz/chaos identity runs with couchd
+live (M9), the `STEAM_GAMES_RUNNING` atom re-test with a game running.
+
+## Changelog — 2026-08-04 (late night, couchd build session)
+Notes: `docs/couchd-stage1-design.md` (C1-C31 + rulings R1-R8),
+`couchd-stage2-design.md` (S1-S9 + SR1-SR9), `couchd-stage3-design.md`.
+- **Stage 1 SHIPPED to shadow.** /build pass (3 research agents: parallel-run
+  practice, reconciler/statechart architecture, console-daemon prior art) then
+  2 adversarial reviews. Biggest ruling: the old stack ALREADY logs its
+  decisions, so the planned effect-inference engine died and ~4k LOC became
+  ~1k. couchd + `tools/shadow-diff` (22 tests) + 30→191 test suite.
+- **Stage 2 designed and built synthetic-only.** InputPlumber evaluated per
+  charter and DECLINED with receipts (root-only #202, crash-bricks-pad #582,
+  20-month rumble TODO #224, no kernel timestamps); its udev technique,
+  persistence and 80ms chord pacing ported instead. Review found 8 blockers
+  (no-root claim unimplementable as written → system-user model; 0640 would
+  have silently killed rumble; sudo-at-night rollback; rig would wake the TV).
+  Built: `couchd/gesture.py` (shared), `inputproc.py` (grab + exact-vpad X360
+  clone + full FF contract), `tools/fake-pad` (uhid DS5 rig with inhibit
+  frame), `couchd/stage2/` install bundle. **E0 + E1-functional PASSED**:
+  forwarding p99 0.065-0.17ms (10ms budget), FF contract live, PS tap
+  re-injected at 80.3ms / hold swallowed, persistence machine, Kodi buttonmap
+  resolves, face-button transposition confirmed on hardware.
+- **Stage 3 PARKED** with a written decision record (nothing to win at
+  1080p60 SDR; `~/gamescope-deps.sh` is wrong as staged, corrections in the
+  note). Revisit on TV upgrade / in-repo packaging / stage 4.
+- **Double-tap PS → TV switcher** and **Kodi gesture keybind settings**
+  (Donnie's requests) shipped and verified live.
 
 ## Roadmap: couchd (agreed 4 Aug 2026 — build rules: docs/couchd-charter.md)
 The accretion phase is over; the architecture is understood (see
@@ -91,8 +135,27 @@ Older "watch it on the couch" items (media controls track):
    YouTube rewind comes back cleanly. Confirmed snappier. Local files unaffected.
 
 ## Open decisions / risks
-- **Couch is NOT under version control** (no `.git`). One bad edit from
-  unrecoverable. Worth a `git init` + first commit — ask Donnie before doing it.
+- ~~Couch is NOT under version control~~ **CLOSED 4 Aug**: git init done,
+  secrets scrubbed first, history clean.
+- **Sunshine's virtual `js0` breaks pad reconnect + TV wake** (found 4 Aug).
+  `pad-connect-daemon:34` and `tv-waker:39` both test `glob('/dev/input/js*')`,
+  so ANY virtual joystick (Sunshine, vpad rigs, the uhid test pad) makes them
+  believe the pad is already there. Immediate: `systemctl --user stop
+  app-dev.lizardbyte.app.Sunshine.service`. Real fix (needs Donnie): test the
+  DualSense's own node instead of any js*. Sunshine is enabled and returns on
+  every login.
+- **Three legacy bugs found by the shadow work, NOT fixed (Donnie's call —
+  behavioral edits to live plumbing).** Pre-declared in the differ so they
+  don't read as couchd faults: (a) pure Big Picture PS-holds never write
+  `/tmp/game-suspended`, so reconcile takes the pad off Kodi ~10s later and it
+  belongs to nobody; (b) games launched FROM Big Picture record appid as the
+  literal string `"bigpicture"`, so that game's Kodi tile CLOSES it instead of
+  resuming; (c) the guard's pidfile isn't removed on normal exit (couchd's
+  owned-resources invariant flags it every tick).
+- **Three `steam_app_*` window-class predicates are fragile identity
+  assumptions** (steam-input-guard:272, screen.js:271 and :291). They dissolve
+  as couchd absorbs those responsibilities (its observation is pid-first);
+  only worth fixing sooner if gamescope ever un-parks.
 - **No auth** (LAN-only by design). A rota-style login MUST be added before any
   Cloudflare-tunnel exposure (pattern in the ROTA memory:
   rota-app-cloudflare-tunnel, rota-app-accounts).
