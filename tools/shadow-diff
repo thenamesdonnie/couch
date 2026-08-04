@@ -58,6 +58,10 @@ OPTIONAL_SOURCES = ('trigger', 'world')
 ACTIVITY_CHECKS = {'pad': lambda w: bool((w.get('pad') or {}).get('present')),
                    'pids': lambda w: bool(w.get('pids'))}
 GESTURE_IDLE_IGNORE = ('pad-quiet', 'init', 'startup')   # not real release edges
+# Comparison only means anything while couchd was actually running: daemon start/stop
+# records carve the evening into runs. Legacy actions outside them are not divergences
+# (R6: a stopped couchd is never an error), and health is judged inside runs only.
+RUN_EDGE_SLACK_S = 10.0
 IGNORE_ARG_KEYS = {'pids', 'pid_set', 'frozen_pids', 'pid', 'resolver', 'argv',
                    'snapshot', 't', 'mono', 'seq', 'ts', 'release_t'}
 SECTIONS = ('COUCHD-ONLY', 'LEGACY-ONLY', 'BOTH-BUT-DIFFERENT')
@@ -341,10 +345,34 @@ def world_series(obs, snaps):
     return sorted(out, key=lambda x: x[0])
 
 
-def observer_health(obs, blinds, snaps, window, notes):
+def daemon_runs(crecs, fallback):
+    """[(start, end)] windows in which couchd was actually observing."""
+    marks = sorted((float(r['t']), r.get('event')) for r in crecs
+                   if r.get('kind') == 'daemon' and isinstance(r.get('t'), (int, float)))
+    if not marks:
+        return [tuple(fallback)]
+    last = max([float(r['t']) for r in crecs
+                if isinstance(r.get('t'), (int, float))] or [fallback[1]])
+    runs, start = [], None
+    for t, ev in marks:
+        if ev == 'start':
+            start = t if start is None else start
+        elif ev == 'stop':
+            runs.append((start if start is not None else fallback[0], t))
+            start = None
+    if start is not None:
+        runs.append((start, last))
+    return runs or [tuple(fallback)]
+
+
+def in_runs(t, runs, slack=0.0):
+    return any(a - slack <= t <= b + slack for a, b in runs)
+
+
+def observer_health(obs, blinds, snaps, runs, notes):
     """Heartbeat gaps, daemon-declared blindness, activity cross-checks, verdict."""
-    t0, t1 = window
-    span = max(0.0, t1 - t0)
+    t0, t1 = runs[0][0], runs[-1][1]
+    span = sum(max(0.0, b - a) for a, b in runs)
     per = {}
     for r in obs:
         if isinstance(r.get('t'), (int, float)):
@@ -360,17 +388,16 @@ def observer_health(obs, blinds, snaps, window, notes):
                          'quiet is not stale - but check the source was wired)' % src)
 
     series = world_series(obs, snaps)
-    beats = [t for t, _ in series]
-    if beats:
-        hb = max([beats[0] - t0] + [b - a for a, b in zip(beats, beats[1:])] +
-                 [t1 - beats[-1]])
-        if hb > HEARTBEAT_LIMIT_S:
-            reasons.append('world/snapshot heartbeat gap of %.0fs (limit %.0fs)'
-                           % (hb, HEARTBEAT_LIMIT_S))
-    else:
-        hb = span
-        if span > HEARTBEAT_LIMIT_S:
-            reasons.append('no world obs or snapshots across a %.0fs window' % span)
+    hb = 0.0
+    for a, b in runs:                       # heartbeat judged INSIDE each daemon run
+        beats = [t for t, _ in series if a <= t <= b]
+        gaps = [beats[0] - a] + [y - x for x, y in zip(beats, beats[1:])] + \
+               [b - beats[-1]] if beats else [b - a]
+        hb = max([hb] + gaps)
+        if max(gaps) > HEARTBEAT_LIMIT_S:
+            reasons.append('world/snapshot heartbeat gap of %.0fs inside the run '
+                           '%s..%s (limit %.0fs)' % (max(gaps), fmt_t(a), fmt_t(b),
+                                                     HEARTBEAT_LIMIT_S))
 
     for b in blinds:
         age = float(b.get('age_s') or b.get('duration') or 0.0)
@@ -379,19 +406,20 @@ def observer_health(obs, blinds, snaps, window, notes):
         (reasons if age > OBSERVER_BLIND_LIMIT_S else notes).append(txt)
 
     for src, pred in ACTIVITY_CHECKS.items():       # world said active, source silent
-        start, last = None, None
-        for t, w in series + [(t1 + 1.0, {})]:
-            if pred(w):
-                start, last = (t if start is None else start), t
-                continue
-            if start is not None:
-                if last - start > OBSERVER_BLIND_LIMIT_S and \
-                        not [x for x in per.get(src, []) if start <= x <= last]:
-                    reasons.append('%s observer silent for %.0fs while the world said '
-                                   'it was active' % (src, last - start))
-                start = None
+        for a, b in runs:
+            start, last = None, None
+            for t, w in [x for x in series if a <= x[0] <= b] + [(b + 1.0, {})]:
+                if pred(w):
+                    start, last = (t if start is None else start), t
+                    continue
+                if start is not None:
+                    if last - start > OBSERVER_BLIND_LIMIT_S and \
+                            not [x for x in per.get(src, []) if start <= x <= last]:
+                        reasons.append('%s observer silent for %.0fs while the world '
+                                       'said it was active' % (src, last - start))
+                    start = None
     return {'window': [t0, t1], 'span_s': span, 'sources': health, 'heartbeat_gap': hb,
-            'blind': blinds, 'valid': not reasons, 'reasons': reasons}
+            'runs': runs, 'blind': blinds, 'valid': not reasons, 'reasons': reasons}
 
 
 # ---- report ------------------------------------------------------------------
@@ -446,10 +474,10 @@ def build(legacy_path, shadow_path, snapshots_path=None):
     notes = []
     lrecs, l_ok = load_jsonl(legacy_path, notes, 'legacy')
     crecs, c_ok = load_jsonl(shadow_path, notes, 'couchd')
-    snaps = []
+    snaps = [r for r in crecs if r.get('kind') == 'snapshot' and 't' in r]
     if snapshots_path and os.path.exists(snapshots_path):
-        snaps = [r for r in load_jsonl(snapshots_path, [], 'snapshots')[0]
-                 if r.get('kind') in (None, 'snapshot') and 't' in r]
+        snaps += [r for r in load_jsonl(snapshots_path, [], 'snapshots')[0]
+                  if r.get('kind') in (None, 'snapshot') and 't' in r]
 
     legacy_all = [i for i in (as_intent(r, 'legacy') for r in lrecs) if i]
     couchd_all = [i for i in (as_intent(r, 'couchd') for r in crecs) if i]
@@ -458,9 +486,19 @@ def build(legacy_path, shadow_path, snapshots_path=None):
     blinds = [r for r in crecs if r.get('kind') == 'observer_blind']
     agree = [r for r in crecs if r.get('kind') == 'agreement']
     bad_inv = [r for r in crecs if r.get('kind') == 'invariant' and not r.get('ok')]
+    ts = [float(r['t']) for r in lrecs + crecs + snaps
+          if isinstance(r.get('t'), (int, float))]
+    runs = daemon_runs(crecs, (min(ts), max(ts)) if ts else (0.0, 0.0))
     ctx = [i for i in legacy_all + couchd_all if i['verb'] in CONTEXT_VERBS]
     legacy_i = [i for i in legacy_all if i['verb'] not in CONTEXT_VERBS]
     couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS]
+    outside = [i for i in legacy_i if not in_runs(i['t'], runs, RUN_EDGE_SLACK_S)]
+    if outside:
+        legacy_i = [i for i in legacy_i if i not in outside]
+        notes.append('%d legacy intent(s) outside couchd\'s run windows excluded '
+                     '(couchd was not running; %s)' % (len(outside), ', '.join(
+                         sorted({'%s(%s)' % (i['verb'], i['subject'])
+                                 for i in outside}))[:120]))
     if ctx:
         notes.append('%d trigger-channel record(s) (%s) held as context, not diffed'
                      % (len(ctx), ','.join(sorted(CONTEXT_VERBS))))
@@ -512,10 +550,11 @@ def build(legacy_path, shadow_path, snapshots_path=None):
         if o:
             offsets[v] = {'n': len(o), 'min': min(o), 'p50': pct(o, 50),
                           'p95': pct(o, 95), 'max': max(o)}
-    ts = [float(r['t']) for r in lrecs + crecs + snaps
-          if isinstance(r.get('t'), (int, float))]
-    window = (min(ts), max(ts)) if ts else (0.0, 0.0)
-    health = observer_health(obs, blinds, snaps, window, notes)
+    if len(runs) > 1:
+        notes.append('couchd ran %d times this evening (%s); gaps between runs are '
+                     'not blindness' % (len(runs), ', '.join(
+                         '%s..%s' % (fmt_t(a), fmt_t(b)) for a, b in runs)))
+    health = observer_health(obs, blinds, snaps, runs, notes)
     disagreements = [r for r in agree if disagrees(r)]
     reasons = list(health['reasons'])
     if not l_ok:
