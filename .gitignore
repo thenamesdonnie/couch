@@ -1,0 +1,35 @@
+# Secrets and machine-specific config. Real values live here, never in git.
+.env
+.env.*
+!.env.example
+
+# Superseded by .env; kept on the box only until the migration is confirmed.
+data/secrets.json
+
+# Dependencies
+node_modules/
+
+# Frontend build output. Regenerate with `npm run build` in web/ after a
+# clone: the server serves web/dist from disk, so it must exist at runtime.
+web/dist/
+
+# Captured pad input streams: large, machine-specific, regenerated on demand.
+recordings/
+
+# Test rig output
+tools/psfuzz/
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editor and OS cruft
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp

@@ -1,0 +1,237 @@
+/* Couch, modern pass. Neutral graphite ground, one blue accent, Inter,
+   depth from fills rather than borders. Three themes: dark (default),
+   oled (true black), light. */
+
+:root, :root[data-theme='dark'] {
+  --bg: #0a0a0c;
+  --card: #16161a;
+  --raise: #222228;
+  --press: #2c2c34;
+  --line: rgba(255, 255, 255, 0.07);
+  --ink: #f4f4f6;
+  --muted: #a2a2ad;
+  --faint: #64646e;
+  --accent: #4c8dff;
+  --accent-press: #3a76e3;
+  --accent-tint: rgba(76, 141, 255, 0.16);
+  --on-accent: #ffffff;
+  --danger: #f25a4e;
+  --danger-tint: rgba(242, 90, 78, 0.14);
+  --ok: #34c46a;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --topbar: 54px;
+  --tabbar: 62px;
+  color-scheme: dark;
+}
+
+:root[data-theme='oled'] {
+  --bg: #000000;
+  --card: #101014;
+  --raise: #1b1b21;
+  --press: #26262e;
+  --line: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(0, 0, 0, 0.72);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f2f2f6;
+  --card: #ffffff;
+  --raise: #e8e8ee;
+  --press: #dcdce4;
+  --line: rgba(20, 20, 30, 0.09);
+  --ink: #1a1a20;
+  --muted: #5d5d68;
+  --faint: #9a9aa4;
+  --accent: #2f6ef2;
+  --accent-press: #2558c9;
+  --accent-tint: rgba(47, 110, 242, 0.12);
+  --on-accent: #ffffff;
+  --danger: #d9483c;
+  --danger-tint: rgba(217, 72, 60, 0.1);
+  --ok: #1f9d55;
+  --scrim: rgba(10, 10, 20, 0.35);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html {
+  /* Ground lives on html only: a body background would paint over the
+     negative-z fixed fanart backdrop on the Playing view. */
+  background: var(--bg);
+  transition: background 0.2s ease;
+}
+html, body {
+  margin: 0;
+  color: var(--ink);
+  font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
+}
+
+body { min-height: 100dvh; font-size: 15px; }
+
+.mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.display {
+  font-weight: 700;
+  letter-spacing: -0.022em;
+}
+
+button {
+  font: inherit;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--raise);
+  border: none;
+  border-radius: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: background 0.13s ease, color 0.13s ease, opacity 0.13s ease;
+}
+button:active { background: var(--press); }
+button.primary { background: var(--accent); color: var(--on-accent); }
+button.primary:active { background: var(--accent-press); }
+button.danger { background: var(--danger-tint); color: var(--danger); }
+button:disabled { opacity: 0.38; pointer-events: none; }
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button svg { flex-shrink: 0; }
+
+input[type='range'] { width: 100%; accent-color: var(--accent); touch-action: none; }
+input[type='text'] {
+  font: inherit;
+  color: var(--ink);
+  background: var(--raise);
+  border: none;
+  border-radius: 12px;
+  padding: 11px 13px;
+  width: 100%;
+}
+input[type='text']::placeholder { color: var(--faint); }
+
+select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--raise);
+  border: none;
+  border-radius: 12px;
+  padding: 11px 10px;
+}
+
+main {
+  padding: calc(var(--topbar) + env(safe-area-inset-top) + 10px) 14px calc(var(--tabbar) + env(safe-area-inset-bottom) + 30px);
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Shared segmented control. */
+.seg {
+  display: flex;
+  gap: 4px;
+  background: var(--raise);
+  border-radius: 12px;
+  padding: 3px;
+}
+.seg button {
+  background: none;
+  color: var(--muted);
+  border-radius: 9px;
+  padding: 8px 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.seg button.on {
+  color: var(--ink);
+  background: var(--card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+:root[data-theme='light'] .seg button.on { box-shadow: 0 1px 4px rgba(20, 20, 40, 0.14); }
+
+.row { display: flex; gap: 8px; align-items: center; }
+.row.wrap { flex-wrap: wrap; }
+.grow { flex: 1; }
+.dim { color: var(--muted); }
+.small { font-size: 13px; }
+
+.tile-img {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 12px;
+  background: var(--raise);
+  transition: transform 0.12s ease;
+}
+button:active > .tile-img { transform: scale(0.97); }
+
+/* The mini player floats above the tab bar; give the page room for it. */
+main.withstrip { padding-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 86px); }
+
+/* Horizontal carousels: no visible scrollbar riding over the content. */
+.noscrollbar { scrollbar-width: none; }
+.noscrollbar::-webkit-scrollbar { display: none; }
+
+/* Skeletons: pulse opacity only (compositor), holding layout so nothing shifts
+   when the real content lands. */
+.sk-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.sk-cell {
+  aspect-ratio: 2 / 3;
+  border-radius: 12px;
+  background: var(--raise);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Sheet + scrim entrance is JS-driven (lib/anim.js): CSS `animation:` on a
+   freshly-inserted element doesn't fire on iOS - a transition triggered a frame
+   after insertion does. */
+
+/* Stop the page behind an open sheet from scrolling ("scroll behind") without
+   a JS body lock: the dimmed scrim eats scroll gestures, the sheet keeps its
+   own vertical scroll and contains it so it doesn't chain to the page. */
+.scrim { touch-action: none; }
+.sheet, .dsheet, .chooser { touch-action: pan-y; overscroll-behavior: contain; }
+
+/* Under Reduce Motion, quiet only the ambient LOOPING animations (skeleton
+   pulse, spinner); the one-shot sheet slide still plays. */
+@media (prefers-reduced-motion: reduce) {
+  .sk-cell, .sk-head, .sk-resume, .sk-trend, .sk-svc, .skline, .ythumb.sk {
+    animation: none;
+    opacity: 0.7;
+  }
+  .ptr-spin.spinning { animation-duration: 1.2s; }
+}
