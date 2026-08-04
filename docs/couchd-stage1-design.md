@@ -435,6 +435,41 @@ writeup; Valve steam-devices udev rules; on-box atom/log measurements
 (4 Aug 2026, Steam idle — STEAM_GAMES_RUNNING game-running re-test still
 owed).
 
+### Adoption verdicts (library sweep, 4 Aug 2026)
+
+ADOPT: psutil (apt, pid trees/states/environ, PID-reuse-safe via
+create_time); python3-systemd (apt, ALREADY INSTALLED: sd_notify, journal);
+systemd config over code (Type=notify + WatchdogSec + Restart=on-failure +
+socket activation when the socket comes); asyncinotify (pip, zero-dep, five
+2026 releases) for flag/log-dir watching — watch the DIRECTORY (inotify
+follows inodes; rename-writes are invisible on a file watch); python-xlib
+PINNED behind a single x11.py adapter (dormant since 2022 but the protocol
+is frozen, Display.fileno() verified working for loop.add_reader; xcffib is
+the named fallback; Wayland kills this file anyway in stage 4); hypothesis
+(dev-only) hunting illegal cross-region state combinations.
+
+HAND-ROLL: the state machine (~200-line pure-data table
+{region: {state: [(guard, next, reason)]}} — libraries smuggle the "why"
+through callbacks; the table being data gives JSON dump, mermaid export,
+and reasons as values for free; python-statemachine 3.x is the live
+fallback if queued events are ever wanted; transitions is dormant; Sismic
+is YAML-embedded-code but its contract vocabulary (pre/post/invariant with
+__old__ access) is stolen into our invariant checks); the event log
+(open+json+flush+fsync — structlog can't control the fsync boundary,
+journald mirrors diagnostics for free); log tailing (~40 lines:
+(ino,dev,pos) + DRAIN THE OLD FD before reopening on rotation — the step
+naive versions miss — + copytruncate seek-0, driven by the inotify dir
+watch); the shadow differ (temporal join across two JSONL streams;
+Scientist's same-process model doesn't fit, and the Python ports died
+2016-2019).
+
+SKIP: watchdog/watchfiles (threads/Rust for two files), pyinotify (dead
+2015), eventsourcing (DDD ontology), OpenTelemetry (a collector for one
+operator), supervisor/circus (systemd exists), jsonrpc libs (frozen),
+sdnotify (dead; apt package covers it), msgspec/orjson (stdlib json fine
+at our volume; msgspec's typed structs noted for later schema validation),
+pip systemd-python (stuck at 235; apt is newer).
+
 ### Architecture + runtime decision (researched; adopted constraints)
 
 Plain-language core: couchd is a *reconciler*, the pattern Kubernetes
