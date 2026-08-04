@@ -665,6 +665,16 @@ app.get('/api/health', wrap(async () => sys.health()));
 
 app.post('/api/system/kodi-restart', wrap(async () => ({ out: await sys.kodiRestart() })));
 
+// --- couchd ---
+
+// The phone's window on the shadow daemon: its status file, read fresh on every
+// request (never cached - a cached reading of a liveness file is worse than no
+// reading). couchd being absent answers ok:false, not an error.
+app.get('/api/couchd/status', wrap(async (req, res) => {
+  res.set('cache-control', 'no-store');
+  return sys.couchdStatus();
+}));
+
 // --- live screen ---
 
 app.get('/api/screen', wrap(async (req, res) => {

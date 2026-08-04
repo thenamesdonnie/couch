@@ -1,0 +1,87 @@
+{
+ "t": 1785879393.7448404,
+ "pid": 1278655,
+ "uptime_s": 386.7,
+ "mode": "shadow",
+ "attention": false,
+ "regions": {
+  "input_ownership": "kodi",
+  "foreground": "kodi",
+  "session": "none",
+  "enforcement": "none",
+  "gesture": "idle",
+  "pad": "absent"
+ },
+ "games": {},
+ "last_would_do": [],
+ "observers": {
+  "pad": {
+   "ok": true,
+   "events": 0,
+   "detail": "0 node(s)",
+   "age_s": 1.8,
+   "stale": false
+  },
+  "flags": {
+   "ok": true,
+   "events": 5,
+   "detail": "1 present",
+   "age_s": 0.1,
+   "stale": false
+  },
+  "pids": {
+   "ok": true,
+   "events": 0,
+   "detail": "0 pid(s)",
+   "age_s": 0.0,
+   "stale": false
+  },
+  "kodi": {
+   "ok": true,
+   "events": 14,
+   "detail": "joystick=True window=10000",
+   "age_s": 0.1,
+   "stale": false
+  },
+  "steam": {
+   "ok": true,
+   "events": 1,
+   "detail": "0 app(s) tracked",
+   "age_s": 0.0,
+   "stale": false
+  },
+  "triggers": {
+   "ok": true,
+   "events": 0,
+   "detail": "quiet",
+   "age_s": 0.0,
+   "stale": false
+  },
+  "x11": {
+   "ok": true,
+   "events": 0,
+   "detail": "top='Kodi'",
+   "age_s": 0.0,
+   "stale": false
+  }
+ },
+ "counts": {
+  "obs": 22,
+  "daemon": 1,
+  "transition": 6,
+  "invariant": 1
+ },
+ "passes": 139,
+ "intents": 0,
+ "invariant_violations": 0,
+ "ps_presses": {
+  "evdev": 0,
+  "steam_guide_lines": 0,
+  "first_event_latency_s": null
+ },
+ "last_trigger": "",
+ "resource_leaks": [
+  "stale guard pidfile (pid 1044993)"
+ ],
+ "shadow_log": "/home/ds2000/couch/shadow/couchd-20260804.jsonl"
+}

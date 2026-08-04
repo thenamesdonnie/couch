@@ -18,6 +18,8 @@
   --danger: #f25a4e;
   --danger-tint: rgba(242, 90, 78, 0.14);
   --ok: #34c46a;
+  /* Degraded, not broken: something is worth reading, nothing is wrong. */
+  --warn: #e8a13c;
   --scrim: rgba(0, 0, 0, 0.6);
   --topbar: 54px;
   --tabbar: 62px;
@@ -50,6 +52,7 @@
   --danger: #d9483c;
   --danger-tint: rgba(217, 72, 60, 0.1);
   --ok: #1f9d55;
+  --warn: #b0730f;
   --scrim: rgba(10, 10, 20, 0.35);
   color-scheme: light;
 }

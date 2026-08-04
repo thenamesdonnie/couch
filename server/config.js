@@ -46,3 +46,8 @@ export const RADARR_CONFIG = e.RADARR_CONFIG || '/var/lib/radarr/config.xml';
 // qBittorrent runs inside the gluetun container, so it is reached at the
 // published LAN address rather than on localhost.
 export const QBITTORRENT_URL = e.QBITTORRENT_URL || `http://${LAN_HOST}:8080`;
+
+// couchd's status file, rewritten atomically every few seconds. Reading it is
+// the only contact this server has with the shadow daemon; its absence is a
+// normal state, never an error.
+export const COUCHD_STATUS = e.COUCHD_STATUS || path.join(ROOT, 'shadow', 'status.json');

@@ -167,6 +167,40 @@
 
   const key = (k) => () => api('/api/screen/key', { key: k });
 
+  // --- couchd: three lines from the shadow daemon's status file.
+  // Raw fetch, not api(): couchd is stopped whenever we like, so a poll that
+  // finds nothing must not raise the error toast. ok:false is a normal answer
+  // and collapses the card to one dim line.
+  let couchd = $state(null);
+
+  async function loadCouchd() {
+    try {
+      const res = await fetch('/api/couchd/status', { cache: 'no-store' });
+      if (res.ok) couchd = await res.json();
+    } catch { /* keep the last reading */ }
+  }
+
+  onMount(() => {
+    loadCouchd();
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') loadCouchd();
+    }, 5000);
+    return () => clearInterval(t);
+  });
+
+  const regions = $derived(couchd?.regions ?? {});
+  const regionLine = $derived(
+    `pad ${regions.pad ?? '?'} · session ${regions.session ?? '?'} · gesture ${regions.gesture ?? '?'}`,
+  );
+  // A source that is not ok (or has gone quiet) degrades the daemon without
+  // stopping it, so it is named rather than alarmed about.
+  const sickObservers = $derived(
+    Object.entries(couchd?.observers ?? {})
+      .filter(([, o]) => !o.ok || o.stale)
+      .map(([name]) => name),
+  );
+  const wouldDo = $derived(couchd?.wouldDo?.[0] ?? '');
+
   // Window switcher: list the open windows and jump to one, plus quick Kodi and
   // show-desktop actions.
   let winOpen = $state(false);
@@ -265,6 +299,21 @@
   {/if}
 </div>
 
+{#if couchd}
+  <div class="card cd">
+    {#if !couchd.ok}
+      <p class="small dim cdline">{couchd.reason}</p>
+    {:else}
+      <h2>couchd</h2>
+      <p class="small mono dim cdline">{regionLine}</p>
+      <p class="small cdline" class:warn={sickObservers.length} class:dim={!sickObservers.length}>
+        {sickObservers.length ? `observers: ${sickObservers.join(', ')}` : 'observers: all ok'}
+      </p>
+      <p class="small cdline" class:dim={!wouldDo}>{wouldDo || 'no would-do yet'}</p>
+    {/if}
+  </div>
+{/if}
+
 {#if winOpen}
   <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (winOpen = false)} role="presentation">
     <div use:slideUp out:slideDown class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Switch window">
@@ -358,6 +407,10 @@
     from { transform: scale(0.4); opacity: 1; }
     to { transform: scale(1.4); opacity: 0; }
   }
+
+  .cd p:last-child { margin-bottom: 0; }
+  .cdline { margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .warn { color: var(--warn); }
 
   .zoomrow { margin-top: 10px; }
   .kbd { margin: 10px 0 8px; }

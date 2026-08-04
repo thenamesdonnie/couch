@@ -1,11 +1,117 @@
 # couchd stage 2 — design note (input ownership)
 
-Status: research complete (adopt-vs-build evaluation done per charter);
-awaiting adversarial review before the input-layer code is written. Builds
-on docs/couchd-stage1-design.md (C22 topology, C27 ownership hygiene, C30
-security, R1/R4 rulings). Stage 2 code is developed and tested ENTIRELY
-against a synthetic uhid DualSense; the real pad's routing changes only at
-a flag day with Donnie present.
+Status: research complete; adversarial review done (findings F1-F22).
+Constraints S1-S9 stand AS AMENDED by the rulings below — where a ruling
+contradicts earlier text, the ruling wins. Stage 2 code is developed and
+tested ENTIRELY against a synthetic uhid DualSense; the real pad's routing
+changes only at a flag day with Donnie present.
+
+## Adversarial review rulings (binding)
+
+**SR1 (F1) — Execution model, honestly.** There is no no-root mechanism to
+put a ds2000 process in a group ds2000 isn't in (measured:
+`systemd-run --user -p SupplementaryGroups=` fails EPERM), and adding
+ds2000 to couchd-input would re-admit Steam. The input process therefore
+runs as a dedicated SYSTEM user `couchd-input` (system unit,
+`User=couchd-input`, `SupplementaryGroups=input` for /dev/uinput), no
+BindsTo=graphical-session (it idles safely when X is down). Factor 1
+restated: **no root at runtime; root once at install** (group + udev rule
++ unit + sudoers drop-in) **and never at rollback** (SR3). couchd's
+supervisor socket accepts SO_PEERCRED uid ∈ {ds2000, couchd-input};
+gesture events flow input-process → supervisor.
+
+**SR2 (F2, F12, F22) — Device correctness.** Udev MODE is **0660** (evdev
+FF playback is a write()); the input process asserts W_OK at grab time and
+fails LOUDLY if absent (python-evdev silently falls back to O_RDONLY).
+Virtual pad ffbit = **FF_RUMBLE only** (the physical DualSense memless set
+is the ceiling; advertising FF_PERIODIC without waveform bits fails
+uploads at our own device; invariant: virtual ffbit ⊆ physical ffbit).
+Virtual pad shape pinned to vpad's exact kernel-xpad clone: name
+"Microsoft X-Box 360 pad", 11 buttons, 8 axes, analog Z/RZ triggers —
+Kodi resolves buttonmaps by `<name>_<b>b_<a>a.xml` and ships
+Microsoft_X-Box_360_pad_11b_8a.xml; E1 asserts that map resolves.
+
+**SR3 (F3) — Rollback without sudo-at-night.** A NOPASSWD sudoers drop-in
+scoped to ONE root-owned script (`couchd-input-release`: mv rule to .off,
+udevadm reload + trigger, restore uaccess) installed at the same sudo
+moment as the rule. Cheat-sheet line added verbatim. Flipping
+COUCHD_OWNS=input off ALSO runs it (the rule alone un-flips nothing).
+Phone switcher stays the pad-free escape (F7).
+
+**SR4 (F4, F18, F19) — The coupled cutover, declared.** Owning input
+necessarily takes gestures and the legacy watcher's sight with it:
+flag day is a DECLARED COMBINED cutover of input+gestures, not a charter
+violation by accident. Before it: reconcile() re-homes into couchd's
+supervisor (needs no pad); the gesture arithmetic is ONE shared module
+used by stage-1 shadow and the input process (corpus stays comparable;
+comparator re-versioned and re-run on the archive per R5); the
+controller_ui.txt press cross-check retires in favor of the input
+process's own press counter + recorded stream. Per-consumer migration
+table: pad-record's job moves into the input process (records the
+grabbed stream); ps-button gains a send-via-couchd path; psfuzz/chaos
+are PORTED to drive couchd and land BEFORE flag day (F21); watcher gets
+the reconcile-on-PermissionError patch as a flagged pre-flag-day legacy
+edit (Donnie decision — it's behavioral, outside R3's log-only license).
+Unaffected (verified): pad-connect-daemon, tv-waker, pad-battery,
+sys.js (sysfs/glob readers), guard, game-launch.
+
+**SR5 (F5, F6) — Verification that survives updates.** TAG-= clears only
+CURRENT_TAGS (udevadm info TAGS still shows uaccess — never use it);
+verification is getfacl + CURRENT_TAGS. On every pad appearance the input
+process asserts ownership (no ds2000 ACL, group couchd-input, rw); on
+failure it REFUSES to own, logs loudly, leaves legacy enabled. The
+71-dualsense-uaccess ordering dependency documented. SDL hint reworded:
+protects SDL games couchd launches only; covering the Steam client means
+taking over ~/.config/autostart/steam.desktop — its own scoped item with
+rollback.
+
+**SR6 (F7, F8) — Input process lifecycle spec.** System unit,
+Restart=on-failure RestartSec=2 StartLimitBurst=5; crash =
+controller-disconnect to the game (audit-failure-10 class reborn) —
+status.json + couch app show "pad unowned" and the phone switcher is the
+escape. Persistence spec: on BT loss emit all-keys-up + centered axes +
+SYN once then silence; hold the node for a bound calibrated from
+pad-connect.service's logged reconnect times; on give-up DESTROY the node
+(free Steam's slot); on reconnect re-key and re-upload the cached FF
+effects (F11 — otherwise rumble dies silently after any BT hiccup).
+
+**SR7 (F9, F10) — Full FF contract.** UPLOAD-create (id -1 → map),
+UPLOAD-update (translate id! or 16 slots exhaust), **UI_FF_ERASE**
+(begin_erase/end_erase — unhandled, a closing game stalls 30s PER
+EFFECT), EV_FF playback + FF_GAIN by mapped id. Every handler
+bounded-time; FF handling never shares a blocking path with gesture/socket
+work. Slot math verified safe (16 memless slots both sides, 1:1 map).
+Rig test: upload 20, update, erase; assert no -ENOSPC, no stall.
+(F9 confirmed: EVIOCGRAB doesn't block the grabber's own writes/uploads —
+S3 is legal once 0660.)
+
+**SR8 (F13-F17) — Rig safety is an inhibit SET, not a udev rule.** A uhid
+DS5 on this box otherwise: wakes the TV and forces HDMI 2 (tv-waker polls
+js* — its .off udev rule is irrelevant), blocks the REAL pad's only
+reconnect path (pad-connect.service's usable() tests any js* — latent
+stack bug, fix flagged), starts a pad-record recording (corpus
+pollution), gets adopted by watcher/couchd/Steam (Steam writes a sibling
+gyro vdf keyed on the fake MAC), and shows on the phone. The rig
+therefore owns setup/teardown: inhibit tv-waker + pad-record +
+pad-battery, assert TV state unchanged, assert recordings gained no
+file, restore everything in finally. E1's scoping rule matches
+ATTRS{uniq}=="<fake MAC>" ONLY (dry-run with udevadm test; assert the
+real MAC AA:BB:CC:DD:EE:FF unmatched) — which means the LIVE rule is
+never exercised by the ladder, so flag-day step 1 is a real-pad getfacl +
+CURRENT_TAGS check. E2 reclassified: daytime, box token, Donnie-aware,
+Steam config backed up (cp -a of config/) with restore line.
+
+**SR9 (F20) — Stage-2 gates, since C9/R5 can't certify mechanism.**
+E0: hid_playstation binds, 3 nodes + power_supply, BTN_MODE visible.
+E1: forwarding latency p50/p99 reported (budget <10ms p99 added);
+FF suite green (SR7); Kodi map resolves (SR2); scoped-rule dry-run clean;
+k=3 consecutive clean runs. E2: Steam adopts virtual pad as first-class
+(BP nav on real UI), routing latency vs C10's 250ms, press counter
+matches sent presses. Each experiment carries a C12 timebox; the
+flag-day checklist lives IN THIS DOC before flag day and includes:
+real-pad ACL check, hot-unplug mid-game, BT reconnect under the patched
+bluetooth.ko, Elden Ring rumble (unverified anywhere upstream), guard
+deletion only one stage later (charter).
 
 ## What it does for the product (plain language)
 

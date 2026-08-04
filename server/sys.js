@@ -5,6 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 
+import { COUCHD_STATUS } from './config.js';
+
 const HOME = os.homedir();
 const BIN = path.join(HOME, '.local/bin');
 const LAUNCHER = path.join(BIN, 'game-launch');
@@ -130,6 +132,42 @@ export function lights(cmd, dim) {
   else if (cmd === 'dim') args.push('dim', String(Math.max(10, Math.min(100, dim | 0))));
   else throw new Error('unrecognised lights command');
   return cli('lights', args, 15000);
+}
+
+// --- couchd (the shadow daemon) ---
+
+// couchd rewrites status.json atomically every ~3s; we re-read it on every
+// request and never cache, so the phone sees the daemon's own clock. A file
+// that is missing, unreadable or older than STALE means couchd is not running:
+// a NORMAL state (it may be stopped at any time, stage-1 design R6/B1), so it
+// answers ok:false with a reason rather than throwing.
+const COUCHD_STALE_S = 60;
+const ago = (s) => (s < 120 ? `${s}s` : s < 7200 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`);
+
+export function couchdStatus() {
+  const raw = readIf(COUCHD_STATUS);
+  if (!raw) return { ok: false, reason: 'couchd not running' };
+  let s;
+  // A half-written read shouldn't happen (the writer renames into place), but
+  // a truncated file must read as "not running", never as a 502.
+  try { s = JSON.parse(raw); } catch { return { ok: false, reason: 'couchd not running' }; }
+  const age = Math.round(Date.now() / 1000 - Number(s.t || 0));
+  if (!Number.isFinite(age) || age > COUCHD_STALE_S) {
+    if (!Number.isFinite(age)) return { ok: false, reason: 'couchd not running' };
+    return { ok: false, reason: `couchd stale (no update for ${ago(age)})`, age };
+  }
+  return {
+    ok: true,
+    age,
+    mode: s.mode ?? null,
+    attention: !!s.attention,
+    uptime: s.uptime_s ?? null,
+    regions: s.regions ?? {},
+    observers: s.observers ?? {},
+    // last_would_do is newest-first, in the same words as /tmp/couchd.log.
+    wouldDo: s.last_would_do ?? [],
+    counts: s.counts ?? {},
+  };
 }
 
 // --- health panel ---

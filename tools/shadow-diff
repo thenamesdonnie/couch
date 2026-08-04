@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """shadow-diff - offline comparison of legacy console intents vs couchd's shadow stream.
 
-Run by hand in the morning. Reads two JSONL intent streams, greedily interval-joins
+Run by hand in the morning. Reads the two JSONL streams, greedily interval-joins
 them on (verb, canonical subject) inside per-verb tolerance windows, and prints the
 three divergence classes from R2 with an empty T-label column for hand triage.
 
@@ -32,16 +32,32 @@ TOLERANCE = {                       # seconds, per verb, +/- around the legacy e
     'request_tv_wake': 10.0,
 }
 DEFAULT_TOLERANCE = 5.0
+# couchd emits ONE intent per (verb, subject, reason) per cooldown window, so legacy
+# repeats inside that window associate to the same intent (many-to-one) instead of
+# piling up as LEGACY-ONLY rows. Class is inferred from the intent's reason string.
+COOLDOWN = {'gesture': 3.0, 'guard': 5.0, 'transition': 10.0, 'repair': 30.0}
+REASON_CLASS = (('repair', 'repair'), ('reconcile', 'repair'), ('entropy', 'repair'),
+                ('guard', 'guard'), ('enforce', 'guard'), ('gesture', 'gesture'),
+                ('ps-', 'gesture'), ('hold', 'gesture'), ('tap', 'gesture'))
+DEFAULT_COOLDOWN_CLASS = 'transition'
 PID_SET_VERBS = {'freeze', 'thaw', 'quit', 'kill'}   # R4: pid sets are diffable args
 CONTEXT_VERBS = {'invoked'}          # trigger channels (R4), context not actions
 PERCEPTUAL_BOUND_S = 0.250           # C10/T6 routing+raise bound, p95 gated
 PERCEPTUAL_VERBS = ('route_pad', 'show')
 OBSERVER_BLIND_LIMIT_S = 300.0       # R5 observer-health gate: >5 min blind = INVALID
+HEARTBEAT_LIMIT_S = 300.0            # max gap in world obs + snapshots (cadence ~30s)
 GESTURE_ASSOC_S = 5.0                # route_pad <-> gesture release association window
 FLAG_FREEZE_S = 10.0                 # freeze -> set_flag(suspended) pairing window
 BP_HOLD_S = 20.0                     # R7(a) big-picture-hold context lookback
 REAPER_SLACK = 2                     # R5 whitelist: transient reaper children tolerated
-EXPECTED_SOURCES = ('pad', 'flags', 'game_pids', 'x11', 'kodi', 'steam_log')
+# obs sources are CHANGE-driven: silence is not staleness, so a silent source is a
+# note, never a verdict. Blindness comes from the daemon's own observer_blind records,
+# from heartbeat gaps, and from ACTIVITY_CHECKS (world said active, source said nothing).
+REQUIRED_SOURCES = ('pad', 'flags', 'pids', 'kodi', 'x11', 'steam')
+OPTIONAL_SOURCES = ('trigger', 'world')
+ACTIVITY_CHECKS = {'pad': lambda w: bool((w.get('pad') or {}).get('present')),
+                   'pids': lambda w: bool(w.get('pids'))}
+GESTURE_IDLE_IGNORE = ('pad-quiet', 'init', 'startup')   # not real release edges
 IGNORE_ARG_KEYS = {'pids', 'pid_set', 'frozen_pids', 'pid', 'resolver', 'argv',
                    'snapshot', 't', 'mono', 'seq', 'ts', 'release_t'}
 SECTIONS = ('COUCHD-ONLY', 'LEGACY-ONLY', 'BOTH-BUT-DIFFERENT')
@@ -76,18 +92,21 @@ def load_jsonl(path, notes, label):
 
 
 def as_intent(rec, side):
-    """Normalise a record from either stream into the comparable intent shape."""
-    verb = rec.get('verb')
-    if not verb or rec.get('kind') == 'obs':
+    """Normalise an intent record into the comparable shape.
+
+    couchd tags intents kind=="intent"; legacy lines carry no kind at all.
+    """
+    if rec.get('kind') not in (None, 'intent') or not rec.get('verb'):
         return None
     try:
         t = float(rec.get('t'))
     except (TypeError, ValueError):
         return None
     args = rec.get('args') if isinstance(rec.get('args'), dict) else {}
-    return {'t': t, 'verb': str(verb), 'subject': rec.get('subject'), 'args': args,
-            'side': side, 'origin': rec.get('src') or rec.get('reason') or side,
-            'reason': rec.get('reason'), 'seq': rec.get('seq'), 'raw': rec}
+    return {'t': t, 'verb': str(rec['verb']), 'subject': rec.get('subject'),
+            'args': args, 'side': side, 'reason': rec.get('reason'),
+            'origin': rec.get('src') or rec.get('reason') or side,
+            'seq': rec.get('seq'), 'raw': rec}
 
 
 def canon(subject):
@@ -106,7 +125,7 @@ def pid_set(it):
     a = it['args']
     for k in ('pids', 'pid_set', 'frozen_pids'):
         v = a.get(k)
-        if isinstance(v, list):
+        if isinstance(v, (list, dict)):     # list of pids, or {pid: state}
             return frozenset(str(p) for p in v)
     if a.get('pid') is not None:
         return frozenset([str(a['pid'])])
@@ -115,14 +134,12 @@ def pid_set(it):
 
 def arg_diff(a, b):
     """Keys both sides define with different values (volatile keys excluded)."""
-    out = []
-    for k in sorted(set(a['args']) & set(b['args']) - IGNORE_ARG_KEYS):
-        if canon(a['args'][k]) != canon(b['args'][k]):
-            out.append('%s=%s|%s' % (k, a['args'][k], b['args'][k]))
-    return out
+    return ['%s=%s|%s' % (k, a['args'][k], b['args'][k])
+            for k in sorted(set(a['args']) & set(b['args']) - IGNORE_ARG_KEYS)
+            if canon(a['args'][k]) != canon(b['args'][k])]
 
 
-# ---- matching (greedy interval join, R2) -------------------------------------
+# ---- matching (greedy interval join, R2 + cooldown many-to-one) ---------------
 def match(legacy, couchd):
     """Time-sorted greedy nearest-match. Returns (pairs, legacy_only, couchd_only)."""
     legacy = sorted(legacy, key=lambda i: i['t'])
@@ -144,9 +161,37 @@ def match(legacy, couchd):
         else:
             taken.add(best)
             pairs.append({'legacy': li, 'couchd': couchd[best], 'offset': best_dt,
-                          'flags': [], 'notes': []})
-    c_only = [ci for n, ci in enumerate(couchd) if n not in taken]
-    return pairs, l_only, c_only
+                          'flags': [], 'notes': [], 'repeats': []})
+    return pairs, l_only, [ci for n, ci in enumerate(couchd) if n not in taken]
+
+
+def cooldown_s(reason):
+    r = canon(reason)
+    for needle, cls in REASON_CLASS:
+        if needle in r:
+            return COOLDOWN[cls]
+    return COOLDOWN[DEFAULT_COOLDOWN_CLASS]
+
+
+def cooldown_associate(pairs, l_only):
+    """Legacy repeats inside couchd's dedup window belong to the matched intent."""
+    still, assoc = [], []
+    for li in l_only:
+        hit = None
+        for p in pairs:
+            if p['legacy']['verb'] != li['verb'] or \
+                    canon(p['legacy']['subject']) != canon(li['subject']):
+                continue
+            anchor = min(p['couchd']['t'], p['legacy']['t'])
+            if anchor <= li['t'] <= anchor + cooldown_s(p['couchd']['reason']):
+                hit = p
+                break
+        if hit is None:
+            still.append(li)
+        else:
+            hit['repeats'].append(li)
+            assoc.append((li, hit))
+    return still, assoc
 
 
 def compare_pair(p):
@@ -169,34 +214,29 @@ def compare_pair(p):
 
 
 # ---- happens-before assertions (R5, independent of the tolerance windows) -----
-def gesture_releases(obs):
-    """Kernel-timestamped gesture release edges from couchd's obs records."""
-    out = []
-    for r in obs:
-        if r.get('region') != 'gesture' and r.get('source') not in ('gesture', 'pad'):
-            continue
-        ev = str(r.get('event') or r.get('state') or r.get('to') or '')
-        if ev in ('release', 'released', 'up', 'idle'):
-            try:
-                out.append(float(r.get('kt', r.get('t'))))
-            except (TypeError, ValueError):
-                pass
+def release_edges(obs, transitions):
+    """PS release edges: pad BTN_MODE=0 kernel timestamps first, gesture->idle next."""
+    out = [float(r.get('kernel_t') or r.get('t')) for r in obs
+           if r.get('source') == 'pad' and r.get('event') == 'BTN_MODE'
+           and not r.get('value')]
+    out += [float(r.get('kernel_t') or r.get('t')) for r in transitions
+            if r.get('region') == 'gesture' and r.get('to') == 'idle'
+            and canon(r.get('reason')) not in GESTURE_IDLE_IGNORE]
     return sorted(out)
 
 
-def assertions(couchd_i, legacy_i, obs, pairs):
+def assertions(couchd_i, legacy_i, edges, pairs):
     """Returns a list of {'name','ok','detail','intent'} rows."""
     rows = []
-    rel = gesture_releases(obs)
     for it in couchd_i:
         if it['verb'] != 'route_pad' or canon(it['subject']) != 'kodi':
             continue
         r = it['args'].get('release_t', it['args'].get('gesture_release_t'))
         near = [float(r)] if r is not None else \
-            [x for x in rel if abs(x - it['t']) <= GESTURE_ASSOC_S]
+            [x for x in edges if abs(x - it['t']) <= GESTURE_ASSOC_S]
         if not near:
             rows.append({'name': 'route_pad(kodi) after gesture release', 'ok': None,
-                         'detail': 'no gesture release within %.0fs - unassociated'
+                         'detail': 'no release edge within %.0fs - unassociated'
                                    % GESTURE_ASSOC_S, 'intent': it})
             continue
         edge = min(near, key=lambda x: abs(x - it['t']))
@@ -207,8 +247,7 @@ def assertions(couchd_i, legacy_i, obs, pairs):
     for it in legacy_i + couchd_i:
         if it['verb'] != 'set_flag':
             continue
-        flag = canon(it['subject'] or it['args'].get('flag'))
-        if 'suspend' not in flag:
+        if 'suspend' not in canon(it['subject'] or it['args'].get('flag')):
             continue
         near = [f for f in legacy_i + couchd_i
                 if f['verb'] == 'freeze' and abs(f['t'] - it['t']) <= FLAG_FREEZE_S]
@@ -224,13 +263,12 @@ def assertions(couchd_i, legacy_i, obs, pairs):
                                % (first['t'] - it['t']), 'intent': None if ok else it})
     for verb in PERCEPTUAL_VERBS:
         offs = [abs(p['offset']) for p in pairs if p['legacy']['verb'] == verb]
-        if not offs:
-            continue
-        p95 = pct(offs, 95)
-        rows.append({'name': '%s matched-offset p95 <= %dms' % (verb,
-                     PERCEPTUAL_BOUND_S * 1000), 'ok': p95 <= PERCEPTUAL_BOUND_S,
-                     'detail': 'p95=%.0fms over %d matches' % (p95 * 1000, len(offs)),
-                     'intent': None})
+        if offs:
+            rows.append({'name': '%s matched-offset p95 <= %dms'
+                                 % (verb, PERCEPTUAL_BOUND_S * 1000),
+                         'ok': pct(offs, 95) <= PERCEPTUAL_BOUND_S,
+                         'detail': 'p95=%.0fms over %d matches'
+                                   % (pct(offs, 95) * 1000, len(offs)), 'intent': None})
     return rows
 
 
@@ -241,6 +279,15 @@ def pct(vals, p):
     k = (len(vals) - 1) * p / 100.0
     lo, hi = int(k), min(int(k) + 1, len(vals) - 1)
     return vals[lo] + (vals[hi] - vals[lo]) * (k - lo)
+
+
+def disagrees(rec):
+    """True when an agreement record (R4 freeze-set / channel metric) really diverges."""
+    if rec.get('agree') is False:
+        return True
+    return any(isinstance(v, (list, tuple)) and v and
+               any(w in k for w in ('only', 'diff', 'missing', 'extra'))
+               for k, v in rec.items())
 
 
 # ---- pre-declared whitelist (R5 + R7) ---------------------------------------
@@ -261,8 +308,7 @@ def bp_hold_context(t, couchd_i, legacy_i):
 
 def triage(section, li, ci, flags, couchd_i, legacy_i):
     """Pre-fill the T column where a divergence matches the written-first whitelist."""
-    sides = [x for x in (li, ci) if x]
-    for it in sides:
+    for it in [x for x in (li, ci) if x]:
         if canon(it['subject']) == 'bigpicture' or \
                 canon(it['args'].get('appid')) == 'bigpicture':
             return 'T5', 'R7(b) pre-declared: legacy records appid literal ' \
@@ -285,49 +331,67 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
 
 
 # ---- observer health (R5, independent of diffing) ----------------------------
-def observer_health(obs, window, notes):
-    """Per-source staleness, blind events, absent sources, and the validity verdict."""
+def world_series(obs, snaps):
+    """(t, world-dict) samples from world obs + snapshots - the heartbeat channel."""
+    out = [(float(r['t']), r) for r in obs if r.get('source') == 'world' and 't' in r]
+    for s in snaps:
+        w = dict(s)
+        w.update(s.get('flags') or {})
+        out.append((float(s['t']), w))
+    return sorted(out, key=lambda x: x[0])
+
+
+def observer_health(obs, blinds, snaps, window, notes):
+    """Heartbeat gaps, daemon-declared blindness, activity cross-checks, verdict."""
     t0, t1 = window
     span = max(0.0, t1 - t0)
-    per, blind = {}, []
+    per = {}
     for r in obs:
-        try:
-            t = float(r.get('t'))
-        except (TypeError, ValueError):
-            continue
-        src = str(r.get('source') or r.get('region') or 'unknown')
-        per.setdefault(src, []).append(t)
-        if r.get('event') == 'observer_blind' or r.get('kind') == 'observer_blind' \
-                or r.get('verb') == 'observer_blind':
-            blind.append({'source': src, 't': t,
-                          'duration': float(r.get('duration') or 0.0),
-                          'detail': str(r.get('detail') or r.get('reason') or '')})
+        if isinstance(r.get('t'), (int, float)):
+            per.setdefault(str(r.get('source') or 'unknown'), []).append(float(r['t']))
     health, reasons = [], []
-    for src in sorted(set(EXPECTED_SOURCES) | set(per)):
+    for src in sorted(set(REQUIRED_SOURCES) | set(OPTIONAL_SOURCES) | set(per)):
         ts = sorted(per.get(src, []))
-        if not ts:
-            health.append({'source': src, 'present': False, 'max_gap': span,
-                           'samples': 0})
-            if span > OBSERVER_BLIND_LIMIT_S:
-                reasons.append('source %s absent for the whole %.0fs window' %
-                               (src, span))
-            continue
-        gaps = [ts[0] - t0] + [b - a for a, b in zip(ts, ts[1:])] + [t1 - ts[-1]]
-        mg = max(gaps)
-        health.append({'source': src, 'present': True, 'max_gap': mg,
-                       'samples': len(ts)})
-        if mg > OBSERVER_BLIND_LIMIT_S:
-            reasons.append('source %s stale for %.0fs (limit %.0fs)' %
-                           (src, mg, OBSERVER_BLIND_LIMIT_S))
-    for b in blind:
-        if b['duration'] > OBSERVER_BLIND_LIMIT_S:
-            reasons.append('observer_blind on %s for %.0fs %s' %
-                           (b['source'], b['duration'], b['detail']))
-        else:
-            notes.append('observer_blind on %s at %s (%.0fs) %s' %
-                         (b['source'], fmt_t(b['t']), b['duration'], b['detail']))
-    return {'window': [t0, t1], 'span_s': span, 'sources': health, 'blind': blind,
-            'valid': not reasons, 'reasons': reasons}
+        health.append({'source': src, 'present': bool(ts), 'samples': len(ts),
+                       'required': src in REQUIRED_SOURCES,
+                       'last_gap': (t1 - ts[-1]) if ts else span})
+        if not ts and src in REQUIRED_SOURCES:
+            notes.append('no %s observations all evening (obs are change-driven, so '
+                         'quiet is not stale - but check the source was wired)' % src)
+
+    series = world_series(obs, snaps)
+    beats = [t for t, _ in series]
+    if beats:
+        hb = max([beats[0] - t0] + [b - a for a, b in zip(beats, beats[1:])] +
+                 [t1 - beats[-1]])
+        if hb > HEARTBEAT_LIMIT_S:
+            reasons.append('world/snapshot heartbeat gap of %.0fs (limit %.0fs)'
+                           % (hb, HEARTBEAT_LIMIT_S))
+    else:
+        hb = span
+        if span > HEARTBEAT_LIMIT_S:
+            reasons.append('no world obs or snapshots across a %.0fs window' % span)
+
+    for b in blinds:
+        age = float(b.get('age_s') or b.get('duration') or 0.0)
+        txt = 'observer_blind on %s: %s %s (age %.0fs)' % (
+            b.get('source'), b.get('why', ''), b.get('detail', ''), age)
+        (reasons if age > OBSERVER_BLIND_LIMIT_S else notes).append(txt)
+
+    for src, pred in ACTIVITY_CHECKS.items():       # world said active, source silent
+        start, last = None, None
+        for t, w in series + [(t1 + 1.0, {})]:
+            if pred(w):
+                start, last = (t if start is None else start), t
+                continue
+            if start is not None:
+                if last - start > OBSERVER_BLIND_LIMIT_S and \
+                        not [x for x in per.get(src, []) if start <= x <= last]:
+                    reasons.append('%s observer silent for %.0fs while the world said '
+                                   'it was active' % (src, last - start))
+                start = None
+    return {'window': [t0, t1], 'span_s': span, 'sources': health, 'heartbeat_gap': hb,
+            'blind': blinds, 'valid': not reasons, 'reasons': reasons}
 
 
 # ---- report ------------------------------------------------------------------
@@ -352,13 +416,18 @@ def arg_str(it):
 
 
 def snapshot_near(snaps, t):
+    """The world couchd saw at or before a divergence (real snapshot schema)."""
     prev = [s for s in snaps if float(s.get('t', 0)) <= t]
     if not prev:
         return ''
     s = max(prev, key=lambda x: float(x.get('t', 0)))
-    bits = ['%s=%s' % (k, v) for k, v in sorted(s.items())
-            if k not in ('t', 'kind') and not isinstance(v, (dict, list))]
-    return ('world @%s: ' % fmt_t(float(s.get('t', t)))) + ' '.join(bits[:6])
+    f, reg = s.get('flags') or {}, s.get('regions') or {}
+    bits = ['session=%s' % f.get('session'), 'suspended=%s' % f.get('suspended'),
+            'focused=%s' % s.get('focused'), 'joystick=%s' % s.get('joystick'),
+            'ui_mode=%s' % s.get('ui_mode'), 'pids=%d' % len(s.get('pids') or {}),
+            '/'.join('%s:%s' % (k, v) for k, v in sorted(reg.items()))]
+    return 'world @%s (%s): %s' % (fmt_t(float(s.get('t', t))), s.get('why', '?'),
+                                   ' '.join(bits))
 
 
 def mkrow(section, li, ci, offset, flags, notes, couchd_i, legacy_i):
@@ -379,22 +448,37 @@ def build(legacy_path, shadow_path, snapshots_path=None):
     crecs, c_ok = load_jsonl(shadow_path, notes, 'couchd')
     snaps = []
     if snapshots_path and os.path.exists(snapshots_path):
-        snaps, _ = load_jsonl(snapshots_path, [], 'snapshots')
+        snaps = [r for r in load_jsonl(snapshots_path, [], 'snapshots')[0]
+                 if r.get('kind') in (None, 'snapshot') and 't' in r]
 
     legacy_all = [i for i in (as_intent(r, 'legacy') for r in lrecs) if i]
     couchd_all = [i for i in (as_intent(r, 'couchd') for r in crecs) if i]
     obs = [r for r in crecs if r.get('kind') == 'obs']
+    trans = [r for r in crecs if r.get('kind') == 'transition']
+    blinds = [r for r in crecs if r.get('kind') == 'observer_blind']
+    agree = [r for r in crecs if r.get('kind') == 'agreement']
+    bad_inv = [r for r in crecs if r.get('kind') == 'invariant' and not r.get('ok')]
     ctx = [i for i in legacy_all + couchd_all if i['verb'] in CONTEXT_VERBS]
     legacy_i = [i for i in legacy_all if i['verb'] not in CONTEXT_VERBS]
     couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS]
     if ctx:
         notes.append('%d trigger-channel record(s) (%s) held as context, not diffed'
                      % (len(ctx), ','.join(sorted(CONTEXT_VERBS))))
+    if bad_inv:
+        notes.append('%d failing invariant record(s): %s' % (len(bad_inv), '; '.join(
+            sorted({'%s %s' % (r.get('name'), r.get('leaks') or '')
+                    for r in bad_inv}))[:200]))
+    for r in crecs:
+        if r.get('kind') == 'daemon' and r.get('event') == 'stop':
+            notes.append('daemon stop @%s: %s passes, %s intents'
+                         % (fmt_t(float(r.get('t', 0))), r.get('passes'),
+                            r.get('intents')))
 
     pairs, l_only, c_only = match(legacy_i, couchd_i)
+    l_only, assoc = cooldown_associate(pairs, l_only)
     for p in pairs:
         compare_pair(p)
-    asserts = assertions(couchd_i, legacy_i, obs, pairs)
+    asserts = assertions(couchd_i, legacy_i, release_edges(obs, trans), pairs)
     for a in asserts:                       # an ordering violation gates even in-window
         if a['ok'] is False and a['intent'] is not None:
             for p in pairs:
@@ -402,18 +486,22 @@ def build(legacy_path, shadow_path, snapshots_path=None):
                     p['flags'].append('ORDER')
                     p['notes'].append('%s: %s' % (a['name'], a['detail']))
 
-    rows = []
-    for it in c_only:
-        rows.append(mkrow('COUCHD-ONLY', None, it, None, [], [], couchd_i, legacy_i))
-    for it in l_only:
-        rows.append(mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i))
-    for p in pairs:
-        if p['flags']:
-            rows.append(mkrow('BOTH-BUT-DIFFERENT', p['legacy'], p['couchd'],
-                              p['offset'], p['flags'], p['notes'], couchd_i, legacy_i))
+    rows = [mkrow('COUCHD-ONLY', None, it, None, [], [], couchd_i, legacy_i)
+            for it in c_only]
+    rows += [mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i)
+             for it in l_only]
+    rows += [mkrow('BOTH-BUT-DIFFERENT', p['legacy'], p['couchd'], p['offset'],
+                   p['flags'], p['notes'], couchd_i, legacy_i)
+             for p in pairs if p['flags']]
     rows.sort(key=lambda r: (SECTIONS.index(r['section']), r['t']))
     for r in rows:
         r['context'] = snapshot_near(snaps, r['t']) if snaps else ''
+    cooled = [{'t': li['t'], 'verb': li['verb'], 'subject': li['subject'],
+               'args': arg_str(li), 'offset': li['t'] - p['couchd']['t'],
+               'note': 'cooldown-associated to couchd seq=%s reason=%s (window %.0fs)'
+                       % (p['couchd']['seq'], p['couchd']['reason'],
+                          cooldown_s(p['couchd']['reason']))}
+              for li, p in assoc]
 
     verbs = sorted({i['verb'] for i in legacy_i + couchd_i})
     counts = {v: {s: sum(1 for r in rows if r['section'] == s and r['verb'] == v)
@@ -424,11 +512,11 @@ def build(legacy_path, shadow_path, snapshots_path=None):
         if o:
             offsets[v] = {'n': len(o), 'min': min(o), 'p50': pct(o, 50),
                           'p95': pct(o, 95), 'max': max(o)}
-    ts = [i['t'] for i in legacy_all + couchd_all] + \
-         [float(r['t']) for r in obs if isinstance(r.get('t'), (int, float))]
+    ts = [float(r['t']) for r in lrecs + crecs + snaps
+          if isinstance(r.get('t'), (int, float))]
     window = (min(ts), max(ts)) if ts else (0.0, 0.0)
-    health = observer_health(obs, window, notes)
-    valid = health['valid'] and l_ok and c_ok
+    health = observer_health(obs, blinds, snaps, window, notes)
+    disagreements = [r for r in agree if disagrees(r)]
     reasons = list(health['reasons'])
     if not l_ok:
         reasons.append('legacy intent stream missing or empty - nothing to compare')
@@ -438,14 +526,17 @@ def build(legacy_path, shadow_path, snapshots_path=None):
     gating = [r for r in hard if r['label'] != 'T5']   # pre-declared = not gating
     return {'inputs': {'legacy': legacy_path, 'couchd': shadow_path,
                        'snapshots': snapshots_path if snaps else None},
-            'notes': notes, 'rows': rows, 'matched_clean': len(pairs) - len(
-                [p for p in pairs if p['flags']]),
-            'matched_total': len(pairs), 'counts': counts, 'offsets': offsets,
+            'notes': notes, 'rows': rows, 'cooldown_associated': cooled,
+            'matched_total': len(pairs),
+            'matched_clean': len(pairs) - len([p for p in pairs if p['flags']]),
+            'counts': counts, 'offsets': offsets, 'context_records': len(ctx),
             'assertions': [{k: v for k, v in a.items() if k != 'intent'}
                            for a in asserts],
-            'observer_health': health, 'context_records': len(ctx),
-            'gating_count': len(gating), 'whitelisted_hard': len(hard) - len(gating),
-            'validity': {'verdict': 'VALID' if valid else 'INVALID',
+            'agreement': {'total': len(agree), 'disagreements': disagreements},
+            'observer_health': health,
+            'gating_count': len(gating) + len(disagreements),
+            'whitelisted_hard': len(hard) - len(gating),
+            'validity': {'verdict': 'INVALID' if reasons else 'VALID',
                          'reasons': reasons}}
 
 
@@ -456,8 +547,7 @@ def render(rep):
     if h['span_s']:
         out.append('                    window=%s..%s (%.0f min)' %
                    (fmt_t(h['window'][0]), fmt_t(h['window'][1]), h['span_s'] / 60.0))
-    for n in rep['notes']:
-        out.append('  ! %s' % n)
+    out += ['  ! %s' % n for n in rep['notes']]
     for sec in SECTIONS:
         rows = [r for r in rep['rows'] if r['section'] == sec]
         out += ['', '== %s == (%d)' % (sec, len(rows))]
@@ -467,20 +557,31 @@ def render(rep):
             off = ' off=%+.3fs' % r['offset'] if r['offset'] is not None else ''
             flg = ' [%s]' % ','.join(r['flags']) if r['flags'] else ''
             out.append('  %-3s %s  %s(%s)%s  %s%s' %
-                       (r['label'] or '..', fmt_t(r['t']), r['verb'],
-                        r['subject'], flg, r['args'], off))
-            if r['note']:
-                out.append('        %s' % r['note'])
-            if r['context']:
-                out.append('        %s' % r['context'])
+                       (r['label'] or '..', fmt_t(r['t']), r['verb'], r['subject'],
+                        flg, r['args'], off))
+            out += ['        %s' % x for x in (r['note'], r['context']) if x]
+    ag = rep['agreement']
+    out += ['', '== AGREEMENT (freeze-set / channel cross-checks, gating per R4) == '
+                '(%d of %d disagree)' % (len(ag['disagreements']), ag['total'])]
+    out += ['  ..  %s  %s: %s' % (fmt_t(float(r.get('t', 0))), r.get('metric', '?'),
+                                  json.dumps({k: v for k, v in r.items()
+                                              if k not in ('kind', 't', 'mono', 'seq')
+                                              })[:150]) for r in ag['disagreements']] \
+        or ['  (none)']
+    if rep['cooldown_associated']:
+        out += ['', '== COOLDOWN-ASSOCIATED == (%d legacy repeats inside couchd\'s '
+                    'dedup window - not divergences)' % len(rep['cooldown_associated'])]
+        for r in rep['cooldown_associated']:
+            out.append('  ..  %s  %s(%s)  %s off=%+.3fs\n        %s' %
+                       (fmt_t(r['t']), r['verb'], r['subject'], r['args'], r['offset'],
+                        r['note']))
     out += ['', '== SUMMARY ==',
-            '  matched %d (%d clean, %d differing); gating rows (SET-MISMATCH/ORDER, '
-            'per R4/R5): %d, +%d pre-declared T5 not gating'
+            '  matched %d (%d clean, %d differing); gating (SET-MISMATCH/ORDER/'
+            'agreement, per R4/R5): %d, +%d pre-declared T5 not gating'
             % (rep['matched_total'], rep['matched_clean'],
                rep['matched_total'] - rep['matched_clean'], rep['gating_count'],
-               rep['whitelisted_hard'])]
-    out.append('  %-18s %8s %8s %8s' % ('verb', SECTIONS[0][:8], SECTIONS[1][:8],
-                                        'BOTH-DIF'))
+               rep['whitelisted_hard']),
+            '  %-18s %8s %8s %8s' % ('verb', 'COUCHD-O', 'LEGACY-O', 'BOTH-DIF')]
     for v, c in sorted(rep['counts'].items()):
         if any(c.values()):
             out.append('  %-18s %8d %8d %8d' % (v, c['COUCHD-ONLY'], c['LEGACY-ONLY'],
@@ -492,17 +593,20 @@ def render(rep):
                    (v, o['n'], o['min'] * 1000, o['p50'] * 1000, o['p95'] * 1000,
                     o['max'] * 1000))
     out.append('  happens-before assertions (R5, evaluated outside the windows):')
-    for a in rep['assertions']:
-        mark = 'PASS' if a['ok'] else ('FAIL' if a['ok'] is False else 'n/a ')
-        out.append('    %s %s - %s' % (mark, a['name'], a['detail']))
-    out.append('  observer health:')
+    for a in rep['assertions'] or [{'ok': None, 'name': '(no assertable intents)',
+                                    'detail': ''}]:
+        out.append('    %s %s - %s' % ('PASS' if a['ok'] else
+                                       ('FAIL' if a['ok'] is False else 'n/a '),
+                                       a['name'], a['detail']))
+    out.append('  observer health (obs are change-driven; heartbeat max gap %.0fs):'
+               % h['heartbeat_gap'])
     for s in h['sources']:
-        out.append('    %-12s %s max-gap %5.0fs  n=%d' %
-                   (s['source'], 'present' if s['present'] else 'ABSENT ',
-                    s['max_gap'], s['samples']))
+        out.append('    %-9s %-9s %-8s n=%-4d last-gap %5.0fs' %
+                   (s['source'], 'required' if s['required'] else 'optional',
+                    'present' if s['present'] else 'SILENT', s['samples'],
+                    s['last_gap']))
     out.append('  EVENING VALIDITY: %s' % rep['validity']['verdict'])
-    for r in rep['validity']['reasons']:
-        out.append('    - %s' % r)
+    out += ['    - %s' % r for r in rep['validity']['reasons']]
     return '\n'.join(out)
 
 
