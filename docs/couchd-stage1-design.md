@@ -1,9 +1,25 @@
 # couchd stage 1 — design note (shadow-mode control plane)
 
-Status: DRAFT — research pass in flight (3 agents: prior art, shadow-migration
-methodology, daemon architecture/runtime). Sections marked TBR (to be
-researched) get filled from their findings. Per docs/couchd-charter.md
-discipline 3: no stage-1 code before this note is complete.
+Status: research complete (3 agents: prior art, shadow-migration
+methodology, daemon architecture/runtime), under adversarial review before
+code per charter discipline 6.
+
+## Decisions (summary)
+
+- **Adopt**: reconciler pattern (k8s), statechart regions (Harel),
+  parallel-run shadow-diff discipline (Scientist/Diffy lineage), Steam's own
+  gameprocess_log.txt as primary game-PID source, prior-art supervision
+  bundle (crash-loop detector, readiness deadlines, flock). Python 3.12
+  supervisor.
+- **Build** (nothing exists to adopt): the state model itself, the
+  legacy-intent inference + shadow-diff tooling, the observation interface
+  with fallback chains, the replay harness over tools/pad-record recordings.
+- **Defer**: InputPlumber adopt-vs-build is stage 2's /build question; input
+  fast path is a separate process behind the socket from day one (C22) so
+  stage 2 stays open either way.
+- **How we'd detect wrongness**: C6 noise floor + C9 per-responsibility
+  gates + C17 predicted-effect checks + free-run drift measurement (C7);
+  mistake list M1-M9 swept at stage end.
 
 ## What it does for the product (plain language)
 
@@ -178,7 +194,106 @@ error); bumpless-transfer control literature (jckantor CBE30338, MathWorks).
 Noted and rejected: unattributed consultancy numbers ("Uber 72h shadow,
 0.3% divergence") that don't trace to any primary source.
 
-### Prior-art constraints (TBR — agent still running)
+### Prior-art constraints (researched; adopted)
+
+Plain-language core: nobody documents this domain — no literature, no Valve
+docs. Everything is reverse-engineered by four hobby projects
+(gamescope-session/steamos-manager, ChimeraOS's supervisor, ShadowBlip's
+InputPlumber/OpenGamepadUI, hhd), so their source code IS the industry
+practice, and their magic numbers are other people's calibrations to
+re-measure, not constants to adopt. Notably, Valve and ChimeraOS both use
+/tmp flag files for deferred intent (reboot-after-Steam-exits), which
+validates our pattern for *deferred intent* while confirming live state
+belongs in the daemon.
+
+**C24 — Better Steam observation channels than we use today** (measured on
+THIS box, X11, no gamescope):
+- `~/.steam/steam/logs/gameprocess_log.txt` is Steam's own tracked-process
+  ledger: per-appid PID add/remove lines with timestamps, exit codes, launch
+  argv, and an authoritative "Remove <appid> from running list". Prefer it
+  over pstree guessing for the freeze set (game-pids stays as fallback).
+- Same file: `SSGL: UI mode (a->b)` marks Big Picture transitions (4=BPM,
+  7=desktop — inferred from 25 local samples, must re-verify, treat mapping
+  as config not code).
+- Root X atoms Steam writes even without gamescope:
+  `GAMESCOPECTRL_BASELAYER_APPID` = `413091, 769` observed live;
+  `STEAM_GAMES_RUNNING` (per gamescope source, read from root) absent while
+  idle — TEST with a game running; likely the cleanest "game running" bit.
+- Subscribe via PropertyChangeMask + select() on the X fd (hhd's approach);
+  poll only as backstop.
+- Every signal has broken for someone; keep all observation behind one
+  interface with a fallback chain (atom → Steam logs → appmanifest → window
+  title → /proc), so a Steam update is a config change, not a rewrite.
+- CEF remote debugging is the most powerful channel and the only one that
+  has bricked Steam UIs; do not enable it.
+
+**C25 — Continuous reassertion, single reconcile function.** Steam re-takes
+its own atoms; hhd re-asserts on a 50ms tick and logs "Steam opened, hiding
+it". Never paired enter/exit handlers: OGUI has a live bug where the
+"disable overlay" branch writes 1 (the log says one thing, the write does
+another). Desired-state → observe → diff → apply, and read back what you
+wrote. (Matches C13/C16; our steam-input-guard's 6s enforcement loop was
+independently the same idea.)
+
+**C26 — Per-app lifecycle state machine with hysteresis.** STARTED / RUNNING
+/ MISSING_WINDOW / STOPPING / STOPPED, with the Steam wrapper's lifecycle
+tracked separately from the game's; "gone" needs 3+ consecutive missed
+checks plus a ~4s missing-window grace (OGUI's calibration; re-measure
+ours). Ignore windows under ~20x20px. Log the full state stack every
+transition.
+
+**C27 — Ownership hygiene bundle** (for stage 2, but shapes stage-1
+interfaces): every override gets a paired auto-release keyed to its
+subject vanishing; save-and-restore any foreign state stomped (sticky
+cache against transient zero reads); clear input state whenever taking
+ownership (stuck-button fix); release in `finally` on every teardown path;
+ecosystem-wide exactly ONE grabber may exist (HandyGCCS vs hhd vs
+steam-patch all broke on this — the industry converged on a single arbiter
+daemon, which is what couchd becomes). Chord timing to Steam: ~80ms between
+events, reversed release order, ~350ms XTEST holds, first synthetic send
+after connect may drop.
+
+**C28 — Supervision bundle**: child readiness is a message with a deadline
+(5s), never a sleep; crash-loop detector with hysteresis (ChimeraOS: 5
+failures under 60s → explicit recover() then rearm) where recover() falls
+back to the mode that can't fail the same way (Kodi-only, pad released,
+nothing frozen); rate-limit restarts (≥5s); teardown deadline + audit (kill,
+wait 5s, kill -9 survivors, log ps for each unexpected one); single
+instance via flock on a held fd, not a pidfile; systemd user unit with
+BindsTo=graphical-session.target, KillMode=mixed.
+
+**C29 — Tag at spawn, discover by tag** (stage-2 upgrade path for
+game-pids): inject a COUCHD_ID env var into everything couchd launches and
+find trees by scanning /proc/*/environ, plus PR_SET_CHILD_SUBREAPER on the
+launcher so Proton orphans reparent to us — the documented fix for exactly
+our Proton-suspend class of bug. Freeze leaves-inward (reversed pstree),
+signalling both process group and pid.
+
+**C30 — The control socket is a privilege-escalation primitive.**
+InputPlumber shipped a root D-Bus API with no authorization at all
+(CVE-2025-66005), then with the Polkit check compiled out by default plus a
+TOCTOU race (CVE-2025-14338). couchd's socket can inject input and
+STOP/KILL processes: unix socket with 0700 dir + SO_PEERCRED uid check from
+the first commit, no path-taking methods (fd-passing or fixed paths only),
+systemd hardening directives on the unit. Split read-only /status from
+mutating calls (steamos-manager's public/private split), and a
+feature-discovery call so clients probe rather than assume.
+
+**C31 — Strangler seams**: a small fixed set of no-op-by-default hooks
+(recover/post_start/post_shutdown) is how the four scripts become couchd's
+actuators; /tmp flags stay only as deferred-intent tokens; couchd has an
+explicit not-the-owner mode (OGUI's should_manage_overlay) — which is what
+shadow mode is.
+
+Sources: evlaV/steamos-manager; ChimeraOS gamescope-session-plus +
+sessions.d/steam + os-session-select; ShadowBlip InputPlumber (D-Bus XML,
+composite_device/mod.rs, SUSE CVE writeup security.opensuse.org 2026-01-09)
++ OpenGamepadUI (launch_manager.gd, reaper.gd, state_machine.gd,
+overlay_mode_input_manager.gd); hhd x11.py/base.py/faq.md; gamescope
+steamcompmgr.cpp atom registration; Alice Mikhaylenko libmanette/HID
+writeup; Valve steam-devices udev rules; on-box atom/log measurements
+(4 Aug 2026, Steam idle — STEAM_GAMES_RUNNING game-running re-test still
+owed).
 
 ### Architecture + runtime decision (researched; adopted constraints)
 
