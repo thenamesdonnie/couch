@@ -18,7 +18,7 @@ import pytest
 
 import gesture
 from gesture import (DOUBLE_TAP, DOUBLE_TAP_S, DOWN, HOLD, HOLD_RELEASE,
-                     HOLD_SECONDS, TAP, PressTracker)
+                     HOLD_SECONDS, LONG_HOLD, LONG_HOLD_S, TAP, PressTracker)
 
 TAP_LEN = 0.08          # a comfortable tap, well under the hold threshold
 K0 = 5000.0             # an arbitrary kernel epoch
@@ -181,6 +181,96 @@ def test_the_kernel_clock_is_what_the_window_is_measured_in():
     tr.feed(K0 + TAP_LEN + 0.2, 1, wall=K0 + 60)
     assert tr.double_armed is True
     assert tr.feed(K0 + TAP_LEN + 0.28, 0, wall=K0 + 60.1) == DOUBLE_TAP
+
+
+# =========================================================================
+# the long-hold tier
+#
+# The semantics, decided here and documented in gesture.py and in the
+# settings page's own help text: the HOLD fires at 0.9s exactly as it always
+# has, and a long hold is only reachable with the hold bound to Nothing. One
+# press cannot be both, and dropping the shadowed binding with a warning
+# beats double-firing (gestureconf.suppress owns that rule; the tracker below
+# is honest about the arithmetic either way).
+# =========================================================================
+def test_the_tier_is_off_unless_asked_for():
+    """Every existing caller - couchd's PadObserver, inputproc - constructs a
+    tracker without it and must never be handed a LONG_HOLD it cannot read."""
+    tr = PressTracker()
+    assert tr.long_hold_seconds is None
+    tr.feed(K0, 1, wall=K0)
+    assert tr.poll(wall=K0 + HOLD_SECONDS + 1e-6) == HOLD
+    for extra in (LONG_HOLD_S, LONG_HOLD_S + 5, LONG_HOLD_S + 60):
+        assert tr.poll(wall=K0 + extra) is None, 'no third tier was asked for'
+
+
+def test_the_default_long_threshold():
+    assert LONG_HOLD_S == 3.0
+    assert gesture.long_hold_reached(True, K0, K0 + 2.999) is False
+    assert gesture.long_hold_reached(True, K0, K0 + LONG_HOLD_S) is True
+    assert gesture.long_hold_reached(False, K0, K0 + 99) is False
+    assert gesture.long_hold_reached(True, None, K0 + 99) is False
+
+
+def test_hold_fires_at_09_and_the_long_hold_at_30_each_once():
+    tr = PressTracker(long_hold_seconds=LONG_HOLD_S)
+    tr.feed(K0, 1, wall=K0)
+    assert tr.poll(wall=K0 + 0.5) is None
+    assert tr.poll(wall=K0 + HOLD_SECONDS + 1e-6) == HOLD
+    assert tr.poll(wall=K0 + 1.5) is None, 'the hold does not repeat'
+    assert tr.poll(wall=K0 + LONG_HOLD_S + 1e-6) == LONG_HOLD
+    assert tr.poll(wall=K0 + 6.0) is None, 'nor does the long hold'
+    assert tr.feed(K0 + 6.0, 0, wall=K0 + 6.0) == HOLD_RELEASE
+
+
+def test_a_long_hold_release_is_never_a_tap_or_half_a_double():
+    """Even if the caller never polled the 0.9s threshold, a press that only
+    crossed the long one still ends as a hold, not a tap."""
+    tr = PressTracker(long_hold_seconds=LONG_HOLD_S)
+    tr.feed(K0, 1, wall=K0)
+    assert tr.poll(wall=K0 + LONG_HOLD_S + 1e-6) == HOLD, 'hold comes first'
+    assert tr.poll(wall=K0 + LONG_HOLD_S + 2e-6) == LONG_HOLD
+    assert tr.feed(K0 + 4.0, 0, wall=K0 + 4.0) == HOLD_RELEASE
+    assert tap(tr, K0 + 4.2) == TAP, 'the window was never armed'
+    assert tr.doubles == 0
+
+
+def test_the_next_press_starts_the_tiers_over():
+    tr = PressTracker(long_hold_seconds=LONG_HOLD_S)
+    tr.feed(K0, 1, wall=K0)
+    tr.poll(wall=K0 + HOLD_SECONDS + 1e-6)
+    tr.poll(wall=K0 + LONG_HOLD_S + 1e-6)
+    tr.feed(K0 + 4.0, 0, wall=K0 + 4.0)
+    assert (tr.hold_fired, tr.long_hold_fired) == (False, False)
+    k1 = K0 + 5.0
+    tr.feed(k1, 1, wall=k1)
+    assert tr.poll(wall=k1 + HOLD_SECONDS + 1e-6) == HOLD
+    assert tr.poll(wall=k1 + LONG_HOLD_S + 1e-6) == LONG_HOLD
+
+
+def test_reset_forgets_a_long_hold_in_flight():
+    tr = PressTracker(long_hold_seconds=LONG_HOLD_S)
+    tr.feed(K0, 1, wall=K0)
+    tr.poll(wall=K0 + LONG_HOLD_S + 1e-6)
+    tr.reset()
+    assert tr.long_hold_fired is False and tr.hold_fired is False
+
+
+def test_a_custom_long_threshold_is_honoured():
+    tr = PressTracker(long_hold_seconds=1.5)
+    tr.feed(K0, 1, wall=K0)
+    assert tr.poll(wall=K0 + HOLD_SECONDS + 1e-6) == HOLD
+    assert tr.poll(wall=K0 + 1.4) is None
+    assert tr.poll(wall=K0 + 1.5) == LONG_HOLD
+
+
+def test_the_long_hold_is_extrapolated_like_the_hold_is():
+    """A button held with no further kernel reports must still cross both
+    thresholds - the whole reason kernel_now extrapolates (R4)."""
+    tr = PressTracker(long_hold_seconds=LONG_HOLD_S)
+    tr.feed(K0, 1, wall=K0)          # the only event this press will produce
+    assert tr.poll(wall=K0 + 5.0) == HOLD
+    assert tr.poll(wall=K0 + 5.0) == LONG_HOLD
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 {
- "t": 1785883611.679854,
- "pid": 1383457,
- "uptime_s": 255.7,
+ "t": 1785885331.6590855,
+ "pid": 1425947,
+ "uptime_s": 156.5,
  "mode": "shadow",
  "attention": false,
  "regions": {
@@ -14,16 +14,16 @@
  },
  "games": {},
  "last_would_do": [
-  "would close_steam_menu steam [gesture:hold-release]",
-  "would show kodi [gesture:hold-release]",
-  "would route_pad kodi [gesture:hold-release]"
+  "would show_switcher tv [gesture:double-tap-switcher]",
+  "would show kodi [gesture:double-tap-switcher]",
+  "would show kodi [guard:wanted-window-not-on-top]"
  ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 24,
+   "events": 36,
    "detail": "0 node(s)",
-   "age_s": 1.2,
+   "age_s": 0.1,
    "stale": false
   },
   "flags": {
@@ -37,14 +37,14 @@
    "ok": true,
    "events": 0,
    "detail": "0 pid(s)",
-   "age_s": 4.9,
+   "age_s": 2.9,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 26,
-   "detail": "joystick=True window=10000",
-   "age_s": 5.0,
+   "events": 9,
+   "detail": "joystick=True window=12000",
+   "age_s": 8.9,
    "stale": false
   },
   "steam": {
@@ -63,32 +63,44 @@
   },
   "x11": {
    "ok": true,
-   "events": 24,
+   "events": 36,
    "detail": "top='Kodi'",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 83,
+  "obs": 85,
   "daemon": 1,
-  "transition": 32,
+  "transition": 38,
   "invariant": 1,
   "observer_blind": 1,
-  "agreement": 4,
-  "intent": 3
+  "intent": 16,
+  "agreement": 5
  },
- "passes": 399,
- "intents": 3,
+ "passes": 349,
+ "intents": 16,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 6,
+  "evdev": 9,
   "steam_guide_lines": 0,
-  "first_event_latency_s": 2.492
+  "first_event_latency_s": 2.924
  },
  "last_trigger": "",
  "resource_leaks": [
   "stale guard pidfile (pid 1375392)"
  ],
+ "bindings": {
+  "tap": "none",
+  "double_tap": "switcher",
+  "hold": "suspend_to_kodi",
+  "hold_release": "none",
+  "long_hold": "none"
+ },
+ "timings": {
+  "hold_seconds": 0.9,
+  "double_tap_seconds": 0.35,
+  "long_hold_seconds": 3.0
+ },
  "shadow_log": "/home/ds2000/couch/shadow/couchd-20260804.jsonl"
 }

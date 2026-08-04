@@ -20,9 +20,11 @@ from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
 from gesture import DOUBLE_TAP_S
+from gestureconf import ACTIONS, DEFAULT_BINDINGS
 from couchd import (GUARDS, HOLD_SECONDS, REGIONS, TRANSITIONS, UNKNOWN,
-                    Machine, check_invariants, make_obs, reconcile,
-                    resolve_appid, want_pad_owner, freeze_set_agreement)
+                    Machine, action_intents, check_invariants, make_obs,
+                    reconcile, resolve_appid, want_pad_owner,
+                    freeze_set_agreement)
 
 APPID = '367520'
 SESSION = {'launcher_pid': 111, 'mode': 'steam', 'appid': APPID,
@@ -379,6 +381,181 @@ def test_a_tap_that_resumes_a_paused_game_cannot_become_a_double():
     rig.observe()                                   # resume decided -> idle
     got = _tap(rig, k0 + 0.2, double_armed=True)
     assert not find(got, 'show_switcher')
+
+
+# =========================================================================
+# key bindings (the addon's settings page, read through gestureconf)
+#
+# ONE file feeds both stacks: the live watcher dispatches on it and the model
+# below decides its would-do from it, so after a rebind the shadow diff still
+# compares like with like instead of scoring the model against a console it
+# no longer describes. These tests bind gestures on Observed directly - the
+# real settings file belongs to Kodi and a test must never write to it.
+# =========================================================================
+def bind(**kw):
+    """A binding dict: the defaults, with the named gestures changed."""
+    b = dict(DEFAULT_BINDINGS)
+    b.update(kw)
+    return b
+
+
+def test_the_model_defaults_to_the_console_as_shipped():
+    o = make_obs()
+    assert o.bindings == DEFAULT_BINDINGS
+    assert o.binding('hold') == 'suspend_to_kodi'
+    assert o.binding('double_tap') == 'switcher'
+    assert (o.hold_seconds, o.double_tap_seconds, o.long_hold_seconds) == (
+        0.9, 0.35, 3.0)
+
+
+def test_rebinding_the_double_tap_changes_what_it_would_do():
+    """The exact thing the shadow diff would otherwise report as a T4."""
+    o = make_obs(regions={'gesture': 'double-tap'},
+                 bindings=bind(double_tap='power_menu'))
+    got = reconcile(o)
+    assert verbs(got) == [('show', 'power-menu')]
+    assert reasons(got) == ['gesture:ps-double-tap']
+    assert not find(got, 'show_switcher'), 'the switcher was unbound'
+
+
+def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 regions={'gesture': 'hold-fired', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'game'},
+                 top_name='Elden Ring', top_class='steam_app_367520',
+                 bindings=bind(hold='switcher', double_tap='none',
+                               hold_release='suspend_to_kodi'))
+    got = reconcile(o)
+    assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
+                          ('route_pad', 'kodi'), ('show', 'kodi'),
+                          ('close_steam_menu', 'steam'), ('show_switcher', 'tv')]
+    # not the hold's deferred handoff: a switcher hands off at once, exactly
+    # as the double-tap one always has
+    assert find(got, 'show_switcher')[0].reason == 'gesture:ps-hold-switcher'
+
+
+def test_a_hold_that_is_not_the_suspend_does_not_wait_for_a_handoff():
+    """Without this the region would sit in handoff-pending for the 4s
+    timeout waiting for a handoff nobody is going to emit, blocking repairs."""
+    rig = Rig(bindings=bind(hold='tv_toggle', double_tap='suspend_to_kodi'),
+              top_name='Thunar', top_class='Thunar').settle()
+    k0 = 20000.0
+    _press(rig, k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.0)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    assert verbs(got) == [('tv_toggle', 'tv')]
+    rig.observe(button_down=False, press_duration=1.2)
+    assert rig.machine.regions['gesture'] == 'idle', 'straight back to idle'
+
+
+def test_the_default_hold_still_defers_its_handoff_to_the_release():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
+    k0 = 20500.0
+    _press(rig, k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.0)
+    assert find(got, 'freeze') and not find(got, 'route_pad')
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    got = rig.observe(button_down=False, press_duration=1.2)
+    assert rig.machine.regions['gesture'] == 'handoff-pending'
+    assert find(got, 'route_pad', 'kodi')
+
+
+def test_a_bound_hold_release_fires_on_top_of_the_handoff():
+    o = make_obs(regions={'gesture': 'handoff-pending'},
+                 bindings=bind(hold_release='desktop'))
+    got = reconcile(o)
+    assert verbs(got) == [('route_pad', 'kodi'), ('show', 'kodi'),
+                          ('close_steam_menu', 'steam'), ('show', 'desktop')]
+    assert find(got, 'show', 'desktop')[0].reason == 'gesture:ps-hold-release'
+
+
+def test_a_bound_tap_fires_from_the_tap_wait_state():
+    o = make_obs(regions={'gesture': 'tap-wait'}, press_duration=0.08,
+                 bindings=bind(tap='power_menu', double_tap='none'))
+    got = reconcile(o)
+    assert verbs(got) == [('show', 'power-menu')]
+    assert reasons(got) == ['gesture:ps-tap']
+
+
+def test_a_long_press_that_lands_in_tap_wait_is_not_a_tap():
+    """With `hold` unbound a long press never leaves 'down' for 'hold-fired',
+    so it releases into 'tap-wait' - and must not fire the tap action there."""
+    o = make_obs(regions={'gesture': 'tap-wait'}, press_duration=5.0,
+                 bindings=bind(tap='power_menu', double_tap='none',
+                               hold='none', long_hold='suspend_to_kodi'))
+    assert reconcile(o) == []
+
+
+def test_the_default_tap_asks_for_nothing_at_all():
+    """tap=none is the shipped console: a no-op tap parks in tap-wait waiting
+    for a possible second press and decides nothing."""
+    assert reconcile(make_obs(regions={'gesture': 'tap-wait'},
+                              press_duration=0.08)) == []
+
+
+def test_the_long_hold_tier_is_only_reachable_with_the_hold_unbound():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              bindings=bind(hold='none', long_hold='quit_game',
+                            double_tap='suspend_to_kodi')).settle()
+    k0 = 21000.0
+    _press(rig, k0)
+    # past the 0.9s hold threshold: with the hold unbound nothing fires yet
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.5)
+    assert rig.machine.regions['gesture'] == 'down', 'still just a long press'
+    assert not got
+    got = rig.observe(button_down=True, down_since_k=k0,
+                      kernel_now=k0 + 3.0 + 1e-6)
+    assert rig.machine.regions['gesture'] == 'long-hold-fired'
+    quit_ = find(got, 'quit')
+    assert quit_ and quit_[0].reason == 'gesture:ps-long-hold'
+    assert quit_[0].args['pids'] == [200] and quit_[0].args['resolver']
+    rig.observe(button_down=False, press_duration=3.5)
+    assert rig.machine.regions['gesture'] == 'idle'
+
+
+def test_a_bound_hold_still_wins_the_press_from_the_long_hold():
+    """The documented semantics: the hold fires at 0.9 as today and the press
+    is spent. gestureconf drops a shadowed long_hold before it gets here, so
+    this is the belt-and-braces half of the same rule."""
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              bindings=bind(long_hold='quit_game')).settle()
+    k0 = 21500.0
+    _press(rig, k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 4.0)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    assert find(got, 'freeze') and not find(got, 'quit')
+
+
+def test_a_custom_hold_threshold_moves_the_boundary():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              hold_seconds=1.5).settle()
+    k0 = 22000.0
+    _press(rig, k0)
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.0)
+    assert rig.machine.regions['gesture'] == 'down', '1.0s is a tap at 1.5'
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.5 + 1e-6)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+
+
+def test_every_action_gestureconf_names_is_implemented_by_the_model():
+    """A binding the settings page offers and the model cannot decide would
+    be a gesture that silently does nothing on one side of the diff."""
+    o = make_obs(session=SESSION, pid_states={200: 'S'},
+                 regions={'gesture': 'double-tap', 'session': 'active'})
+    for action in ACTIONS:
+        got = action_intents(replace(o, bindings=bind(double_tap=action)),
+                             'double_tap', APPID, [200])
+        if action == 'none':
+            assert got == []
+        else:
+            assert got, f'{action} decides nothing'
+            assert all(i.reason.startswith('gesture:') for i in got)
+
+
+def test_quit_game_with_nothing_running_decides_nothing():
+    o = make_obs(regions={'gesture': 'double-tap'},
+                 bindings=bind(double_tap='quit_game'))
+    assert reconcile(o) == []
 
 
 def test_no_repair_intents_while_a_gesture_is_in_flight():

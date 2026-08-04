@@ -1,0 +1,171 @@
+# Kodi Media Center language file
+# Addon Name: Couch Switcher
+# Addon id: script.couch.switcher
+# Addon Provider: ds2000
+msgid ""
+msgstr ""
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en_GB\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+#########################################################################################################
+#: SETTINGS            320XX
+#########################################################################################################
+
+#: /resources/settings.xml
+msgctxt "#32000"
+msgid "Couch Switcher"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32001"
+msgid "Bindings"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32002"
+msgid "What each way of pressing the PS button does."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32003"
+msgid "PS button"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32010"
+msgid "Single tap"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32011"
+msgid "Double tap"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32012"
+msgid "Hold"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32013"
+msgid "Letting go after a hold"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32014"
+msgid "Long hold"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32020"
+msgid "Nothing"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32021"
+msgid "Pause the game and show Kodi"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32022"
+msgid "On-TV switcher"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32023"
+msgid "Steam menu"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32024"
+msgid "Kodi power menu"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32025"
+msgid "Save and quit the game"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32026"
+msgid "TV on / off"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32027"
+msgid "Show the desktop"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32030"
+msgid "Timing"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32031"
+msgid "How long each gesture takes. Sensible defaults; change one at a time."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32032"
+msgid "Thresholds"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32033"
+msgid "Hold time (seconds)"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32034"
+msgid "Double-tap window (seconds)"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32035"
+msgid "Long-hold time (seconds)"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32040"
+msgid "A quick press. While a game is paused a tap always resumes it, whatever is set here: that is the only way back into a paused game, so it is not a binding. Unavailable while Double tap is set, because every double tap would fire this on its way through."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32041"
+msgid "Two quick presses. The default opens the on-TV switcher: a list of the running game, Big Picture and the desktop, navigable with the stick."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32042"
+msgid "Holding the button for the hold time. The default pauses the running game and puts Kodi back on screen. Leave at least one gesture on this: it is the only way out of a game from the couch, and a settings file that binds it away everywhere is rejected and this is put back."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32043"
+msgid "Fires when the button comes back up after a hold, on top of whatever the hold itself did."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32044"
+msgid "Holding for the long-hold time. Only available with Hold set to Nothing: the hold fires first and the press is already spent, so with both set the long hold is ignored."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32045"
+msgid "How long the button must be down to count as a hold rather than a tap. Default 0.9."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32046"
+msgid "How long after letting go a second press still counts as a double tap. Default 0.35."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32047"
+msgid "How long the button must be down for a long hold. Must be longer than the hold time. Default 3.0."
+msgstr ""

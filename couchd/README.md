@@ -24,8 +24,12 @@ affects the console; nothing depends on it and nothing may be made to.
 | file | what it is |
 |---|---|
 | `couchd.py` | the daemon: observers, state machine, pure `reconcile()`, shadow output |
+| `gesture.py` | the PS-button arithmetic: thresholds, predicates, `PressTracker` |
+| `gestureconf.py` | the PS-button **key bindings**, read from Kodi's settings file |
 | `x11.py` | the read-only python-xlib adapter (the only X code; replaced in stage 4) |
 | `test_reconcile.py` | unit + Hypothesis tests for the pure model (no daemon, no I/O) |
+| `test_gesture.py` | the tap / double-tap / hold / long-hold arithmetic |
+| `test_gestureconf.py` | every failure path of the settings reader, and the safety rail |
 | `couchd.service` | the systemd user unit. **Not installed by the build** |
 
 Install (operator, when wanted):
@@ -37,6 +41,52 @@ Install (operator, when wanted):
 Run it in the foreground instead, for a look:
 
     ~/couch/couchd/.venv/bin/python ~/couch/couchd/couchd.py
+
+## Key bindings (Kodi > Add-ons > Program add-ons > Couch Switcher > Configure)
+
+What the PS button does is a **setting**, not a constant, and both stacks read
+the one file: `gestureconf.py` parses
+`~/.kodi/userdata/addon_data/script.couch.switcher/settings.xml`, the live
+watcher dispatches on it, and `reconcile()` decides its would-do from it. One
+file, two stacks, so a rebind moves them together and the shadow diff still
+compares like with like.
+
+Defaults, which are exactly the console as it shipped:
+
+| gesture | default action | what it does |
+|---|---|---|
+| `tap` | `none` | (a tap with a game **paused** always resumes it - see below) |
+| `double_tap` | `switcher` | the on-TV switcher dialog |
+| `hold` (0.9s) | `suspend_to_kodi` | freeze the game, hand the pad and the screen to Kodi |
+| `hold_release` | `none` | fires when the button comes back up after a hold |
+| `long_hold` (3.0s) | `none` | the third tier |
+
+Actions: `none`, `suspend_to_kodi`, `switcher`, `steam_menu`, `power_menu`,
+`quit_game`, `tv_toggle`, `desktop`. Timings: `hold_seconds` 0.9,
+`double_tap_seconds` 0.35, `long_hold_seconds` 3.0.
+
+Three rules that are not negotiable from the settings page:
+
+* **the safety rail** - at least one gesture must reach `suspend_to_kodi`. It
+  is the only way out of a running game from the couch, so a config that binds
+  it away everywhere is rejected *as a whole* and `hold` is forced back to it,
+  with a warning in `/tmp/couchd.log` and `/tmp/pad-home.log`.
+* **the hold beats the long hold** - the hold fires at 0.9s exactly as it
+  always has, and by then the press is spent. `long_hold` is therefore only
+  reachable with `hold` set to Nothing; bound together, the long hold is
+  dropped with a warning rather than double-firing.
+* **the double-tap beats the tap**, for the mirror reason: with both bound,
+  every double-tap would fire the tap action on its way through.
+
+**A tap that resumes a paused game is not a binding.** It is the recovery
+path - the only route back into a game this stack suspended - so binding it
+away would strand the paused game. It stays state logic above the dispatch, in
+the watcher and in the model's `tap-resume` state.
+
+Nothing raises: a missing, truncated, half-written or nonsense settings file
+degrades field by field to the defaults above and says so. The read is one
+`stat()` unless the file changed, so both loops poll it every iteration and a
+rebind lands within a tick - no restart, no reload signal.
 
 ## What it reads (all read-only)
 
@@ -81,12 +131,14 @@ Nothing else. The unit enforces it: `ProtectSystem=strict` with
   * `session` none | starting | active | orphaned | ending | unknown
   * `enforcement` none | kodi | game (couchd's model of a guard window)
   * `gesture` idle | down | hold-fired | handoff-pending | timed-out |
-    tap-resume | tap-wait | down-again | double-tap — the last three are the
-    double-tap switcher: a no-op tap parks in `tap-wait` for 0.35s
-    (`gesture.DOUBLE_TAP_S`), a second press inside that window is
+    tap-resume | tap-wait | down-again | double-tap | long-hold-fired — the
+    middle three are the double-tap switcher: a no-op tap parks in `tap-wait`
+    for 0.35s (`gesture.DOUBLE_TAP_S`), a second press inside that window is
     `down-again`, and its release — if it is a tap and not a hold — is
-    `double-tap`, which asks for the on-TV switcher. Nothing is delayed by
-    the wait: a tap's own action, if it had one, already fired from `down`.
+    `double-tap`, which asks for the on-TV switcher. `long-hold-fired` is the
+    third tier and is unreachable unless `hold` is bound to Nothing.
+* `bindings` / `timings` - what the PS button is bound to right now, straight
+  from the addon's settings page.
   * `pad` present | absent | unknown
 * `games` - appid → lifecycle (`LAUNCHING`/`RUNNING`/`FROZEN`/`MISSING_WINDOW`/
   `STOPPED`…), from Steam's ledger crossed with the process tree.
@@ -137,11 +189,21 @@ this box: ~2% of one core, ~38MB RSS.
 ## Tests
 
     cd ~/couch/couchd
-    .venv/bin/python -m pytest test_reconcile.py -q
+    .venv/bin/python -m pytest -q
 
-They exercise the pure model only - the audit's failure modes (orphaned
+`test_reconcile.py` exercises the pure model only - the audit's failure modes (orphaned
 session, stale flag, lost thaw, joystick drift, frozen game visible), the
 gesture boundary (0.8s is a tap, 0.9s is a hold), unknown-region suppression,
 the two pre-declared legacy bugs that couchd is supposed to get *right*, and a
 Hypothesis state machine driving random observation sequences through the real
-transition table asserting the named invariants after every step.
+transition table asserting the named invariants after every step. It also
+pins the bindings: that the defaults decide exactly what the console decided
+before the settings page existed, and that a rebound gesture changes the
+emitted intent on both sides of the diff.
+
+`test_gestureconf.py` is mostly failure paths - empty, truncated, non-XML and
+nonsense files, unknown actions, out-of-range timings - plus the safety rail
+and the two precedence rules. It also checks the addon's own
+`resources/settings.xml` against the module's vocabulary and its `strings.po`,
+so the page and the reader cannot drift apart. Nothing in it writes to
+`~/.kodi/userdata`; that path is Kodi's.

@@ -27,6 +27,25 @@ import time
 HOLD_SECONDS = 0.9        # PS held this long = "hold" (suspend/handoff)
 HANDOFF_TIMEOUT = 4.0     # release never came: hand over anyway (monotonic)
 
+# A THIRD tier above the hold, for a gesture that has to be hard to do by
+# accident (quit the game, TV off). It is opt-in in both senses:
+#
+#   * the tracker only watches for it when it is given a long_hold_seconds -
+#     PressTracker(..., long_hold_seconds=None), the default, behaves exactly
+#     as it did before this tier existed and poll() can never return
+#     LONG_HOLD, so couchd and inputproc are untouched until asked;
+#   * the POLICY (gestureconf.suppress) is that a long hold only fires when
+#     `hold` is bound to nothing. A press cannot be both a 0.9s hold and a
+#     3.0s long hold: the hold fires at 0.9 exactly as today and the press is
+#     spent from then on. Binding both is a mistake, not a chord, so the long
+#     hold is dropped with a warning rather than double-firing.
+#
+# The tracker itself is honest about both: if a caller does hand it a
+# long_hold_seconds AND lets the hold fire, poll() returns HOLD once and then
+# LONG_HOLD once. Deciding that the second one is unwanted is the config's
+# job, not the arithmetic's.
+LONG_HOLD_S = 3.0
+
 # Two taps this close together are ONE gesture (the on-TV switcher). Measured
 # release-to-next-press, not press-to-press, so a slow second tap can still
 # arrive inside the window. 0.35s sits above the ~0.25s a comfortable
@@ -72,6 +91,17 @@ def kernel_now(last_k, last_k_wall, wall=None):
 
 def hold_reached(button_down, down_since_k, k_now, threshold=HOLD_SECONDS):
     """0.9s measured between KERNEL timestamps (R4)."""
+    return bool(button_down and down_since_k is not None
+                and (k_now - down_since_k) >= threshold)
+
+
+def long_hold_reached(button_down, down_since_k, k_now, threshold=LONG_HOLD_S):
+    """The third tier: the same arithmetic as hold_reached, further out.
+
+    Kept as its own predicate rather than a second call with an argument so
+    the two thresholds read as two decisions in the callers, and so a test can
+    pin "0.9 is a hold, 3.0 is a long hold" against named functions.
+    """
     return bool(button_down and down_since_k is not None
                 and (k_now - down_since_k) >= threshold)
 
@@ -141,8 +171,9 @@ DOWN = 'down'
 TAP = 'tap'
 DOUBLE_TAP = 'double-tap'
 HOLD_RELEASE = 'hold-release'
-#: poll() outcome
+#: poll() outcomes
 HOLD = 'hold'
+LONG_HOLD = 'long-hold'   # only ever returned when long_hold_seconds is set
 
 
 class PressTracker:
@@ -157,9 +188,15 @@ class PressTracker:
     needs the moment the threshold is crossed, stage 2 does.
     """
 
-    def __init__(self, hold_seconds=HOLD_SECONDS, double_tap_s=DOUBLE_TAP_S):
+    def __init__(self, hold_seconds=HOLD_SECONDS, double_tap_s=DOUBLE_TAP_S,
+                 long_hold_seconds=None):
         self.hold_seconds = hold_seconds
         self.double_tap_s = double_tap_s
+        # None = the tier is off, which is the default: an existing caller
+        # (couchd's PadObserver, inputproc) can never be handed a LONG_HOLD it
+        # does not know what to do with.
+        self.long_hold_seconds = long_hold_seconds
+        self.long_hold_fired = False    # poll() already announced this one
         self.button_down = False
         self.down_since_k = None
         self.press_duration = None      # last COMPLETED press, seconds
@@ -203,6 +240,7 @@ class PressTracker:
             self.button_down = True
             self.down_since_k = k
             self.hold_fired = False
+            self.long_hold_fired = False
             self.presses += 1
             gap = (None if self.last_tap_ended_k is None
                    else k - self.last_tap_ended_k)
@@ -213,10 +251,11 @@ class PressTracker:
                 self.press_duration = k - self.down_since_k
                 self.press_ended_at = (time.monotonic() if mono is None
                                        else mono)
-            was_hold = self.hold_fired
+            was_hold = self.hold_fired or self.long_hold_fired
             self.button_down = False
             self.down_since_k = None
             self.hold_fired = False
+            self.long_hold_fired = False
             if was_hold or not is_tap(self.press_duration, self.hold_seconds):
                 # tap-then-hold: the hold wins, and it disarms the window too.
                 self.last_tap_ended_k = None
@@ -246,13 +285,25 @@ class PressTracker:
     def poll(self, wall=None):
         """Called on every loop iteration by the owner of the pad. Returns
         HOLD exactly once per press, the moment the kernel clock crosses the
-        threshold - including when no further events arrive at all."""
-        if self.hold_fired or not self.button_down:
+        threshold - including when no further events arrive at all.
+
+        With long_hold_seconds set it also returns LONG_HOLD exactly once, at
+        the further threshold. Both can fire in one press (HOLD first, then
+        LONG_HOLD); which of them the console ACTS on is gestureconf's
+        precedence rule, not this function's - see LONG_HOLD_S above.
+        """
+        if not self.button_down:
             return None
-        if hold_reached(self.button_down, self.down_since_k,
-                        self.kernel_now(wall), self.hold_seconds):
+        k = self.kernel_now(wall)
+        if not self.hold_fired and hold_reached(
+                self.button_down, self.down_since_k, k, self.hold_seconds):
             self.hold_fired = True
             return HOLD
+        if (self.long_hold_seconds is not None and not self.long_hold_fired
+                and long_hold_reached(self.button_down, self.down_since_k, k,
+                                      self.long_hold_seconds)):
+            self.long_hold_fired = True
+            return LONG_HOLD
         return None
 
     def held_for(self, wall=None):
@@ -267,5 +318,6 @@ class PressTracker:
         self.button_down = False
         self.down_since_k = None
         self.hold_fired = False
+        self.long_hold_fired = False
         self.last_tap_ended_k = None
         self.double_armed = False

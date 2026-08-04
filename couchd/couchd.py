@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 # and the stage-2 input process must decide tap-vs-hold identically or the
 # shadow corpus stops being comparable to what the owning process did.
 import gesture
+import gestureconf
 from gesture import HANDOFF_TIMEOUT, HOLD_SECONDS  # noqa: F401 (re-exported)
 
 HOME = os.path.expanduser('~')
@@ -194,6 +195,18 @@ class Observed:
     double_armed: bool = False             # this press began inside the
     #                                        double-tap window of the last tap
 
+    # The PS-button key bindings, as the addon's settings page left them.
+    # BOTH stacks read the same file through ~/couch/couchd/gestureconf.py -
+    # the live watcher dispatches on it, the model below decides its would-do
+    # from it - so a rebind moves them together and the shadow diff stays
+    # clean. Carrying it on Observed rather than reading the file from inside
+    # reconcile() keeps the model pure (C13) and lets a test bind a gesture
+    # without touching a path Kodi owns.
+    bindings: dict = field(default_factory=lambda: dict(gestureconf.DEFAULT_BINDINGS))
+    hold_seconds: float = HOLD_SECONDS
+    double_tap_seconds: float = gesture.DOUBLE_TAP_S
+    long_hold_seconds: float = gesture.LONG_HOLD_S
+
     # model state fed back in (maintained by Machine/daemon)
     regions: dict = field(default_factory=dict)
     region_since: dict = field(default_factory=dict)
@@ -232,6 +245,13 @@ class Observed:
     def steam_menu_open(self):
         return 'ClientUI' in (self.steam_route or '')
 
+    def binding(self, name):
+        """The effective action for one gesture. Defaults are the console's
+        behaviour as shipped, so an Observed built without bindings decides
+        exactly what it decided before the settings page existed."""
+        return (self.bindings or {}).get(
+            name, gestureconf.DEFAULT_BINDINGS.get(name, 'none'))
+
 
 def make_obs(**kw):
     """Terse constructor for tests and for the daemon: a quiescent, fully
@@ -247,6 +267,9 @@ def make_obs(**kw):
         pad_known=True, pad_present=True, button_down=False,
         down_since_k=None, kernel_now=1000.0, press_duration=None,
         press_ended_at=None, double_armed=False,
+        bindings=dict(gestureconf.DEFAULT_BINDINGS),
+        hold_seconds=HOLD_SECONDS, double_tap_seconds=gesture.DOUBLE_TAP_S,
+        long_hold_seconds=gesture.LONG_HOLD_S,
         regions={'input_ownership': 'kodi', 'foreground': 'kodi',
                  'session': 'none', 'enforcement': 'none',
                  'gesture': 'idle', 'pad': 'present'},
@@ -264,7 +287,7 @@ def make_obs(**kw):
 # =========================================================================
 VERBS = ('freeze', 'thaw', 'route_pad', 'show', 'close_steam_menu', 'set_flag',
          'clear_flag', 'dismiss', 'launch', 'quit', 'kill', 'iconify',
-         'request_tv_wake', 'show_switcher')
+         'request_tv_wake', 'show_switcher', 'tv_toggle')
 PID_VERBS = ('freeze', 'thaw', 'quit', 'kill')
 
 
@@ -335,12 +358,48 @@ def g_hold_reached(o):
     """0.9s measured between KERNEL timestamps (R4). kernel_now is anchored
     on the last kernel event and extrapolated with wall time for the gap, so
     a held button with no further reports still fires. The arithmetic itself
-    is gesture.py's, shared with the stage-2 input process (SR4)."""
-    return gesture.hold_reached(o.button_down, o.down_since_k, o.kernel_now)
+    is gesture.py's, shared with the stage-2 input process (SR4); the
+    threshold is the settings page's, defaulting to 0.9."""
+    return gesture.hold_reached(o.button_down, o.down_since_k, o.kernel_now,
+                                o.hold_seconds)
+
+
+def g_hold_fires(o):
+    """...and the hold is actually bound to something.
+
+    With `hold` set to Nothing the press must stay in 'down' long enough for
+    the long-hold tier to see it; parking it in 'hold-fired' with no action
+    would eat the press. Under the default bindings hold IS bound, so this is
+    g_hold_reached and the table below behaves exactly as it always has.
+    """
+    return o.binding('hold') != 'none' and g_hold_reached(o)
+
+
+def g_long_hold_fires(o):
+    """The third tier, and only ever reachable with `hold` unbound - see
+    gesture.LONG_HOLD_S and gestureconf.suppress for why the two cannot both
+    fire off one press. gestureconf already guarantees that pairing, so the
+    binding check here is belt and braces, not the rule."""
+    return (o.binding('long_hold') != 'none' and o.binding('hold') == 'none'
+            and gesture.long_hold_reached(o.button_down, o.down_since_k,
+                                          o.kernel_now, o.long_hold_seconds))
 
 
 def g_released(o):
     return not o.button_down
+
+
+def g_released_no_handoff(o):
+    """Released after a hold that was NOT the suspend.
+
+    The suspend defers giving Kodi the pad to the release (audit failure 4),
+    which is what 'handoff-pending' exists for. Any other bound hold action
+    has already done whatever it does, so the gesture is simply over; without
+    this the region would sit in 'handoff-pending' waiting for a handoff that
+    is never coming and block drift repairs for the 4s timeout. Always false
+    under the default bindings.
+    """
+    return not o.button_down and o.binding('hold') != 'suspend_to_kodi'
 
 
 def g_released_tap_resume(o):
@@ -368,7 +427,8 @@ def g_double_window_over(o):
     ABSENCE of an event, so there is no kernel timestamp to measure from. The
     decision that matters (released_double) stays kernel-exact.
     """
-    return gesture.double_tap_window_over(_since(o, 'gesture'))
+    return gesture.double_tap_window_over(_since(o, 'gesture'),
+                                          o.double_tap_seconds)
 
 
 def g_switcher_emitted(o):
@@ -496,7 +556,12 @@ TRANSITIONS = {
                   ('released', 'idle', 'pad-quiet')],
         'idle': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
                  ('button_down', 'down', 'ps-press')],
-        'down': [('hold_reached', 'hold-fired', 'ps-held-0.9s'),
+        # The hold is tried first, exactly as before; the long-hold tier below
+        # it is unreachable unless `hold` is bound to Nothing (g_hold_fires /
+        # g_long_hold_fires), so under the default bindings this list is the
+        # one it has always been.
+        'down': [('hold_fires', 'hold-fired', 'ps-held-0.9s'),
+                 ('long_hold_fires', 'long-hold-fired', 'ps-held-long'),
                  ('released_tap_resume', 'tap-resume', 'ps-tap-with-paused-game'),
                  ('released', 'tap-wait', 'ps-tap-noop')],
         # A tap that did nothing (no paused game to resume) is not final until
@@ -510,15 +575,21 @@ TRANSITIONS = {
         # Reachable ONLY from tap-wait, which is why a double-tap can never
         # follow a tap that resumed a paused game: that tap goes to
         # 'tap-resume' instead, and the resume owns the pad from there.
-        'down-again': [('hold_reached', 'hold-fired', 'ps-held-0.9s'),
+        'down-again': [('hold_fires', 'hold-fired', 'ps-held-0.9s'),
+                       ('long_hold_fires', 'long-hold-fired', 'ps-held-long'),
                        ('released_double', 'double-tap', 'ps-double-tap'),
                        ('released_tap_resume', 'tap-resume',
                         'ps-tap-with-paused-game'),
                        ('released', 'tap-wait', 'ps-tap-noop')],
         'double-tap': [('switcher_emitted', 'idle', 'switcher-decided'),
                        ('gesture_stale', 'idle', 'gesture-abandoned')],
-        'hold-fired': [('released', 'handoff-pending', 'ps-released-after-hold'),
+        'hold-fired': [('released_no_handoff', 'idle', 'hold-action-done'),
+                       ('released', 'handoff-pending', 'ps-released-after-hold'),
                        ('handoff_overdue', 'timed-out', 'release-never-came')],
+        # A long hold has no deferred half: whatever it was bound to fired at
+        # the threshold, so the release just ends the gesture.
+        'long-hold-fired': [('released', 'idle', 'ps-released-after-long-hold'),
+                            ('gesture_stale', 'idle', 'gesture-abandoned')],
         'handoff-pending': [('handoff_emitted', 'idle', 'handoff-decided'),
                             ('handoff_overdue', 'timed-out', 'release-never-came')],
         'timed-out': [('handoff_emitted', 'idle', 'handoff-decided'),
@@ -736,6 +807,176 @@ def _pred(effect, deadline):
     return {'effect': effect, 'deadline_s': deadline}
 
 
+# =========================================================================
+# pure model: the bound actions
+# =========================================================================
+# One gesture -> one reason tag, so a rebound gesture is legible in the log
+# and in the differ without decoding args. The two the console shipped with
+# ('gesture:ps-hold', 'gesture:ps-double-tap') keep their exact old spelling:
+# whitelists, the enforcement-window trigger below and the differ's own
+# triage all key off them.
+GESTURE_REASON = {
+    'tap': 'gesture:ps-tap',
+    'double_tap': 'gesture:ps-double-tap',
+    'hold': 'gesture:ps-hold',
+    'hold_release': 'gesture:ps-hold-release',
+    'long_hold': 'gesture:ps-long-hold',
+}
+
+
+def _suspend_intents(o, appid, running, reason, defer_handoff):
+    """`suspend_to_kodi`: freeze whatever is running and land on Kodi.
+
+    Exactly the sequence the hold has always emitted. `defer_handoff` is what
+    the hold needs and nothing else does: the pad must NOT move while the
+    button is still down (audit failure 4), so the route/show/guard half is
+    emitted from 'handoff-pending' on release instead. Any other gesture bound
+    to this action has no release to wait for and hands off at once, which is
+    what the double-tap switcher already did.
+    """
+    out = []
+    if running:
+        out.append(Intent(
+            'freeze', appid,
+            {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
+             'mode': o.session_mode},
+            reason, _pred('all game pids in state T', 5.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+        out.append(Intent(
+            'set_flag', 'suspended', {'value': appid},
+            reason, _pred('/tmp/game-suspended exists', 2.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+    elif o.session_mode == 'bigpicture' or o.regions.get('foreground') == 'bigpicture':
+        # R7(a) done RIGHT: record the suspend even though there is nothing to
+        # freeze, so the joystick repair below can never decide the pad belongs
+        # to an invisible Big Picture.
+        out.append(Intent(
+            'set_flag', 'suspended', {'value': 'bigpicture', 'pids': []},
+            reason + '-bigpicture', _pred('/tmp/game-suspended exists', 2.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+    else:
+        return []           # no live game, not Big Picture: nothing meaningful
+    if not defer_handoff:
+        out += _handoff_intents(reason)
+    return out
+
+
+def _handoff_intents(reason):
+    """Kodi gets the pad, the screen, and a guard window. The three of them
+    always travel together; the watcher's handoff_to_kodi() is this."""
+    return [
+        Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'}, reason,
+               _pred('input.enablejoystick true', 2.0),
+               requires=('gesture', 'input_ownership'), cooldown=3.0),
+        Intent('show', 'kodi', {'via': 'xlib-restack'}, reason,
+               _pred('top window is Kodi', 2.0),
+               requires=('gesture', 'foreground'), cooldown=3.0),
+        Intent('close_steam_menu', 'steam',
+               {'via': 'vpad-guide', 'window_s': GUARD_WINDOW}, reason,
+               _pred('steam menu not routed', 6.0),
+               requires=('gesture',), cooldown=3.0),
+    ]
+
+
+def _switcher_intents(o, appid, running, reason, switcher_reason):
+    """`switcher`: the on-TV dialog script.couch.switcher draws.
+
+    The dialog is Kodi's and has to be navigable with the stick, so anything
+    actually running is suspended FIRST - the whole suspend path, in the same
+    order - and only then is the dialog asked for. That order is what the
+    watcher does, so the differ sees the same sequence from both stacks.
+    """
+    out = []
+    handed = False
+    if o.session_present and running:
+        out.append(Intent(
+            'freeze', appid,
+            {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
+             'mode': o.session_mode},
+            reason, _pred('all game pids in state T', 5.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+        out.append(Intent(
+            'set_flag', 'suspended', {'value': appid},
+            reason, _pred('/tmp/game-suspended exists', 2.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+        handed = True
+    elif o.session_present and (o.session_mode == 'bigpicture'
+                                or o.regions.get('foreground') == 'bigpicture'):
+        out.append(Intent(
+            'set_flag', 'suspended', {'value': 'bigpicture', 'pids': []},
+            reason, _pred('/tmp/game-suspended exists', 2.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+        handed = True
+    if handed:
+        out += _handoff_intents(reason)
+    else:
+        # Nothing to suspend, but the dialog still needs a visible Kodi -
+        # including on the way back from the desktop, which is where this
+        # gesture is most useful.
+        out.append(Intent('show', 'kodi',
+                          {'via': 'xlib-restack', 'showing_desktop': 'off'},
+                          switcher_reason, _pred('top window is Kodi', 2.0),
+                          requires=('gesture', 'foreground'), cooldown=3.0))
+    out.append(Intent('show_switcher', 'tv',
+                      {'via': 'kodi-addon:script.couch.switcher',
+                       'suspended_first': handed},
+                      switcher_reason, _pred('Kodi select dialog open', 3.0),
+                      requires=('gesture',), cooldown=3.0))
+    return out
+
+
+def action_intents(o, gesture_name, appid, running, defer_handoff=False):
+    """One bound gesture -> the would-dos it asks for.
+
+    The whole binding dispatch is here, in the pure model, mirroring
+    pad-home-watcher's `act()` verb for verb. Anything gestureconf can name
+    must appear in both or the shadow diff is lying.
+    """
+    action = o.binding(gesture_name)
+    if action == 'none':
+        return []
+    reason = GESTURE_REASON.get(gesture_name, f'gesture:ps-{gesture_name}')
+    if action == 'suspend_to_kodi':
+        return _suspend_intents(o, appid, running, reason, defer_handoff)
+    if action == 'switcher':
+        switcher_reason = ('gesture:double-tap-switcher'
+                           if gesture_name == 'double_tap'
+                           else f'{reason}-switcher')
+        return _switcher_intents(o, appid, running, reason, switcher_reason)
+    if action == 'steam_menu':
+        # The same guide press steam-input-guard uses to CLOSE the menu; the
+        # button is a toggle, so opening it is the identical effect.
+        return [Intent('show', 'steam-menu', {'via': 'vpad-guide'}, reason,
+                       _pred('steam menu routed', 3.0),
+                       requires=('gesture',), cooldown=3.0)]
+    if action == 'power_menu':
+        return [Intent('show', 'power-menu',
+                       {'via': 'kodi-jsonrpc:GUI.ActivateWindow shutdownmenu'},
+                       reason, _pred('currentwindow == 10106', 3.0),
+                       requires=('gesture',), cooldown=3.0)]
+    if action == 'quit_game':
+        if not o.session_present:
+            return []       # nothing to quit; game-launch would no-op too
+        return [Intent('quit', appid or 'all',
+                       {'pids': running, 'resolver': PID_RESOLVER,
+                        'via': 'game-launch quit'},
+                       reason, _pred('no game pids left', 20.0),
+                       requires=('gesture', 'session'), cooldown=3.0)]
+    if action == 'tv_toggle':
+        return [Intent('tv_toggle', 'tv', {'via': 'tv toggle'}, reason,
+                       _pred('tv power state flipped', 15.0),
+                       requires=('gesture',), cooldown=3.0)]
+    if action == 'desktop':
+        # The couch server's own route, not a bare xfwm4 show-desktop: it
+        # suspends a running game on the way out, the same as the phone does.
+        return [Intent('show', 'desktop',
+                       {'via': 'couch-api:/api/windows/activate'}, reason,
+                       _pred('desktop showing', 5.0),
+                       requires=('gesture', 'foreground'), cooldown=3.0)]
+    return []               # an action gestureconf let through and we do not
+    #                         know: decide nothing rather than guess
+
+
 def reconcile(o):
     """PURE. observed -> [intent]. No event argument (C13), no I/O.
 
@@ -753,111 +994,55 @@ def reconcile(o):
     running = o.running_pids
 
     # -- 1. gestures ------------------------------------------------------
+    # Every gesture goes through the SAME binding dispatch the live watcher
+    # uses (action_intents above <-> pad-home-watcher's act()), reading the
+    # same file through gestureconf. One file, two stacks: after a rebind the
+    # shadow diff still compares like with like instead of scoring the model
+    # against a console it no longer describes.
+    #
+    # T5 note (pre-declared, and deliberately EMPTY): the switcher landed in
+    # BOTH stacks in the same change, so there is no whitelist entry to write
+    # - show_switcher must appear in both streams or it is a real T4. The one
+    # knowingly-different thing is timing, not decisions: couchd holds the
+    # gesture region in 'tap-wait' for DOUBLE_TAP_S after any no-op tap, and
+    # the "no repair while a gesture is in flight" invariant therefore
+    # suppresses drift repairs for that 350ms; the watcher has no such pause.
+    # A repair falling exactly in that window shows up as LEGACY-ONLY once and
+    # is gone by the next 10s reconcile - triage it T6 (same decision, later),
+    # never T4.
     if g == 'hold-fired':
-        if running:
-            out.append(Intent(
-                'freeze', appid,
-                {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
-                 'mode': o.session_mode},
-                'gesture:ps-hold',
-                _pred('all game pids in state T', 5.0),
-                requires=('gesture', 'session'), cooldown=3.0))
-            out.append(Intent(
-                'set_flag', 'suspended', {'value': appid},
-                'gesture:ps-hold', _pred('/tmp/game-suspended exists', 2.0),
-                requires=('gesture', 'session'), cooldown=3.0))
-        elif o.session_mode == 'bigpicture' or o.regions.get('foreground') == 'bigpicture':
-            # R7(a) done RIGHT: record the suspend even though there is
-            # nothing to freeze, so the joystick repair below can never
-            # decide the pad belongs to an invisible Big Picture.
-            out.append(Intent(
-                'set_flag', 'suspended', {'value': 'bigpicture', 'pids': []},
-                'gesture:ps-hold-bigpicture',
-                _pred('/tmp/game-suspended exists', 2.0),
-                requires=('gesture', 'session'), cooldown=3.0))
+        # defer_handoff: the pad must not move while the button is still down
+        # (audit failure 4). The other half is emitted from 'handoff-pending'.
+        out += action_intents(o, 'hold', appid, running, defer_handoff=True)
 
     if g in ('handoff-pending', 'timed-out'):
         reason = ('gesture:hold-release' if g == 'handoff-pending'
                   else 'gesture:hold-release-timeout')
-        out.append(Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'}, reason,
-                          _pred('input.enablejoystick true', 2.0),
-                          requires=('gesture', 'input_ownership'), cooldown=3.0))
-        out.append(Intent('show', 'kodi', {'via': 'xlib-restack'}, reason,
-                          _pred('top window is Kodi', 2.0),
-                          requires=('gesture', 'foreground'), cooldown=3.0))
-        out.append(Intent('close_steam_menu', 'steam',
-                          {'via': 'vpad-guide', 'window_s': GUARD_WINDOW}, reason,
-                          _pred('steam menu not routed', 6.0),
-                          requires=('gesture',), cooldown=3.0))
+        if o.binding('hold') == 'suspend_to_kodi':
+            out += _handoff_intents(reason)
+        # ...and whatever the release itself is bound to, on top. 'none' by
+        # default, so this line changes nothing until someone binds it.
+        out += action_intents(o, 'hold_release', appid, running)
+
+    if g == 'long-hold-fired':
+        out += action_intents(o, 'long_hold', appid, running)
 
     if g == 'double-tap':
-        # Two quick taps ask for the on-TV switcher (the Kodi select dialog
-        # script.couch.switcher draws). The dialog is Kodi's, and it has to be
-        # navigable with the stick, so anything actually running is suspended
-        # FIRST - the whole PS-hold path, in the same order - and only then is
-        # the dialog asked for. That order is what the watcher does, so the
-        # differ sees the same sequence from both stacks.
+        out += action_intents(o, 'double_tap', appid, running)
+
+    if g == 'tap-wait' and gesture.is_tap(o.press_duration, o.hold_seconds):
+        # A tap that did nothing else. gestureconf guarantees this is bound
+        # only when double_tap is not, so a real double-tap can never fire the
+        # tap action on its way through; with the default bindings (tap=none)
+        # nothing is emitted here at all. The tap that RESUMES a paused game
+        # is not this: it is state logic, in 'tap-resume' below.
         #
-        # T5 note (pre-declared, and deliberately EMPTY): unlike R7(a)/R7(b)
-        # this feature lands in BOTH stacks in the same change, so there is no
-        # whitelist entry to write - show_switcher must appear in both streams
-        # or it is a real T4. The one knowingly-different thing is timing, not
-        # decisions: couchd holds the gesture region in 'tap-wait' for
-        # DOUBLE_TAP_S after any no-op tap, and the "no repair while a gesture
-        # is in flight" invariant therefore suppresses drift repairs for that
-        # 350ms; the watcher has no such pause. A repair falling exactly in
-        # that window shows up as LEGACY-ONLY once and is gone by the next 10s
-        # reconcile - triage it T6 (same decision, later), never T4.
-        handed = False
-        if o.session_present and running:
-            out.append(Intent(
-                'freeze', appid,
-                {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
-                 'mode': o.session_mode},
-                'gesture:ps-double-tap',
-                _pred('all game pids in state T', 5.0),
-                requires=('gesture', 'session'), cooldown=3.0))
-            out.append(Intent(
-                'set_flag', 'suspended', {'value': appid},
-                'gesture:ps-double-tap', _pred('/tmp/game-suspended exists', 2.0),
-                requires=('gesture', 'session'), cooldown=3.0))
-            handed = True
-        elif o.session_present and (o.session_mode == 'bigpicture'
-                                    or o.regions.get('foreground') == 'bigpicture'):
-            out.append(Intent(
-                'set_flag', 'suspended', {'value': 'bigpicture', 'pids': []},
-                'gesture:ps-double-tap', _pred('/tmp/game-suspended exists', 2.0),
-                requires=('gesture', 'session'), cooldown=3.0))
-            handed = True
-        if handed:
-            out.append(Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'},
-                              'gesture:ps-double-tap',
-                              _pred('input.enablejoystick true', 2.0),
-                              requires=('gesture', 'input_ownership'), cooldown=3.0))
-            out.append(Intent('show', 'kodi', {'via': 'xlib-restack'},
-                              'gesture:ps-double-tap',
-                              _pred('top window is Kodi', 2.0),
-                              requires=('gesture', 'foreground'), cooldown=3.0))
-            out.append(Intent('close_steam_menu', 'steam',
-                              {'via': 'vpad-guide', 'window_s': GUARD_WINDOW},
-                              'gesture:ps-double-tap',
-                              _pred('steam menu not routed', 6.0),
-                              requires=('gesture',), cooldown=3.0))
-        else:
-            # Nothing to suspend, but the dialog still needs a visible Kodi -
-            # including on the way back from the desktop, which is where this
-            # gesture is most useful.
-            out.append(Intent('show', 'kodi',
-                              {'via': 'xlib-restack', 'showing_desktop': 'off'},
-                              'gesture:double-tap-switcher',
-                              _pred('top window is Kodi', 2.0),
-                              requires=('gesture', 'foreground'), cooldown=3.0))
-        out.append(Intent('show_switcher', 'tv',
-                          {'via': 'kodi-addon:script.couch.switcher',
-                           'suspended_first': handed},
-                          'gesture:double-tap-switcher',
-                          _pred('Kodi select dialog open', 3.0),
-                          requires=('gesture',), cooldown=3.0))
+        # The is_tap() re-check is not redundant. With `hold` bound to Nothing
+        # a long press never leaves 'down' for 'hold-fired', so it releases
+        # into 'tap-wait' like a tap does; the watcher measures the duration
+        # before it dispatches and this has to as well, or a five-second press
+        # would fire the tap action on one side of the diff only.
+        out += action_intents(o, 'tap', appid, running)
 
     if g == 'tap-resume':
         out.append(Intent('launch', appid,
@@ -2003,6 +2188,8 @@ class Couchd:
         self.owned = {'leaks': []}
         self._last_leaks = None
         self._press_channels = (0, 0)
+        self._conf_bindings = None      # last bindings said out loud
+        self._conf_warnings = None
         self.suppressed = 0
         self.violations = 0
         self.stop = None
@@ -2040,14 +2227,50 @@ class Couchd:
         # actually suspended something, which is exactly when the watcher
         # spawns steam-input-guard - the plain switcher (nothing running)
         # spawns no guard and so opens no window.
-        if intent.reason.startswith(('gesture:hold-release', 'gesture:ps-double-tap',
-                                     'transition:session-ended',
-                                     'reconcile:orphaned-session')):
+        # A rebound gesture that hands the pad to Kodi spawns a guard too, so
+        # the trigger keys off the handoff's own close_steam_menu rather than
+        # a list of reasons that would go stale on every new binding. Under
+        # the default bindings that intent only ever appears at hold-release
+        # and ps-double-tap, both of which are named below anyway, so this
+        # adds nothing to today's behaviour.
+        handoff = (intent.verb == 'close_steam_menu'
+                   and intent.reason.startswith('gesture:'))
+        if handoff or intent.reason.startswith(
+                ('gesture:hold-release', 'gesture:ps-double-tap',
+                 'transition:session-ended', 'reconcile:orphaned-session')):
             self.enforcement_target = 'kodi'
             self.enforcement_until = time.monotonic() + GUARD_WINDOW
         elif intent.reason in ('gesture:tap-resume', 'transition:session-started'):
             self.enforcement_target = 'game'
             self.enforcement_until = time.monotonic() + GUARD_WINDOW
+
+    # -- key bindings -----------------------------------------------------
+    def gesture_conf(self):
+        """The PS-button bindings, cached on the settings file's mtime.
+
+        Read-only, and outside ~/couch/shadow, so it does not widen what the
+        daemon writes; the unit's ReadWritePaths are unchanged. A warning is
+        said once per distinct set, not per pass - a rejected config (the
+        safety rail) must be visible in /tmp/couchd.log without drowning it.
+        """
+        conf = gestureconf.load()
+        if conf.warnings and conf.warnings != self._conf_warnings:
+            self._conf_warnings = conf.warnings
+            for w in conf.warnings:
+                say(f'bindings: {w}')
+            self.log.write({'kind': 'obs', 'source': 'bindings',
+                            'event': 'settings-warning',
+                            'warnings': list(conf.warnings),
+                            'bindings': dict(conf.bindings)})
+        if conf.bindings != self._conf_bindings:
+            self._conf_bindings = dict(conf.bindings)
+            say('bindings: ' + ', '.join(f'{k}={v}' for k, v in
+                                         conf.bindings.items()))
+            self.log.write({'kind': 'obs', 'source': 'bindings',
+                            'event': 'bindings-changed',
+                            'bindings': dict(conf.bindings),
+                            'timings': conf.timings})
+        return conf
 
     # -- observation assembly --------------------------------------------
     def observe(self, loop):
@@ -2060,6 +2283,7 @@ class Couchd:
         self.triggers.poll()
         xst = self.x11.poll(loop)
         pad_src = self.world.src('pad')
+        conf = self.gesture_conf()
         return Observed(
             now=time.time(), mono=time.monotonic(),
             flags_known=self.world.src('flags').ok,
@@ -2086,6 +2310,12 @@ class Couchd:
             press_duration=self.pad.press_duration,
             press_ended_at=self.pad.press_ended_at,
             double_armed=self.pad.double_armed,
+            # Re-read every pass; gestureconf.load() is a stat() unless the
+            # file changed, so a rebind takes effect on the next tick without
+            # a restart, exactly as it does in the watcher.
+            bindings=dict(conf.bindings), hold_seconds=conf.hold_seconds,
+            double_tap_seconds=conf.double_tap_seconds,
+            long_hold_seconds=conf.long_hold_seconds,
             regions=dict(self.machine.regions),
             region_since=dict(self.machine.since),
             games=dict(self.machine.games),
@@ -2203,6 +2433,12 @@ class Couchd:
                                if self.pad.first_event_latency else None)},
             'last_trigger': self.triggers.last,
             'resource_leaks': list(self.owned.get('leaks', ())),
+            # What the PS button is actually bound to right now, so the phone
+            # can show it without re-reading Kodi's addon_data itself.
+            'bindings': dict(o.bindings),
+            'timings': {'hold_seconds': o.hold_seconds,
+                        'double_tap_seconds': o.double_tap_seconds,
+                        'long_hold_seconds': o.long_hold_seconds},
             'shadow_log': os.path.join(SHADOW_DIR, f'couchd-{time.strftime("%Y%m%d")}.jsonl'),
         }
         write_atomic(os.path.join(SHADOW_DIR, 'status.json'),

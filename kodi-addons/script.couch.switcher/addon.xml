@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="script.couch.switcher" name="Couch Switcher" version="1.0.0" provider-name="ds2000">
+<addon id="script.couch.switcher" name="Couch Switcher" version="1.1.0" provider-name="ds2000">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
   </requires>
@@ -8,7 +8,12 @@
   </extension>
   <extension point="xbmc.addon.metadata">
     <summary>Switch between the game, Kodi and the desktop</summary>
-    <description>The on-TV window switcher. Double-tap the PS button and pick where the room should be looking: a running or paused game, Big Picture, or the desktop. Shares the couch server's state-aware switching, so leaving a game suspends it properly and returning resumes it.</description>
+    <description>The on-TV window switcher. Double-tap the PS button and pick where the room should be looking: a running or paused game, Big Picture, or the desktop. Shares the couch server's state-aware switching, so leaving a game suspends it properly and returning resumes it.
+
+Configure holds the PS-button key bindings: what a tap, a double tap, a hold, letting go after a hold and a long hold each do, plus the three timings behind them. The pad watcher and couchd both read the same file, so a rebind moves the whole console at once.</description>
+    <news>v1.1.0
+- Settings page: PS-button key bindings (tap, double tap, hold, hold release, long hold) and their timings.
+- At least one gesture always reaches "pause the game and show Kodi"; a config that binds it away everywhere is rejected and the hold is put back.</news>
     <platform>all</platform>
   </extension>
 </addon>

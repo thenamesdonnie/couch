@@ -35,6 +35,11 @@ TOLERANCE = {                       # seconds, per verb, +/- around the legacy e
     # streams or it is a real T4. The watcher fires the addon immediately
     # after its suspend, couchd emits the intent in the same pass.
     'show_switcher': 3.0,
+    # Only reachable from a non-default key binding (Couch Switcher >
+    # Configure). Both stacks decide it off the same gestureconf read, so it
+    # is diffable like everything else; the window is wide because the effect
+    # is a network dial to the TV that takes 6-8s from cold.
+    'tv_toggle': 15.0,
 }
 DEFAULT_TOLERANCE = 5.0
 # couchd emits ONE intent per (verb, subject, reason) per cooldown window, so legacy
