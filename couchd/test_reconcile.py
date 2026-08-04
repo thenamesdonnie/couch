@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""Unit + property tests for couchd's pure model.
+
+Everything here runs against reconcile() and the transition table only: no
+sockets, no X, no /tmp, no daemon. The audit's failure modes are the
+scenarios; the two pre-declared legacy bugs (R7) are tested as things couchd
+must do RIGHT, not as behaviour to copy.
+
+    .venv/bin/python -m pytest test_reconcile.py -q
+"""
+import os
+import sys
+from dataclasses import replace
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import pytest
+from hypothesis import HealthCheck, settings
+from hypothesis import strategies as st
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
+
+from couchd import (GUARDS, HOLD_SECONDS, REGIONS, TRANSITIONS, UNKNOWN,
+                    Machine, check_invariants, make_obs, reconcile,
+                    resolve_appid, want_pad_owner, freeze_set_agreement)
+
+APPID = '367520'
+SESSION = {'launcher_pid': 111, 'mode': 'steam', 'appid': APPID,
+           'raw': f'111 steam {APPID}'}
+BP_SESSION = {'launcher_pid': 222, 'mode': 'bigpicture', 'appid': None,
+              'raw': '222 bigpicture '}
+
+
+def verbs(intents):
+    return [(i.verb, i.subject) for i in intents]
+
+
+def reasons(intents):
+    return [i.reason for i in intents]
+
+
+def find(intents, verb, subject=None):
+    return [i for i in intents
+            if i.verb == verb and (subject is None or i.subject == subject)]
+
+
+class Rig:
+    """Drives the real Machine + reconcile over a sequence of observations,
+    exactly as the daemon's pass_once() does."""
+
+    def __init__(self, **world):
+        self.mono = 1000.0
+        self.machine = Machine(on_transition=self._log)
+        self.machine.since = {r: self.mono for r in REGIONS}
+        self.recent = {}
+        self.world = world
+        self.transitions = []
+        self.last = None
+
+    def _log(self, region, frm, to, reason):
+        self.transitions.append((region, frm, to, reason))
+
+    def observe(self, dt=0.2, **kw):
+        self.mono += dt
+        w = dict(self.world)
+        w.update(kw)
+        w.setdefault('kernel_now', self.mono)
+        o = make_obs(now=self.mono, mono=self.mono,
+                     regions=dict(self.machine.regions),
+                     region_since=dict(self.machine.since),
+                     games=dict(self.machine.games),
+                     recent=dict(self.recent), **w)
+        self.machine.step(o)
+        o = replace(o, regions=dict(self.machine.regions),
+                    games=dict(self.machine.games))
+        intents = reconcile(o)
+        assert not check_invariants(o, intents), check_invariants(o, intents)
+        for it in intents:
+            self.recent[it.key] = self.mono
+        self.last = o
+        return intents
+
+    def settle(self, passes=3, **kw):
+        """Let the regions converge on a static world, then forget what we
+        would have done, so a test sees only the decisions it provoked."""
+        for _ in range(passes):
+            self.observe(**kw)
+        self.recent.clear()
+        self.transitions.clear()
+        return self
+
+
+# =========================================================================
+# the transition table itself
+# =========================================================================
+def test_every_region_has_an_unknown_state():
+    for region in REGIONS:
+        assert UNKNOWN in TRANSITIONS[region], region
+
+
+def test_table_targets_and_guards_all_exist():
+    for region, states in TRANSITIONS.items():
+        for state, rules in states.items():
+            for guard, nxt, reason in rules:
+                assert guard in GUARDS, f'{region}.{state}: {guard}'
+                assert nxt in states or nxt == UNKNOWN, f'{region}.{state}->{nxt}'
+                assert reason and isinstance(reason, str)
+
+
+# =========================================================================
+# the audit's reconcile scenarios (failure modes 6-9)
+# =========================================================================
+def test_orphaned_session_is_reclaimed():
+    """Audit failure 8: launcher SIGKILLed, no game left, pad stranded."""
+    o = make_obs(session=SESSION, launcher_alive=False, pid_states={},
+                 joystick=False,
+                 regions={'session': 'orphaned', 'input_ownership': 'game'})
+    got = reconcile(o)
+    assert ('clear_flag', 'session') in verbs(got)
+    assert ('route_pad', 'kodi') in verbs(got)
+    assert ('show', 'kodi') in verbs(got)
+    assert all(r.startswith('reconcile:') for r in reasons(got))
+
+
+def test_stale_suspended_flag_is_removed():
+    """Audit failure 9: game killed externally, flag left behind."""
+    o = make_obs(suspended=APPID, pid_states={},
+                 regions={'session': 'none'})
+    got = find(reconcile(o), 'clear_flag', 'suspended')
+    assert got and got[0].reason == 'reconcile:stale-suspended-flag'
+
+
+def test_lost_thaw_is_repaired_with_the_pid_set():
+    """Audit failure 6: everything frozen, no paused flag."""
+    o = make_obs(session=SESSION, suspended=None,
+                 pid_states={200: 'T', 201: 'T'}, joystick=False,
+                 regions={'session': 'active', 'input_ownership': 'game'})
+    got = find(reconcile(o), 'thaw')
+    assert got, verbs(reconcile(o))
+    assert got[0].args['pids'] == [200, 201]
+    assert got[0].args['resolver']
+    assert got[0].subject == APPID
+
+
+def test_joystick_drift_is_corrected():
+    """Audit failure 7: Kodi crash-restart reloads the wrong setting."""
+    o = make_obs(joystick=False, session=None,
+                 regions={'input_ownership': 'game', 'session': 'none'})
+    got = find(reconcile(o), 'route_pad', 'kodi')
+    assert got and got[0].reason == 'reconcile:joystick-setting-drift'
+    assert got[0].args['was'] is False
+
+
+def test_frozen_game_visible_raises_kodi():
+    """Audit failure 5: the room is looking at a stopped game."""
+    o = make_obs(suspended=APPID, pid_states={200: 'T'},
+                 top_name='Elden Ring', top_class='steam_app_367520',
+                 regions={'session': 'active', 'foreground': 'game'})
+    got = find(reconcile(o), 'show', 'kodi')
+    assert got
+    assert 'reconcile:frozen-game-visible' in reasons(got)
+
+
+def test_quiescent_world_wants_nothing():
+    assert reconcile(make_obs()) == []
+
+
+# =========================================================================
+# guard invariants (steam-input-guard), only inside an enforcement window
+# =========================================================================
+def test_guard_closes_steam_menu_only_inside_a_window():
+    world = dict(steam_route='OnFocusWindowChanged to window type: '
+                             'k_nGameIDControllerConfigs_ClientUI, AppID 769',
+                 focused_class='Kodi')
+    assert not find(reconcile(make_obs(**world)), 'close_steam_menu')
+    o = make_obs(regions={'enforcement': 'kodi'}, **world)
+    assert find(reconcile(o), 'close_steam_menu')
+
+
+def test_guard_raises_kodi_when_something_else_is_on_top():
+    o = make_obs(top_name='Steam', top_class='steamwebhelper',
+                 regions={'enforcement': 'kodi', 'foreground': 'other'})
+    got = find(reconcile(o), 'show', 'kodi')
+    assert got and got[0].args['invariant'] == 2
+
+
+def test_guard_thaw_repair_carries_pids():
+    o = make_obs(session=SESSION, pid_states={5: 'T', 6: 'T'}, joystick=False,
+                 regions={'enforcement': 'game', 'session': 'active',
+                          'input_ownership': 'game'})
+    got = find(reconcile(o), 'thaw')
+    assert got and got[0].args['pids'] == [5, 6]
+
+
+# =========================================================================
+# gestures (pad-home-watcher), driven through the real state machine
+# =========================================================================
+def _press(rig, k0):
+    return rig.observe(button_down=True, down_since_k=k0, kernel_now=k0)
+
+
+def test_hold_freezes_then_hands_off_on_release():
+    rig = Rig(session=SESSION, pid_states={200: 'S', 201: 'S'}, joystick=False,
+              top_name='Elden Ring', top_class='steam_app_367520').settle()
+    k0 = 5000.0
+    assert not _press(rig, k0)                       # gesture: idle -> down
+    assert rig.machine.regions['gesture'] == 'down'
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    freeze = find(got, 'freeze')
+    assert freeze and freeze[0].args['pids'] == [200, 201]
+    assert find(got, 'set_flag', 'suspended')
+    # the pad must NOT move while the button is still down (audit failure 4)
+    assert not find(got, 'route_pad')
+    got = rig.observe(button_down=False, press_duration=1.1)
+    assert rig.machine.regions['gesture'] == 'handoff-pending'
+    assert find(got, 'route_pad', 'kodi')
+    assert find(got, 'show', 'kodi')
+    assert find(got, 'close_steam_menu')
+    rig.observe()
+    assert rig.machine.regions['gesture'] == 'idle'
+
+
+def test_tap_with_a_paused_game_resumes_it():
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    k0 = 6000.0
+    _press(rig, k0)
+    got = rig.observe(button_down=False, press_duration=0.3)
+    launch = find(got, 'launch')
+    assert launch and launch[0].args['mode'] == 'resume'
+    assert launch[0].subject == APPID
+    assert not find(got, 'freeze')
+
+
+def test_08_second_press_is_a_tap_and_09_is_a_hold():
+    """The boundary is 0.9s of KERNEL time, both sides of it."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    k0 = 7000.0
+    _press(rig, k0)
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.8)
+    assert rig.machine.regions['gesture'] == 'down'          # not yet a hold
+    got = rig.observe(button_down=False, press_duration=0.8)
+    assert find(got, 'launch'), 'a 0.8s press is a tap'
+
+    rig2 = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
+    k1 = 8000.0
+    _press(rig2, k1)
+    # +1us: 8000.0 + 0.9 lands a fraction BELOW the threshold in binary
+    # floating point, and the comparison is >=, exactly as in the watcher.
+    got = rig2.observe(button_down=True, down_since_k=k1,
+                       kernel_now=k1 + HOLD_SECONDS + 1e-6)
+    assert rig2.machine.regions['gesture'] == 'hold-fired'
+    assert find(got, 'freeze'), 'a 0.9s press is a hold'
+
+
+def test_release_that_never_comes_times_out_into_the_handoff():
+    """The watcher's 4s safety net: hand the pad over rather than strand it."""
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
+    k0 = 9000.0
+    _press(rig, k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.0)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    assert find(got, 'freeze')
+    # button still down 5s later and no further kernel events: time it out
+    got = rig.observe(dt=5.0, button_down=True, down_since_k=k0,
+                      kernel_now=k0 + 6.0)
+    assert rig.machine.regions['gesture'] == 'timed-out'
+    handoff = find(got, 'route_pad', 'kodi')
+    assert handoff and handoff[0].reason == 'gesture:hold-release-timeout'
+
+
+def test_pad_dying_mid_hold_still_hands_the_pad_back():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
+    k0 = 9200.0
+    _press(rig, k0)
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.0)
+    got = rig.observe(dt=0.2, pad_present=False, button_down=False)
+    assert rig.machine.regions['gesture'] == 'handoff-pending'
+    assert find(got, 'route_pad', 'kodi')
+
+
+def test_no_repair_intents_while_a_gesture_is_in_flight():
+    """Reconciling mid-press is how Kodi gets a phantom held button."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={},
+              joystick=False).settle()
+    k0 = 9500.0
+    got = _press(rig, k0)
+    assert rig.machine.regions['gesture'] == 'down'
+    assert not [i for i in got if i.reason.startswith('reconcile:')]
+    # the same world with the button up does want repairs
+    rig2 = Rig(session=SESSION, suspended=APPID, pid_states={},
+               joystick=False).settle()
+    got2 = rig2.observe()
+    assert [i for i in got2 if i.reason.startswith('reconcile:')]
+
+
+# =========================================================================
+# unknown-region suppression (R4)
+# =========================================================================
+def test_kodi_down_suppresses_pad_routing_but_not_flag_repairs():
+    o = make_obs(kodi_known=False, joystick=None, suspended=APPID,
+                 pid_states={}, regions={'input_ownership': UNKNOWN,
+                                         'session': 'none'})
+    got = reconcile(o)
+    assert not find(got, 'route_pad')
+    assert find(got, 'clear_flag', 'suspended')
+
+
+def test_x_down_suppresses_window_intents():
+    o = make_obs(x_known=False, top_name='', top_class='', suspended=APPID,
+                 pid_states={200: 'T'},
+                 regions={'foreground': UNKNOWN, 'session': 'active'})
+    assert not find(reconcile(o), 'show')
+
+
+def test_unknown_pad_suppresses_gesture_intents():
+    o = make_obs(pad_known=False, session=SESSION, pid_states={200: 'S'},
+                 joystick=False,
+                 regions={'gesture': UNKNOWN, 'pad': UNKNOWN,
+                          'session': 'active', 'input_ownership': 'game'})
+    assert not find(reconcile(o), 'freeze')
+
+
+def test_unknown_regions_are_reachable_when_a_source_goes_blind():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
+    rig.observe(kodi_known=False, joystick=None)
+    assert rig.machine.regions['input_ownership'] == UNKNOWN
+    rig.observe(x_known=False)
+    assert rig.machine.regions['foreground'] == UNKNOWN
+    rig.observe(flags_known=False)
+    assert rig.machine.regions['session'] == UNKNOWN
+
+
+# =========================================================================
+# R7: the two pre-declared legacy bugs, done RIGHT
+# =========================================================================
+def test_r7a_big_picture_hold_records_the_suspend():
+    """Legacy freeze_game() writes /tmp/game-suspended only inside `if
+    pids:`, so a pure Big Picture hold leaves no flag and reconcile takes the
+    pad off Kodi ~10s later - routed to nobody. couchd records it."""
+    rig = Rig(session=BP_SESSION, pid_states={}, joystick=False,
+              big_picture_window=True, top_name='Big Picture Mode',
+              top_class='steamwebhelper').settle()
+    k0 = 10000.0
+    _press(rig, k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 1.0)
+    flag = find(got, 'set_flag', 'suspended')
+    assert flag and flag[0].args['value'] == 'bigpicture'
+    assert not find(got, 'freeze'), 'nothing to freeze in pure Big Picture'
+
+
+def test_r7a_pad_is_never_routed_to_an_invisible_big_picture():
+    """The other half of the bug: session present, nothing frozen, nothing
+    running, Kodi on screen. Legacy's `want = not (session and not
+    suspended)` says the pad belongs to the game. couchd asks what is
+    actually in front of the room."""
+    o = make_obs(session=BP_SESSION, suspended=None, pid_states={},
+                 joystick=True, top_name='Kodi', top_class='Kodi',
+                 big_picture_window=True,
+                 regions={'session': 'active', 'input_ownership': 'kodi',
+                          'foreground': 'kodi'})
+    assert want_pad_owner(o) == 'kodi'
+    assert not find(reconcile(o), 'route_pad', 'game')
+
+
+def test_r7b_a_game_launched_inside_big_picture_keeps_its_real_appid():
+    """Legacy records appid as the literal string "bigpicture", so that
+    game's own Kodi tile CLOSES it instead of resuming. Steam's ledger knows
+    better, and couchd asks the ledger."""
+    o = make_obs(session=BP_SESSION, suspended='bigpicture',
+                 pid_states={200: 'T', 201: 'T'},
+                 ledger={APPID: (200, 201)}, games={APPID: 'FROZEN'},
+                 joystick=True,
+                 regions={'session': 'active', 'gesture': 'tap-resume'})
+    assert resolve_appid(o) == APPID
+    got = reconcile(o)
+    launch = find(got, 'launch')
+    assert launch and launch[0].subject == APPID
+    assert launch[0].args['mode'] == 'resume'
+    assert launch[0].args['suspended_flag'] == 'bigpicture'
+    assert not find(got, 'quit') and not find(got, 'kill')
+
+
+def test_r7b_freeze_subject_is_the_ledger_appid_too():
+    o = make_obs(session=BP_SESSION, pid_states={200: 'S'},
+                 ledger={APPID: (200,)}, games={APPID: 'RUNNING'},
+                 joystick=False,
+                 regions={'session': 'active', 'gesture': 'hold-fired',
+                          'input_ownership': 'game'})
+    freeze = find(reconcile(o), 'freeze')
+    assert freeze and freeze[0].subject == APPID
+
+
+# =========================================================================
+# transitions, agreement metric, convergence
+# =========================================================================
+def test_session_start_and_end_produce_the_transition_intents():
+    rig = Rig().settle()
+    got = rig.observe(session=SESSION, pid_states={}, joystick=False)
+    assert rig.machine.regions['session'] == 'starting'
+    assert find(got, 'route_pad', 'game')
+    assert find(got, 'show')
+    assert find(got, 'request_tv_wake')
+    rig.observe(session=SESSION, pid_states={200: 'S'}, joystick=False)
+    assert rig.machine.regions['session'] == 'active'
+    got = rig.observe(session=None, pid_states={}, joystick=True)
+    assert rig.machine.regions['session'] == 'ending'
+    assert find(got, 'route_pad', 'kodi')
+
+
+def test_freeze_set_agreement_flags_a_proton_style_miss():
+    o = make_obs(pid_states={1: 'S', 2: 'S'})
+    ok = freeze_set_agreement(o, ledger_pids={1, 2}, tree_pids={1, 2})
+    assert ok['agree']
+    # the audit's failure 1 shape: the tree knows about a pid we would miss
+    bad = freeze_set_agreement(o, ledger_pids={1, 2, 3}, tree_pids={1, 2, 3})
+    assert not bad['agree'] and bad['tree_minus_couchd'] == [3]
+
+
+def test_repeated_reconcile_on_a_static_world_reaches_a_fixpoint():
+    o = make_obs(session=SESSION, suspended=None, pid_states={9: 'T'},
+                 joystick=False, top_class='steam_app_367520',
+                 regions={'session': 'active', 'input_ownership': 'game',
+                          'foreground': 'game'})
+    first = reconcile(o)
+    assert first
+    recent = {i.key: o.mono for i in first}
+    assert reconcile(replace(o, recent=recent)) == []
+
+
+# =========================================================================
+# the wire schema the differ (MVS-2) will read
+# =========================================================================
+def test_intent_records_match_the_shared_schema(tmp_path, monkeypatch):
+    import couchd
+    from couchd import RecordingExecutor, ShadowLog
+    # never let a test line into the real corpus's human log
+    monkeypatch.setattr(couchd, 'HUMAN_LOG', str(tmp_path / 'couchd.log'))
+    log = ShadowLog(directory=str(tmp_path), prefix='couchd')
+    ex = RecordingExecutor(log)
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 regions={'gesture': 'hold-fired', 'session': 'active',
+                          'input_ownership': 'game'})
+    intents = reconcile(o)
+    assert intents
+    for it in intents:
+        ex.execute(it, o)
+    log.close()
+    import json
+    recs = [json.loads(line) for line in
+            (tmp_path / f'couchd-{__import__("time").strftime("%Y%m%d")}.jsonl')
+            .read_text().splitlines()]
+    assert len(recs) == len(intents)
+    required = {'t', 'seq', 'mono', 'verb', 'subject', 'args', 'reason',
+                'regions', 'predict', 'kind'}
+    for r in recs:
+        assert required <= set(r), required - set(r)
+        assert r['kind'] == 'intent'
+        assert isinstance(r['t'], float) and isinstance(r['seq'], int)
+        assert isinstance(r['mono'], float)
+        assert r['predict'] is None or set(r['predict']) == {'effect', 'deadline_s'}
+        assert set(r['regions']) >= set(REGIONS)
+    assert [r['seq'] for r in recs] == sorted(r['seq'] for r in recs)
+    freeze = [r for r in recs if r['verb'] == 'freeze']
+    assert freeze and freeze[0]['args']['pids'] == [200]
+    assert freeze[0]['args']['resolver']
+
+
+# =========================================================================
+# stateful property testing (C20) - in-process, against the pure reconcile
+# =========================================================================
+class ConsoleModel(RuleBasedStateMachine):
+    """Random observation sequences, including impossible orderings, driven
+    straight into Machine+reconcile. Every step asserts the named invariants;
+    Hypothesis hunts for the illegal cross-region combination."""
+
+    def __init__(self):
+        super().__init__()
+        self.mono = 1000.0
+        self.kernel = 5000.0
+        self.machine = Machine()
+        self.machine.since = {r: self.mono for r in REGIONS}
+        self.recent = {}
+        self.w = dict(session=None, suspended=None, pid_states={},
+                      joystick=True, launcher_alive=None,
+                      top_name='Kodi', top_class='Kodi', focused_class='Kodi',
+                      big_picture_window=False, steam_route='', ledger={},
+                      pad_known=True, pad_present=True, button_down=False,
+                      down_since_k=None, press_duration=None,
+                      flags_known=True, pids_known=True, kodi_known=True,
+                      x_known=True, steam_known=True, kodi_window=10000)
+        self.violations = []
+
+    # -- world mutations -------------------------------------------------
+    @rule(mode=st.sampled_from(['steam', 'bigpicture', 'shadps4']))
+    def start_session(self, mode):
+        self.w['session'] = {'launcher_pid': 111, 'mode': mode,
+                             'appid': APPID if mode == 'steam' else None,
+                             'raw': f'111 {mode}'}
+        self.w['launcher_alive'] = True
+
+    @rule()
+    def end_session(self):
+        self.w['session'] = None
+        self.w['launcher_alive'] = None
+
+    @rule()
+    def kill_launcher(self):
+        self.w['launcher_alive'] = False
+
+    @rule(n=st.integers(min_value=0, max_value=4))
+    def game_processes(self, n):
+        self.w['pid_states'] = {200 + i: 'S' for i in range(n)}
+        self.w['ledger'] = {APPID: tuple(self.w['pid_states'])} if n else {}
+
+    @rule()
+    def freeze_processes(self):
+        self.w['pid_states'] = {p: 'T' for p in self.w['pid_states']}
+
+    @rule(v=st.sampled_from([APPID, 'bigpicture', None]))
+    def set_suspended(self, v):
+        self.w['suspended'] = v
+
+    @rule(v=st.booleans())
+    def set_joystick(self, v):
+        self.w['joystick'] = v
+
+    @rule(top=st.sampled_from([('Kodi', 'Kodi'),
+                               ('Elden Ring', 'steam_app_367520'),
+                               ('Big Picture Mode', 'steamwebhelper'),
+                               ('Thunar', 'Thunar')]))
+    def set_top_window(self, top):
+        self.w['top_name'], self.w['top_class'] = top
+        self.w['big_picture_window'] = 'Big Picture' in top[0]
+
+    @rule(open_=st.booleans())
+    def steam_menu(self, open_):
+        self.w['steam_route'] = ('... ClientUI, AppID 769' if open_ else
+                                 '... Desktop, AppID 413080')
+
+    @rule()
+    def press(self):
+        self.kernel += 0.05
+        self.w['button_down'] = True
+        self.w['down_since_k'] = self.kernel
+
+    @rule(held=st.floats(min_value=0.0, max_value=3.0))
+    def release(self, held):
+        if self.w['down_since_k'] is not None:
+            self.w['press_duration'] = held
+        self.w['button_down'] = False
+        self.w['down_since_k'] = None
+        self.kernel += held
+
+    @rule()
+    def pad_gone(self):
+        self.w['pad_present'] = False
+        self.w['button_down'] = False
+        self.w['down_since_k'] = None
+
+    @rule()
+    def pad_back(self):
+        self.w['pad_present'] = True
+
+    @rule(source=st.sampled_from(['flags_known', 'pids_known', 'kodi_known',
+                                  'x_known', 'steam_known', 'pad_known']),
+          ok=st.booleans())
+    def observer_health(self, source, ok):
+        self.w[source] = ok
+        if source == 'kodi_known' and not ok:
+            self.w['joystick'] = None
+
+    @rule(dt=st.floats(min_value=0.05, max_value=12.0))
+    def tick(self, dt):
+        self.mono += dt
+        self.kernel += dt
+
+    # -- the pass under test ---------------------------------------------
+    def _pass(self):
+        self.mono += 0.2
+        w = dict(self.w)
+        if w['kodi_known'] and w['joystick'] is None:
+            w['joystick'] = True
+        o = make_obs(now=self.mono, mono=self.mono, kernel_now=self.kernel,
+                     regions=dict(self.machine.regions),
+                     region_since=dict(self.machine.since),
+                     games=dict(self.machine.games), recent=dict(self.recent),
+                     **w)
+        self.machine.step(o)
+        o = replace(o, regions=dict(self.machine.regions),
+                    games=dict(self.machine.games))
+        intents = reconcile(o)
+        for it in intents:
+            self.recent[it.key] = self.mono
+        return o, intents
+
+    @invariant()
+    def model_invariants_hold(self):
+        o, intents = self._pass()
+        bad = check_invariants(o, intents)
+        assert not bad, f'{bad} regions={o.regions}'
+        # named invariants, spelled out again at the property level
+        if o.regions['gesture'] != 'idle':
+            assert not [i for i in intents if i.reason.startswith('reconcile:')]
+        for i in intents:
+            for r in i.requires:
+                assert o.regions.get(r) != UNKNOWN
+            if i.verb in ('freeze', 'thaw', 'quit', 'kill'):
+                assert 'pids' in i.args and 'resolver' in i.args
+        # convergence: nothing new on an unchanged world
+        recent = dict(self.recent)
+        assert reconcile(replace(o, recent=recent)) == []
+
+
+TestConsoleModel = ConsoleModel.TestCase
+TestConsoleModel.settings = settings(
+    max_examples=60, stateful_step_count=40, deadline=None,
+    suppress_health_check=[HealthCheck.too_slow])
+
+
+if __name__ == '__main__':
+    raise SystemExit(pytest.main([__file__, '-q']))

@@ -1,0 +1,66 @@
+# couchd stage 1 - the shadow control plane. NOT INSTALLED by the build; the
+# operator copies it to ~/.config/systemd/user/ when they want it running.
+#
+#   cp ~/couch/couchd/couchd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user start couchd
+#
+# Rollback, always safe, never an error:  systemctl --user stop couchd
+#
+# No other unit may ever gain Requires=/After=couchd in stage 1 (R6): a down
+# shadow costs nothing, and nothing may come to depend on it.
+[Unit]
+Description=couchd (stage 1, shadow mode) - observes the console, decides nothing
+Documentation=file:%h/couch/docs/couchd-stage1-design.md
+# Dies with the graphical session it observes; never pulls it up.
+BindsTo=graphical-session.target
+After=graphical-session.target
+# Crash-loop policy lives in [Unit] (systemd moved these out of [Service]):
+# five failures inside five minutes and it stays down.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
+ExecStart=%h/couch/couchd/.venv/bin/python %h/couch/couchd/couchd.py
+WorkingDirectory=%h/couch/couchd
+# Credentials (Kodi) come from the environment, never from source.
+EnvironmentFile=-%h/couch/.env
+# A down shadow costs nothing; a looping one DoSes X and Kodi (R6).
+Restart=on-failure
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=15
+
+# Hardening. couchd is a reader, so it can afford to be locked down hard.
+NoNewPrivileges=yes
+# strict = the whole hierarchy read-only; the two ReadWritePaths below are the
+# only places couchd can write, which is the passivity claim made mechanical.
+ProtectSystem=strict
+ReadWritePaths=%h/couch/shadow /tmp
+# PrivateTmp MUST stay off: /tmp/game-session, /tmp/game-suspended,
+# /tmp/vpad.fifo and /tmp/steam-input-guard.pid are the shared truth it reads,
+# and /tmp/couchd.log is what the phone shows.
+PrivateTmp=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Talks to 127.0.0.1 only (Kodi JSON-RPC); opens no listening socket at all.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# It must never be the reason the box is slow next to a running game.
+Nice=5
+CPUWeight=20
+IOWeight=20
+MemoryMax=256M
+
+[Install]
+WantedBy=graphical-session.target
