@@ -4,33 +4,38 @@
 Runs forever (systemd user unit pad-record.service). Whenever a DualSense
 appears it opens the same nodes pad-home-watcher reads (the button/stick
 device; Motion and Touchpad are excluded, they never carry the events the
-state machine cares about) and streams every event to a file in
-~/couch/recordings/. When the pad goes away the file is closed, gzipped and
-summarised in /tmp/pad-record.log. Purely passive: the nodes are opened
-read-only and never grabbed, so Kodi/Steam/the watcher see the pad exactly
-as before.
+state machine cares about) and streams every event, gzip-compressed as it
+goes, to a file in ~/couch/recordings/. When the pad goes away the file is
+closed and summarised in /tmp/pad-record.log. Purely passive: the nodes are
+opened read-only and never grabbed, so Kodi/Steam/the watcher see the pad
+exactly as before.
 
 Alongside raw events it records the console state machine's context: the
-contents of /tmp/game-session and /tmp/game-suspended are polled about once
-a second and any change is written as a marker line. A replay then knows not
-just what the thumb did but what state the console was in when it did it.
+contents of /tmp/game-session and /tmp/game-suspended are checked every
+~100ms and any change is written as a marker line stamped with the flag
+file's own mtime (not the poll time), because the gesture decisions the
+replay must validate branch on flag state at button-release time.
 
-File format (one JSON value per line):
+Recordings older than RETAIN_DAYS are deleted when a new one starts.
+
+File format (one JSON value per line, in a .jsonl.gz):
   {"header": ..., "started": ..., "nodes": {...}}   first line
   [t, dev, type, code, value]                       an input_event; t is the
                                                     kernel's event timestamp
                                                     (float seconds), dev
                                                     indexes header nodes
-  {"t": ..., "marker": "game-session", "value": ...} a /tmp flag changed
+  {"t": <mtime|poll>, "marker": "game-session", "value": ...}  a flag changed
 EV_MSC (scancode chatter) is dropped; EV_KEY/EV_ABS/EV_SYN are kept so a
-replay can preserve report boundaries.
+replay can preserve report boundaries. The gzip stream is sync-flushed every
+~2s of quiet, so a hard kill loses at most the tail after the last flush.
 """
+import glob
+import gzip
 import json
 import os
 import re
 import select
 import struct
-import subprocess
 import time
 
 EVENT_FORMAT = 'llHHi'  # struct input_event on x86_64
@@ -44,6 +49,8 @@ FLAGS = ('/tmp/game-session', '/tmp/game-suspended')
 OUT_DIR = os.path.expanduser('~/couch/recordings')
 LOG = '/tmp/pad-record.log'
 SCAN_SECONDS = 2.0
+FLUSH_SECONDS = 2.0
+RETAIN_DAYS = 14
 
 
 def say(msg):
@@ -68,19 +75,34 @@ def find_pads():
 
 
 def read_flags():
+    """{name: (content-or-None, mtime-or-None)} for the two /tmp flags."""
     state = {}
     for path in FLAGS:
         try:
-            state[os.path.basename(path)] = open(path).read().strip()
+            content = open(path).read().strip()
+            mtime = os.stat(path).st_mtime
         except OSError:
-            state[os.path.basename(path)] = None
+            content, mtime = None, None
+        state[os.path.basename(path)] = (content, mtime)
     return state
+
+
+def prune_old():
+    cutoff = time.time() - RETAIN_DAYS * 86400
+    for path in glob.glob(os.path.join(OUT_DIR, 'pad-*.jsonl*')):
+        try:
+            if os.stat(path).st_mtime < cutoff:
+                os.remove(path)
+                say(f'pruned {os.path.basename(path)} (older than {RETAIN_DAYS}d)')
+        except OSError:
+            pass
 
 
 def record(nodes):
     """One recording: from these nodes appearing until every one is gone."""
+    prune_old()
     stamp = time.strftime('%Y%m%d-%H%M%S')
-    path = os.path.join(OUT_DIR, f'pad-{stamp}.jsonl')
+    path = os.path.join(OUT_DIR, f'pad-{stamp}.jsonl.gz')
     fds = {}   # fd -> dev index
     names = []
     for node, name in sorted(nodes.items()):
@@ -97,12 +119,16 @@ def record(nodes):
     flags = read_flags()
     events = 0
     started = time.time()
-    with open(path, 'w') as out:
+    dirty = False
+    last_flush = started
+    with gzip.open(path, 'wt') as out:
         out.write(json.dumps({'header': 1, 'started': stamp,
-                              'nodes': names, 'flags': flags}) + '\n')
+                              'nodes': names,
+                              'flags': {k: v[0] for k, v in flags.items()}})
+                  + '\n')
         say(f'recording {path} from {", ".join(n["node"] for n in names)}')
         while fds:
-            ready, _, _ = select.select(list(fds), [], [], 1.0)
+            ready, _, _ = select.select(list(fds), [], [], 0.1)
             for fd in ready:
                 try:
                     data = os.read(fd, EVENT_SIZE * 64)
@@ -121,19 +147,25 @@ def record(nodes):
                     out.write(json.dumps([round(sec + usec / 1e6, 6),
                                           fds[fd], etype, code, value]) + '\n')
                     events += 1
+                    dirty = True
             now_flags = read_flags()
-            for key, val in now_flags.items():
-                if val != flags[key]:
-                    out.write(json.dumps({'t': round(time.time(), 3),
-                                          'marker': key, 'value': val}) + '\n')
+            for key, (val, mtime) in now_flags.items():
+                if val != flags[key][0]:
+                    # Stamp with the flag file's own mtime so the marker
+                    # lines up with the button event that caused it, not
+                    # with our poll; deletion has no mtime, use now.
+                    out.write(json.dumps(
+                        {'t': round(mtime if mtime else time.time(), 3),
+                         'marker': key, 'value': val}) + '\n')
                     say(f'marker {key} -> {val!r}')
+                    dirty = True
             flags = now_flags
-            if not ready:
-                out.flush()
+            if dirty and time.time() - last_flush >= FLUSH_SECONDS:
+                out.flush()  # Z_SYNC_FLUSH: readable up to here on hard kill
+                last_flush = time.time()
+                dirty = False
 
-    subprocess.run(['gzip', '-f', path])
-    say(f'closed {path}.gz: {events} events over '
-        f'{time.time() - started:.0f}s')
+    say(f'closed {path}: {events} events over {time.time() - started:.0f}s')
 
 
 def main():

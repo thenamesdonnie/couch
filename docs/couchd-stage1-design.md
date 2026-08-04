@@ -1,8 +1,148 @@
 # couchd stage 1 — design note (shadow-mode control plane)
 
-Status: research complete (3 agents: prior art, shadow-migration
-methodology, daemon architecture/runtime), under adversarial review before
-code per charter discipline 6.
+Status: research complete; adversarial review done (2 independent Opus
+reviewers, correctness + practicality lenses). Constraints C1-C31 stand AS
+AMENDED by the rulings below — where a ruling contradicts a constraint's
+original text, the ruling wins.
+
+## Adversarial review rulings (binding)
+
+**R1 (was E1/blocker) — Stage 1 launches nothing.** C23 is an *interface*
+requirement only: the launch verb exists in the contract so launch can move
+behind couchd in stage 2 (env injection + subreaper); stage-1 couchd never
+starts Steam, games, or anything else. "Stage 1 = all passive" wins.
+
+**R2 — Minimal viable shadow replaces the full pipeline.** The old stack
+ALREADY LOGS ITS DECISIONS (game-launch "=== launch/quit/suspend/resume",
+watcher "PS held, freezing N processes of X" + every reconcile repair with
+reason, guard fix-lists) — the design's "legacy never announces decisions"
+premise was false. Legacy intent = parse the three logs (primary), effect
+observation demoted to corroboration. Build order: MVS-1 one-file shadow
+daemon (gestures + reconcile as pure functions, intents to
+~/couch/shadow/*.jsonl + human one-liners to /tmp/couchd.log); MVS-2
+offline tools/shadow-diff (time-sorted greedy match on (verb,subject) ±5s,
+three sections printed, hand-labeled T1-T6); MVS-3 replay once a real
+corpus exists. Cut entirely: C6's twin observer (degenerate here — floor
+defined instead as run-to-run variance of a repeated rig scenario), C8's
+21-point Nagios window (eyes-on-the-morning-diff at this volume; per-class
+"k=3-5 consecutive clean" instead), C1's process-mining alignment
+(~100-LOC greedy matcher), five-deep fallback chains (two sources each:
+best-measured + /proc-based terminal fallback; interface kept so more can
+be added when one actually breaks). C20 runs Hypothesis against the pure
+reconcile function in-process, NOT over a socket — no injection surface in
+stage 1. C28 trimmed to flock + restart policy (no children exist yet);
+C11's mid-action fallback becomes "flip COUCHD_OWNS off, legacy reconcile
+converges within a tick" (proven by audit).
+
+**R3 — Two prerequisites for the legacy logs as intent source:** say()
+gains sub-second timestamps, and each script emits one machine-readable
+JSONL line beside each human line; the guard additionally logs per-fix
+lines (its summary is end-of-window). These are log-only edits to the old
+stack (M9-safe) — the ONLY old-stack edits stage 1 is allowed.
+
+**R4 — Model amendments (correctness blockers 1,4-7,21):**
+- freeze/thaw/quit intents carry the RESOLVED PID SET + resolver name as
+  diffable args (verb-level diffing would have been blind to the audit's
+  Proton fix); plus a continuous freeze-set agreement metric (couchd's
+  would-freeze set vs game-pids vs gameprocess ledger, every tick, no
+  transition needed).
+- Verbs added: launch(app,mode), quit(scope), kill(pid-set),
+  iconify(window-class), request_tv_wake.
+- game region → dynamic map appid → per-app lifecycle (C26 states incl.
+  LAUNCHING/STOPPING), separate session region for the wrapper; two
+  concurrent games (A stopping, B starting) must be representable.
+- EVERY region gets `unknown`; intents for a region observed `unknown` are
+  suppressed (named invariant — covers Kodi-down windows).
+- New `gesture` region (idle|down|hold-fired|handoff-pending|timed-out) +
+  `pad` region; "no reconcile intents while gesture != idle" is a named
+  invariant; gesture arithmetic uses KERNEL event timestamps, not read
+  time (fixes a latent legacy flaw too).
+- New `enforcement` region (none|kodi(until t)|game(until t)) so guard
+  windows and supersede are modeled, not implementation detail.
+- Trigger channels ADDED to observation: couch server switcher log,
+  game-launch argv log line, Kodi addon launch line (without these, three
+  of four responsibilities produce unmatched legacy-only diffs forever).
+- Kodi observation adds GUI.GetProperties(currentwindow) +
+  Player.GetActivePlayers (power-menu dismiss + playback state).
+- tv region: stage 1 observes via tv-waker's state only, or drops the
+  region; values on|standby|wrong-input, not on|off.
+- Owned-resources invariant each tick (uinput nodes, vpad fifo, guard
+  pidfile, flags) — leak class of audit failure 10, checked in shadow.
+
+**R5 — Comparator amendments (blockers 8-10, sf 12,20,23):**
+- Happens-before assertions evaluated INDEPENDENTLY of tolerance windows
+  (route_pad after release edge; freeze before suspended-flag; pad-to-kodi
+  before focus): a match inside ±2s that violates ordering still gates.
+  Retain matched-offset distributions per verb; gate p95 against the
+  250ms perceptual bound.
+- C9 split: organic coverage (gestures, transitions) vs INJECTED coverage
+  (guard invariants, reconcile repairs — they fire ~never organically; the
+  audit's decoy-staging technique becomes a fault-injection rig, with
+  legacy repair loops briefly paused so couchd's would-do is first
+  responder). The 10-15 sessions are SHARED across responsibilities;
+  transition coverage is the unit.
+- Gate wording: raw diff rate vs noise floor; T4 bucket empty; others
+  reported not gating; T5 whitelist WRITTEN BEFORE first evening (initial
+  entries: gameprocess-ledger vs game-pids on transient reaper children;
+  no-launcher-pid orphan semantics; flag verbs absent from couchd's
+  stream; single-arbiter replaces guard supersede).
+- Comparator is versioned; every change re-runs against the archived
+  corpus of all previous evenings (corpus lives OFF /tmp and off the
+  retention rotation); the result delta is reviewed. C17 deadlines and C5
+  windows derive from ONE per-verb measured latency table.
+- Observer-health gate independent of diffing: staleness heartbeat per
+  source (a source silent N minutes invalidates the evening rather than
+  passing an empty comparison); tail Steam logs by (dev,ino,size) with a
+  loud observer-blind event on truncation; pad-appearance-to-first-event
+  latency tracked; PS presses cross-checked against controller_ui.txt
+  (independent hidraw channel). Canonical Steam log path chosen once
+  (resolve the ~/.steam/steam vs debian-installation symlink).
+
+**R6 — Operational amendments (B1-B3, C-list, E4-E5):**
+- Phone-readable from week one: human one-liners in /tmp/couchd.log
+  (same say() shape as the other scripts) + couch server proxies
+  /api/couchd/status; Screen tab shows three lines. Charter's
+  day-one-observable requirement, honored in stage 1 not "later".
+- Shadow unit: Restart=on-failure, RestartSec=10, StartLimitBurst=5,
+  StartLimitIntervalSec=300 — a down shadow costs nothing, a looping one
+  DoSes X/Kodi. No unit may ever gain Requires=/After=couchd in stage 1.
+- Supervisor loops ≥1s period, always; hhd's 50ms number belongs only to
+  the stage-2 input process. Kodi reads: subscribe to the 9090
+  notification socket (couch server already does), settings reads
+  rate-limited ≥10s; the anti-entropy tick NEVER drives Kodi read rate.
+  X: cache the window tree, refresh on PropertyNotify/ConfigureNotify;
+  banned in code: SubstructureRedirect, ResizeRedirect, XGrabServer.
+  Attention mode: observed change drops sampling to ≤200ms for a few
+  seconds (inotify on flags; X events), so faults are seen before legacy
+  repairs erase them (blocker 10).
+- game-pids stays a library call/in-process read, not a subprocess per
+  tick. Event log lives under ~/couch/shadow/ (NOT /tmp — tmpfiles wipes
+  at boot), bounded, with the corpus archived separately.
+- Audit cheat-sheet gains, the day the unit lands, as line 1:
+  `systemctl --user stop pad-record couchd` (return to 4 Aug-green).
+  Agents holding the box token may stop couchd; its absence is never an
+  error. M9 sweep extended: rigs pass with couchd running, stopped, AND
+  after a stop-start cycle (no residue: fds, X connection, files).
+- gitleaks re-runs at every commit that moves script logic into the repo
+  (the watcher hardcodes the Kodi password; couchd reads .env from its
+  first line). M7/M8 marked done for repo-init.
+
+**R7 — Pre-declared legacy bugs (T3 from evening one; do NOT "fix" the
+shadow to match them):** (a) pure Big Picture holds never write
+/tmp/game-suspended (freeze_game writes inside `if pids:`), so reconcile
+takes the pad off Kodi ~10s later — pad routed to nobody (log evidence
+17:19:25, 17:19:59); (b) games launched from inside Big Picture record
+appid as the literal string "bigpicture", so that game's own Kodi tile
+CLOSES it instead of resuming (log evidence 18:34:41). Both live today;
+couchd's model does it right and the diff will show legacy wrong. Fixing
+legacy is a separate decision for Donnie (they're on the handoff sheet).
+
+**R8 — Recorder fixes applied immediately** (before tonight's corpus):
+flag markers at ~100ms with mtime stamps; inline gzip with periodic sync
+flush; 14-day retention. A world-snapshot corpus (flags + pid states +
+joystick + top window, periodic JSONL) is recorded SEPARATELY for the
+reconcile responsibility — the pad recorder structurally can't cover it
+(it only runs while a pad is present; reconcile runs pad or no pad).
 
 ## Decisions (summary)
 
