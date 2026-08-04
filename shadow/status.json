@@ -1,7 +1,7 @@
 {
- "t": 1785881063.7493596,
+ "t": 1785881732.094301,
  "pid": 1278655,
- "uptime_s": 2056.7,
+ "uptime_s": 2725.1,
  "mode": "shadow",
  "attention": false,
  "regions": {
@@ -13,73 +13,79 @@
   "pad": "absent"
  },
  "games": {},
- "last_would_do": [],
+ "last_would_do": [
+  "would close_steam_menu steam [gesture:hold-release]",
+  "would show kodi [gesture:hold-release]",
+  "would route_pad kodi [gesture:hold-release]"
+ ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 0,
+   "events": 71,
    "detail": "0 node(s)",
-   "age_s": 0.3,
+   "age_s": 0.7,
    "stale": false
   },
   "flags": {
    "ok": true,
    "events": 5,
    "detail": "1 present",
-   "age_s": 0.1,
+   "age_s": 0.0,
    "stale": false
   },
   "pids": {
    "ok": true,
    "events": 0,
    "detail": "0 pid(s)",
-   "age_s": 0.0,
+   "age_s": 4.9,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 69,
+   "events": 92,
    "detail": "joystick=True window=10000",
-   "age_s": 0.1,
+   "age_s": 5.0,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 1,
+   "events": 4,
    "detail": "0 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 0,
-   "detail": "quiet",
+   "events": 2,
+   "detail": "quit (save and close)",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 0,
+   "events": 200,
    "detail": "top='Kodi'",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 77,
+  "obs": 139,
   "daemon": 1,
-  "transition": 6,
-  "invariant": 1
+  "transition": 34,
+  "invariant": 1,
+  "agreement": 4,
+  "intent": 9
  },
- "passes": 771,
- "intents": 0,
+ "passes": 1566,
+ "intents": 9,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 0,
-  "steam_guide_lines": 0,
-  "first_event_latency_s": null
+  "evdev": 6,
+  "steam_guide_lines": 5,
+  "first_event_latency_s": 22.766
  },
- "last_trigger": "",
+ "last_trigger": "quit (save and close)",
  "resource_leaks": [
   "stale guard pidfile (pid 1044993)"
  ],

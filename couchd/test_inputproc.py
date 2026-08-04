@@ -637,6 +637,41 @@ def test_rig_detects_corpus_pollution():
     assert mod.compare_recordings(['a.gz'], ['a.gz', 'b.gz']) == ['b.gz']
 
 
+def test_rig_impersonates_the_real_pad_by_name():
+    """E0 caught this live: hid-tools names its emulator "Sony Interactive
+    Entertainment Wireless Controller", so under its own name the rig
+    exercises NONE of the name-matched paths - 71-dualsense-uaccess.rules
+    (ATTRS{name}), couchd's PAD_WANTED, inputproc's find_pad. SR8's premise
+    is that the fake pad differs from the real one only by MAC."""
+    import couchd
+    mod = load_fake_pad()
+    assert mod.PAD_NAME == inputproc.PAD_NAME == couchd.PAD_WANTED
+
+
+def test_rig_never_touches_hidtools_input_nodes_property():
+    """E0 caught this live too. Reading hid-tools' `input_nodes` spawns a
+    thread that calls UHIDDevice.dispatch() while it opens every evdev node.
+    UHIDDevice._poll is CLASS-level, so that thread plus our own dispatch
+    pump is "RuntimeError: concurrent poll() invocation" - and if opening a
+    node raises (the /dev entry and its ACL land after the sysfs node), the
+    property never reaches its `done = True; t.join()` and the thread is
+    orphaned, polling forever. The rig reads sysfs directly instead."""
+    path = os.path.expanduser('~/couch/tools/fake-pad')
+    if not os.path.exists(path):
+        pytest.skip('tools/fake-pad not present')
+    tree = ast.parse(open(path).read(), filename=path)
+    reads, writes = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in ('input_nodes',
+                                                             '_input_nodes'):
+            (writes if isinstance(node.ctx, ast.Store) else reads).append(
+                node.attr)
+    assert reads == [], f'fake-pad reads hid-tools input_nodes: {reads}'
+    assert writes == ['_input_nodes'], writes   # the disarming assignment
+    mod = load_fake_pad()
+    assert hasattr(mod, 'sysfs_event_nodes')
+
+
 def test_rig_can_send_the_ps_button():
     """hid-tools caps self.buttons at 12, which makes button 13 - BTN_MODE,
     the entire point of the rig - unsendable. The subclass fixes it; this

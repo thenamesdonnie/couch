@@ -73,6 +73,19 @@ PIDFILE = '/tmp/fake-pad.pid'
 STATUSFILE = '/tmp/fake-pad.status'
 RECORDINGS = os.path.expanduser('~/couch/recordings')
 INHIBIT_UNITS = ('tv-waker.service', 'pad-record.service', 'pad-battery.service')
+
+# The name the REAL pad presents. hid-tools names its emulator "Sony
+# Interactive Entertainment Wireless Controller" (the USB product string),
+# but hid_playstation takes the input device name from hdev->name, and over
+# Bluetooth the real DualSense reports "DualSense Wireless Controller".
+# Two independent artefacts on this box confirm it: couchd's PAD_WANTED and
+# Kodi's hand-made DualSense_Wireless_Controller_13b_8a.xml buttonmap.
+#
+# The rig MUST use the real name. 71-dualsense-uaccess.rules matches on
+# ATTRS{name}, couchd's PadObserver and inputproc's find_pad() both filter on
+# it, and SR8's whole premise is that the fake pad is indistinguishable from
+# the real one EXCEPT by MAC. Under the emulator's own name the rig would
+# quietly exercise none of those paths.
 PAD_NAME = 'DualSense Wireless Controller'
 
 # hid-tools' PS5 button indices (its buttons_map), by the names on the pad.
@@ -197,11 +210,29 @@ def make_device():
             #    (HID_UNIQ, hence udev's ATTRS{uniq}) and what feature report
             #    0x09 encodes, which is where hid_playstation reads it from.
             self.uniq = FAKE_MAC
+            # 1b. and the real pad's NAME, so the rig actually exercises the
+            #     name-matched paths (71-dualsense-uaccess.rules, couchd's
+            #     PAD_WANTED, inputproc's find_pad). See PAD_NAME above.
+            self.name = PAD_NAME
             # 2. hid-tools sets range(1, 13) - button 13, BTN_MODE, the PS
             #    button, would raise InvalidHIDCommunication. The report
             #    descriptor declares 14 buttons; only this tuple stops us.
             self.buttons = tuple(range(1, 14))
             self.unhandled = {'get': 0, 'set': 0, 'output': 0}
+            # 4. DISARM hid-tools' input_nodes property. Reading it spawns a
+            #    background thread that calls UHIDDevice.dispatch() while it
+            #    opens every evdev node - and UHIDDevice._poll is a CLASS-level
+            #    select.poll(), so that thread and our own dispatch pump are
+            #    two concurrent poll() calls on one object ("RuntimeError:
+            #    concurrent poll() invocation"). Worse, if opening a node
+            #    raises - and it does, because the /dev entry and its ACL land
+            #    a moment AFTER the sysfs node appears - the property never
+            #    reaches its `done = True; t.join()`, so the thread is
+            #    orphaned and polls forever. Pre-seeding the cache makes the
+            #    property return [] immediately and never start a thread. We
+            #    read the sysfs directly instead (sysfs_event_nodes below),
+            #    which needs no thread and opens nothing.
+            self._input_nodes = []
 
         # 3. InputPlumber #459: unhandled reports return SUCCESS.
         def get_report(self, req, rnum, rtype):
@@ -224,17 +255,49 @@ def make_device():
     return FakeDualSense()
 
 
-def wait_ready(dev, seconds=5.0):
+def sysfs_event_nodes(dev):
+    """[(/dev/input/eventN, name)] straight out of sysfs.
+
+    Deliberately NOT hid-tools' `input_nodes`: that property opens every
+    evdev node from a background dispatch thread (see note 4 in the subclass
+    above). Everything we need is in the parent input device's uevent file,
+    which is a plain read - no thread, no open, no ACL race.
+    """
+    nodes = []
+    try:
+        paths = dev.walk_sysfs('input', 'input/input*/event*')
+    except Exception:
+        return nodes
+    for path in sorted(paths, key=lambda p: p.name):
+        name = '?'
+        try:
+            with open(path.parent / 'uevent') as f:
+                for line in f:
+                    key, _, value = line.strip().partition('=')
+                    if key == 'NAME':
+                        name = value.strip('"')
+        except OSError:
+            pass
+        nodes.append((os.path.join('/dev/input', path.name), name))
+    return nodes
+
+
+def wait_ready(dev, seconds=8.0):
     """S7's success oracle: hid_playstation bound = three input nodes plus a
-    power_supply class. Anything less and the driver did not take it."""
+    power_supply class. Anything less and the driver did not take it.
+
+    Single-threaded on purpose: this loop is the ONLY thing calling
+    dispatch(), so the class-level poll object has exactly one caller.
+    """
     deadline = time.time() + seconds
     while time.time() < deadline:
         dev.dispatch(10)
-        try:
-            if dev.is_ready():
-                return True
-        except Exception:
-            pass
+        if dev.started and len(sysfs_event_nodes(dev)) == 3:
+            try:
+                if dev.power_supply_class is not None:
+                    return True
+            except Exception:
+                pass
         time.sleep(0.05)
     return False
 
@@ -246,13 +309,11 @@ def describe(dev):
         lines.append(f'hidraw:       {", ".join(dev.hidraw_nodes) or "(none)"}')
     except Exception:
         pass
-    try:
-        nodes = dev.input_nodes
-        lines.append(f'input nodes:  {len(nodes)}')
-        for n in nodes:
-            lines.append(f'  {n.evdev}  {n.name!r}')
-    except Exception as e:
-        lines.append(f'input nodes:  ERROR {e}')
+    nodes = sysfs_event_nodes(dev)
+    lines.append(f'input nodes:  {len(nodes)}')
+    for devnode, name in nodes:
+        lines.append(f'  {devnode}  {name!r}'
+                     + ('' if os.path.exists(devnode) else '  [NO DEV NODE]'))
     try:
         ps = dev.power_supply_class
         lines.append(f'power_supply: {"present" if ps else "MISSING"}')
@@ -437,6 +498,13 @@ def main():
         daemon()
         return
     if args[0] == 'status':
+        # Ask the daemon to REFRESH the file first, then read it. Reading it
+        # directly returns the snapshot taken at startup, which reports
+        # "reports sent: 0" forever and is quietly misleading.
+        if daemon_alive():
+            with open(FIFO, 'w') as f:
+                f.write('status\n')
+            time.sleep(0.3)
         if os.path.exists(STATUSFILE):
             sys.stdout.write(open(STATUSFILE).read())
             return

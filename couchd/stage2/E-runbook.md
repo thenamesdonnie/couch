@@ -91,6 +91,11 @@ Start the reader first — it exits by itself after 20 seconds:
     $PY - <<'EOF'
     import select, time
     from evdev import InputDevice, ecodes, list_devices
+    def kname(code):
+        # NOT ecodes.KEY[code]: that dict holds KEY_* only and raises
+        # KeyError on every BTN_* code, BTN_MODE included.
+        n = ecodes.bytype[ecodes.EV_KEY].get(code, code)
+        return n if isinstance(n, str) else '/'.join(n)
     dev = [InputDevice(p) for p in list_devices()]
     d = [x for x in dev if x.uniq == 'de:ad:be:ef:fa:ce'
          and x.name == 'DualSense Wireless Controller'][0]
@@ -101,7 +106,7 @@ Start the reader first — it exits by itself after 20 seconds:
         if r:
             for e in d.read():
                 if e.type == ecodes.EV_KEY:
-                    print(f'{e.sec}.{e.usec:06d} {ecodes.KEY[e.code]} {e.value}')
+                    print(f'{e.sec}.{e.usec:06d} {kname(e.code)} {e.value}')
     EOF
 
 Then, in terminal B (a second tab) or A's sibling shell:
@@ -112,6 +117,20 @@ Then, in terminal B (a second tab) or A's sibling shell:
 
 **Success:** `BTN_MODE 1` / `BTN_MODE 0` pairs appear with kernel timestamps,
 and the hold shows ~1.2s between them. `BTN_SOUTH` appears for cross.
+
+> **Axis and dpad commands are LEVEL, not edge.** The rig holds stick and hat
+> state across commands, and evdev emits nothing when a value does not
+> change. `axis lx 1` twice in a row produces exactly one event — the second
+> is correctly silent. When a value seems "missing", check the current level
+> before concluding anything:
+>
+>     $PY -c "from evdev import InputDevice, ecodes, list_devices; \
+>     d=[InputDevice(p) for p in list_devices()]; \
+>     d=[x for x in d if x.uniq=='de:ad:be:ef:fa:ce' and x.name=='DualSense Wireless Controller'][0]; \
+>     print({ecodes.ABS[c]: i.value for c,i in d.capabilities()[ecodes.EV_ABS]})"
+>
+> Centre the sticks (`axis lx 0`, `dpad center`) before a run if you want
+> every command to produce an event.
 
 **Gate:** all three of E0.1/E0.2/E0.3 green = **E0 PASSES**.
 
@@ -211,6 +230,9 @@ Reader on the **virtual** pad:
     $PY - <<'EOF'
     import select, time
     from evdev import InputDevice, ecodes, list_devices
+    def kname(code):
+        n = ecodes.bytype[ecodes.EV_KEY].get(code, code)
+        return n if isinstance(n, str) else '/'.join(n)
     v = [InputDevice(p) for p in list_devices()]
     v = [x for x in v if x.name == 'Microsoft X-Box 360 pad'][0]
     print('reading virtual', v.path)
@@ -220,7 +242,7 @@ Reader on the **virtual** pad:
         if r:
             for e in v.read():
                 if e.type == ecodes.EV_KEY:
-                    print('KEY', ecodes.KEY[e.code], e.value)
+                    print('KEY', kname(e.code), e.value)
                 elif e.type == ecodes.EV_ABS:
                     print('ABS', ecodes.ABS[e.code], e.value)
     EOF
