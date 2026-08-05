@@ -1,0 +1,985 @@
+#!/usr/bin/env python3
+"""A freeze-frame CURTAIN over the console's suspend/resume window shuffle.
+
+A suspend is four visible steps - freeze the game, raise Kodi, unmap the
+frozen window, hand over the pad - and the room sees every one of them. This
+tool hides that: `curtain show <frame.jpg>` slaps the game's last rendered
+frame (the one pause-snap just wrote) fullscreen over everything, the shuffle
+happens underneath it, and `curtain fade` dissolves it to reveal Kodi. Resume
+is the mirror image.
+
+WHY NOTHING MAY DRIVE THIS LIVE UNTIL BOTH STACKS WHITELIST THE WINDOW.
+The curtain is, by construction, an unknown fullscreen window sitting on top
+of the console, which is exactly the shape both stacks are built to repair:
+
+  * couchd's `foreground` region classifies the topmost big window by class.
+    'couch-curtain' is not Kodi, not Big Picture and not steam_app_*, so the
+    region would settle on 'other' ("something-else-on-top") for as long as
+    the curtain is up, and every rule that requires ('foreground', ...) would
+    be reasoning about a screen it has misread. Worse, foreground='other'
+    during a suspend is precisely the state the enforcement guards treat as
+    drift;
+  * the legacy watcher (and couchd's `guard:frozen-game-visible`) repairs a
+    frozen game left on top by restacking Kodi. A curtain that is raised
+    above everything, including Kodi, can be read as that same fault - and
+    the repair would restack against it while the curtain re-raises itself.
+
+So the deal is: `couch-curtain` must be classified as TRANSPARENT (skipped
+entirely, as if not mapped) by couchd's classifier and by the legacy
+watcher's on-top test BEFORE any caller invokes this. Wiring it into
+game-launch's suspend arm and couchd is a separate, deploy-gated step that
+this tool deliberately does not do. Right now this is a standalone tool with
+tests and nothing calls it.
+
+  curtain show <image.jpg> [--timeout 8]   map the overlay now (blocks until
+                                           it is actually on screen)
+  curtain fade [--duration 0.4]            fade it out and exit the daemon
+  curtain clear                            destroy it instantly
+  curtain status                           what is up, and for how long
+
+THE WATCHDOG IS THE CONTRACT. The daemon self-destructs after --timeout
+seconds no matter what: no fade, no clear, no caller. A curtain that sticks
+is worse than no curtain at all, because it sits over the whole console with
+no input of its own and the room has no way to dismiss it. Two independent
+mechanisms enforce it - the loop's deadline check, and a SIGALRM one second
+later whose handler is os._exit(), because a dead client's windows are
+destroyed by the X server itself. SIGTERM/SIGINT tear down the same way.
+
+COSMETIC CONTRACT, mirroring pause-snap exactly: every failure path here is a
+line on stderr and a non-zero exit that the caller throws away. A suspend
+must never wait on, or be broken by, a picture. Callers should run this the
+way game-launch runs pause-snap - `timeout 3 curtain show ... || true`.
+
+Test seams (unset in normal operation):
+  COUCH_CURTAIN_DIR   put pid/fifo/status/log here instead of /tmp
+  DISPLAY             which server to draw on (tests: an Xvfb, never :0)
+"""
+import errno
+import fcntl
+import json
+import os
+import select
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+# Same trick fake-pad uses: the tool may be run by the system python3 (from a
+# shell script, from Kodi) while python-xlib and Pillow live in couchd's venv.
+VENV = os.path.expanduser('~/couch/couchd/.venv')
+if os.path.isdir(VENV) and sys.prefix != VENV:
+    _site = os.path.join(VENV, 'lib', f'python{sys.version_info.major}.'
+                                      f'{sys.version_info.minor}',
+                         'site-packages')
+    if os.path.isdir(_site):
+        sys.path.append(_site)
+
+DIR = os.environ.get('COUCH_CURTAIN_DIR') or '/tmp'
+PIDFILE = os.path.join(DIR, 'couch-curtain.pid')
+FIFO = os.path.join(DIR, 'couch-curtain.fifo')
+STATUSFILE = os.path.join(DIR, 'couch-curtain.status')
+LOG = os.path.join(DIR, 'couch-curtain.log')
+
+WM_CLASS = 'couch-curtain'          # both stacks whitelist on this
+DEFAULT_TIMEOUT = 8.0               # the watchdog; see the docstring
+MIN_TIMEOUT, MAX_TIMEOUT = 0.5, 60.0
+DEFAULT_FADE = 0.4
+FADE_HZ = 60.0
+WATCHDOG_GRACE = 1.0                # SIGALRM lands this long after the deadline
+READY_WAIT = 6.0                    # how long `show` waits to see the window up
+POLL_MS = 25                        # fifo poll slice; also the deadline's resolution
+
+FFMPEG = '/usr/bin/ffmpeg'
+
+
+def say(msg):
+    """Every diagnostic goes to stderr. For the CLI that is the operator's
+    terminal; the daemon is spawned with stderr pointed at LOG, so the same
+    line becomes the log entry. One code path, two destinations."""
+    print(f'{time.strftime("%H:%M:%S")} curtain: {msg}', file=sys.stderr,
+          flush=True)
+
+
+class CurtainError(Exception):
+    """Anything that means 'no curtain'. Always ends as stderr + non-zero."""
+
+
+class Usage(Exception):
+    pass
+
+
+# =========================================================================
+# pure logic (tested without an X server)
+# =========================================================================
+def fit_box(iw, ih, sw, sh):
+    """Scale (iw, ih) to fit inside (sw, sh) keeping aspect, and centre it.
+    Returns (w, h, x, y). The remainder is left black - a letterbox, never a
+    crop: this frame is the player's last moment in the game and cutting the
+    edges off it looks like a bug, not a transition.
+
+    Never upscales beyond the screen; a smaller frame IS upscaled, because
+    pause-snap writes 960px-wide jpgs and a 960px picture in the middle of a
+    4K screen would read as a window, not a curtain.
+    """
+    if iw <= 0 or ih <= 0 or sw <= 0 or sh <= 0:
+        raise CurtainError(f'nonsense geometry: {iw}x{ih} into {sw}x{sh}')
+    scale = min(sw / iw, sh / ih)
+    w = max(1, min(sw, int(round(iw * scale))))
+    h = max(1, min(sh, int(round(ih * scale))))
+    return w, h, (sw - w) // 2, (sh - h) // 2
+
+
+def _number(name, raw, lo, hi):
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise Usage(f'{name} wants a number, got {raw!r}')
+    if not lo <= v <= hi:
+        raise Usage(f'{name} must be between {lo} and {hi} (got {v})')
+    return v
+
+
+def parse_args(argv):
+    """argv (without argv[0]) -> a plain dict. Raises Usage.
+
+    Hand-rolled rather than argparse for the same reason fake-pad is: the
+    grammar is four verbs and one option each, and a caller's malformed line
+    must produce our own message, not argparse's exit-2 with a usage block on
+    stdout.
+    """
+    if not argv or argv[0] in ('-h', '--help'):
+        raise Usage(None)
+    cmd, rest = argv[0], list(argv[1:])
+
+    def option(flag, default, lo, hi):
+        value = default
+        out = []
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if a == flag:
+                if i + 1 >= len(rest):
+                    raise Usage(f'{flag} wants a value')
+                value = _number(flag, rest[i + 1], lo, hi)
+                i += 2
+                continue
+            if a.startswith(flag + '='):
+                value = _number(flag, a.split('=', 1)[1], lo, hi)
+                i += 1
+                continue
+            out.append(a)
+            i += 1
+        rest[:] = out
+        return value
+
+    if cmd == 'show':
+        timeout = option('--timeout', DEFAULT_TIMEOUT, MIN_TIMEOUT, MAX_TIMEOUT)
+        if len(rest) != 1:
+            raise Usage('show wants exactly one image path')
+        return {'cmd': 'show', 'image': os.path.abspath(rest[0]),
+                'timeout': timeout}
+    if cmd == 'fade':
+        duration = option('--duration', DEFAULT_FADE, 0.0, 5.0)
+        if rest:
+            raise Usage(f'fade takes no arguments (got {rest})')
+        return {'cmd': 'fade', 'duration': duration}
+    if cmd in ('clear', 'status'):
+        if rest:
+            raise Usage(f'{cmd} takes no arguments (got {rest})')
+        return {'cmd': cmd}
+    if cmd == '__serve__':                     # internal: the daemon itself
+        if len(rest) != 3:
+            raise Usage('__serve__ is internal (image timeout ready_fd)')
+        return {'cmd': '__serve__', 'image': rest[0], 'timeout': float(rest[1]),
+                'ready_fd': int(rest[2])}
+    raise Usage(f'unknown command {cmd!r}')
+
+
+def claim_pidfile(path=PIDFILE, attempts=5):
+    """Claim being THE curtain. Returns the held fd, or None if a live one
+    already owns it. Lifted wholesale from fake-pad's claim, including its
+    inode re-check, and for the same reasons: an flock is held by the kernel
+    for exactly as long as the process lives, so a daemon that died hard
+    leaves a pidfile the next one can take, while one that is merely slow to
+    map cannot be raced into a second overlay window.
+    """
+    for _ in range(attempts):
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        try:
+            same = os.stat(path).st_ino == os.fstat(fd).st_ino
+        except OSError:
+            same = False
+        if not same:
+            os.close(fd)                       # locked an already-unlinked file
+            time.sleep(0.05)
+            continue
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        os.fsync(fd)
+        return fd
+    return None
+
+
+def daemon_pid():
+    try:
+        return int(open(PIDFILE).read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def daemon_alive():
+    pid = daemon_pid()
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def read_status():
+    try:
+        with open(STATUSFILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def clear_stale():
+    """Delete pid/fifo/status left by a curtain that died hard.
+
+    The test for 'died hard' is the flock, not the pid: taking the lock proves
+    nobody is holding it. Cheap, and it stops `curtain show` from mistaking a
+    corpse's pidfile for a live daemon."""
+    fd = claim_pidfile()
+    if fd is None:
+        return False
+    try:
+        for path in (FIFO, PIDFILE, STATUSFILE):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+    return True
+
+
+# =========================================================================
+# the image
+# =========================================================================
+def _frame_pillow(path, sw, sh):
+    """Primary path: Pillow. Present in couchd's venv AND the system python on
+    this box (12.2.0 in both), decodes the jpg, scales and letterboxes in one
+    library, and its raw packer emits BGRX directly - the exact byte order a
+    depth-24 LSBFirst X server wants for ZPixmap - so there is no per-pixel
+    Python anywhere in the hot path. A 960px pause-snap frame lands in a few
+    tens of ms.
+    """
+    from PIL import Image
+    with Image.open(path) as im:
+        im.load()                              # decode inside the with-block
+        frame = im.convert('RGB')
+    w, h, x, y = fit_box(frame.width, frame.height, sw, sh)
+    frame = frame.resize((w, h), Image.LANCZOS)
+    canvas = Image.new('RGB', (sw, sh), (0, 0, 0))
+    canvas.paste(frame, (x, y))
+    return canvas.tobytes('raw', 'BGRX')
+
+
+def _frame_ffmpeg(path, sw, sh):
+    """The one fallback, for a box where Pillow is missing. ffmpeg does the
+    decode, the aspect-preserving scale, the black pad and the pixel format in
+    a single filter chain, and rawvideo/bgra is byte-for-byte what XPutImage
+    takes (the alpha byte is the ignored X of BGRX at depth 24)."""
+    vf = (f'scale={sw}:{sh}:force_original_aspect_ratio=decrease,'
+          f'pad={sw}:{sh}:(ow-iw)/2:(oh-ih)/2:color=black')
+    try:
+        r = subprocess.run([FFMPEG, '-v', 'error', '-i', path, '-vf', vf,
+                            '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt',
+                            'bgra', '-'],
+                           capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise CurtainError(f'ffmpeg fallback failed: {e}')
+    if r.returncode != 0 or len(r.stdout) != sw * sh * 4:
+        raise CurtainError(
+            f'ffmpeg produced {len(r.stdout)} bytes, wanted {sw * sh * 4} '
+            f'({(r.stderr or b"").decode("utf-8", "replace").strip()[:120]})')
+    return r.stdout
+
+
+def load_frame(path, sw, sh):
+    """Screen-sized BGRX bytes for `path`, letterboxed on black."""
+    if not os.path.exists(path):
+        raise CurtainError(f'no such image: {path}')
+    if os.path.getsize(path) == 0:
+        raise CurtainError(f'empty image: {path}')
+    try:
+        import PIL                             # noqa: F401  (probe only)
+    except ImportError:
+        return _frame_ffmpeg(path, sw, sh)
+    try:
+        return _frame_pillow(path, sw, sh)
+    except CurtainError:
+        raise
+    except Exception as e:
+        # A jpg Pillow will not decode is usually a truncated capture, and
+        # ffmpeg is more forgiving about those than Pillow is. One retry, then
+        # the caller gets its non-zero exit.
+        say(f'pillow could not read {path} ({e}); trying ffmpeg')
+        return _frame_ffmpeg(path, sw, sh)
+
+
+# =========================================================================
+# the overlay window
+# =========================================================================
+class Overlay:
+    """One override-redirect fullscreen window, showing one image.
+
+    Deliberately narrow: it selects NO event mask at all (not even Expose -
+    the image is the window's BACKGROUND pixmap, so the server repaints it
+    for us), takes no grab, and never touches the input focus. The only input
+    story it has is not having one, and the empty Shape input region below
+    makes that true at the server rather than by good manners.
+    """
+
+    def __init__(self, display_name=None):
+        self.display_name = display_name or os.environ.get('DISPLAY') or ':0'
+        self.d = None
+        self.win = None
+        self.pixmap = None
+        self.w = self.h = 0
+        self.depth = 24
+        self.mapped = False
+        self.image = ''
+        self.shows = 0
+
+    # -- setup ----------------------------------------------------------
+    def open(self):
+        from Xlib import display, X
+        self.X = X
+        try:
+            self.d = display.Display(self.display_name)
+        except Exception as e:
+            raise CurtainError(f'cannot open display {self.display_name}: {e}')
+        s = self.d.screen()
+        self.screen = s
+        self.w, self.h = s.width_in_pixels, s.height_in_pixels
+        self.depth = s.root_depth
+        self._check_pixel_format()
+        self.opacity_atom = self.d.intern_atom('_NET_WM_WINDOW_OPACITY')
+        self.net_wm_name = self.d.intern_atom('_NET_WM_NAME')
+        self.utf8 = self.d.intern_atom('UTF8_STRING')
+        self.win = s.root.create_window(
+            0, 0, self.w, self.h, 0, self.depth, X.InputOutput,
+            X.CopyFromParent, background_pixel=s.black_pixel,
+            override_redirect=True, event_mask=0,
+            # NotUseful: with the compositor on, backing store is wasted
+            # memory the size of the screen, and without it we still repaint
+            # from the background pixmap.
+            backing_store=X.NotUseful)
+        self.win.set_wm_class(WM_CLASS, WM_CLASS)
+        self.win.set_wm_name(WM_CLASS)         # legacy WM_NAME...
+        self.win.change_property(self.net_wm_name, self.utf8, 8,
+                                 WM_CLASS.encode())   # ...and the modern one
+        self._empty_input_region()
+        self.d.sync()
+
+    def _check_pixel_format(self):
+        """Bail loudly on anything but the ordinary 32-bits-per-pixel,
+        LSBFirst, 0xff0000/0xff00/0xff TrueColor screen. Every X server this
+        console will ever see is that (verified: Xorg on this box and Xvfb
+        both report byte order 0, depth 24 at 32bpp, root visual class 4), and
+        a generic packer would mean per-pixel Python for two million pixels.
+        Cosmetic feature: refusing is a perfectly good outcome."""
+        info = self.d.display.info
+        bpp = next((f.bits_per_pixel for f in info.pixmap_formats
+                    if f.depth == self.depth), None)
+        if bpp != 32:
+            raise CurtainError(f'depth {self.depth} is {bpp} bits per pixel, '
+                               f'this tool only packs 32')
+        if info.image_byte_order != 0:
+            raise CurtainError('X server is MSBFirst; this tool packs BGRX '
+                               'for LSBFirst only')
+        vid = self.screen.root_visual
+        for depth in self.screen.allowed_depths:
+            for v in depth.visuals:
+                if v.visual_id == vid:
+                    if (v.red_mask, v.green_mask, v.blue_mask) != (
+                            0xff0000, 0xff00, 0xff):
+                        raise CurtainError(
+                            f'unexpected visual masks '
+                            f'{v.red_mask:#x}/{v.green_mask:#x}/{v.blue_mask:#x}')
+                    return
+
+    def _empty_input_region(self):
+        """Set the Shape INPUT region to nothing, so clicks and motion pass
+        straight through to whatever is underneath. Belt to the
+        override-redirect braces: the curtain is up during a handover in which
+        the phone may be sending XTEST clicks at Kodi, and a fullscreen window
+        that eats one of them is a lost tap the room cannot explain. If the
+        Shape extension is missing this is skipped - the window still never
+        takes focus, it just becomes click-absorbing for its ~1s life."""
+        try:
+            from Xlib.ext import shape
+            self.win.shape_rectangles(shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+        except Exception as e:
+            say(f'input region not shaped ({e}); curtain will absorb clicks')
+
+    # -- content --------------------------------------------------------
+    def set_image(self, path):
+        """Draw `path` into a fresh pixmap and make it the window background.
+
+        Background pixmap rather than drawing into the window: the server then
+        repaints on every expose without us selecting Expose events or running
+        a redraw loop, and a REPLACEMENT is one atomic swap plus a clear -
+        which is why `show` over an existing curtain does not flicker and does
+        not need a second window.
+        """
+        data = load_frame(path, self.w, self.h)
+        X = self.X
+        pixmap = self.win.create_pixmap(self.w, self.h, self.depth)
+        gc = pixmap.create_gc(foreground=self.screen.black_pixel,
+                              background=self.screen.black_pixel)
+        try:
+            # PutImage is one request per band: the server's max request
+            # length is 256KB here (python-xlib does not negotiate BIG-REQUESTS
+            # and does not split for us), while a 1080p frame is 8MB. Rows per
+            # request are computed from the server's own limit, never assumed.
+            row = self.w * 4
+            limit = self.d.display.info.max_request_length * 4 - 128
+            rows = max(1, limit // row)
+            y = 0
+            while y < self.h:
+                band = min(rows, self.h - y)
+                pixmap.put_image(gc, 0, y, self.w, band, X.ZPixmap, self.depth,
+                                 0, data[y * row:(y + band) * row])
+                y += band
+            self.win.change_attributes(background_pixmap=pixmap)
+            self.win.clear_area()              # 0,0,0,0 = the whole window
+            self.d.sync()
+        finally:
+            try:
+                gc.free()
+            except Exception:
+                pass
+            # Freeing our id is safe while the window still references the
+            # pixmap: the server keeps the resource alive until nothing does.
+            old, self.pixmap = self.pixmap, pixmap
+            if old is not None:
+                try:
+                    old.free()
+                except Exception:
+                    pass
+        self.image = path
+        self.shows += 1
+
+    def show(self):
+        """Map (if needed) and raise. Raising is a one-shot, not a loop: a
+        window that re-raises itself forever would fight the very restack
+        repairs described at the top of this file instead of merely confusing
+        them."""
+        self.set_opacity(1.0)
+        if not self.mapped:
+            self.win.map()
+            self.mapped = True
+        self.win.configure(stack_mode=self.X.Above)
+        self.d.sync()
+
+    def set_opacity(self, fraction):
+        """_NET_WM_WINDOW_OPACITY, which xfwm4's compositor honours.
+
+        If no compositor is running the property is simply ignored, and the
+        fade degrades to the curtain sitting there until fade()'s clock runs
+        out and unmaps it - a hard cut instead of a dissolve. That is the
+        accepted degradation: the transition still ends with Kodi on screen at
+        the right moment, it just is not pretty.
+        """
+        from Xlib import Xatom
+        value = max(0, min(0xffffffff, int(0xffffffff * fraction)))
+        try:
+            self.win.change_property(self.opacity_atom, Xatom.CARDINAL, 32,
+                                     [value])
+            self.d.flush()
+        except Exception as e:
+            say(f'opacity {fraction:.2f} not set: {e}')
+
+    def fade(self, duration, stop=None):
+        """Step the opacity to zero over `duration`, then unmap. `stop` is a
+        callable that cuts the fade short (the watchdog, a signal)."""
+        steps = max(1, int(duration * FADE_HZ))
+        interval = duration / steps
+        for i in range(steps):
+            if stop is not None and stop():
+                break
+            self.set_opacity(1.0 - (i + 1) / steps)
+            time.sleep(interval)
+        self.hide()
+
+    def hide(self):
+        if self.win is not None and self.mapped:
+            try:
+                self.win.unmap()
+                self.d.sync()
+            except Exception:
+                pass
+        self.mapped = False
+
+    def teardown(self):
+        """Unmap, destroy, disconnect - each step independently best-effort.
+        Closing the display would destroy the window on its own (the server
+        frees a departed client's resources); doing it explicitly just makes
+        the frame disappear before the interpreter starts shutting down."""
+        self.hide()
+        for step in ('destroy', 'close'):
+            try:
+                if step == 'destroy' and self.win is not None:
+                    self.win.destroy()
+                    self.d.sync()
+                elif step == 'close' and self.d is not None:
+                    self.d.close()
+            except Exception:
+                pass
+        self.win = None
+        self.d = None
+
+
+# =========================================================================
+# the daemon
+# =========================================================================
+STOPPING = {'now': False}
+
+
+def install_signal_handlers():
+    """SIGTERM/SIGINT set a flag and never raise - fake-pad's rule, for the
+    same reason: a handler that raises can tear the process out of the middle
+    of teardown. The loop and the fade both check the flag."""
+    def onsig(_signum, _frame):
+        STOPPING['now'] = True
+    signal.signal(signal.SIGTERM, onsig)
+    signal.signal(signal.SIGINT, onsig)
+
+
+def arm_watchdog(seconds):
+    """The hard half of the contract. The loop's own deadline check is the
+    polite half; this is the one that holds when a blocking X call never
+    returns, and it holds because the handler does not try to be tidy - it
+    calls os._exit(), the process dies, and the X server destroys the windows
+    of a client that has gone away. No X call is made from the handler, so
+    there is nothing left to hang on."""
+    def onalarm(_signum, _frame):
+        os._exit(3)
+    signal.signal(signal.SIGALRM, onalarm)
+    signal.setitimer(signal.ITIMER_REAL, max(0.1, seconds + WATCHDOG_GRACE))
+
+
+def write_status(overlay, deadline):
+    payload = {
+        'pid': os.getpid(),
+        'image': overlay.image,
+        'shows': overlay.shows,
+        'mapped': overlay.mapped,
+        'display': overlay.display_name,
+        'screen': [overlay.w, overlay.h],
+        'remaining': round(max(0.0, deadline - time.monotonic()), 2),
+        'ts': time.time(),
+    }
+    tmp = STATUSFILE + f'.{os.getpid()}'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(payload, f)
+        os.replace(tmp, STATUSFILE)            # readers never see half a file
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def remove_our_files():
+    """Only if they are still ours - fake-pad's rule. `curtain fade` returns
+    as soon as its line is in the FIFO, so a fade immediately followed by a
+    fresh `show` can otherwise have the OLD daemon's teardown delete the NEW
+    daemon's fifo and pidfile."""
+    owner = daemon_pid()
+    if owner is not None and owner != os.getpid():
+        return
+    for path in (FIFO, PIDFILE, STATUSFILE):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def report(ready_fd, message):
+    """One line back to the `show` that spawned us, then the pipe is done."""
+    if ready_fd is None:
+        return
+    try:
+        os.write(ready_fd, message.encode() + b'\n')
+    except OSError:
+        pass
+
+
+def serve(image, timeout, ready_fd=None):
+    """Claim, map, report, then serve the FIFO until the deadline.
+
+    Order matters: the claim happens before any X resource exists, so two
+    near-simultaneous `show`s cannot both end up holding an overlay window;
+    and the readiness report happens only after the window is genuinely on
+    screen, so a caller that got exit 0 knows the shuffle underneath is now
+    hidden.
+    """
+    install_signal_handlers()
+    lock_fd = claim_pidfile()
+    if lock_fd is None:
+        report(ready_fd, 'ERR another curtain already holds ' + PIDFILE)
+        return 1
+    overlay = Overlay()
+    deadline = time.monotonic() + timeout
+    try:
+        try:
+            overlay.open()
+            overlay.set_image(image)
+            overlay.show()
+        except CurtainError as e:
+            report(ready_fd, f'ERR {e}')
+            say(str(e))
+            return 1
+        except Exception as e:
+            report(ready_fd, f'ERR {type(e).__name__}: {e}')
+            say(f'{type(e).__name__}: {e}')
+            return 1
+        arm_watchdog(timeout)
+        write_status(overlay, deadline)
+        report(ready_fd, 'READY')
+        if ready_fd is not None:
+            try:
+                os.close(ready_fd)
+            except OSError:
+                pass
+            ready_fd = None
+        return loop(overlay, deadline, timeout)
+    finally:
+        overlay.teardown()
+        remove_our_files()
+        try:
+            os.close(lock_fd)                  # releases the flock
+        except OSError:
+            pass
+
+
+def loop(overlay, deadline, timeout):
+    """The command pump. Every wait is bounded by the deadline, so the daemon
+    cannot outlive its timeout even if nobody ever writes to the FIFO."""
+    try:
+        if os.path.exists(FIFO):
+            os.remove(FIFO)
+        os.mkfifo(FIFO, 0o600)
+        rfd = os.open(FIFO, os.O_RDONLY | os.O_NONBLOCK)
+        wfd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)   # keeps it off EOF
+    except OSError as e:
+        say(f'fifo unavailable ({e}); the curtain will only watchdog out')
+        rfd = wfd = None
+    poller = select.poll()
+    if rfd is not None:
+        poller.register(rfd, select.POLLIN)
+    buf = b''
+    faded = False
+    try:
+        while not STOPPING['now']:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                say(f'watchdog: {timeout:.1f}s up, tearing the curtain down '
+                    f'(nobody faded or cleared it)')
+                break
+            for _fd, _mask in poller.poll(min(POLL_MS, int(left * 1000) + 1)):
+                try:
+                    chunk = os.read(rfd, 4096)
+                except OSError:
+                    chunk = b''
+                if not chunk:
+                    continue
+                buf += chunk
+                while b'\n' in buf:
+                    line, buf = buf.split(b'\n', 1)
+                    action, deadline = handle(
+                        overlay, line.decode('utf-8', 'replace').strip(),
+                        deadline)
+                    if action == 'fade':
+                        faded = True
+                    if action in ('fade', 'stop'):
+                        STOPPING['now'] = True
+                        break
+    finally:
+        for fd in (rfd, wfd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    if faded:
+        say('faded out')
+    return 0
+
+
+def handle(overlay, line, deadline):
+    """Returns (action, deadline). action is '' (carry on), 'stop' or 'fade'."""
+    try:
+        parts = shlex.split(line)
+    except ValueError:
+        parts = line.split()
+    if not parts:
+        return '', deadline
+    cmd, args = parts[0], parts[1:]
+    try:
+        if cmd == 'show':
+            # Same window, new picture, new watchdog. The re-raise matters as
+            # much as the image: something may have stacked over us since.
+            overlay.set_image(args[0])
+            overlay.show()
+            if len(args) > 1:
+                deadline = time.monotonic() + float(args[1])
+                arm_watchdog(float(args[1]))
+            write_status(overlay, deadline)
+            return '', deadline
+        if cmd == 'fade':
+            duration = float(args[0]) if args else DEFAULT_FADE
+            # Never fade past the watchdog: the deadline is the promise, the
+            # dissolve is the decoration.
+            duration = max(0.0, min(duration,
+                                    deadline - time.monotonic() - 0.05))
+            overlay.fade(duration, stop=lambda: STOPPING['now'])
+            return 'fade', deadline
+        if cmd == 'clear':
+            return 'stop', deadline
+        if cmd == 'status':
+            write_status(overlay, deadline)
+            return '', deadline
+        if cmd == 'quit':
+            return 'stop', deadline
+        say(f'bad command: {line}')
+    except CurtainError as e:
+        # A replacement image that will not load leaves the CURRENT frame up
+        # rather than tearing the curtain down mid-transition.
+        say(f'{cmd}: {e}')
+    except (IndexError, ValueError) as e:
+        say(f'bad command: {line} ({e})')
+    return '', deadline
+
+
+# =========================================================================
+# the CLI
+# =========================================================================
+def fifo_send(line):
+    """One command line to the daemon, NON-BLOCKING. Opening a FIFO for
+    writing blocks until a reader shows up - forever if the daemon died hard -
+    and the one thing this tool must never do is park its caller. O_NONBLOCK
+    turns that into ENXIO, which the callers below treat as 'no daemon'."""
+    try:
+        fd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno in (errno.ENXIO, errno.ENOENT):
+            return False
+        say(f'cannot open {FIFO}: {e}')
+        return False
+    try:
+        os.write(fd, line.rstrip('\n').encode() + b'\n')
+        return True
+    except OSError as e:
+        say(f'write to {FIFO} failed: {e}')
+        return False
+    finally:
+        os.close(fd)
+
+
+def wait_gone(pid, seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def spawn(image, timeout):
+    """Start the daemon and wait for it to say the window is up.
+
+    Detached (start_new_session) because it must outlive the shell that ran
+    `curtain show`, and its stdio goes to LOG because a background process
+    writing to the caller's terminal during a suspend is nobody's friend.
+    """
+    rfd, wfd = os.pipe()
+    argv = [sys.executable, os.path.abspath(__file__), '__serve__', image,
+            f'{timeout:.3f}', str(wfd)]
+    try:
+        log = open(LOG, 'a')
+    except OSError:
+        log = subprocess.DEVNULL
+    try:
+        with open(os.devnull, 'rb') as null:
+            proc = subprocess.Popen(argv, stdin=null, stdout=log, stderr=log,
+                                    pass_fds=(wfd,), start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        os.close(rfd)
+        os.close(wfd)
+        say(f'cannot start the curtain daemon: {e}')
+        return 1
+    finally:
+        if hasattr(log, 'close'):
+            log.close()
+    os.close(wfd)                              # so EOF means 'the child died'
+    try:
+        message = read_line(rfd, READY_WAIT)
+    finally:
+        os.close(rfd)
+    if message == 'READY':
+        return 0
+    if message.startswith('ERR'):
+        say(message[4:].strip() or 'the curtain daemon refused')
+        return 1
+    # No word either way: something is wrong enough that we do not want an
+    # unconfirmed window over the console. Kill it now rather than leave it to
+    # the watchdog - this is the one case where the caller is still waiting.
+    if proc.poll() is not None:
+        say(f'the curtain daemon exited ({proc.returncode}) without mapping'
+            + (f': {message}' if message else f' - see {LOG}'))
+        return 1
+    say(f'curtain did not come up within {READY_WAIT:.0f}s'
+        + (f' ({message})' if message else ''))
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    return 1
+
+
+def read_line(fd, seconds):
+    end = time.monotonic() + seconds
+    buf = b''
+    while time.monotonic() < end:
+        left = end - time.monotonic()
+        r, _, _ = select.select([fd], [], [], max(0.01, min(0.5, left)))
+        if not r:
+            continue
+        try:
+            chunk = os.read(fd, 512)
+        except OSError:
+            return ''
+        if not chunk:                          # EOF: the child is gone
+            return buf.decode('utf-8', 'replace').strip()
+        buf += chunk
+        if b'\n' in buf:
+            return buf.split(b'\n', 1)[0].decode('utf-8', 'replace').strip()
+    return buf.decode('utf-8', 'replace').strip()
+
+
+def cmd_show(image, timeout):
+    if not os.path.exists(image):
+        say(f'no such image: {image}')
+        return 1
+    if daemon_alive():
+        before = read_status().get('shows', 0)
+        if fifo_send(f'show {shlex.quote(image)} {timeout:.3f}'):
+            end = time.monotonic() + 2.0
+            while time.monotonic() < end:
+                st = read_status()
+                if st.get('shows', 0) > before and st.get('image') == image:
+                    return 0
+                if not daemon_alive():
+                    break
+                time.sleep(0.02)
+            say('the running curtain did not take the new image; replacing it')
+        # It died between the liveness check and the write, or it is wedged.
+        cmd_clear()
+    clear_stale()
+    return spawn(image, timeout)
+
+
+def cmd_fade(duration):
+    pid = daemon_pid()
+    if not daemon_alive():
+        clear_stale()
+        say('no curtain is up (nothing to fade)')
+        return 0                               # the wanted end state already holds
+    if not fifo_send(f'fade {duration:.3f}'):
+        return cmd_clear()
+    # Bounded wait so callers can sequence on it, but never a hard dependency:
+    # if the daemon is slow the watchdog still has it, so we return 0 either
+    # way rather than fail a suspend over a dissolve.
+    if not wait_gone(pid, duration + 1.5):
+        say('curtain still up after the fade window; its watchdog has it')
+    return 0
+
+
+def cmd_clear():
+    pid = daemon_pid()
+    if not daemon_alive():
+        clear_stale()
+        return 0
+    if fifo_send('clear'):
+        if wait_gone(pid, 1.5):
+            return 0
+    try:
+        os.kill(pid, signal.SIGTERM)           # the FIFO is wedged; be blunt
+    except OSError:
+        pass
+    if not wait_gone(pid, 1.5):
+        say(f'curtain pid {pid} did not exit; its watchdog will take it')
+    clear_stale()
+    return 0
+
+
+def cmd_status():
+    st = read_status()
+    alive = daemon_alive()
+    if not alive:
+        clear_stale()
+        print('no curtain is up')
+        return 1
+    st['remaining'] = round(max(0.0, st.get('remaining', 0)
+                                - (time.time() - st.get('ts', time.time()))), 2)
+    print(json.dumps(st, indent=2, sort_keys=True))
+    return 0
+
+
+def main(argv):
+    try:
+        opts = parse_args(argv)
+    except Usage as e:
+        if not e.args or e.args[0] is None:
+            print(__doc__, file=sys.stderr)
+            return 2
+        say(str(e))
+        return 2
+    # pause-snap's defaults, for the same reason: this may be run from a shell
+    # script, a Kodi addon or systemd, none of which reliably carry DISPLAY.
+    os.environ.setdefault('DISPLAY', ':0')
+    os.environ.setdefault('XAUTHORITY', os.path.expanduser('~/.Xauthority'))
+    cmd = opts['cmd']
+    if cmd == '__serve__':
+        return serve(opts['image'], opts['timeout'], opts['ready_fd'])
+    if cmd == 'show':
+        return cmd_show(opts['image'], opts['timeout'])
+    if cmd == 'fade':
+        return cmd_fade(opts['duration'])
+    if cmd == 'clear':
+        return cmd_clear()
+    return cmd_status()
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except CurtainError as e:
+        say(str(e))
+        sys.exit(1)
