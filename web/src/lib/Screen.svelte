@@ -331,7 +331,14 @@
              appearing twice. -->
         {#each wins.filter((w) => !w.kodi && w.id !== 'desktop') as w (w.id)}
           <button class="winrow" onclick={() => activate(w.id)}>
-            <Icon name="screen" size={18} /><span class="grow wintitle">{w.title}</span><Icon name="chevron-right" size={16} />
+            <!-- A paused game wears the frame it was frozen on, so the list
+                 answers "where was I?" without resuming to find out. -->
+            {#if w.thumb}
+              <img class="winthumb" src={w.thumb} alt="" loading="lazy" />
+            {:else}
+              <Icon name="screen" size={18} />
+            {/if}
+            <span class="grow wintitle">{w.title}</span><Icon name="chevron-right" size={16} />
           </button>
         {/each}
         <button class="winrow" onclick={() => activate('desktop')}>
@@ -368,6 +375,18 @@
   .winrow { justify-content: flex-start; gap: 12px; text-align: left; color: var(--ink); }
   .winrow :global(svg):first-child { color: var(--muted); }
   .wintitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sits where the row's leading icon would, at the same 18px optical weight,
+     so a paused row keeps the list's rhythm instead of growing taller. */
+  .winthumb {
+    flex: none;
+    width: 44px;
+    height: 25px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #000;
+    border: 1px solid var(--line);
+    margin: -4px 0;
+  }
   .seg button { padding: 8px 12px; }
 
   .frame {

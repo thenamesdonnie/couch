@@ -9,6 +9,7 @@ import os from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { rpc } from './kodi.js';
+import { PAUSED_DIR } from './games.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const XINPUT = path.join(__dirname, 'xinput.py');
@@ -251,6 +252,25 @@ function suspendedFlag() {
   return fs.existsSync('/tmp/game-suspended');
 }
 
+function suspendedAppid() {
+  try { return fs.readFileSync('/tmp/game-suspended', 'utf8').trim(); } catch { return ''; }
+}
+
+// The paused game's last rendered frame, captured at suspend time by
+// ~/.local/bin/pause-snap. Names carry the capture time
+// (<appid>__<epoch_ms>.jpg), so the newest is simply the last one in sort
+// order - and every capture is a new url, which is what stops a phone (or
+// Kodi) serving the frame from the previous time this game was paused.
+function pausedFrame(appid) {
+  const prefix = `${String(appid).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)}__`;
+  let names;
+  try { names = fs.readdirSync(PAUSED_DIR); } catch { return null; }
+  const hits = names
+    .filter((n) => n.startsWith(prefix) && n.endsWith('.jpg') && !n.endsWith('.tile.jpg'))
+    .sort();
+  return hits.length ? path.join(PAUSED_DIR, hits[hits.length - 1]) : null;
+}
+
 function gameLaunch(mode) {
   const p = spawn(GAME_LAUNCH, [mode], { env: XENV, detached: true, stdio: 'ignore' });
   p.unref();
@@ -274,8 +294,14 @@ export async function windows() {
   let list;
   try { list = JSON.parse(out); } catch { return []; }
   if (suspendedFlag()) {
+    // The frozen game keeps its row, marked, and now wearing the frame it was
+    // frozen on: the switcher answers "where was I?" without resuming first.
+    const frame = pausedFrame(suspendedAppid());
     for (const w of list) {
-      if ((w.cls || '').startsWith('steam_app')) w.title += ' · paused';
+      if (!(w.cls || '').startsWith('steam_app')) continue;
+      w.title += ' · paused';
+      w.paused = true;
+      if (frame) w.thumb = `/api/art/game?p=${encodeURIComponent(frame)}`;
     }
   }
   return [...list, { ...DESKTOP }];

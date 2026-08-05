@@ -287,7 +287,7 @@ def make_obs(**kw):
 # =========================================================================
 VERBS = ('freeze', 'thaw', 'route_pad', 'show', 'close_steam_menu', 'set_flag',
          'clear_flag', 'dismiss', 'launch', 'quit', 'kill', 'iconify',
-         'request_tv_wake', 'show_switcher', 'tv_toggle')
+         'request_tv_wake', 'show_switcher', 'tv_toggle', 'snapshot')
 PID_VERBS = ('freeze', 'thaw', 'quit', 'kill')
 
 
@@ -824,6 +824,27 @@ GESTURE_REASON = {
 }
 
 
+def _snapshot_intent(appid, reason):
+    """Keep the game's last rendered frame as its artwork while it is paused.
+
+    An ACTION by the legacy stack (~/.local/bin/pause-snap, called from both
+    suspend initiators), so it is a would-do here like any other. It only ever
+    follows a freeze that actually stopped something: with nothing frozen
+    there is no window whose last frame means anything, and neither live
+    script emits it - Big Picture suspends have no snapshot.
+
+    Ordering is deliberately NOT part of the contract. xfwm4 compositing keeps
+    every mapped window's pixmap, so the capture is identical before or after
+    the SIGSTOP and before or after Kodi is raised over the game; the live
+    scripts snap after the STOP only so the freeze itself stays instant, and
+    the watcher runs it off its select loop, so the effect can land a moment
+    late. The differ's window is sized for that.
+    """
+    return Intent('snapshot', appid, {'via': 'pause-snap'}, reason,
+                  _pred('a freeze-frame jpg for the appid', 5.0),
+                  requires=('gesture', 'session'), cooldown=3.0)
+
+
 def _suspend_intents(o, appid, running, reason, defer_handoff):
     """`suspend_to_kodi`: freeze whatever is running and land on Kodi.
 
@@ -846,6 +867,7 @@ def _suspend_intents(o, appid, running, reason, defer_handoff):
             'set_flag', 'suspended', {'value': appid},
             reason, _pred('/tmp/game-suspended exists', 2.0),
             requires=('gesture', 'session'), cooldown=3.0))
+        out.append(_snapshot_intent(appid, reason))
     elif o.session_mode == 'bigpicture' or o.regions.get('foreground') == 'bigpicture':
         # R7(a) done RIGHT: record the suspend even though there is nothing to
         # freeze, so the joystick repair below can never decide the pad belongs
@@ -899,6 +921,7 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
             'set_flag', 'suspended', {'value': appid},
             reason, _pred('/tmp/game-suspended exists', 2.0),
             requires=('gesture', 'session'), cooldown=3.0))
+        out.append(_snapshot_intent(appid, reason))
         handed = True
     elif o.session_present and (o.session_mode == 'bigpicture'
                                 or o.regions.get('foreground') == 'bigpicture'):

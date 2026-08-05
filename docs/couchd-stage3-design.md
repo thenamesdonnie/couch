@@ -29,6 +29,13 @@ a Kodi-first gamescope setup anywhere. Bad trade against the prime rule.
 2. Ubuntu ships gamescope in-repo (packaging risk disappears).
 3. Stage 4 — where "one compositor owning the screen" is the goal and
    gamescope/cage become prior art to study, not a wrapper to bolt on.
+4. (Added 4 Aug, post-parking) Donnie's stated appetite for
+   picture-in-picture and animated Kodi<->game transitions — features this
+   parking decision did NOT weigh, because they aren't achievable on bare
+   X11 either way. They are native stage-4 outcomes (surfaces the
+   compositor owns can be scaled/faded freely), and gamescope-nested gets
+   only partway (a scalable window, no PiP composition). If that appetite
+   grows, it strengthens the case for stage 4, not for un-parking stage 3.
 
 ## If resuming: the preserved recipe
 

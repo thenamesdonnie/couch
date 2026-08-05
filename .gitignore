@@ -16,6 +16,10 @@ web/dist/
 # Captured pad input streams: large, machine-specific, regenerated on demand.
 recordings/
 
+# Freeze-frames of paused games (pause-snap): transient screen content, written
+# at suspend and deleted on resume. Never anything to commit.
+data/paused/
+
 # Test rig output
 tools/psfuzz/
 

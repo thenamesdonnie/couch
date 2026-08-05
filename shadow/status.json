@@ -1,92 +1,94 @@
 {
- "t": 1785885523.8760908,
+ "t": 1785888278.8901863,
  "pid": 1425947,
- "uptime_s": 348.7,
+ "uptime_s": 3103.7,
  "mode": "shadow",
- "attention": false,
+ "attention": true,
  "regions": {
-  "input_ownership": "kodi",
-  "foreground": "kodi",
-  "session": "none",
+  "input_ownership": "game",
+  "foreground": "game",
+  "session": "active",
   "enforcement": "none",
   "gesture": "idle",
   "pad": "absent"
  },
- "games": {},
+ "games": {
+  "1771300": "RUNNING"
+ },
  "last_would_do": [
-  "would show_switcher tv [gesture:double-tap-switcher]",
-  "would show kodi [gesture:double-tap-switcher]",
-  "would show kodi [guard:wanted-window-not-on-top]"
+  "would route_pad kodi [reconcile:joystick-setting-drift]",
+  "would show 1771300 [guard:kodi-on-top-mid-game]",
+  "would request_tv_wake tv [transition:session-started]"
  ],
  "observers": {
   "pad": {
    "ok": true,
    "events": 36,
    "detail": "0 node(s)",
-   "age_s": 1.7,
+   "age_s": 0.6,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 5,
-   "detail": "1 present",
+   "events": 10,
+   "detail": "2 present",
    "age_s": 0.1,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 0,
-   "detail": "0 pid(s)",
+   "events": 51,
+   "detail": "17 pid(s)",
    "age_s": 0.0,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 16,
-   "detail": "joystick=True window=12000",
-   "age_s": 0.1,
+   "events": 108,
+   "detail": "joystick=False window=12000",
+   "age_s": 3.1,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 1,
-   "detail": "0 app(s) tracked",
+   "events": 12,
+   "detail": "1 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 0,
-   "detail": "quiet",
+   "events": 2,
+   "detail": "quit (save and close)",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 36,
-   "detail": "top='Kodi'",
+   "events": 194,
+   "detail": "top='Kingdom Come: Deliverance II'",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 92,
+  "obs": 316,
   "daemon": 1,
-  "transition": 38,
+  "transition": 57,
   "invariant": 1,
   "observer_blind": 1,
-  "intent": 16,
-  "agreement": 5
+  "intent": 22,
+  "agreement": 80
  },
- "passes": 432,
- "intents": 16,
+ "passes": 2423,
+ "intents": 22,
  "invariant_violations": 0,
  "ps_presses": {
   "evdev": 9,
   "steam_guide_lines": 0,
   "first_event_latency_s": 2.924
  },
- "last_trigger": "",
+ "last_trigger": "quit (save and close)",
  "resource_leaks": [
   "stale guard pidfile (pid 1375392)"
  ],
@@ -102,5 +104,5 @@
   "double_tap_seconds": 0.35,
   "long_hold_seconds": 3.0
  },
- "shadow_log": "/home/ds2000/couch/shadow/couchd-20260804.jsonl"
+ "shadow_log": "/home/ds2000/couch/shadow/couchd-20260805.jsonl"
 }

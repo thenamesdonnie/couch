@@ -106,6 +106,67 @@ def main():
             sys.exit('kodi window not found')
         return
 
+    if cmd == 'gamewin':
+        # The game's OWN window, by the same rule game-launch's focus_game
+        # uses to decide what to raise: a window whose _NET_WM_PID is one of
+        # the game's processes, or whose class is the steam_app_<appid> Proton
+        # stamps on it (which survives even when the window's pid belongs to a
+        # wine helper nobody pgrepped). Biggest match wins - games open splash
+        # and helper windows too. Falls back to the biggest non-furniture
+        # window for native games with unhelpful window pids.
+        #
+        #   xinput.py gamewin [pid ...]
+        #
+        # Callers: pause-snap, which grabs this window while the game is
+        # frozen. Printing an id costs nothing and touches nothing.
+        wanted = set()
+        for a in sys.argv[2:]:
+            try:
+                wanted.add(int(a))
+            except ValueError:
+                pass
+        NET_PID = d.intern_atom('_NET_WM_PID')
+        NOT_GAMES = {'Kodi', 'xfdesktop', 'xfce4-panel', 'steamwebhelper'}
+        best = [None]       # (area, id) of a positive match
+        fallback = [None]   # ...of the biggest thing that is not furniture
+
+        def scan(w):
+            try:
+                children = w.query_tree().children
+            except Exception:
+                return
+            for c in children:
+                try:
+                    if c.get_attributes().map_state == X.IsViewable:
+                        g = c.get_geometry()
+                        area = g.width * g.height
+                        try:
+                            p = c.get_full_property(NET_PID, 0)
+                            pid = int(p.value[0]) if p else 0
+                        except Exception:
+                            pid = 0
+                        try:
+                            cls = (c.get_wm_class() or ('', ''))[0] or ''
+                        except Exception:
+                            cls = ''
+                        if (pid and pid in wanted) or cls.startswith('steam_app'):
+                            if best[0] is None or area > best[0][0]:
+                                best[0] = (area, c.id)
+                        elif (cls and cls not in NOT_GAMES
+                              and g.width >= 600 and g.height >= 400):
+                            if fallback[0] is None or area > fallback[0][0]:
+                                fallback[0] = (area, c.id)
+                except Exception:
+                    pass
+                scan(c)
+
+        scan(root)
+        hit = best[0] or fallback[0]
+        if not hit:
+            sys.exit('game window not found')
+        print(hex(hit[1]))
+        return
+
     if cmd == 'windows':
         # The managed top-level windows (EWMH _NET_CLIENT_LIST), minus furniture
         # (the desktop, panels), each with its title - so the phone can offer a

@@ -305,8 +305,9 @@ def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
     assert rig.machine.regions['gesture'] == 'double-tap'
     order = [(i.verb, i.subject) for i in got]
     assert order == [('freeze', APPID), ('set_flag', 'suspended'),
-                     ('route_pad', 'kodi'), ('show', 'kodi'),
-                     ('close_steam_menu', 'steam'), ('show_switcher', 'tv')]
+                     ('snapshot', APPID), ('route_pad', 'kodi'),
+                     ('show', 'kodi'), ('close_steam_menu', 'steam'),
+                     ('show_switcher', 'tv')]
     assert find(got, 'freeze')[0].args['pids'] == [200, 201]
     assert find(got, 'show_switcher')[0].args['suspended_first'] is True
     rig.observe()
@@ -384,6 +385,86 @@ def test_a_tap_that_resumes_a_paused_game_cannot_become_a_double():
 
 
 # =========================================================================
+# the paused game's freeze-frame (pause-snap)
+#
+# An ACTION by the legacy stack - both suspend initiators capture the game
+# window's last rendered frame and keep it as that game's artwork while it is
+# frozen - so it is a would-do here like any other verb. It landed in both
+# stacks in the same change, so like show_switcher there is no T5 whitelist
+# entry: it must appear in BOTH streams or it is a real T4.
+# =========================================================================
+def test_a_hold_that_freezes_a_game_also_snapshots_it():
+    """Right after the flag, and BEFORE the pad moves: the frame belongs to
+    the freeze, not to the handoff (which does not happen until release)."""
+    rig = Rig(session=SESSION, pid_states={200: 'S', 201: 'S'}, joystick=False,
+              top_name='Elden Ring', top_class='steam_app_367520').settle()
+    k0 = 14000.0
+    _press(rig, k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95)
+    assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
+                          ('snapshot', APPID)]
+    snap = find(got, 'snapshot')[0]
+    assert snap.args['via'] == 'pause-snap'
+    assert snap.reason == 'gesture:ps-hold'
+    assert snap.requires == ('gesture', 'session')
+
+
+def test_the_phone_switcher_suspend_snapshots_the_same_way():
+    """game-launch's suspend branch is the other initiator; the model does not
+    distinguish them, which is the point - one verb, both callers."""
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 regions={'gesture': 'hold-fired', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'game'},
+                 top_name='Elden Ring', top_class='steam_app_367520')
+    got = action_intents(o, 'hold', APPID, [200], defer_handoff=False)
+    order = verbs(got)
+    assert order.index(('snapshot', APPID)) == order.index(
+        ('set_flag', 'suspended')) + 1
+    assert order.index(('snapshot', APPID)) < order.index(('route_pad', 'kodi'))
+
+
+def test_a_big_picture_suspend_has_no_frame_to_capture():
+    """Nothing was frozen, so there is no game window whose last frame means
+    anything - and neither live script runs pause-snap on this path."""
+    o = make_obs(session=BP_SESSION, big_picture_window=True, joystick=False,
+                 regions={'gesture': 'hold-fired', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'bigpicture'},
+                 top_name='Big Picture Mode', top_class='steamwebhelper')
+    got = action_intents(o, 'hold', None, [], defer_handoff=False)
+    assert find(got, 'set_flag', 'suspended'), 'the suspend is still recorded'
+    assert not find(got, 'snapshot')
+
+
+def test_no_snapshot_when_there_is_nothing_to_suspend():
+    o = make_obs(regions={'gesture': 'hold-fired', 'session': 'none'},
+                 top_name='Thunar', top_class='Thunar')
+    assert not find(action_intents(o, 'hold', None, []), 'snapshot')
+
+
+def test_the_switcher_gesture_snapshots_too():
+    """The double-tap borrows the whole suspend path, frame included."""
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              top_name='Elden Ring', top_class='steam_app_367520').settle()
+    k0 = 14500.0
+    _tap(rig, k0)
+    got = _tap(rig, k0 + 0.2, double_armed=True)
+    snap = find(got, 'snapshot', APPID)
+    assert snap and snap[0].reason == 'gesture:ps-double-tap'
+    order = verbs(got)
+    assert order.index(('snapshot', APPID)) < order.index(('show_switcher', 'tv'))
+
+
+def test_snapshot_is_suppressed_while_the_session_region_is_unknown():
+    """R4: it requires session, so a blind session observer means no
+    would-do rather than a guessed one."""
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 regions={'gesture': 'hold-fired', 'session': UNKNOWN,
+                          'input_ownership': 'game', 'foreground': 'game'},
+                 top_name='Elden Ring', top_class='steam_app_367520')
+    assert not find(reconcile(o), 'snapshot')
+
+
+# =========================================================================
 # key bindings (the addon's settings page, read through gestureconf)
 #
 # ONE file feeds both stacks: the live watcher dispatches on it and the model
@@ -427,8 +508,9 @@ def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
                                hold_release='suspend_to_kodi'))
     got = reconcile(o)
     assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
-                          ('route_pad', 'kodi'), ('show', 'kodi'),
-                          ('close_steam_menu', 'steam'), ('show_switcher', 'tv')]
+                          ('snapshot', APPID), ('route_pad', 'kodi'),
+                          ('show', 'kodi'), ('close_steam_menu', 'steam'),
+                          ('show_switcher', 'tv')]
     # not the hold's deferred handoff: a switcher hands off at once, exactly
     # as the double-tap one always has
     assert find(got, 'show_switcher')[0].reason == 'gesture:ps-hold-switcher'

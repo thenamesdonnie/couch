@@ -35,6 +35,12 @@ TOLERANCE = {                       # seconds, per verb, +/- around the legacy e
     # streams or it is a real T4. The watcher fires the addon immediately
     # after its suspend, couchd emits the intent in the same pass.
     'show_switcher': 3.0,
+    # The paused game's freeze-frame. Both stacks gained it in the same change,
+    # so like show_switcher there is no T5 entry: it must appear in BOTH
+    # streams. Wider than the flag verbs it follows because the watcher runs
+    # pause-snap off its select loop (a blocked watcher is a pad that stops
+    # responding), so the legacy line can trail its own freeze by a beat.
+    'snapshot': 5.0,
     # Only reachable from a non-default key binding (Couch Switcher >
     # Configure). Both stacks decide it off the same gestureconf read, so it
     # is diffable like everything else; the window is wide because the effect

@@ -439,6 +439,50 @@ def test_snapshot_context_uses_real_schema():
         assert 'transition:pad' in sd.render(rep)
 
 
+# ------------------------------------------- the paused game's freeze-frame
+# Verb name collision worth stating: the shadow stream ALSO has a world record
+# with kind=="snapshot". as_intent() takes kind in (None, 'intent') only, so
+# the two never meet - the tests below and test_snapshot_context_uses_real_schema
+# above exercise both halves of that.
+def test_pause_snap_matches_across_the_watchers_background_delay():
+    """The watcher runs pause-snap off its select loop, so the legacy line can
+    trail the freeze it belongs to. 5s of tolerance covers that."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'freeze', '730', pids=[100], resolver='game-pids'),
+                   legacy(0.1, 'set_flag', 'suspended', value='730'),
+                   legacy(1.8, 'snapshot', '730', via='pause-snap',
+                          gesture='hold', reason='ps-hold')],
+                  [couchd(0.1, 'freeze', '730', pids=[100], resolver='game-pids'),
+                   couchd(0.15, 'set_flag', 'suspended', value='730'),
+                   couchd(0.2, 'snapshot', '730', via='pause-snap')])
+        s = sections(rep)
+        assert rep['matched_total'] == 3, rep['matched_total']
+        assert all(not s[k] for k in sd.SECTIONS), s
+
+
+def test_a_snapshot_only_one_stack_took_is_a_divergence():
+    """No T5 entry: it landed in both stacks in the same change, so a missing
+    frame on either side is a real row for triage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'freeze', '730', pids=[100], resolver='game-pids')],
+                  [couchd(0.1, 'freeze', '730', pids=[100], resolver='game-pids'),
+                   couchd(0.2, 'snapshot', '730', via='pause-snap')])
+        s = sections(rep)
+        assert [r['verb'] for r in s['COUCHD-ONLY']] == ['snapshot'], s
+        assert not s['LEGACY-ONLY']
+
+
+def test_snapshots_of_different_games_never_pair_up():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'snapshot', '730', via='pause-snap')],
+                  [couchd(0.2, 'snapshot', '367520', via='pause-snap')])
+        s = sections(rep)
+        assert len(s['LEGACY-ONLY']) == 1 and len(s['COUCHD-ONLY']) == 1, s
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):

@@ -11,6 +11,10 @@ export const STEAMAPPS = path.join(HOME, '.steam/steam/steamapps');
 export const LIBCACHE = path.join(HOME, '.steam/debian-installation/appcache/librarycache');
 export const PS4_DIR = path.join(HOME, 'games/ps4');
 export const TILE_DIR = path.join(HOME, '.local/share/game-tiles');
+// Freeze-frames of paused games, written by ~/.local/bin/pause-snap at
+// suspend time. Game art like any other, so it is served through the same
+// /api/art/game route rather than growing a route of its own.
+export const PAUSED_DIR = path.join(HOME, 'couch/data/paused');
 const SHADPS4_APP = path.join(HOME, '.local/share/shadps4/Shadps4-sdl.AppImage');
 
 const PLUMBING = /proton|steam linux runtime|steamworks common/i;
@@ -133,5 +137,5 @@ export function listGames() {
 // refused however the path was built.
 export function isAllowedArt(p) {
   const real = path.resolve(p);
-  return [LIBCACHE, PS4_DIR, TILE_DIR].some((root) => real.startsWith(root + path.sep));
+  return [LIBCACHE, PS4_DIR, TILE_DIR, PAUSED_DIR].some((root) => real.startsWith(root + path.sep));
 }
