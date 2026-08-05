@@ -146,6 +146,16 @@ rows gate post-flip (currently hand-triage).
 
 ### TV upgrade (researched 5 Aug 2026, decision Donnie's)
 
+**GPU swap-day is prepped (5 Aug):** base OS is already RDNA4-ready (Mesa
+25.2, kernel 6.14, navi48 firmware present). Pre-staged: couch House GPU
+card reads amdgpu sysfs when nvidia-smi is gone (cb102ca), whisper-asr
+falls back to CPU int8 by itself, kodi-tv applies amdgpu TearFree
+alongside the NVIDIA line, Sunshine auto-detects VAAPI (nothing pinned).
+Swap day = fit card + PSU, then `sudo bash ~/gpu-swap/gpu-swap-9070xt.sh`
+(purges NVIDIA stack, deletes the xorg.conf NVIDIA pins that would
+black-screen X, installs TearFree conf + VA/Vulkan tools), reboot, run
+the printed sanity checks. Revert path in the script header.
+
 **GPU swap plan (researched 5 Aug, Donnie leaning yes):** 9070 XT into this
 box (PSU swap needed, ~300W card), 4070 to the main PC. On Linux amdgpu can't
 do HDMI 2.1 (4K60 max over native HDMI) BUT: (a) DP->HDMI 2.1 adapters are
