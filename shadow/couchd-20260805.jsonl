@@ -5862,3 +5862,4 @@
 {"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785940959.5740578, "mono": 23849.719239169, "seq": 43}
 {"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785940989.5741885, "mono": 23879.719370657, "seq": 44}
 {"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785941019.574463, "mono": 23909.719643313, "seq": 45}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785941049.5747485, "mono": 23939.719928874, "seq": 46}
