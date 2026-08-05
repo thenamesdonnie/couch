@@ -6213,3 +6213,11 @@
 {"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943779.6082644, "mono": 26669.75344596, "seq": 394}
 {"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943809.607995, "mono": 26699.753176127, "seq": 395}
 {"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943839.6082466, "mono": 26729.753427665, "seq": 396}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943869.6083, "mono": 26759.753481531, "seq": 397}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943899.608631, "mono": 26789.753812367, "seq": 398}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943929.6087894, "mono": 26819.753971089, "seq": 399}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943959.6090233, "mono": 26849.754204293, "seq": 400}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785943989.6089056, "mono": 26879.754086927, "seq": 401}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785944019.609515, "mono": 26909.75469674, "seq": 402}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785944049.6096938, "mono": 26939.754875377, "seq": 403}
+{"kind": "obs", "source": "kodi", "event": "notification", "method": "Other.KeepAlive", "params": {"data": [{}], "sender": "plugin.video.jellyfin"}, "t": 1785944079.6099918, "mono": 26969.755173154, "seq": 404}
