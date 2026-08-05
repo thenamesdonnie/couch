@@ -13,7 +13,7 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
-## 🟡 DISK INCIDENT (5 Aug 14:57) - RECOVERED 15:36, watch phase
+## ✅ DISK INCIDENT (5 Aug 14:57) - RESOLVED, experiment concluded
 
 disk1 dropped offline under the Simpsons season-pack write load (second
 RTL9210 dropout; first was during zip extraction). Donnie applied the
@@ -144,7 +144,13 @@ rows gate post-flip (currently hand-triage).
 
 **Suites:** couchd 441, tools 213, gitleaks clean.
 
-### TV upgrade (researched 5 Aug 2026, decision Donnie's)
+### TV upgrade — BOUGHT 5 Aug evening: LG C5 + Hisense AX5140Q (5.1.4)
+
+Arrival day: TV = the tv-setup-lg flow below; soundbar = C5 eARC port
+(HDMI 3 on most C5s), enable passthrough in Kodi audio settings, TV
+sound out = HDMI-ARC device. Also install Jellyfin from the LG store
+(native 4K HDR/DV) and reserve the TV's IP on the router. Un-parks
+couchd stage 3 (HDMI 2.1 + VRR exists now).
 
 **GPU swap-day is prepped (5 Aug):** base OS is already RDNA4-ready (Mesa
 25.2, kernel 6.14, navi48 firmware present). Pre-staged: couch House GPU
