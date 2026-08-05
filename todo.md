@@ -132,6 +132,34 @@ everything else", commits a414699..d43fb75):
 - Model fingerprint is now `d1adeed4083a` (several restarts this
   afternoon; tonight's differ read MUST use --window from ~17:10).
 
+Transition polish track (evening, Donnie's "start on transition stuff",
+commits 4912383 + 049d114 - BUILT AND TESTED, NOTHING DEPLOYED):
+- `tools/curtain`: freeze-frame overlay hiding the suspend/resume window
+  shuffle, synchronous show (~0.24s), fade via compositor opacity,
+  double watchdog (a stuck curtain is impossible), click-through, 40
+  Xvfb-isolated tests. NOT wired into anything yet.
+- Switcher dialog rebuilt as an animated bottom sheet (280ms slide+fade
+  in, thumbnails), addon-local textures so skin updates can't revert
+  it; `ui.animated_dialog=false` = instant rollback to the stock
+  dialog; XML failure falls back to stock loudly. couchd's effect check
+  and the sweep already accept both window shapes (12000 + the
+  13000-13099 python-window pool - Kodi can't pin custom dialog ids).
+- DEPLOY DAY (after the gestures acceptance, in order): (1) whitelist
+  WM_CLASS couch-curtain in BOTH stacks' foreground classification
+  (couchd fg region + legacy frozen-game-visible repair) - a model
+  change: differ note, fingerprint moves, couchd restart; (2) reload
+  the switcher addon, verify dialog draws + stick navigates during the
+  slide + effect verdicts confirmed; (3) live-test curtain standalone;
+  (4) wire curtain into game-launch suspend/resume; (5) gesture-sweep
+  must pass 12/12 after all of it. Longer arc: the curtain becomes
+  couchd's opening move when `transitions` flips.
+- Also agreed in chat, not yet built: CPU work for tomorrow (global
+  60fps cap via DXVK_FRAME_RATE + MangoHud in the Steam unit env,
+  CPUWeight slice for qB/arr/Jellyfin, game-session-keyed governor
+  watcher - governor flip needs sudo, goes on Donnie's list). GPU plan:
+  9070 XT stays on Ubuntu (kernel 6.14 + Mesa 25.2 ready); SteamOS
+  ruled out for this box; stage 3 gamescope spike after the swap.
+
 **NEXT:** (1) Donnie's evening pass = the acceptance for `gestures`;
 (2) morning after: `tools/shadow-diff --window` over the evening (the
 differ now gates on acting health too);
