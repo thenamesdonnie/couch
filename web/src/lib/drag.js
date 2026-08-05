@@ -28,6 +28,16 @@ export function dragDismiss(node, { onClose }) {
   let dy = 0;
   let mode = null; // null = undecided, 'drag' = ours, 'ignore' = native scroll
   let scroller = null;
+  let raf = 0;
+
+  // Buttery-follow rules: the transform write happens at most once per display
+  // frame (rAF), not once per touch event, and the sheet is promoted to its
+  // own compositor layer (will-change) the moment the drag starts, so iOS
+  // moves an already-rasterised layer instead of repainting mid-gesture.
+  function applyFrame() {
+    raf = 0;
+    node.style.transform = `translateY(${dy}px)`;
+  }
 
   // The nearest scrollable (in the given axis) between the touch and the
   // sheet root, or the root itself. null = nothing here scrolls that way.
@@ -66,6 +76,8 @@ export function dragDismiss(node, { onClose }) {
       if (Math.abs(moveX) < 8 && Math.abs(moveY) < 8) return; // not yet a gesture
       if (moveY > Math.abs(moveX) && (!scroller || scroller.scrollTop <= 0)) {
         mode = 'drag';
+        node.style.transition = '';
+        node.style.willChange = 'transform';
       } else if (Math.abs(moveX) > Math.abs(moveY)) {
         // horizontal: hands off only if something here scrolls horizontally
         // (season pills row); otherwise consume so nothing behind moves.
@@ -80,20 +92,23 @@ export function dragDismiss(node, { onClose }) {
     if (mode !== 'drag') return;
     dy = Math.max(0, t.clientY - startY);
     e.preventDefault(); // ours now - no scroll, no rubber-band
-    node.style.transition = '';
-    node.style.transform = `translateY(${dy}px)`;
+    if (!raf) raf = requestAnimationFrame(applyFrame);
   }
 
   function onEnd() {
     if (mode !== 'drag') return;
     mode = null;
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    node.style.transform = `translateY(${dy}px)`; // land on the final position
     if (dy > 110) {
       node.dataset.dragY = String((dy / node.offsetHeight) * 100);
       onClose();
     } else if (dy > 0) {
       node.style.transition = 'transform 0.25s cubic-bezier(0.22, 1, 0.36, 1)';
       node.style.transform = '';
-      setTimeout(() => { node.style.transition = ''; }, 260);
+      setTimeout(() => { node.style.transition = ''; node.style.willChange = ''; }, 260);
+    } else {
+      node.style.willChange = '';
     }
   }
 
