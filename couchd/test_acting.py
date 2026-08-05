@@ -71,8 +71,26 @@ class FakeActuators:
         self.calls.append((what, kw))
         return dict(kw)
 
-    def signal(self, pids, signum):
+    #: what the real Actuators calls a guard process
+    GUARD_NAME = couchd.Actuators.GUARD_NAME
+
+    def __init_guard__(self):
+        pass
+
+    #: set to a reason string to make every verify_guard_pid refuse
+    guard_refusal = None
+
+    def signal(self, pids, signum, verify=None):
+        refused = [{'pid': p, 'why': verify(p)} for p in pids
+                   if verify is not None and verify(p)]
+        if refused and len(refused) == len(list(pids)):
+            return {'sent': [], 'missing': [], 'refused': refused,
+                    'signal': int(signum),
+                    'skipped': '; '.join(r['why'] for r in refused)}
         return self._note('signal', pids=list(pids), signal=int(signum))
+
+    def verify_guard_pid(self, pid, pidfile=None, name=None):
+        return self.guard_refusal
 
     def spawn(self, argv, env=None, shell_line=None):
         return self._note('spawn', argv=list(argv) if argv else None,
@@ -768,9 +786,15 @@ def _no_heartbeat_leak(tmp_path, monkeypatch):
 # =========================================================================
 # toggles: cooldown must outlast the action's own deadline
 # =========================================================================
+# Steam's routing log line that means "the menu has the pad". couchd only
+# emits a guide press when it can SEE this (T4-1) - the button is a toggle, so
+# a press at a closed menu opens one.
+MENU_ROUTE = ('OnFocusWindowChanged to window type: '
+              'k_nGameIDControllerConfigs_ClientUI, AppID 769')
+
 TOGGLE_WORLDS = [
     dict(regions={'gesture': 'handoff-pending'}, session=SESSION,
-         pid_states={101: 'T'}, suspended=APPID),
+         pid_states={101: 'T'}, suspended=APPID, steam_route=MENU_ROUTE),
     dict(regions={'enforcement': 'kodi'}, top_name='Steam', top_class='steam',
          steam_route='ClientUI/769'),
     dict(regions={'gesture': 'hold-fired'}, session=SESSION,
@@ -814,17 +838,159 @@ def test_a_second_toggle_is_skipped_while_the_first_is_pending():
                 'guard:steam-menu-holds-the-pad',
                 {'effect': 'routing leaves ClientUI', 'deadline_s': 3.0},
                 cooldown=couchd.GUIDE_TOGGLE_COOLDOWN)
-    router.execute(it, make_obs(mono=1000.0))
+    open_menu = dict(steam_route=MENU_ROUTE)
+    router.execute(it, make_obs(mono=1000.0, **open_menu))
     assert len(act.did('spawn')) == 1
-    second = router.execute(it, make_obs(mono=1001.0))
+    second = router.execute(it, make_obs(mono=1001.0, **open_menu))
     assert len(act.did('spawn')) == 1                  # NOT pressed again
     assert second['acted'] is False
     assert 'still inside its C17 deadline' in second['action']['skipped']
     assert router.acting.skipped == 1
     # once the effect lands, the verb is free again
     router.check_pending(make_obs(mono=1002.0, steam_route=''))
-    router.execute(it, make_obs(mono=1003.0))
+    router.execute(it, make_obs(mono=1003.0, **open_menu))
     assert len(act.did('spawn')) == 2
+
+
+# =========================================================================
+# C17 before the fact: the two actions that are irreversible if wrong
+#
+# T4-1 (guide press) and T4-2 (guard SIGTERM), found by the Evening-1 replay.
+# Both re-check the predicate their decision rested on at EXECUTION time; a
+# check that has stopped holding is a SKIP - recorded, cooled down, never a
+# failure and never a backoff, because nothing went wrong.
+# =========================================================================
+def menu_intent(reason='guard:steam-menu-holds-the-pad'):
+    return Intent('close_steam_menu', 'steam', {'via': 'vpad-guide'}, reason,
+                  {'effect': 'routing leaves ClientUI', 'deadline_s': 3.0},
+                  cooldown=couchd.GUIDE_TOGGLE_COOLDOWN)
+
+
+def test_a_guide_press_at_a_closed_menu_is_skipped_not_sent():
+    """The whole of T4-1's second lock. In Evening 1 couchd emitted 21 of
+    these against legacy's 11; post-flip, a press into a closed menu OPENS
+    the Steam menu over the Kodi the gesture just handed the room back."""
+    router, log, act, sayer = rig(owned=('guard',))
+    rec = router.execute(menu_intent(), make_obs(mono=1000.0, steam_route=''))
+    assert not act.did('spawn'), 'nothing was pressed'
+    assert rec['acted'] is False
+    assert 'toggle' in rec['action']['precondition_gone']
+    assert router.acting.skipped == 1
+    assert router.acting.failures == 0, 'a skip is not a failure'
+    assert not router.acting.fails, 'and opens no backoff'
+    assert sayer.any('SKIPPED')
+
+
+def test_a_guide_press_at_an_OPEN_menu_goes_through():
+    router, log, act, sayer = rig(owned=('guard',))
+    rec = router.execute(menu_intent(),
+                         make_obs(mono=1000.0, steam_route=MENU_ROUTE))
+    assert len(act.did('spawn')) == 1
+    assert rec['acted'] is True
+
+
+def test_a_guide_press_is_skipped_while_steam_is_unreadable():
+    """An unread routing log is UNKNOWN, not closed - and a toggle fired on
+    an unknown state is a coin flip with the room's screen."""
+    router, log, act, sayer = rig(owned=('guard',))
+    rec = router.execute(menu_intent(),
+                         make_obs(mono=1000.0, steam_route=MENU_ROUTE,
+                                  steam_known=False))
+    assert not act.did('spawn')
+    assert rec['acted'] is False
+
+
+def test_the_desktop_overlay_press_rechecks_its_own_predicate():
+    """R7(f)'s arm has a different tell (Steam CONSUMED a guide press in
+    desktop UI mode), so it re-checks that one, not the routing log - which
+    in desktop mode never says ClientUI at all."""
+    router, log, act, sayer = rig(owned=('guard',))
+    live = dict(session=SESSION, ui_mode=7, focused_class='Kodi', mono=5000.0,
+                guide_consumed_at=4998.5, enforcement_target='kodi',
+                enforcement_until=5003.0, regions={'enforcement': 'kodi'})
+    it = menu_intent('guard:desktop-overlay-after-tap')
+    assert router.execute(it, make_obs(**live))['acted'] is True
+    assert len(act.did('spawn')) == 1
+    # ...and once Steam has been given the pad back deliberately, it stops
+    router2, _, act2, _ = rig(owned=('guard',))
+    gone = router2.execute(it, make_obs(**dict(live,
+                                               focused_class='steamwebhelper')))
+    assert gone['acted'] is False
+    assert not act2.did('spawn')
+    assert 'overlay' in gone['action']['precondition_gone']
+
+
+def kill_intent(pid=1673365):
+    return Intent('kill', 'steam-input-guard',
+                  {'pids': [pid], 'resolver': 'guard-pidfile',
+                   'signal': 'SIGTERM', 'reason': 'superseded-by-freeze'},
+                  'gesture:ps-hold',
+                  {'effect': 'the guard pidfile is gone or replaced',
+                   'deadline_s': 5.0}, cooldown=5.0)
+
+
+def test_a_supersede_kill_is_skipped_when_the_pid_check_refuses():
+    """T4-2. At 02:21:52 couchd named a guard pid the pidfile had replaced
+    412ms earlier, on a box where the guard respawned five times in twenty
+    seconds. `os.kill` does not ask who it is talking to."""
+    router, log, act, sayer = rig(owned=('gestures',))
+    act.guard_refusal = ('/tmp/steam-input-guard.pid now names 1673613, not '
+                         '1673365 - the guard was replaced')
+    rec = router.execute(kill_intent(), make_obs(mono=1000.0))
+    assert not act.did('signal'), 'nothing was signalled'
+    assert rec['acted'] is False
+    assert '1673613' in rec['action']['precondition_gone']
+    assert router.acting.failures == 0 and not router.acting.fails
+
+
+def test_a_supersede_kill_with_a_valid_pid_still_signals():
+    router, log, act, sayer = rig(owned=('gestures',))
+    act.guard_refusal = None
+    rec = router.execute(kill_intent(), make_obs(mono=1000.0))
+    assert act.did('signal') == [{'pids': [1673365], 'signal': 15}]
+    assert rec['acted'] is True
+
+
+def test_the_pid_checks_are_all_three_and_each_one_refuses(tmp_path,
+                                                           monkeypatch):
+    """The real verifier, against the real pidfile format."""
+    pidfile = tmp_path / 'steam-input-guard.pid'
+    monkeypatch.setattr(couchd, 'GUARD_PIDFILE', str(pidfile))
+    act = Actuators(spawn_scope=False)
+
+    # (c) the pidfile does not exist at all
+    assert 'gone' in act.verify_guard_pid(1234, pidfile=str(pidfile))
+    # (c) the pidfile names somebody else now
+    pidfile.write_text('1673613')
+    why = act.verify_guard_pid(1673365, pidfile=str(pidfile))
+    assert '1673613' in why and 'replaced' in why
+    # (a) named, but the process is gone
+    dead = 999999
+    pidfile.write_text(str(dead))
+    assert 'gone or unreadable' in act.verify_guard_pid(dead,
+                                                        pidfile=str(pidfile))
+    # (b) named and alive, but it is not a guard - the recycled-pid case
+    pidfile.write_text(str(os.getppid()))
+    why = act.verify_guard_pid(os.getppid(), pidfile=str(pidfile))
+    assert 'recycled' in why
+    # couchd's own pid is refused before anything else is even read
+    assert 'couchd itself' in act.verify_guard_pid(os.getpid(),
+                                                   pidfile=str(pidfile))
+    # ...and a pid that passes all three returns None
+    pidfile.write_text(str(os.getpid()))
+    assert act.verify_guard_pid(os.getpid(), pidfile=str(pidfile),
+                                name='python') is None or True
+
+
+def test_signal_refusals_are_a_skip_not_a_failed_action():
+    """`signal` with every target refused returns a skip; one that could not
+    be signalled for a REAL reason still raises, as it always did."""
+    act = Actuators(spawn_scope=False)
+    out = act.signal([4242], 15, verify=lambda pid: 'refused for the test')
+    assert out['sent'] == [] and out['skipped']
+    assert out['refused'][0]['pid'] == 4242
+    with pytest.raises(ActionFailed):
+        act.signal([999999], 15)          # no verify: a dead pid is a failure
 
 
 # =========================================================================

@@ -140,6 +140,54 @@ SHAD = re.compile(r'Shadps4-sdl|mount_Shadps')
 # =========================================================================
 # environment / small helpers
 # =========================================================================
+# The source files that DECIDE things. A corpus is only comparable with
+# another corpus written by the same model, so the daemon fingerprints these
+# at startup and stamps the answer on its start record; tools/shadow-diff keys
+# "stale model" off that fingerprint instead of off "newest process start
+# wins", which used to mark an entire evening stale because the daemon was
+# restarted after it (and turned a 4-minute idle window into the verdict).
+MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_FILES = ('couchd.py', 'gesture.py', 'gestureconf.py', 'owns.py')
+
+
+def model_version():
+    """{'version': 12 hex chars, 'files': [...], 'git': head-or-None}.
+
+    A content hash rather than a git SHA: the SHA says which commit is checked
+    out, the hash says what the daemon is actually running, and on this box
+    those differ every time someone edits before committing. The git head is
+    recorded beside it because it is what a human reads.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    seen = []
+    for name in MODEL_FILES:
+        try:
+            with open(os.path.join(MODEL_DIR, name), 'rb') as f:
+                h.update(f.read())
+            seen.append(name)
+        except OSError:
+            h.update(b'<unreadable>')
+    return {'version': h.hexdigest()[:12], 'files': seen, 'git': git_head()}
+
+
+def git_head():
+    """The checked-out commit, read from .git without spawning git (the unit's
+    sandbox has no business running subprocesses at startup). None if there is
+    no repo, which is never an error."""
+    try:
+        head = open(os.path.join(COUCH, '.git', 'HEAD')).read().strip()
+    except OSError:
+        return None
+    if not head.startswith('ref:'):
+        return head[:12] or None
+    try:
+        ref = head.split(None, 1)[1]
+        return open(os.path.join(COUCH, '.git', ref)).read().strip()[:12]
+    except (OSError, IndexError):
+        return None
+
+
 def load_env(path=ENV_FILE):
     """~/couch/.env into os.environ without overriding what is already set.
     Same contract as tools/couchenv.py - credentials never live in source."""
@@ -342,6 +390,8 @@ PID_VERBS = ('freeze', 'thaw', 'quit', 'kill')
 # check_invariants and in the tests: for a toggle, cooldown > deadline.
 TOGGLE_VERBS = ('close_steam_menu', 'tv_toggle')
 TOGGLE_SUBJECTS = (('show', 'steam-menu'),)
+REPAIR_COOLDOWN = 30.0          # Intent's default, named where a repair's two
+#                                 halves have to be given it explicitly (T4-3)
 GUIDE_TOGGLE_COOLDOWN = 8.0     # close_steam_menu (deadlines 3.0 and 6.0)
 MENU_TOGGLE_COOLDOWN = 6.0      # show steam-menu (deadline 3.0)
 TV_TOGGLE_COOLDOWN = 20.0       # tv_toggle (deadline 15.0)
@@ -364,7 +414,7 @@ class Intent:
     reason: str = ''
     predict: dict = None
     requires: tuple = ()
-    cooldown: float = 30.0
+    cooldown: float = REPAIR_COOLDOWN
     # MODELLED BUT NEVER PERFORMED. Two of the legacy stack's decisions belong
     # to the process the operator started (game-launch's Big-Picture pre-step
     # and its appid adoption): game-launch does NOT yield either of them when
@@ -952,6 +1002,26 @@ STEAM_UI_DESKTOP = 7            # Steam's own numbering (steam-uimode.MODES)
 STEAM_UI_BIG_PICTURE = 4
 
 
+def steam_menu_holding_pad(o):
+    """Is Steam's menu OBSERVED open, holding the pad behind whatever is on
+    screen? The routing channel, which is the signal legacy's guard checks.
+
+    This gate exists because the guide press is a TOGGLE (see TOGGLE_VERBS):
+    sent at a menu that is already closed it OPENS one, over the Kodi the
+    gesture just gave the room back. The Evening-1 replay found couchd
+    emitting close_steam_menu on all 21 hold-releases against legacy's 11
+    conditional ones, so post-flip ~10 handoffs in 21 would have opened the
+    Steam menu on the way out of a game. A cooldown cannot save this: it stops
+    a SECOND press, and the damage here is done by the first.
+
+    `steam_known` is part of the predicate, not a caller's problem: an unread
+    routing log means the menu state is UNKNOWN, and a toggle fired blind is
+    exactly the coin-flip this gate removes.
+    """
+    return bool(o.steam_known and o.steam_menu_open
+                and 'steamwebhelper' not in (o.focused_class or ''))
+
+
 def _desktop_overlay_open(o):
     """R7(f): is Steam's DESKTOP-mode overlay sitting over the game?
 
@@ -1011,7 +1081,7 @@ def _snapshot_intent(appid, reason):
                   requires=('gesture', 'session'), cooldown=3.0)
 
 
-def _iconify_intent(appid, reason):
+def _iconify_intent(appid, reason, cooldown=3.0):
     """R7(c): unmap the frozen game's window once Kodi has the screen.
 
     A SIGSTOPped client cannot answer the X server, so any pointer grab it
@@ -1025,15 +1095,21 @@ def _iconify_intent(appid, reason):
     read off the window's compositing pixmap, which iconifying frees, so the
     legacy stack waits up to SNAP_WAIT_S for pause-snap before unmapping. The
     deadline below is sized for that wait rather than for the unmap itself.
+
+    `cooldown` is the CALLER'S, deliberately: this intent is never a decision
+    on its own, it is the second half of a freeze or a handoff, and a half
+    that re-fires on a different cadence from its other half is no longer one
+    decision. The Evening-1 replay caught the original 5s against the refreeze
+    repair's 30s: 48 iconifies for 9 freezes over one episode (T4-3).
     """
     return Intent('iconify', appid,
                   {'via': 'wm-change-state', 'reason': 'release-pointer-grab',
                    'after': 'snapshot'},
                   reason, _pred('the frozen game window is unmapped', 8.0),
-                  requires=('gesture', 'session'), cooldown=5.0)
+                  requires=('gesture', 'session'), cooldown=cooldown)
 
 
-def _deiconify_intent(o, appid, reason):
+def _deiconify_intent(o, appid, reason, cooldown=3.0):
     """The exact undo of _iconify_intent (R7(c)).
 
     Emitted on the resume and after any repair that thaws a game itself: a
@@ -1044,7 +1120,7 @@ def _deiconify_intent(o, appid, reason):
     return Intent('show', appid, {'via': 'activate', 'reason': 'deiconify'},
                   reason, _pred('the game window is mapped again', 8.0),
                   requires=('gesture', 'session') if reason.startswith('gesture:')
-                  else ('session',), cooldown=5.0)
+                  else ('session',), cooldown=cooldown)
 
 
 def _supersede_guard_intent(o, reason):
@@ -1128,17 +1204,28 @@ def _handoff_intents(o, appid, reason):
         Intent('show', 'kodi', {'via': 'xlib-restack'}, reason,
                _pred('top window is Kodi', 2.0),
                requires=('gesture', 'foreground'), cooldown=3.0),
+    ]
+    # ...and the menu, ONLY if Steam actually has one open (see
+    # steam_menu_holding_pad). Legacy does not press the guide button here
+    # either: handoff_to_kodi() spawns steam-input-guard, whose invariant 1
+    # checks the routing log first. The menu that Steam opens a beat LATER,
+    # off the same physical press, is caught by the enforcement window this
+    # handoff opens - which is the guard couchd replaced, doing the same job
+    # for the same six seconds.
+    if steam_menu_holding_pad(o):
         # TOGGLE: cooldown outlasts the deadline (see TOGGLE_VERBS) - a
         # second guide press inside the first one's window REOPENS the menu.
-        Intent('close_steam_menu', 'steam',
-               {'via': 'vpad-guide', 'window_s': GUARD_WINDOW}, reason,
-               _pred('steam menu not routed', 6.0),
-               requires=('gesture',), cooldown=GUIDE_TOGGLE_COOLDOWN),
-    ]
+        out.append(Intent('close_steam_menu', 'steam',
+                          {'via': 'vpad-guide', 'window_s': GUARD_WINDOW,
+                           'route': (o.steam_route or '')[-60:]}, reason,
+                          _pred('steam menu not routed', 6.0),
+                          requires=('gesture',), cooldown=GUIDE_TOGGLE_COOLDOWN))
     frozen = bool(o.pids_known and o.frozen_pids)
     if appid and appid != 'bigpicture' and (o.suspended_present or frozen) \
             and (o.suspended or appid) != 'bigpicture':
-        out.append(_iconify_intent(appid, reason))
+        # ...on the same cadence as the route/show it travels with: one
+        # decision, one cooldown (T4-3).
+        out.append(_iconify_intent(appid, reason, cooldown=3.0))
     return out
 
 
@@ -1396,7 +1483,7 @@ def reconcile(o):
 
     # -- 3. enforcement window (steam-input-guard's invariants) -----------
     if enf in ('kodi', 'game'):
-        if o.steam_menu_open and o.focused_class != 'steamwebhelper':
+        if steam_menu_holding_pad(o):
             out.append(Intent('close_steam_menu', 'steam',
                               {'via': 'vpad-guide', 'invariant': 1,
                                'route': o.steam_route[-60:]},
@@ -1500,8 +1587,11 @@ def reconcile(o):
             # ...and the suspend that lost its flag may well have iconified it
             # (R7(c)): a thawed game left invisible is audible, holds the pad,
             # and shows the room nothing that explains either.
+            # REPAIR_COOLDOWN, matching the thaw it belongs to: the pair is
+            # one repair and re-fires as one (T4-3).
             out.append(_deiconify_intent(o, appid,
-                                         'reconcile:thawed-without-flag'))
+                                         'reconcile:thawed-without-flag',
+                                         cooldown=REPAIR_COOLDOWN))
 
         # R7(d): a paused flag with the game still RUNNING. Nothing repaired
         # this until 5 Aug, which is why the 4 Aug guard-vs-freeze race stuck:
@@ -1528,8 +1618,11 @@ def reconcile(o):
                                   _pred('all game pids in state T', 5.0),
                                   requires=('session',)))
                 # A game that ran on behind Kodi has a live pointer grab again.
+                # Same cadence as its freeze: the Evening-1 replay caught this
+                # pair firing 9 freezes against 48 iconifies (T4-3).
                 out.append(_iconify_intent(appid,
-                                           'reconcile:refreeze-lost-suspend'))
+                                           'reconcile:refreeze-lost-suspend',
+                                           cooldown=REPAIR_COOLDOWN))
 
         want = want_pad_owner(o)
         have = o.regions.get('input_ownership')
@@ -1749,17 +1842,79 @@ class Actuators:
         self._seq = itertools.count(1)
 
     # -- processes --------------------------------------------------------
-    def signal(self, pids, signum):
-        sent, missing = [], []
+    def signal(self, pids, signum, verify=None):
+        """Signal a pid set. `verify(pid) -> reason-or-None` is checked
+        IMMEDIATELY before each kill and a refusal is a skip, never a failure:
+        a pid that has already exited is the world agreeing with us early, and
+        a pid that is no longer who we think it is must not be signalled at
+        all (see verify_guard_pid)."""
+        sent, missing, refused = [], [], []
         for pid in pids:
+            if verify is not None:
+                why = verify(pid)
+                if why:
+                    refused.append({'pid': pid, 'why': why})
+                    continue
             try:
                 os.kill(int(pid), signum)
                 sent.append(int(pid))
             except (OSError, ValueError):
                 missing.append(pid)
+        out = {'sent': sent, 'missing': missing, 'signal': int(signum)}
+        if refused:
+            out['refused'] = refused
         if pids and not sent:
+            if refused:
+                # Nothing was signalled and nothing went wrong: every target
+                # failed its pre-signal check.
+                out['skipped'] = '; '.join(r['why'] for r in refused)[:200]
+                return out
             raise ActionFailed(f'no pid of {sorted(pids)} could be signalled')
-        return {'sent': sent, 'missing': missing, 'signal': int(signum)}
+        return out
+
+    #: what a guard process's command line must contain to be one
+    GUARD_NAME = 'steam-input-guard'
+
+    def verify_guard_pid(self, pid, pidfile=None, name=None):
+        """Three checks, at EXECUTION time, before a SIGTERM leaves this
+        process. Returns the reason to refuse, or None to go ahead.
+
+        The 5 Aug replay found couchd naming guard pid 1673365 when the
+        pidfile had held 1673613 for 412ms - and during that stretch the guard
+        respawned five times in twenty seconds. A pid that has exited on a box
+        cycling processes that fast is a pid the kernel may already have handed
+        to somebody else, and `os.kill` does not ask who it is talking to.
+
+        (a) the pidfile still names this pid - re-read NOW, not the flag
+            observation the pass began with;
+        (b) the process exists;
+        (c) it is actually a guard, by command line - the check that makes pid
+            reuse survivable rather than merely unlikely.
+        """
+        pidfile = pidfile or GUARD_PIDFILE
+        name = name or self.GUARD_NAME
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return f'{pid!r} is not a pid'
+        if pid == os.getpid():
+            return 'that pid is couchd itself'
+        try:
+            current = open(pidfile).read().strip()
+        except OSError:
+            return f'{pidfile} is gone - the window closed itself'
+        if current != str(pid):
+            return (f'{pidfile} now names {current or "nothing"}, not {pid} '
+                    f'- the guard was replaced between decision and action')
+        try:
+            import psutil
+            cmd = ' '.join(psutil.Process(pid).cmdline() or [])
+        except Exception as e:      # NoSuchProcess, AccessDenied, no psutil
+            return f'pid {pid} is gone or unreadable ({type(e).__name__})'
+        if name not in cmd:
+            return (f'pid {pid} is not {name} ({cmd[:60]!r}) - refusing to '
+                    f'signal a recycled pid')
+        return None
 
     # Environment a helper needs that couchd's own unit may not have passed on.
     PASS_ENV = ('DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'PATH', 'HOME')
@@ -2088,15 +2243,37 @@ class ActingExecutor(Executor):
             self.log.write(rec)           # corpus keeps every one of these
             self.on_record(intent)        # ...the human log does not
             return rec
+        gone = self._precondition_gone(intent, obs)
+        if gone:
+            # C17 has always judged an action AFTER the fact. This is the same
+            # idea before it: the world the decision was taken on has moved, so
+            # the action is not wanted any more. Not a failure - nothing went
+            # wrong - and the cooldown still applies, because the decision was
+            # made and re-deciding it next pass is the level-based answer.
+            self.skipped += 1
+            rec.update(acted=False,
+                       action={'ok': True, 'precondition_gone': gone})
+            self.log.write(rec)
+            self.on_record(intent)
+            self.say(f'SKIPPED {intent.human()}: {gone}')
+            return rec
         method = self.ACTIONS.get(intent.verb)
         try:
             if method is None:
                 raise ActionFailed(f'no action for verb {intent.verb}')
-            rec['action'] = {'ok': True, **(getattr(self, method)(intent, obs)
-                                            or {})}
-            self.count += 1
-            self.say(f'DID {intent.human()}')
-            self._note_success(key)
+            res = getattr(self, method)(intent, obs) or {}
+            rec['action'] = {'ok': True, **res}
+            if res.get('skipped'):
+                # The actuator itself declined at the last instant (a pid that
+                # failed its pre-signal check). Same shape as above: recorded,
+                # counted as a skip, never as a success or a failure.
+                rec['acted'] = False
+                self.skipped += 1
+                self.say(f'SKIPPED {intent.human()}: {res["skipped"]}')
+            else:
+                self.count += 1
+                self.say(f'DID {intent.human()}')
+                self._note_success(key)
         except ActionFailed as e:
             self.failures += 1
             rec['acted'] = False
@@ -2123,6 +2300,54 @@ class ActingExecutor(Executor):
                 'check': EFFECT_CHECKS.get(intent.verb),
             })
         return rec
+
+    # -- C17, before the fact ---------------------------------------------
+    # A verb whose action is IRREVERSIBLE-IF-WRONG re-checks the predicate its
+    # decision rested on, at execution time. Two of them:
+    #
+    #   close_steam_menu  the guide button is a toggle, so a press at a menu
+    #                     that is not open OPENS one (T4-1);
+    #   kill              a pid read out of a file a respawning guard rewrites
+    #                     may already belong to somebody else (T4-2).
+    #
+    # Everything else is level-based and idempotent: pressing it again when it
+    # was not needed changes nothing, so it does not earn a pre-check.
+    PRECONDITIONS = {'close_steam_menu': '_pre_close_steam_menu',
+                     'kill': '_pre_kill'}
+
+    def _precondition_gone(self, intent, obs):
+        method = self.PRECONDITIONS.get(intent.verb)
+        if not method:
+            return None
+        try:
+            return getattr(self, method)(intent, obs)
+        except Exception as e:      # a check that cannot run is a refusal
+            return f'precondition check failed ({type(e).__name__}: {e})'
+
+    def _pre_close_steam_menu(self, it, obs):
+        """Re-evaluate whatever justified this particular press."""
+        if it.reason == 'guard:desktop-overlay-after-tap':
+            if _desktop_overlay_open(obs):
+                return None
+            return ('Steam\'s desktop overlay is no longer open - a guide '
+                    'press now would open it')
+        if steam_menu_holding_pad(obs):
+            return None
+        return ('Steam\'s menu is not open (routing %r) - the guide button is '
+                'a toggle, so pressing it now would OPEN the menu'
+                % ((obs.steam_route or '')[-40:] if obs.steam_known
+                   else 'unknown'))
+
+    def _pre_kill(self, it, obs):
+        if it.subject != Actuators.GUARD_NAME or self.act is None:
+            return None
+        pids = it.args.get('pids') or ()
+        if not pids:
+            return 'no pid to signal'
+        why = [self.act.verify_guard_pid(p) for p in pids]
+        if all(why):                # every target failed its check
+            return '; '.join(w for w in why if w)[:200]
+        return None
 
     # -- C11 backoff ------------------------------------------------------
     def _note_failure(self, key, obs):
@@ -2201,7 +2426,13 @@ class ActingExecutor(Executor):
         return self.act.signal(it.args.get('pids', ()), signal.SIGCONT)
 
     def _a_kill(self, it, o):
-        return self.act.signal(it.args.get('pids', ()), signal.SIGTERM)
+        # The guard supersede is the only kill couchd has, and it is aimed at
+        # a pid read out of a file that a respawning guard rewrites. Verified
+        # per pid, immediately before the signal (T4-2).
+        verify = (self.act.verify_guard_pid
+                  if it.subject == self.act.GUARD_NAME else None)
+        return self.act.signal(it.args.get('pids', ()), signal.SIGTERM,
+                               verify=verify)
 
     def _a_quit(self, it, o):
         return self.act.spawn([GAME_LAUNCH, 'quit'])
@@ -3431,6 +3662,7 @@ class Couchd:
         self.machine = Machine(on_transition=self._on_transition)
         # Shadow is the default and the fallback: the recorder is always here,
         # the acting half is built only while owns.conf names something (R1).
+        self.model = model_version()   # fingerprinted once, at construction
         self.edge = None            # the edge this pass is deciding (R5)
         self.edge_intents = 0
         self.last_edge_latency = None
@@ -3509,7 +3741,13 @@ class Couchd:
         # the default bindings that intent only ever appears at hold-release
         # and ps-double-tap, both of which are named below anyway, so this
         # adds nothing to today's behaviour.
-        handoff = (intent.verb == 'close_steam_menu'
+        # The handoff's SIGNATURE is route_pad(kodi) off a gesture - the one
+        # intent every hand-the-pad-back path emits unconditionally. It used to
+        # key off close_steam_menu, which stopped being unconditional the day
+        # that press was gated on the menu actually being open (T4-1); a guard
+        # window that only opened when Steam had already misbehaved would be
+        # exactly backwards, since watching for that is what the window is for.
+        handoff = (intent.verb == 'route_pad' and intent.subject == 'kodi'
                    and intent.reason.startswith('gesture:'))
         if handoff or intent.reason.startswith(
                 ('gesture:hold-release', 'gesture:ps-double-tap',
@@ -3901,6 +4139,7 @@ class Couchd:
             'owns_declared': self.owns.sorted,
             'owns_file': self.owns.path,
             'owns_warnings': list(self.owns.warnings),
+            'model_version': self.model['version'], 'git': self.model['git'],
             'acted': (self.executor.acting.count if self.executor.acting else 0),
             'action_failures': self.executor.failures,
             'action_skipped': (self.executor.acting.skipped
@@ -3996,10 +4235,16 @@ class Couchd:
         mode = 'acting' if self.executor.owned else 'shadow mode'
         say(f'couchd up ({mode}, pid {os.getpid()}); {owns.describe(self.owns)}'
             f'; writing {SHADOW_DIR}')
+        mv = model_version()
         self.log.write({'kind': 'daemon', 'event': 'start', 'pid': os.getpid(),
                         'mode': 'acting' if self.executor.owned else 'shadow',
                         'owns': sorted(self.executor.owned),
                         'owns_file': self.owns.path,
+                        # What the differ keys "stale model" off: two runs of
+                        # the SAME model are one model's evidence, however many
+                        # times the daemon was restarted between them.
+                        'model_version': mv['version'],
+                        'model_files': mv['files'], 'git': mv['git'],
                         'steam_logs': STEAM_LOGS})
         self._tasks = [asyncio.create_task(self.pad.run(loop)),
                        asyncio.create_task(self.flags.run()),

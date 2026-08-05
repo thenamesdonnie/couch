@@ -13,6 +13,13 @@ Examples:
   tools/shadow-diff corpus/legacy-0804.jsonl # legacy stream copied off /tmp
   tools/shadow-diff --shadow ~/couch/shadow/couchd-20260804.jsonl --json > diff.json
   tools/shadow-diff --date 20260804 --no-context   # skip world-snapshot context lines
+  tools/shadow-diff --date 20260805 --window 00:38-03:15   # pin ONE evening
+
+Staleness is a MODEL question: runs are compared against each other when they
+share the model_version couchd stamps on its start record, however many times
+it was restarted between them. A corpus older than that fingerprint falls back
+to "newest start wins" - use --window to say which evening you mean, or a
+later restart marks the whole thing stale and the verdict covers nothing.
 
 Triage labels (C10): T1 harness, T2 benign, T3 bug-in-old, T4 bug-in-couchd (the only
 gating bucket), T5 pre-declared, T6 same decision wrong latency.
@@ -103,9 +110,19 @@ def load_jsonl(path, notes, label):
         notes.append('%s stream MISSING: %s (diff below is not a real comparison)'
                      % (label, path))
         return [], False
-    recs, bad = [], 0
+    recs, bad, holes = [], 0, 0
     with open(path, 'r', errors='replace') as fh:
         for line in fh:
+            # A crash leaves a HOLE, not a truncation: the 05:19 power event
+            # left 1154 NUL bytes in snapshots-20260805.jsonl where the tail
+            # had been allocated but never reached the platter. Those bytes
+            # carry no newline, so they arrive glued to whatever real record
+            # follows them - counted separately from ordinary garbage, because
+            # "the box lost power here" and "somebody wrote junk" are different
+            # facts about an evening.
+            if '\x00' in line:
+                holes += 1
+                line = line.replace('\x00', '')
             line = line.strip()
             if not line:
                 continue
@@ -119,6 +136,10 @@ def load_jsonl(path, notes, label):
     if bad:
         notes.append('%s stream: %d unparseable line(s) skipped (truncated tail?)'
                      % (label, bad))
+    if holes:
+        notes.append('%s stream: %d line(s) contained NUL bytes - an unclean '
+                     'shutdown left a hole in the file; the NULs were stripped '
+                     'and whatever parsed was kept' % (label, holes))
     if not recs:
         notes.append('%s stream empty: %s' % (label, path))
     return recs, bool(recs)
@@ -585,29 +606,36 @@ def world_series(obs, snaps):
 
 
 def daemon_runs(crecs, fallback):
-    """[(start, end)] windows in which couchd was actually observing.
+    """([(start, end)], [model_version]) - the windows couchd was observing in,
+    and which MODEL each one was running.
 
     With no daemon records at all we cannot know, so the whole data span is one run.
     When they exist, a run whose start record is missing (the log rotated at midnight
     mid-run) is anchored to couchd's own first record - NOT to the legacy stream,
     which is cumulative across days and once stretched run 1 back three hours.
     """
-    marks = sorted((float(r['t']), r.get('event')) for r in crecs
-                   if r.get('kind') == 'daemon' and isinstance(r.get('t'), (int, float)))
+    marks = sorted((float(r['t']), r.get('event'), r.get('model_version'))
+                   for r in crecs if r.get('kind') == 'daemon'
+                   and isinstance(r.get('t'), (int, float)))
     if not marks:
-        return [tuple(fallback)]
+        return [tuple(fallback)], [None]
     cts = [float(r['t']) for r in crecs if isinstance(r.get('t'), (int, float))]
     first, last = (min(cts), max(cts)) if cts else fallback
-    runs, start = [], None
-    for t, ev in marks:
+    runs, models, start, model = [], [], None, None
+    for t, ev, mv in marks:
         if ev == 'start':
-            start = t if start is None else start
+            if start is None:
+                start, model = t, mv
         elif ev == 'stop':
             runs.append((start if start is not None else first, t))
-            start = None
+            models.append(model)
+            start, model = None, None
     if start is not None:
         runs.append((start, last))
-    return runs or [tuple(fallback)]
+        models.append(model)
+    if not runs:
+        return [tuple(fallback)], [None]
+    return runs, models
 
 
 def in_runs(t, runs, slack=0.0):
@@ -714,7 +742,8 @@ def mkrow(section, li, ci, offset, flags, notes, couchd_i, legacy_i):
             'origin': ref['origin']}
 
 
-def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=True):
+def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=True,
+          window=None):
     """Everything the report needs, as plain data (also the --json payload)."""
     notes = []
     if since:
@@ -739,13 +768,84 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     ats = [float(r['t']) for r in lrecs + crecs + snaps
            if isinstance(r.get('t'), (int, float))]
     span = (min(ats), max(ats)) if ats else (0.0, 0.0)
-    runs = daemon_runs(crecs, span)
+    runs, run_models = daemon_runs(crecs, span)
     starts = [float(r['t']) for r in crecs if r.get('kind') == 'daemon'
               and r.get('event') == 'start' and isinstance(r.get('t'), (int, float))]
     if since:
-        runs = [(max(a, since), b) for a, b in runs if b > since] or [(since, span[1])]
-    model_t = max(starts) if starts else runs[0][0]     # newest model = newest start
-    current = [r for r in runs if r[0] >= model_t - 0.001]   # started with this model
+        keep = [(i, (max(a, since), b)) for i, (a, b) in enumerate(runs) if b > since]
+        if keep:
+            run_models = [run_models[i] for i, _ in keep]
+            runs = [r for _, r in keep]
+        else:
+            runs, run_models = [(since, span[1])], [None]
+    # --window CLIPS the analysis to a stated stretch of the evening. Without
+    # it every number below silently covers whatever the files happen to hold,
+    # which is how "0 gating divergences" once came out of a 4-minute idle
+    # window with no decisions in it and read like an evening's verdict.
+    clipped = 0
+    if window:
+        w0, w1 = window
+        kept = [(i, (max(a, w0), min(b, w1))) for i, (a, b) in enumerate(runs)
+                if b >= w0 and a <= w1]
+        clipped = len(runs) - len(kept)
+        run_models = [run_models[i] for i, _ in kept] or [None]
+        runs = [r for _, r in kept] or [(w0, w1)]
+        notes.append('--window %s..%s: analysis clipped to it (%d run(s) fell '
+                     'outside)' % (fmt_t(w0), fmt_t(w1), clipped))
+
+        def _in(seq):
+            return [r for r in seq
+                    if isinstance(r.get('t'), (int, float)) and w0 <= r['t'] <= w1]
+        # Health, transitions and snapshots are clipped too, or the report
+        # measures observer gaps against records outside the window it claims
+        # to be about.
+        obs, trans, blinds = _in(obs), _in(trans), _in(blinds)
+        agree, snaps = _in(agree), _in(snaps)
+        bad_inv = _in(bad_inv)
+    # STALENESS IS A MODEL QUESTION, NOT A CLOCK ONE. Two runs of the same
+    # model are one model's evidence however many restarts sit between them;
+    # a run of an older model is not comparable and never gates. Corpora
+    # written before couchd stamped `model_version` fall back to the old
+    # "newest start wins" rule, and say so.
+    # ...and both rules judge only the runs still in scope: a --window that
+    # pins Tuesday evening must not be declared stale by a restart on Friday.
+    inside = [t for t in starts if any(a - 0.001 <= t <= b for a, b in runs)]
+    model_t = max(inside) if inside else (max(starts) if starts and not window
+                                          else runs[0][0])
+    known = [m for m in run_models if m]
+    if known:
+        newest_model = next((m for _, m in sorted(
+            zip([r[0] for r in runs], run_models), key=lambda x: -x[0]) if m), None)
+        current = [r for r, m in zip(runs, run_models) if m == newest_model]
+        model_key, model_rule = newest_model, 'model_version'
+        older = [m for m in run_models if m and m != newest_model]
+        if older:
+            notes.append('%d run(s) ran an OLDER model (%s) than the newest '
+                         '(%s) - marked stale, excluded from gating'
+                         % (len(older), ', '.join(sorted(set(older))), newest_model))
+        if len(current) > 1:
+            notes.append('%d run(s) share model %s and are compared TOGETHER; '
+                         'a restart is not a new model' % (len(current), newest_model))
+    elif window:
+        # No fingerprints in this corpus, but the operator has PINNED the
+        # stretch under review. Taking that as "these runs are one model's
+        # evidence" is the whole point of the flag - and it is an assertion by
+        # a human, not a fact from the data, so the verdict line says so.
+        current = list(runs)
+        model_key, model_rule = None, '--window (corpus predates model_version)'
+        notes.append('this corpus carries no model_version; --window is taken '
+                     'as your assertion that these %d run(s) ran ONE model. '
+                     'Corpora written from 5 Aug 2026 carry the fingerprint and '
+                     'do not need the assertion' % len(runs))
+    else:
+        current = [r for r in runs if r[0] >= model_t - 0.001]
+        model_key, model_rule = None, 'newest-start (corpus predates model_version)'
+        if len(runs) > 1:
+            notes.append('this corpus carries no model_version, so staleness '
+                         'falls back to "newest daemon start wins" (%s) - which '
+                         'marks a whole evening stale after any later restart. '
+                         'Use --window to pin the evening you mean'
+                         % fmt_t(model_t))
     ctx = [i for i in legacy_all + couchd_all if i['verb'] in CONTEXT_VERBS]
     legacy_i = [i for i in legacy_all if i['verb'] not in CONTEXT_VERBS]
     couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS
@@ -836,15 +936,14 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
             offsets[v] = {'n': len(o), 'min': min(o), 'p50': pct(o, 50),
                           'p95': pct(o, 95), 'max': max(o)}
     run_rows = [{'n': n, 'start': a, 'end': b, 'stale': (a, b) not in current,
+                 'model': run_models[n - 1] if n <= len(run_models) else None,
                  'intents': sum(1 for i in couchd_i if a <= i['t'] <= b),
                  'rows': sum(1 for r in rows if r['run'] == n)}
                 for n, (a, b) in enumerate(runs, 1)]
     if len(runs) > 1:
-        notes.append('couchd ran %d times (%s); gaps between runs are not blindness, '
-                     'and runs before the newest daemon start (%s) carry an older '
-                     'model - marked stale, excluded from gating'
+        notes.append('couchd ran %d times (%s); gaps between runs are not blindness'
                      % (len(runs), ', '.join('%s..%s' % (fmt_t(a), fmt_t(b))
-                                             for a, b in runs), fmt_t(model_t)))
+                                             for a, b in runs)))
     health = observer_health(obs, blinds, snaps, current, notes)
     disagreements = [dict(r, label=agreement_label(r)[0], why=agreement_label(r)[1])
                      for r in agree if disagrees(r)
@@ -862,6 +961,27 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     hard = [r for r in rows if ('SET-MISMATCH' in r['flags'] or 'ORDER' in r['flags'])
             and not r['stale']]
     gating = [r for r in hard if r['label'] != 'T5']   # pre-declared = not gating
+    # What the verdict is a verdict OVER. A gate computed across zero
+    # comparable decisions is not a pass, and must never be able to read like
+    # one (the 5 Aug replay found Evening 1's own "0 gating divergences"
+    # came out of a 4-minute idle window with 0 intents in it).
+    evaluated = [r for r in rows if not r['stale']]
+    matched_here = [p for p in pairs
+                    if in_runs(p['couchd']['t'], current, RUN_EDGE_SLACK_S)]
+    scope = {'from': (window[0] if window else (runs[0][0] if runs else span[0])),
+             'to': (window[1] if window else (runs[-1][1] if runs else span[1])),
+             'source': '--window' if window else ('--since' if since else 'data'),
+             'runs_clipped': clipped,
+             'model': model_key, 'model_rule': model_rule,
+             'rows_evaluated': len(evaluated),
+             'rows_stale': len(rows) - len(evaluated),
+             'matched_evaluated': len(matched_here),
+             'decisions': len(matched_here) + len(evaluated)}
+    if not scope['decisions']:
+        reasons.append('nothing to judge: 0 comparable decisions inside the '
+                       'window under review (%s..%s) - a gate computed over an '
+                       'empty stretch is not a pass'
+                       % (fmt_t(scope['from']), fmt_t(scope['to'])))
     return {'inputs': {'legacy': legacy_path, 'couchd': shadow_path,
                        'snapshots': snapshots_path if snaps else None},
             'notes': notes, 'rows': rows, 'cooldown_associated': cooled,
@@ -870,6 +990,7 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
             'matched_total': len(pairs),
             'matched_clean': len(pairs) - len([p for p in pairs if p['flags']]),
             'counts': counts, 'offsets': offsets, 'context_records': len(ctx),
+            'scope': scope,
             'edge_latency': edge_latency(crecs, runs),
             'assertions': [{k: v for k, v in a.items() if k != 'intent'}
                            for a in asserts],
@@ -997,12 +1118,27 @@ def render(rep):
                    (s['source'], 'required' if s['required'] else 'optional',
                     'present' if s['present'] else 'SILENT', s['samples'],
                     s['last_gap']))
+    # The verdict, and WHAT IT IS A VERDICT OVER. Never one without the other:
+    # a gate computed over an idle stretch has to look like one on the page.
+    s = rep['scope']
     out.append('  EVENING VALIDITY: %s' % rep['validity']['verdict'])
+    out.append('    window %s..%s (%s), staleness by %s%s'
+               % (fmt_t(s['from']), fmt_t(s['to']), s['source'], s['model_rule'],
+                  ' %s' % s['model'] if s['model'] else ''))
+    out.append('    judged %d decision(s): %d matched pair(s) + %d divergence '
+               'row(s); %d row(s) skipped as stale-model%s'
+               % (s['decisions'], s['matched_evaluated'], s['rows_evaluated'],
+                  s['rows_stale'],
+                  ', %d run(s) clipped away by --window' % s['runs_clipped']
+                  if s['runs_clipped'] else ''))
+    out.append('    gating divergences: %d%s'
+               % (rep['gating_count'],
+                  '' if s['decisions'] else '  <-- over NOTHING; not a pass'))
     out += ['    - %s' % r for r in rep['validity']['reasons']]
     return '\n'.join(out)
 
 
-def parse_since(text, day):
+def parse_since(text, day, flag='--since'):
     """--since as HH:MM[:SS] against the report's date, or a raw epoch."""
     if not text:
         return None
@@ -1015,7 +1151,28 @@ def parse_since(text, day):
             return datetime.strptime('%s %s' % (day, text), fmt).timestamp()
         except ValueError:
             continue
-    raise SystemExit('--since: expected HH:MM, HH:MM:SS or an epoch, got %r' % text)
+    raise SystemExit('%s: expected HH:MM, HH:MM:SS or an epoch, got %r'
+                     % (flag, text))
+
+
+def parse_window(text, day):
+    """--window A-B, either end optional: `00:38-03:15`, `-03:15`, `21:00-`.
+
+    Pins the stretch of the evening under review, so a verdict cannot be
+    computed over whatever the files happen to contain and then read as if it
+    covered the evening.
+    """
+    if not text:
+        return None
+    lo, sep, hi = text.partition('-')
+    if not sep:
+        raise SystemExit('--window: expected START-END (either end may be '
+                         'empty), got %r' % text)
+    t0 = parse_since(lo.strip(), day, '--window') if lo.strip() else 0.0
+    t1 = parse_since(hi.strip(), day, '--window') if hi.strip() else float('inf')
+    if t0 is None or t1 is None or t1 <= t0:
+        raise SystemExit('--window: END must be after START, got %r' % text)
+    return (t0, t1)
 
 
 def main(argv=None):
@@ -1034,13 +1191,19 @@ def main(argv=None):
     ap.add_argument('--since', help='ignore everything before HH:MM[:SS] (of --date) '
                     'or an epoch; runs before the newest daemon start are marked '
                     'stale automatically, so this is only for narrowing further')
+    ap.add_argument('--window', help='pin the stretch under review: START-END '
+                    'as HH:MM[:SS] (of --date) or epochs, either end optional. '
+                    'The verdict line states the window it covered and how many '
+                    'decisions were in it, so an idle stretch cannot pass as an '
+                    'evening')
     ap.add_argument('--json', action='store_true', help='machine-readable report')
     a = ap.parse_args(argv)
     day = a.date or datetime.now().strftime('%Y%m%d')
     legacy = a.legacy_opt or a.legacy or '/tmp/legacy-intents.jsonl'
     shadow = a.shadow or os.path.join(a.shadow_dir, 'couchd-%s.jsonl' % day)
     snaps = a.snapshots or os.path.join(a.shadow_dir, 'snapshots-%s.jsonl' % day)
-    rep = build(legacy, shadow, snaps, parse_since(a.since, day), not a.no_context)
+    rep = build(legacy, shadow, snaps, parse_since(a.since, day), not a.no_context,
+                window=parse_window(a.window, day))
     print(json.dumps(rep, indent=1, default=str) if a.json else render(rep))
     return 0 if rep['validity']['verdict'] == 'VALID' and not rep['gating_count'] else 1
 

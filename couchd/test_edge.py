@@ -310,6 +310,123 @@ def test_a_tick_pass_writes_no_latency_record(tmp_path, monkeypatch):
 
 
 # =========================================================================
+# the enforcement window's trigger (T4-1's second-order effect)
+# =========================================================================
+def test_a_handoff_opens_the_guard_window_without_a_guide_press(tmp_path,
+                                                                monkeypatch):
+    """The window used to be triggered by the handoff's close_steam_menu.
+    That press is now conditional on Steam's menu actually being open (T4-1),
+    so the trigger moved to route_pad(kodi) - the intent every hand-the-pad-
+    back path emits unconditionally. A guard window that only opened once
+    Steam had already misbehaved would be exactly backwards."""
+    d = daemon(tmp_path, monkeypatch)
+    d._on_intent(couchd.Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'},
+                               'gesture:ps-hold-release'))
+    assert d.enforcement_target == 'kodi'
+    assert d.enforcement_until > time.monotonic()
+
+
+def test_a_resume_still_opens_a_game_window(tmp_path, monkeypatch):
+    d = daemon(tmp_path, monkeypatch)
+    d._on_intent(couchd.Intent('launch', '367520', {'mode': 'resume'},
+                               'gesture:tap-resume'))
+    assert d.enforcement_target == 'game'
+
+
+def test_a_repair_route_pad_opens_no_window(tmp_path, monkeypatch):
+    """Only GESTURES hand the pad back with a guard window behind them; the
+    standing drift repair is not a transition and never was."""
+    d = daemon(tmp_path, monkeypatch)
+    d._on_intent(couchd.Intent('route_pad', 'kodi', {},
+                               'reconcile:joystick-setting-drift'))
+    assert d.enforcement_target is None
+
+
+# =========================================================================
+# the guard pidfile, read fresh on the pass that decides (T4-2)
+# =========================================================================
+def test_the_guard_pid_is_re_read_on_the_pass_that_decides(tmp_path,
+                                                           monkeypatch):
+    """couchd names a guard pid on the GESTURE EDGE now, ~50ms after the
+    button moved, and the guard respawns often enough that the pidfile is a
+    moving target (five times in twenty seconds on 5 Aug). Every pass -
+    including an edge pass - re-reads it before deciding: observe() calls
+    flags.read_all() first, so the model never works off the last tick."""
+    d = daemon(tmp_path, monkeypatch)
+    pidfile = tmp_path / 'steam-input-guard.pid'
+    alive = os.getppid()
+
+    pidfile.write_text(str(alive))
+    assert d.observe(loop=None).guard_pid == alive
+
+    pidfile.write_text('999999')          # a pid that is not there any more
+    assert d.observe(loop=None).guard_pid is None, 'a dead pid names nobody'
+
+    pidfile.write_text(str(alive))
+    assert d.observe(loop=None).guard_pid == alive
+
+    pidfile.write_text(str(os.getpid()))  # couchd's own write-through
+    o = d.observe(loop=None)
+    assert o.guard_pid == os.getpid() and o.guard_pid_ours is True
+
+    pidfile.unlink()
+    assert d.observe(loop=None).guard_pid is None
+
+
+def test_couchds_own_guard_window_is_never_superseded(tmp_path, monkeypatch):
+    """SIGTERMing the pid in that file when it is OURS would kill the daemon
+    holding the console together - the same rule the legacy watcher yields on."""
+    d = daemon(tmp_path, monkeypatch)
+    (tmp_path / 'steam-input-guard.pid').write_text(str(os.getpid()))
+    o = d.observe(loop=None)
+    assert couchd._supersede_guard_intent(o, 'gesture:ps-hold') == []
+
+
+# =========================================================================
+# the model fingerprint (what the differ keys staleness off)
+# =========================================================================
+def test_the_model_version_is_a_hash_of_the_decision_making_source():
+    v = couchd.model_version()
+    assert v['version'] and len(v['version']) == 12
+    assert set(v['files']) <= set(couchd.MODEL_FILES)
+    assert 'couchd.py' in v['files']
+    assert couchd.model_version()['version'] == v['version'], 'and it is stable'
+
+
+def test_the_model_version_moves_when_the_model_does(tmp_path, monkeypatch):
+    """Two corpora written by different models must be distinguishable, or
+    the differ cannot tell a restart from a rebuild."""
+    fake = tmp_path / 'src'
+    fake.mkdir()
+    for name in couchd.MODEL_FILES:
+        (fake / name).write_text('# %s\n' % name)
+    monkeypatch.setattr(couchd, 'MODEL_DIR', str(fake))
+    first = couchd.model_version()['version']
+    (fake / 'couchd.py').write_text('# couchd.py\nCHANGED = True\n')
+    assert couchd.model_version()['version'] != first
+
+
+def test_the_start_record_carries_the_model_version(tmp_path, monkeypatch):
+    d = daemon(tmp_path, monkeypatch)
+
+    async def drive():
+        task = asyncio.create_task(d.run())
+        await asyncio.sleep(0.25)
+        d.stop.set()
+        d.world.wake.set()
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(drive())
+    recs = [json.loads(l) for l in
+            (tmp_path / f'couchd-{time.strftime("%Y%m%d")}.jsonl').read_text()
+            .strip().splitlines()]
+    start = [r for r in recs if r.get('kind') == 'daemon'
+             and r.get('event') == 'start'][0]
+    assert start['model_version'] == couchd.model_version()['version']
+    assert start['model_files']
+
+
+# =========================================================================
 # the x11 observer's two acquisition paths, at the daemon level
 # =========================================================================
 class FakeAdapter:

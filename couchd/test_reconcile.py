@@ -21,7 +21,8 @@ from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
 from gesture import DOUBLE_TAP_S
 from gestureconf import ACTIONS, DEFAULT_BINDINGS
-from couchd import (GUARDS, HOLD_SECONDS, REGIONS, TRANSITIONS, UNKNOWN,
+from couchd import (GUARDS, HOLD_SECONDS, REGIONS, REPAIR_COOLDOWN, TRANSITIONS,
+                    UNKNOWN,
                     Machine, action_intents, check_invariants, make_obs,
                     reconcile, resolve_appid, want_pad_owner,
                     freeze_set_agreement)
@@ -218,7 +219,9 @@ def test_hold_freezes_then_hands_off_on_release():
     assert rig.machine.regions['gesture'] == 'handoff-pending'
     assert find(got, 'route_pad', 'kodi')
     assert find(got, 'show', 'kodi')
-    assert find(got, 'close_steam_menu')
+    # ...and NOT a guide press: Steam's menu is not open, and the button is a
+    # toggle (T4-1). See the three tests under "the guide press is a toggle".
+    assert not find(got, 'close_steam_menu'), verbs(got)
     rig.observe()
     assert rig.machine.regions['gesture'] == 'idle'
 
@@ -362,8 +365,7 @@ def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
     order = [(i.verb, i.subject) for i in got]
     assert order == [('freeze', APPID), ('set_flag', 'suspended'),
                      ('snapshot', APPID), ('route_pad', 'kodi'),
-                     ('show', 'kodi'), ('close_steam_menu', 'steam'),
-                     ('show_switcher', 'tv')]
+                     ('show', 'kodi'), ('show_switcher', 'tv')]
     assert find(got, 'freeze')[0].args['pids'] == [200, 201]
     assert find(got, 'show_switcher')[0].args['suspended_first'] is True
     rig.observe()
@@ -573,8 +575,7 @@ def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
     got = reconcile(o)
     assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
                           ('snapshot', APPID), ('route_pad', 'kodi'),
-                          ('show', 'kodi'), ('close_steam_menu', 'steam'),
-                          ('show_switcher', 'tv')]
+                          ('show', 'kodi'), ('show_switcher', 'tv')]
     # not the hold's deferred handoff: a switcher hands off at once, exactly
     # as the double-tap one always has
     assert find(got, 'show_switcher')[0].reason == 'gesture:ps-hold-switcher'
@@ -611,7 +612,7 @@ def test_a_bound_hold_release_fires_on_top_of_the_handoff():
                  bindings=bind(hold_release='desktop'))
     got = reconcile(o)
     assert verbs(got) == [('route_pad', 'kodi'), ('show', 'kodi'),
-                          ('close_steam_menu', 'steam'), ('show', 'desktop')]
+                          ('show', 'desktop')]
     assert find(got, 'show', 'desktop')[0].reason == 'gesture:ps-hold-release'
 
 
@@ -1344,6 +1345,111 @@ def test_model_only_intents_are_never_performed():
     assert rec['action']['ok'] is True and 'model_only' in rec['action']
     assert ex.count == 0 and ex.failures == 0
     assert not said, 'not a failure and not a refusal: nothing to say'
+
+
+# =========================================================================
+# the guide press is a TOGGLE (T4-1, from the Evening-1 replay)
+#
+# The handoff used to press it on every hold-release. Legacy does not: its
+# handoff spawns steam-input-guard, whose invariant 1 reads the routing log
+# first. Evening 1: couchd 21 emissions, legacy 11, one match - so post-flip
+# roughly ten handoffs in twenty-one would have OPENED the Steam menu over
+# the Kodi the gesture exists to return to.
+# =========================================================================
+#: Steam's own routing line when the menu has the pad (Evening-1 corpus)
+MENU_ROUTE = ('OnFocusWindowChanged to window type: '
+              'k_nGameIDControllerConfigs_ClientUI, AppID 769')
+
+
+def _release(rig, k0=30000.0, **world):
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0, **world)
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95,
+                **world)
+    return rig.observe(button_down=False, press_duration=1.1, **world)
+
+
+def test_t4_1_the_handoff_presses_guide_only_when_the_menu_is_open():
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    got = _release(rig, suspended=APPID, pid_states=_running(E1_PIDS, 'T'),
+                   steam_route=MENU_ROUTE, focused_class='Kodi')
+    press = find(got, 'close_steam_menu')
+    assert press, verbs(got)
+    assert 'ClientUI' in press[0].args['route']
+    assert press[0].cooldown > float(press[0].predict['deadline_s'])
+
+
+def test_t4_1_a_closed_menu_gets_no_guide_press_at_all():
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    got = _release(rig, suspended=APPID, pid_states=_running(E1_PIDS, 'T'),
+                   steam_route='', focused_class='Kodi')
+    assert find(got, 'route_pad', 'kodi'), 'the handoff itself is unchanged'
+    assert find(got, 'show', 'kodi')
+    assert not find(got, 'close_steam_menu'), verbs(got)
+
+
+def test_t4_1_an_unreadable_steam_log_is_unknown_not_closed():
+    """A toggle fired on an unknown state is a coin flip with the screen."""
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    got = _release(rig, suspended=APPID, pid_states=_running(E1_PIDS, 'T'),
+                   steam_route=MENU_ROUTE, steam_known=False)
+    assert not find(got, 'close_steam_menu'), verbs(got)
+
+
+def test_t4_1_steam_focused_means_the_player_chose_steam():
+    """Closing a menu the player deliberately opened would be rude, and it is
+    the same clause legacy's guard uses."""
+    o = make_obs(regions={'gesture': 'handoff-pending'},
+                 steam_route=MENU_ROUTE, focused_class='steamwebhelper')
+    assert not find(reconcile(o), 'close_steam_menu')
+
+
+def test_t4_1_the_guard_window_still_catches_a_menu_steam_opens_late():
+    """Steam opens its menu ~0.3-1s after the press, i.e. after the handoff
+    has already been decided. That is what the enforcement window is for, and
+    it is the reason gating the handoff's own press loses nothing."""
+    o = make_obs(regions={'enforcement': 'kodi'}, steam_route=MENU_ROUTE,
+                 focused_class='Kodi')
+    got = find(reconcile(o), 'close_steam_menu')
+    assert got and got[0].reason == 'guard:steam-menu-holds-the-pad'
+
+
+# =========================================================================
+# one repair, one cadence (T4-3)
+# =========================================================================
+def test_t4_3_the_refreeze_and_its_iconify_share_a_cooldown():
+    """9 freezes against 48 iconifies over one Evening-1 episode: the pair
+    had cooldowns 6x apart, so it stopped behaving as one decision."""
+    o = make_obs(session=SESSION, suspended=APPID,
+                 pid_states=_running(E1_PIDS[:4]), joystick=True,
+                 top_name='Kodi', top_class='Kodi', focused_class='Kodi',
+                 regions={'session': 'active', 'foreground': 'kodi'})
+    got = reconcile(o)
+    freeze = find(got, 'freeze')[0]
+    icon = find(got, 'iconify')[0]
+    assert icon.cooldown == freeze.cooldown == REPAIR_COOLDOWN
+
+
+def test_t4_3_the_handoffs_iconify_rides_with_its_route_and_show():
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    got = _release(rig, suspended=APPID, pid_states=_running(E1_PIDS, 'T'))
+    icon = find(got, 'iconify')[0]
+    assert icon.cooldown == find(got, 'route_pad', 'kodi')[0].cooldown
+    assert icon.cooldown == find(got, 'show', 'kodi')[0].cooldown
+
+
+def test_t4_3_the_repair_thaw_and_its_deiconify_share_a_cooldown():
+    o = make_obs(session=SESSION, suspended=None,
+                 pid_states=_running(E1_PIDS[:3], 'T'), joystick=False,
+                 regions={'session': 'active', 'input_ownership': 'game'})
+    got = reconcile(o)
+    thaw = find(got, 'thaw')[0]
+    back = [i for i in find(got, 'show', APPID)
+            if i.args.get('reason') == 'deiconify'][0]
+    assert back.cooldown == thaw.cooldown == REPAIR_COOLDOWN
 
 
 TestConsoleModel = ConsoleModel.TestCase

@@ -83,11 +83,20 @@ def sections(rep):
     return {s: [r for r in rep['rows'] if r['section'] == s] for s in sd.SECTIONS}
 
 
-def run(tmp, lrecs, crecs, snaps=None):
+def run(tmp, lrecs, crecs, snaps=None, window=None):
     lp = write(tmp, 'legacy.jsonl', lrecs)
     cp = write(tmp, 'couchd.jsonl', crecs)
     sp = write(tmp, 'snaps.jsonl', snaps) if snaps else None
-    return sd.build(lp, cp, sp)
+    return sd.build(lp, cp, sp, window=window)
+
+
+def daemon_rec(t, event, model=None):
+    """A daemon start/stop mark, optionally carrying the model fingerprint
+    couchd stamps on every start from 5 Aug 2026."""
+    r = {'kind': 'daemon', 'event': event, 't': T0 + t, 'pid': 4242}
+    if model:
+        r['model_version'] = model
+    return r
 
 
 # ---------------------------------------------------------------- clean evening
@@ -768,6 +777,143 @@ def test_edge_latency_above_the_bound_is_called_out_but_never_gates():
         assert rep['edge_latency']['within_bound'] is False
         assert 'ABOVE the 250ms bound' in sd.render(rep)
         assert rep['gating_count'] == 0
+
+
+# ------------------------------------------------ staleness by MODEL version
+def test_a_restart_of_the_same_model_does_not_make_the_evening_stale():
+    """The defect the 5 Aug replay found: staleness keyed off the newest
+    process start, so ANY later restart voided the whole evening's gating -
+    and Evening 1's own '0 gating divergences' turned out to be computed over
+    a 4-minute idle window with nothing in it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'route_pad', 'kodi')],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa'),
+                   couchd(10.5, 'route_pad', 'game'),   # a divergence to judge
+                   daemon_rec(20.0, 'stop'),
+                   daemon_rec(21.0, 'start', 'aaaaaaaaaaaa'),
+                   daemon_rec(30.0, 'stop')])
+        assert [r['stale'] for r in rep['rows']] == [False] * len(rep['rows'])
+        assert rep['scope']['model_rule'] == 'model_version'
+        assert rep['scope']['rows_stale'] == 0
+        assert rep['scope']['decisions'] > 0
+
+
+def test_a_run_of_an_older_model_is_stale_and_does_not_gate():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'route_pad', 'kodi')],
+                  [daemon_rec(0.0, 'start', 'oldoldoldold'),
+                   couchd(10.5, 'route_pad', 'game'),
+                   daemon_rec(20.0, 'stop'),
+                   daemon_rec(21.0, 'start', 'newnewnewnew'),
+                   daemon_rec(30.0, 'stop')])
+        assert all(r['stale'] for r in rep['rows'])
+        assert rep['scope']['model'] == 'newnewnewnew'
+        assert any('OLDER model' in n for n in rep['notes'])
+
+
+def test_a_corpus_without_fingerprints_says_which_rule_it_fell_back_to():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(10.0, 'route_pad', 'kodi')],
+                  [daemon_rec(0.0, 'start'), couchd(10.5, 'route_pad', 'game'),
+                   daemon_rec(20.0, 'stop'), daemon_rec(21.0, 'start'),
+                   daemon_rec(30.0, 'stop')])
+        assert 'newest-start' in rep['scope']['model_rule']
+        assert all(r['stale'] for r in rep['rows'])
+        assert any('--window to pin' in n for n in rep['notes'])
+
+
+# --------------------------------------------------------------- the window
+def test_window_clips_the_analysis_and_the_verdict_says_so():
+    with tempfile.TemporaryDirectory() as tmp:
+        recs = [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa'),
+                couchd(10.5, 'route_pad', 'game'), daemon_rec(60.0, 'stop'),
+                daemon_rec(600.0, 'start', 'aaaaaaaaaaaa'),
+                couchd(610.0, 'show', 'desktop'), daemon_rec(660.0, 'stop')]
+        legacy_recs = [legacy(10.0, 'route_pad', 'kodi'),
+                       legacy(609.0, 'show', 'kodi')]
+        rep = run(tmp, legacy_recs, recs, window=(T0 - 1, T0 + 120))
+        assert rep['scope']['source'] == '--window'
+        assert rep['scope']['runs_clipped'] == 1
+        ts = [r['t'] for r in rep['rows']]
+        assert ts and all(t <= T0 + 120 for t in ts), 'the later run is gone'
+        text = sd.render(rep)
+        assert 'window' in text and 'judged' in text
+        assert 'decision(s)' in text
+
+
+def test_a_window_with_nothing_in_it_can_never_read_as_a_pass():
+    """The exact shape of the original defect: a verdict over an idle stretch
+    must not look like an evening's verdict."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(10.0, 'route_pad', 'kodi')],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa'),
+                   couchd(10.5, 'route_pad', 'game'), daemon_rec(60.0, 'stop')],
+                  window=(T0 + 1000, T0 + 2000))
+        assert rep['scope']['decisions'] == 0
+        assert rep['gating_count'] == 0
+        assert rep['validity']['verdict'] == 'INVALID'
+        assert any('0 comparable decisions' in r
+                   for r in rep['validity']['reasons'])
+        assert 'over NOTHING; not a pass' in sd.render(rep)
+
+
+def test_window_lets_a_fingerprintless_evening_be_judged_on_request():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(10.0, 'route_pad', 'kodi')],
+                  [daemon_rec(0.0, 'start'), couchd(10.5, 'route_pad', 'game'),
+                   daemon_rec(60.0, 'stop'), daemon_rec(600.0, 'start'),
+                   daemon_rec(660.0, 'stop')],
+                  window=(T0 - 1, T0 + 120))
+        assert not any(r['stale'] for r in rep['rows'])
+        assert '--window' in rep['scope']['model_rule']
+        assert any('your assertion' in n for n in rep['notes'])
+
+
+def test_parse_window_accepts_open_ends_and_rejects_nonsense():
+    day = '20260805'
+    lo, hi = sd.parse_window('00:38-03:15', day)
+    assert hi > lo
+    assert sd.parse_window('-03:15', day)[0] == 0.0
+    assert sd.parse_window('21:00-', day)[1] == float('inf')
+    assert sd.parse_window(None, day) is None
+    for bad in ('03:15', '03:15-00:38', 'tea-time'):
+        try:
+            sd.parse_window(bad, day)
+        except SystemExit:
+            continue
+        raise AssertionError('accepted %r' % bad)
+
+
+# ------------------------------------------------------- crash-holed corpora
+def test_a_nul_hole_from_a_crash_is_counted_and_stepped_over():
+    """The 05:19 power event left 1154 NUL bytes in snapshots-20260805.jsonl:
+    the tail was allocated and never reached the platter."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cp = os.path.join(tmp, 'couchd.jsonl')
+        with open(cp, 'w') as fh:
+            fh.write(json.dumps(couchd(10.5, 'route_pad', 'kodi')) + '\n')
+            fh.write('\x00' * 1154 + '\n')          # the hole
+            fh.write(json.dumps(couchd(30.5, 'show', 'kodi')) + '\n')
+        lp = write(tmp, 'legacy.jsonl', [legacy(10.0, 'route_pad', 'kodi'),
+                                         legacy(30.0, 'show', 'kodi')])
+        rep = sd.build(lp, cp, None)
+        assert any('NUL bytes' in n for n in rep['notes'])
+        assert rep['matched_total'] == 2, 'the records either side survived'
+
+
+def test_a_nul_hole_glued_to_a_real_record_still_yields_the_record():
+    """A hole carries no newline, so it arrives stuck to whatever follows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cp = os.path.join(tmp, 'couchd.jsonl')
+        with open(cp, 'w') as fh:
+            fh.write('\x00' * 64 + json.dumps(couchd(10.5, 'route_pad', 'kodi'))
+                     + '\n')
+        lp = write(tmp, 'legacy.jsonl', [legacy(10.0, 'route_pad', 'kodi')])
+        rep = sd.build(lp, cp, None)
+        assert rep['matched_total'] == 1
+        assert any('NUL bytes' in n for n in rep['notes'])
 
 
 if __name__ == '__main__':
