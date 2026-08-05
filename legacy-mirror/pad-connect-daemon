@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Reconnects the DualSense by connecting outwards, because it can't connect in.
+#
+# The kernel refuses the pad's incoming request to open the HID channel with
+# "security block". It checks the encryption key size before allowing L2CAP, and
+# this adapter answers "what size is the key?" about 0.7 ms after the pad has
+# already asked. The key is fine — 16 bytes — but it still reads as 0, fails the
+# minimum of 7, and the pad hangs up 160 ms later. That is the connect-hold-drop
+# cycle, and it is a kernel regression (commit d4ca2fd218caa, in Ubuntu's kernel
+# via the v6.14.4 stable merge), not a fault with the pad or the pairing.
+#
+# The check only guards *incoming* connections, so when the pad's link appears
+# this asks bluez to open the channel from this end instead and the check never
+# runs. Pairing always worked because a fresh pair happens on a link that is
+# already up and authorised, with no key size read to lose a race against.
+#
+# Everything here is shaped by one number: the pad tears the link down about
+# 270 ms after it comes up, and the key size isn't known until 107 ms in. So the
+# outbound call has to land inside a window of roughly 160 ms.
+#
+#   - The connect goes into a bluetoothctl that is already running and already
+#     on the bus. Starting one costs 100-200 ms of fork, exec and bus setup,
+#     which on its own overshoots the window.
+#   - The new value is read out of the signal rather than asked for. Querying
+#     bluez for the Connected property is another round trip for something the
+#     signal already carries.
+#
+# An earlier version did both the slow way and connected exactly once.
+set -uo pipefail
+
+MAC="AA:BB:CC:DD:EE:FF"
+DBUS_PATH="/org/bluez/hci0/dev_${MAC//:/_}"
+
+# A REAL DualSense joystick node only. Any-js* was legacy bug 3: Sunshine's
+# virtual mouse registers as js0 from boot, which made "pad already usable"
+# permanently true (seen live 5 Aug 2026).
+usable() {
+  local n name
+  for n in /sys/class/input/js*/device/name; do
+    [ -e "$n" ] || continue
+    name=$(cat "$n" 2>/dev/null) || continue
+    case "$name" in
+      *[Vv]irtual*|*Sunshine*) continue ;;
+      *DualSense*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# bluetoothctl's own chatter goes nowhere on purpose. Nothing reads the coproc's
+# output, and a pipe nobody drains eventually fills and blocks the writer — which
+# would wedge the one thing that has to be ready to move instantly.
+start_btctl() {
+  coproc BTCTL { bluetoothctl >/dev/null 2>&1; }
+  BTCTL_PID=$!
+  sleep 1
+}
+cleanup() { kill "${BTCTL_PID:-}" 2>/dev/null; }
+trap cleanup EXIT
+
+start_btctl
+
+# Only ever finishes a link the pad has already made; never goes looking for one.
+# Asking bluez to connect to a pad that isn't there leaves this adapter paging
+# for the whole timeout, and a radio that is paging is not listening for pages,
+# so host and pad call each other at once and neither can answer.
+fire() {
+  if ! printf 'connect %s\n' "$MAC" >&"${BTCTL[1]}" 2>/dev/null; then
+    echo "bluetoothctl went away — restarting it"
+    start_btctl
+    printf 'connect %s\n' "$MAC" >&"${BTCTL[1]}" 2>/dev/null || return 1
+  fi
+  local t0=$EPOCHREALTIME
+  for _ in $(seq 16); do
+    if usable; then
+      awk -v a="$t0" -v b="$EPOCHREALTIME" \
+        'BEGIN{ printf "connected in %d ms\n", (b-a)*1000 }'
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+echo "watching for ${MAC}"
+# Only if a link is already up. The guard against paging lives in the signal
+# handler now — it fires on "boolean true" and nothing else — so this one line
+# has to carry its own, or restarting the service pages a switched-off pad.
+if ! usable && dbus-send --system --print-reply --dest=org.bluez "$DBUS_PATH" \
+     org.freedesktop.DBus.Properties.Get \
+     string:org.bluez.Device1 string:Connected 2>/dev/null | grep -q 'boolean true'; then
+  fire >/dev/null 2>&1 || true
+fi
+
+while read -r line; do
+  case "$line" in
+    *'"Connected"'*)
+      # dbus-monitor prints the property name and then its value on the next
+      # line, so the value is already on its way — reading it costs nothing and
+      # tells us whether this is the pad arriving or leaving.
+      read -r value
+      case "$value" in
+        *"boolean true"*) ;;
+        *) continue ;;
+      esac
+      usable && continue
+      if ! fire; then
+        echo "link appeared but HID didn't come up"
+        sleep 2
+      fi
+      ;;
+  esac
+  # Process substitution rather than a pipe: a pipeline would put this loop in a
+  # subshell, and the coproc's file descriptor belongs to the parent.
+done < <(dbus-monitor --system \
+  "type='signal',path='$DBUS_PATH',interface='org.freedesktop.DBus.Properties'" 2>/dev/null)

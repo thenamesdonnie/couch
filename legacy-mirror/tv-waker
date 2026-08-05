@@ -1,0 +1,166 @@
+#!/home/ds2000/tv-remote/bin/python
+"""Instant TV wake when the DualSense connects, over an always-open link.
+
+The old path ran `tv hdmi2` cold on every pad connect, and dialling a TV that
+is in standby takes 15-46s (the panel barely answers the network while asleep).
+This daemon instead keeps ONE connection to the set open permanently - the TV
+answers the Android TV Remote protocol even in standby, so the connection
+survives sleep - and sends the wake the instant the pad appears, with no
+dial-up. All that is left is the panel's own ~6s wake, not a cold connect.
+
+Trigger: the pad's /dev/input/js* device appearing, the same signal
+pad-connect-daemon treats as "usable". Edge-detected (absent -> present) with a
+cooldown so the connect-drop-retry flap can't fire it repeatedly.
+
+Coexists with tv-power-watcher's connection the same way ad-hoc `tv` calls do
+(the set accepts multiple remote sessions). Replaces the udev -> pad-tv-on cold
+path, which should be disabled so the two don't race (see the .service note).
+"""
+import asyncio
+import glob
+import time
+from pathlib import Path
+
+from androidtvremote2 import AndroidTVRemote
+
+HOST = "192.168.4.108"
+CONF = Path("/home/ds2000/.config/tv-remote")
+
+WAKE = "HOME"                 # brings the panel out of standby (POWER only works while awake)
+INPUT_KEY = "TV_INPUT_HDMI_2"  # the PC's input
+WAKE_TO_USABLE = 6.0          # panel needs a beat after HOME before it takes the input switch
+SETTLE_AFTER_SEND = 1.5
+SETTLE_AFTER_CONNECT = 1.0
+POLL = 0.4
+COOLDOWN = 20.0              # ignore re-triggers within this window (rides out reconnect flap)
+
+
+def pad_present():
+    """A REAL DualSense joystick node only. Any-js* was legacy bug 3: Sunshine's
+    virtual mouse registers as js0 from boot, so the absent->present edge never
+    fired and the TV stopped waking on pad connect (seen live 5 Aug 2026)."""
+    for p in glob.glob('/sys/class/input/js*/device/name'):
+        try:
+            name = Path(p).read_text().strip()
+        except OSError:
+            continue
+        low = name.lower()
+        if 'dualsense' in low and 'virtual' not in low and 'sunshine' not in low:
+            return True
+    return False
+
+
+# Anyone (game-launch, scripts) can request a wake by touching this; consumed
+# on the next poll tick. Only acts when the set is actually in standby.
+FLAG = Path('/tmp/tv-wake-request')
+
+
+def say(msg):
+    print(msg, flush=True)
+
+
+async def do_wake(tv):
+    if not tv.is_on:
+        say("TV asleep -> HOME to wake")
+        tv.send_key_command(WAKE)
+        await asyncio.sleep(WAKE_TO_USABLE)
+    else:
+        say("TV already on -> just selecting the input")
+    tv.send_key_command(INPUT_KEY)
+    await asyncio.sleep(SETTLE_AFTER_SEND)
+    say("done")
+
+
+async def wake_if_off(tv, why, state):
+    """Gentler than the pad path: only touches the TV when it is in standby,
+    so starting a video while already watching never flashes an input OSD."""
+    if tv.is_on:
+        say(f"{why}: TV already on - nothing to do")
+        return
+    t = time.monotonic()
+    if t - state['last'] < COOLDOWN:
+        say(f"{why}: within cooldown - ignoring")
+        return
+    state['last'] = t
+    say(f"{why} -> waking TV")
+    try:
+        await do_wake(tv)
+    except Exception as e:
+        say(f"wake failed: {e}")
+
+
+async def kodi_video_watch(tv, state):
+    """Wake the set when video playback starts in Kodi (any source: phone
+    remote, discover, cinema mode). Music stays silent-screen."""
+    import json
+    dec = json.JSONDecoder()
+    while True:
+        try:
+            reader, _writer = await asyncio.open_connection('localhost', 9090)
+            say('kodi notification socket connected')
+            buf = ''
+            while True:
+                chunk = (await reader.read(65536)).decode('utf-8', 'replace')
+                if not chunk:
+                    raise ConnectionError('kodi closed the socket')
+                buf += chunk
+                while buf:
+                    buf = buf.lstrip()
+                    try:
+                        msg, end = dec.raw_decode(buf)
+                    except ValueError:
+                        break  # partial message, wait for more
+                    buf = buf[end:]
+                    if msg.get('method') == 'Player.OnPlay':
+                        item = (msg.get('params', {}).get('data', {})
+                                or {}).get('item', {})
+                        if item.get('type') != 'song':
+                            await wake_if_off(
+                                tv, f"video started ({item.get('type', '?')})",
+                                state)
+        except OSError as e:
+            say(f'kodi socket lost ({e}); retrying in 10s')
+            await asyncio.sleep(10)
+
+
+async def pad_and_flag_watch(tv, state):
+    prev = pad_present()
+    while True:
+        await asyncio.sleep(POLL)
+        # explicit wake requests (game-launch touches the flag)
+        if FLAG.exists():
+            try:
+                FLAG.unlink()
+            except OSError:
+                pass
+            await wake_if_off(tv, 'wake requested (game launch)', state)
+        now = pad_present()
+        if now and not prev:
+            t = time.monotonic()
+            if t - state['last'] >= COOLDOWN:
+                state['last'] = t
+                say("pad connected -> waking TV")
+                try:
+                    await do_wake(tv)
+                except Exception as e:
+                    say(f"wake failed: {e}")
+            else:
+                say("pad reconnect within cooldown - ignoring")
+        prev = now
+
+
+async def main():
+    tv = AndroidTVRemote("homelab-waker", str(CONF / "cert.pem"),
+                         str(CONF / "key.pem"), HOST)
+    await tv.async_connect()
+    tv.keep_reconnecting()             # rides out any drop on its own
+    await asyncio.sleep(SETTLE_AFTER_CONNECT)
+    say(f"connected (TV is {'on' if tv.is_on else 'standby'}); "
+        f"watching pad + wake flag + kodi playback")
+    state = {'last': 0.0}
+    await asyncio.gather(pad_and_flag_watch(tv, state),
+                         kodi_video_watch(tv, state))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
