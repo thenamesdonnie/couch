@@ -2,7 +2,7 @@
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
   import { portal } from './portal.js';
   import { api, fmtTime } from './state.svelte.js';
-  import { cache, loadContinue, loadLibrary, ui } from './store.svelte.js';
+  import { cache, loadContinue, loadLibrary, loadUpcoming, ui } from './store.svelte.js';
   import { fadeimg, decodeImages } from './img.js';
   import Discover from './Discover.svelte';
   import YouTube from './YouTube.svelte';
@@ -40,7 +40,7 @@
   let searchTimer = null;
   let loadSeq = 0;
 
-  let upcoming = $state([]);
+  const upcoming = $derived(cache.upcoming ?? []);
   const airLabel = (iso) => {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -58,9 +58,7 @@
     try {
       if (view === 'continue') {
         loadContinue().catch(() => {});
-        api('/api/upcoming')
-          .then((u) => { if (seq === loadSeq) upcoming = u.episodes.filter((e) => !e.hasFile).slice(0, 8); })
-          .catch(() => {});
+        loadUpcoming().catch(() => {});
       } else {
         loadLibrary(view, sort).catch(() => {});
       }

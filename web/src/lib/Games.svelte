@@ -1,28 +1,19 @@
 <script>
   import { live, api } from './state.svelte.js';
-  import { ui } from './store.svelte.js';
+  import { ui, cache, loadGames, loadSteamLib } from './store.svelte.js';
   import { fadeimg } from './img.js';
   import Icon from './Icon.svelte';
 
   let view = $state('box'); // box | library
-  let games = $state([]);        // on-the-box games (Steam installed + PS4 + apps)
-  let loaded = $state(false);
-  let steamLib = $state([]);     // full owned Steam library
-  let steamLoaded = $state(false);
+  // Both lists live in the shared cache: the tab paints instantly from the
+  // last visit and the store's focus/poll revalidation keeps them fresh.
+  const games = $derived(cache.games ?? []);        // on-the-box games (Steam installed + PS4 + apps)
+  const loaded = $derived(cache.games !== null);
+  const steamLib = $derived(cache.steamLib ?? []);  // full owned Steam library
+  const steamLoaded = $derived(cache.steamLib !== null);
   let downloads = $state([]);
   let installing = $state(new Set());
 
-  async function refresh() {
-    const data = await api('/api/games');
-    games = data.games;
-    loaded = true;
-  }
-  async function loadSteam() {
-    try {
-      const d = await api('/api/steam/library');
-      steamLib = d.games;
-    } catch { /* no steam key */ } finally { steamLoaded = true; }
-  }
   async function loadDownloads() {
     try {
       const res = await fetch('/api/steam/downloads');
@@ -30,9 +21,14 @@
     } catch { /* leave empty */ }
   }
 
-  // Refresh on mount, focus, and the 30s poll. Downloads poll a touch faster so
-  // progress moves while you watch.
-  $effect(() => { ui.focusTick; ui.pollTick; refresh(); loadSteam(); loadDownloads(); });
+  // Cold caches fill on first visit; afterwards revalidation is the store's
+  // job. Downloads stay local and poll a touch faster so progress moves.
+  $effect(() => {
+    ui.focusTick; ui.pollTick;
+    if (!cache.games) loadGames().catch(() => {});
+    if (cache.steamLib === null) loadSteamLib();
+    loadDownloads();
+  });
   $effect(() => {
     const t = setInterval(loadDownloads, 6000);
     return () => clearInterval(t);
@@ -65,7 +61,7 @@
       installing = new Set([...installing, g.appid]);
       try {
         await api('/api/steam/install', { appid: g.appid });
-        setTimeout(() => { loadSteam(); loadDownloads(); }, 2500);
+        setTimeout(() => { loadSteamLib(); loadDownloads(); }, 2500);
       } finally {
         setTimeout(() => { installing.delete(g.appid); installing = new Set(installing); }, 2500);
       }

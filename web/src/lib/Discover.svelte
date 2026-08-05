@@ -62,16 +62,38 @@
 
   const tmdbUrl = (p) => (p ? '/api/art/tmdb?p=' + encodeURIComponent(p) : null);
 
+  // Full details cached per title: the first open waits for everything (sheet
+  // slides up complete), reopening is instant from cache with a quiet refresh
+  // behind it so statuses stay current.
+  const detailCache = new Map();
+
+  async function fetchDetail(item) {
+    const d = await api(`/api/discover/detail?type=${item.mediaType}&tmdbId=${item.tmdbId}`);
+    const full = { ...item, ...d };
+    detailCache.set(item.mediaType + item.tmdbId, full);
+    return full;
+  }
+
   async function openDetail(item) {
+    const key = item.mediaType + item.tmdbId;
+    want4k = false;
+    const cached = detailCache.get(key);
+    if (cached) {
+      pickedSeasons = new Set((cached.seasonList || []).filter((s) => !s.status).map((s) => s.number));
+      detail = cached;
+      // Refresh behind the sheet; keep the user's season picks as they are.
+      fetchDetail(item).then((full) => {
+        if (detail && detail.mediaType + detail.tmdbId === key) detail = full;
+      }).catch(() => {});
+      return;
+    }
     // Fetch the full detail AND decode its art before opening, so the sheet
     // slides up complete instead of popping fields and images in piecemeal.
     // The tapped card shows a spinner while this happens.
-    openingId = item.mediaType + item.tmdbId;
+    openingId = key;
     detailLoading = true;
-    want4k = false;
     try {
-      const d = await api(`/api/discover/detail?type=${item.mediaType}&tmdbId=${item.tmdbId}`);
-      const full = { ...item, ...d };
+      const full = await fetchDetail(item);
       await decodeImages([tmdbUrl(full.poster), tmdbUrl(full.backdrop)]);
       // Everything still missing starts selected, so one tap requests the lot.
       pickedSeasons = new Set((full.seasonList || []).filter((s) => !s.status).map((s) => s.number));

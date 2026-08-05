@@ -1,5 +1,6 @@
 <script>
   import { api } from './state.svelte.js';
+  import { cache, loadYtFeed } from './store.svelte.js';
   import { fadeimg } from './img.js';
   import Icon from './Icon.svelte';
 
@@ -8,8 +9,8 @@
   let sub = $state(localStorage.getItem('couch.yt') || 'subscriptions');
   $effect(() => localStorage.setItem('couch.yt', sub));
 
-  // Cache each sub-tab's list so switching between them is instant.
-  const feeds = $state({ subscriptions: null, recommendations: null });
+  // Feeds live in the shared cache, so they survive tab switches and the
+  // store's focus/poll revalidation keeps them fresh in the background.
   let search = $state('');
   let searchResults = $state(null);
   let loading = $state(false);
@@ -17,14 +18,13 @@
   async function loadFeed(type) {
     loading = true;
     try {
-      const d = await api(`/api/youtube/feed?type=${type}`);
-      feeds[type] = d.results;
-    } catch { feeds[type] = []; } finally { loading = false; }
+      await loadYtFeed(type);
+    } catch { cache.ytFeeds[type] = cache.ytFeeds[type] || []; } finally { loading = false; }
   }
 
   $effect(() => {
     if (sub === 'search') return;
-    if (!feeds[sub]) loadFeed(sub);
+    if (!cache.ytFeeds[sub]) loadFeed(sub);
   });
 
   let timer = null;
@@ -48,7 +48,7 @@
     onplay?.();
   }
 
-  const list = $derived(sub === 'search' ? (searchResults ?? []) : (feeds[sub] ?? []));
+  const list = $derived(sub === 'search' ? (searchResults ?? []) : (cache.ytFeeds[sub] ?? []));
   const showSkeleton = $derived(loading && !list.length);
 </script>
 

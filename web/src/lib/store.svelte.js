@@ -11,6 +11,10 @@ export const cache = $state({
   shows: {},
   discover: null, // { trending, popularFilms, popularShows }
   services: null,
+  games: null,    // on-the-box games list
+  steamLib: null, // full owned Steam library
+  ytFeeds: {},    // keyed by feed name -> results
+  upcoming: null, // airing-soon episodes (Coming up strip)
 });
 
 // Bumped when the app regains focus/visibility. Data-owning components watch it
@@ -65,6 +69,36 @@ export async function loadServices() {
   return d.services;
 }
 
+export async function loadGames() {
+  const d = await api('/api/games');
+  cache.games = d.games;
+  return d.games;
+}
+
+export async function loadSteamLib() {
+  // No Steam key configured is a normal state, not an error: cache an empty
+  // library so the tab stops showing a loader and doesn't retry forever.
+  try {
+    const d = await api('/api/steam/library');
+    cache.steamLib = d.games;
+  } catch {
+    cache.steamLib = cache.steamLib || [];
+  }
+  return cache.steamLib;
+}
+
+export async function loadYtFeed(name) {
+  const d = await api(`/api/youtube/feed?type=${name}`);
+  cache.ytFeeds[name] = d.results;
+  return d.results;
+}
+
+export async function loadUpcoming() {
+  const u = await api('/api/upcoming');
+  cache.upcoming = u.episodes.filter((e) => !e.hasFile).slice(0, 8);
+  return cache.upcoming;
+}
+
 // Refresh whatever is already cached (stale-while-revalidate on demand). Called
 // on focus so lists reflect media added inside or outside the app.
 function revalidateCached() {
@@ -73,6 +107,10 @@ function revalidateCached() {
   for (const s of Object.keys(cache.shows)) loadLibrary('shows', s).catch(() => {});
   if (cache.discover) loadDiscover().catch(() => {});
   if (cache.services) loadServices().catch(() => {});
+  if (cache.games) loadGames().catch(() => {});
+  if (cache.steamLib?.length) loadSteamLib();
+  for (const f of Object.keys(cache.ytFeeds)) loadYtFeed(f).catch(() => {});
+  if (cache.upcoming) loadUpcoming().catch(() => {});
 }
 
 // Warm the caches shortly after launch, off the critical path, so the first
