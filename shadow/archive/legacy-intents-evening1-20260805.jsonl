@@ -513,3 +513,11 @@
 {"t": 1785899071.0657647, "src": "watcher", "verb": "show", "subject": "kodi", "args": {"reason": "hold-release", "via": "xlib-restack"}}
 {"t": 1785899071.1465626, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785899077.1465316, "target": "kodi"}}
 {"t": 1785899071.3658288, "src": "watcher", "verb": "iconify", "subject": "367520", "args": {"via": "wm-change-state", "reason": "release-pointer-grab", "window": "0x7a00001"}}
+{"t": 1785899077.6423993, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785899266.374, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1785899266.681, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[1732542,1732543,1732544,1732652,1732676,1732679,1732682,1732688,1732691,1732700,1732732,1732739,1732758,1732764,1732774,1732776,1732782,1732792],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1785899267.847, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[1732542,1732543,1732544,1732652,1732676,1732679,1732682,1732688,1732691,1732700,1732732,1732739,1732758,1732764,1732774,1732776,1732782,1732792],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1785899269.750, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1785899270.515, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"1732130"}}
+{"t": 1785899270.538, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785899270.554, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"steam"}}
