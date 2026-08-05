@@ -110,6 +110,15 @@ Late afternoon while Donnie was out (commits 500c6ae, 87c40fa):
 
 ### TV upgrade (researched 5 Aug 2026, decision Donnie's)
 
+**Switch-day is prepped (5 Aug):** webOS backend built beside the Android TV
+one; `tv`/`tv-waker`/couch House tab all flip over when
+`~/.config/tv-remote/tv.json` exists. Day-one steps: plug in the LG, put it
+on the LAN, enable Settings > General > Devices > External Devices > "Turn
+on via Wi-Fi", run `tv-setup-lg` (accept the prompt on the TV), done.
+Optional after: install Jellyfin from the LG content store for native 4K
+HDR/DV, reserve the TV's IP on the router. Rollback: delete tv.json,
+restart tv-waker. The webOS code is untested until a real LG exists.
+
 The current 1080p60 Toshiba with no VRR is what parks stage 3. Any HDMI
 2.1 + VRR set un-parks it. The 4070 + 5700X3D drives 4K60 comfortably
 (DLSS for heavy titles; at 4K everything is GPU-bound so the CPU is never
