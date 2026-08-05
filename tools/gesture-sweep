@@ -1,0 +1,705 @@
+#!/usr/bin/env python3
+"""Synthetic PS-gesture sweep against the LIVE acting couchd (brief item 1).
+
+Everything runs inside tools/fake-pad's inhibit frame: tv-waker, pad-record
+and pad-battery are stopped for the duration and restored on any exit, the
+TV cannot wake, and the rig refuses to start if the real pad is connected.
+The sweep itself only ever produces gesture intents, and under today's
+bindings with no game session those are limited to `show kodi` and
+`show_switcher` - both Kodi-screen-only. Any acted intent outside that
+allowlist fails the sweep loudly.
+
+What it exercises (the 5 Aug brief's still-unexercised list):
+  * the full double-tap gap sweep - 0/48/60/120/350 ms release-to-press
+    through the real daemon, end-to-end confirmation of the bf34a27
+    coalescing fix (0..120 fire the switcher, 350 does not);
+  * show_switcher's effect check VERIFIES now (verdict 'confirmed', not
+    'unverified' - bug 2 of bf34a27);
+  * plain hold and long hold with no session: the no-session gate (bug 3)
+    decides a logged no-op, the long-hold tier stays unreachable while
+    `hold` is bound;
+  * the tap-then-hold boundary: a second press that turns into a hold must
+    be a hold, never a double-tap;
+  * a stuck hold: release never comes, 'timed-out' via release-never-came,
+    clean recovery to idle;
+  * a rapid 5-tap burst collapsing to exactly one switcher;
+  * pad disconnect mid-gesture: the uhid device is destroyed with the
+    button down and couchd must go observer-blind and recover, acting on
+    nothing.
+
+Run it with couchd ACTING on gestures (owns.conf), no real pad, no game
+session. It sequences scenarios on couchd's own status.json regions, reads
+the verdicts from the shadow JSONL, and prints a PASS/FAIL table; exit 0
+means every expectation held and the frame restored what it stopped.
+"""
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FAKE_PAD = os.path.join(HERE, 'fake-pad')
+FIFO = '/tmp/fake-pad.fifo'
+PIDFILE = '/tmp/fake-pad.pid'
+STATUS = os.path.expanduser('~/couch/shadow/status.json')
+TV_WAKE_REQUEST = '/tmp/tv-wake-request'
+LEGACY_INTENTS = '/tmp/legacy-intents.jsonl'
+KODI_RPC = ('127.0.0.1', 9090)
+KODI_SELECT_DIALOG = 12000
+INHIBIT_UNITS = ('tv-waker.service', 'pad-record.service',
+                 'pad-battery.service')
+
+# The ONLY (verb, subject) pairs the acting executor may run during this
+# sweep. PAIRS, not verbs: `show` dispatches on its subject and only
+# `show kodi` is an xlib restack - `show <appid>` spawns game-launch and
+# `show steam-menu` presses the virtual guide button, neither of which any
+# gesture on an idle box should reach. Anything outside this set fails the
+# run outright and aborts the remaining scenarios.
+ALLOWED_ACTED = {('show', 'kodi'), ('show_switcher', 'tv')}
+
+# Kodi windows the sweep may close between scenarios. 12000 is the select
+# dialog the switcher addon draws. 10106 is Kodi's context menu: Kodi's OWN
+# joystick layer also maps the PS button (peripheral.joystick buttonmap +
+# gamepad-poweroff.xml's <guide holdtime="1000">), so every hold >=1s in
+# this sweep ALSO opens the tv-poweroff menu, exactly as a real-pad hold
+# does on this box. That is the console's normal behaviour, not a sweep
+# artefact - but the menu is modal and its first entry is "turn everything
+# off", so it must never be left standing for the evening couch pass.
+DISMISS_WINDOWS = (12000, 10106)
+
+PAD_NAME = 'DualSense Wireless Controller'
+FAKE_MAC = 'de:ad:be:ef:fa:ce'
+
+
+def say(msg):
+    print(f'{time.strftime("%H:%M:%S")} sweep: {msg}', flush=True)
+
+
+def die(msg):
+    say(f'FATAL: {msg}')
+    sys.exit(2)
+
+
+# -------------------------------------------------------------------------
+# world reads
+# -------------------------------------------------------------------------
+def read_status(retries=3):
+    """status.json, tolerant of landing mid-write."""
+    for _ in range(retries):
+        try:
+            with open(STATUS) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            time.sleep(0.3)
+    return None
+
+
+def unit_active(unit):
+    try:
+        r = subprocess.run(['systemctl', '--user', 'is-active', unit],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == 'active'
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def real_pad_present():
+    """Same rule as fake-pad's frame: a DualSense whose uniq is not the
+    rig's MAC is the real pad."""
+    try:
+        with open('/proc/bus/input/devices') as f:
+            blocks = f.read().split('\n\n')
+    except OSError:
+        return None
+    for b in blocks:
+        m = re.search(r'N: Name="([^"]*)"', b)
+        if not m or PAD_NAME not in m.group(1):
+            continue
+        u = re.search(r'U: Uniq=(\S*)', b)
+        uniq = (u.group(1) if u else '').lower()
+        if uniq != FAKE_MAC:
+            return uniq or '(no uniq)'
+    return None
+
+
+def kodi(method, params=None, timeout=3.0):
+    """One JSON-RPC call over Kodi's TCP server. Returns the RESULT MATCHED
+    BY ID, or None if Kodi is unreachable.
+
+    Port 9090 pushes notifications to every connected client (tv-waker
+    depends on exactly that), so the reply to our request can arrive with a
+    notification glued before or after it in the same stream. The buffer is
+    therefore parsed as a SEQUENCE of JSON documents (raw_decode) and only
+    the one carrying our id is the answer; anything else is discarded.
+    """
+    payload = {'jsonrpc': '2.0', 'id': 714, 'method': method}
+    if params is not None:
+        payload['params'] = params
+    decoder = json.JSONDecoder()
+    try:
+        with socket.create_connection(KODI_RPC, timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(json.dumps(payload).encode())
+            buf = ''
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    chunk = s.recv(4096)
+                except socket.timeout:
+                    return None
+                if not chunk:
+                    return None
+                buf += chunk.decode('utf-8', 'replace')
+                while buf:
+                    buf = buf.lstrip()
+                    try:
+                        doc, end = decoder.raw_decode(buf)
+                    except ValueError:
+                        break               # incomplete document: recv more
+                    buf = buf[end:]
+                    if isinstance(doc, dict) and doc.get('id') == 714:
+                        return doc.get('result')
+    except OSError:
+        return None
+    return None
+
+
+def kodi_window():
+    r = kodi('GUI.GetProperties', {'properties': ['currentwindow']})
+    if isinstance(r, dict):
+        return (r.get('currentwindow') or {}).get('id')
+    return None
+
+
+# -------------------------------------------------------------------------
+# shadow log tailing
+# -------------------------------------------------------------------------
+class Tail:
+    def __init__(self, path):
+        self.path = path
+        self.offset = os.path.getsize(path) if os.path.exists(path) else 0
+
+    def mark(self):
+        if os.path.exists(self.path):
+            self.offset = os.path.getsize(self.path)
+
+    def records(self):
+        """Everything appended since mark(). NUL-hole and mid-write safe:
+        a line that will not parse is skipped, the offset only advances over
+        complete lines."""
+        out = []
+        try:
+            with open(self.path, 'rb') as f:
+                f.seek(self.offset)
+                data = f.read()
+        except OSError:
+            return out
+        end = data.rfind(b'\n')
+        if end < 0:
+            return out
+        self.offset += end + 1
+        for line in data[:end].split(b'\n'):
+            line = line.strip(b'\x00').strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line.decode('utf-8', 'replace')))
+            except ValueError:
+                continue
+        return out
+
+
+def acted(records, verb=None, reason=None):
+    return [r for r in records
+            if r.get('kind') == 'intent' and r.get('acted')
+            and (verb is None or r.get('verb') == verb)
+            and (reason is None or r.get('reason') == reason)]
+
+
+def effects(records, verb=None):
+    return [r for r in records if r.get('kind') == 'effect'
+            and (verb is None or r.get('verb') == verb)]
+
+
+def noops(records):
+    return [r for r in records if r.get('kind') == 'decision'
+            and r.get('event') == 'gesture-no-op']
+
+
+def gesture_transitions(records):
+    return [(r.get('from'), r.get('to'), r.get('reason')) for r in records
+            if r.get('kind') == 'transition' and r.get('region') == 'gesture']
+
+
+# -------------------------------------------------------------------------
+# rig control
+# -------------------------------------------------------------------------
+def rig_alive():
+    try:
+        os.kill(int(open(PIDFILE).read()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def rig_send(script):
+    """One buffered write: the rig executes the lines back-to-back, so the
+    `sleep` lines inside ARE the gaps (see fake-pad's sleep command).
+
+    O_NONBLOCK on purpose: opening a FIFO for writing with no reader blocks
+    forever, and a rig that died hard (leaving the fifo behind) must raise
+    ENXIO here rather than park the driver with the inhibit units stopped.
+    """
+    fd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        os.write(fd, script.rstrip('\n').encode() + b'\n')
+    finally:
+        os.close(fd)
+
+
+def script_seconds(script):
+    """How long the rig will spend executing it (press=0.12, hold default
+    1.2, sleep n) - the driver waits this plus a margin."""
+    total = 0.0
+    for line in script.strip().split('\n'):
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == 'press':
+            total += 0.12
+        elif parts[0] == 'hold':
+            total += float(parts[2]) if len(parts) > 2 else 1.2
+        elif parts[0] == 'sleep':
+            total += float(parts[1])
+    return total
+
+
+# -------------------------------------------------------------------------
+# sequencing on couchd's own view
+# -------------------------------------------------------------------------
+def wait_for(pred, timeout, what, poll=0.5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(poll)
+    say(f'TIMEOUT waiting for {what} ({timeout}s)')
+    return False
+
+
+def gesture_region():
+    s = read_status()
+    return (s or {}).get('regions', {}).get('gesture')
+
+
+def wait_gesture(state, timeout=30):
+    return wait_for(lambda: gesture_region() == state, timeout,
+                    f'gesture region == {state}')
+
+
+def dismiss_ui():
+    """Close whatever the scenario left on screen - the switcher's select
+    dialog (12000) and/or Kodi's own tv-poweroff context menu (10106, which
+    Kodi opens on any >=1s PS hold; see DISMISS_WINDOWS) - and PROVE it
+    closed. A dialog left open would make the next scenario's effect check
+    trivially true, and a modal menu left standing is a booby trap for the
+    evening couch pass. Back is only ever sent while one of the two known
+    windows is on top, so it cannot navigate Kodi from an arbitrary screen.
+    """
+    w = kodi_window()
+    if w is None:
+        say('WARNING: Kodi RPC unreachable; cannot confirm dialog state')
+        return False
+    for _ in range(6):
+        if w not in DISMISS_WINDOWS:
+            return True
+        kodi('Input.Back')
+        time.sleep(0.7)
+        w = kodi_window()
+        if w is None:
+            say('WARNING: Kodi RPC went unreachable mid-dismiss')
+            return False
+    say(f'WARNING: Kodi window {w} still open after 6 Backs')
+    return False
+
+
+# -------------------------------------------------------------------------
+# expectations
+# -------------------------------------------------------------------------
+def expect_switcher(name, recs):
+    """A double-tap that must fire: exactly one acted show_switcher, reason
+    double-tap-switcher, verdict confirmed."""
+    fails = []
+    sw = acted(recs, 'show_switcher')
+    if len(sw) != 1:
+        fails.append(f'expected exactly 1 acted show_switcher, got {len(sw)}')
+    elif sw[0].get('reason') != 'gesture:double-tap-switcher':
+        fails.append(f'switcher reason {sw[0].get("reason")!r}')
+    eff = effects(recs, 'show_switcher')
+    if not eff:
+        fails.append('no show_switcher effect verdict landed')
+    else:
+        bad = [e['verdict'] for e in eff if e.get('verdict') != 'confirmed']
+        if bad:
+            fails.append(f'show_switcher verdict(s) {bad} (want confirmed)')
+    return fails
+
+
+def expect_no_switcher(name, recs):
+    sw = acted(recs, 'show_switcher')
+    return ([f'{len(sw)} switcher(s) acted, expected none'] if sw else [])
+
+
+def expect_hold_noop(name, recs):
+    """A no-session hold: at least one gesture-no-op decision naming the
+    hold, no acted intents at all."""
+    fails = []
+    ops = noops(recs)
+    if not any(n.get('gesture') == 'hold-fired' and n.get('session') is False
+               for n in ops):
+        fails.append('no gesture-no-op record for hold-fired with no session')
+    if acted(recs):
+        fails.append(f'{len(acted(recs))} intents acted; a no-session hold '
+                     f'must act on nothing')
+    trans = gesture_transitions(recs)
+    if not any(t[1] == 'hold-fired' for t in trans):
+        fails.append('gesture region never entered hold-fired')
+    return fails
+
+
+SCENARIOS = []
+
+
+def scenario(name, script, expect, wait_after=1.5, idle_timeout=30,
+             note=''):
+    SCENARIOS.append({'name': name, 'script': script, 'expect': expect,
+                      'wait_after': wait_after, 'idle_timeout': idle_timeout,
+                      'note': note})
+
+
+scenario('single-tap', 'press ps',
+         lambda n, r: (expect_no_switcher(n, r)
+                       + ([f'{len(noops(r))} unexpected no-op(s)']
+                          if noops(r) else [])
+                       + ([f'{len(acted(r))} unexpected acted intent(s)']
+                          if acted(r) else [])),
+         note='tap is unbound: decides nothing, quietly')
+
+for gap in (0, 48, 60, 120):
+    scenario(f'double-tap-{gap}ms',
+             ('press ps\npress ps' if gap == 0
+              else f'press ps\nsleep {gap / 1000:.3f}\npress ps'),
+             expect_switcher, wait_after=8,
+             note='must fire the switcher (bf34a27 end-to-end)')
+
+scenario('double-tap-350ms', 'press ps\nsleep 0.350\npress ps',
+         expect_no_switcher, wait_after=4,
+         note='at the window: two singles, no switcher')
+
+scenario('hold-1.5s', 'hold ps 1.5', expect_hold_noop,
+         wait_after=2, idle_timeout=30,
+         note='no session: logged no-op, nothing acted (bf34a27 bug 3)')
+
+scenario('long-hold-3.5s', 'hold ps 3.5',
+         lambda n, r: (expect_hold_noop(n, r)
+                       + (['long-hold-fired reached: the tier must be '
+                           'unreachable while hold is bound']
+                          if any(t[1] == 'long-hold-fired'
+                                 for t in gesture_transitions(r)) else [])
+                       + (['hold fired more than once in one press']
+                          if sum(1 for t in gesture_transitions(r)
+                                 if t[1] == 'hold-fired') != 1 else [])),
+         wait_after=2, idle_timeout=30,
+         note='hold fires once at 0.9; long-hold tier stays dark')
+
+scenario('tap-then-hold', 'press ps\nsleep 0.100\nhold ps 1.3',
+         lambda n, r: (expect_no_switcher(n, r) + expect_hold_noop(n, r)),
+         wait_after=2, idle_timeout=30,
+         note='second press inside the window but held: a hold, never a double')
+
+scenario('stuck-hold', 'down ps\nsleep 5.6\nrelease ps',
+         lambda n, r: (expect_hold_noop(n, r)
+                       + ([] if any(t[2] == 'release-never-came'
+                                    for t in gesture_transitions(r))
+                          else ['never took the release-never-came edge'])),
+         wait_after=2, idle_timeout=30,
+         note='release 5.6s late: timed-out via release-never-came, recovers')
+
+scenario('burst-5-taps',
+         'press ps\nsleep 0.080\npress ps\nsleep 0.080\npress ps\n'
+         'sleep 0.080\npress ps\nsleep 0.080\npress ps',
+         expect_switcher, wait_after=8,
+         note='rapid multi-tap collapses to exactly one switcher')
+
+
+# -------------------------------------------------------------------------
+# the run
+# -------------------------------------------------------------------------
+MODEL_FILES = ('couchd.py', 'gesture.py', 'gestureconf.py', 'owns.py')
+
+
+def preflight():
+    for unit in ('couchd.service', 'couch.service', 'pad-home.service'):
+        if not unit_active(unit):
+            die(f'{unit} is not active')
+    s = read_status()
+    if not s:
+        die('cannot read status.json')
+    if s.get('mode') != 'acting' or s.get('owns') != ['gestures']:
+        die(f"couchd is {s.get('mode')} owns={s.get('owns')}; "
+            f"this sweep expects acting ['gestures']")
+    if s.get('bindings') != {'tap': 'none', 'double_tap': 'switcher',
+                             'hold': 'suspend_to_kodi',
+                             'hold_release': 'none', 'long_hold': 'none'}:
+        die(f"bindings are not the defaults: {s.get('bindings')} - the "
+            f"scenario expectations assume the default vocabulary")
+    regions = s.get('regions', {})
+    if regions.get('session') != 'none':
+        die(f"session region is {regions.get('session')!r}; "
+            f"the sweep must not run against a live game")
+    if regions.get('foreground') == 'bigpicture':
+        die('Big Picture is on top: a no-session hold would emit a real '
+            'set_flag suspended=bigpicture (couchd._suspend_intents) - '
+            'close it first')
+    if regions.get('pad') == 'present':
+        die("pad region is already 'present' with no real pad refused - "
+            "something else is emulating a pad")
+    # A stale suspended flag turns every plain tap into a REAL tap-resume:
+    # launch <appid> mode=resume + show <appid>, i.e. game-launch spawning
+    # and a /tmp/tv-wake-request touch. Refuse to start until it is gone.
+    if os.path.exists('/tmp/game-suspended'):
+        die('/tmp/game-suspended exists; a tap would act a real resume. '
+            'Let the legacy reconcile clear it (or clear it) first')
+    # The daemon must be RUNNING the code we are asserting about: a model
+    # file newer than the daemon's start means the fixes on disk are not the
+    # fixes in memory, and the sweep would grade the wrong build.
+    started = s.get('t', time.time()) - s.get('uptime_s', 0)
+    for name in MODEL_FILES:
+        path = os.path.join(HERE, '..', 'couchd', name)
+        if os.path.exists(path) and os.path.getmtime(path) > started:
+            die(f'couchd/{name} is newer than the running daemon; restart '
+                f'couchd (a human decision while acting) before sweeping')
+    mac = real_pad_present()
+    if mac:
+        die(f'real DualSense connected (uniq {mac})')
+    if rig_alive():
+        die('fake-pad is already up; quit it first')
+    players = kodi('Player.GetActivePlayers')
+    if players:
+        die(f'Kodi is playing something ({players}); PS taps during '
+            f'playback kick the room back to Home')
+    w = kodi_window()
+    if w is None:
+        say('WARNING: Kodi RPC unreachable - dialog-closed checks degraded')
+    elif w in DISMISS_WINDOWS:
+        dismiss_ui()
+    return s
+
+
+def clear_wake_flag(when):
+    """The one file that can wake the TV after the frame restores tv-waker,
+    which consumes a stale flag on its first 0.4s poll tick. Must run BEFORE
+    every stop_rig (frame restore), and once more after, belt and braces."""
+    if os.path.exists(TV_WAKE_REQUEST):
+        try:
+            os.unlink(TV_WAKE_REQUEST)
+        except OSError as e:
+            say(f'WARNING: could not delete {TV_WAKE_REQUEST}: {e}')
+            return
+        say(f'WARNING: {TV_WAKE_REQUEST} existed {when} - deleted. '
+            f'Find out what wrote it; no sweep path should.')
+
+
+def start_rig(log_path):
+    """Launch the rig. Returns the Popen IMMEDIATELY into the caller's
+    hands; readiness failures RAISE rather than die(), because by this
+    point the frame may already have the inhibit units stopped and only the
+    caller's finally (stop_rig) can put them back. die() here would leak a
+    live rig with tv-waker down - the one state the charter forbids."""
+    log = open(log_path, 'w')
+    return subprocess.Popen(['setsid', FAKE_PAD, 'up'],
+                            stdout=log, stderr=subprocess.STDOUT)
+
+
+def wait_rig_ready(log_path):
+    if not wait_for(rig_alive, 20, 'fake-pad daemon'):
+        raise RuntimeError(f'fake-pad never came up (see {log_path})')
+    # couchd notices the node on its own; the pad region flipping to
+    # 'present' is the daemon telling us it is watching THIS pad. 30s: the
+    # status file only republishes regions on a pass, and idle passes are
+    # seconds apart.
+    if not wait_for(lambda: (read_status() or {}).get('regions', {})
+                    .get('pad') == 'present', 30, "pad region 'present'"):
+        raise RuntimeError(f'couchd never saw the fake pad (see {log_path})')
+    say('rig up, couchd watching the fake pad')
+
+
+def stop_rig(proc, log_path):
+    if rig_alive():
+        try:
+            rig_send('quit')
+        except OSError:
+            pass
+    if proc is not None:
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            say('rig did not exit on quit; killing its process group')
+            try:
+                os.killpg(os.getpgid(proc.pid), 15)
+                proc.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                say('WARNING: rig would not die; inhibit units may still '
+                    'be stopped - check systemctl --user status tv-waker')
+    try:
+        with open(log_path) as f:
+            tail = f.read().strip().split('\n')[-8:]
+        say('rig log tail:')
+        for line in tail:
+            print(f'    {line}', flush=True)
+    except OSError:
+        pass
+
+
+def main():
+    say('preflight')
+    status0 = preflight()
+    inhibit_before = {u: unit_active(u) for u in INHIBIT_UNITS}
+    fails0 = status0.get('action_failures', 0)
+    tail = Tail(status0.get('shadow_log',
+                            os.path.expanduser('~/couch/shadow/couchd-'
+                                               + time.strftime('%Y%m%d')
+                                               + '.jsonl')))
+    legacy0 = (os.path.getsize(LEGACY_INTENTS)
+               if os.path.exists(LEGACY_INTENTS) else 0)
+    log_path = f'/tmp/gesture-sweep-rig-{os.getpid()}.log'
+
+    results = []
+    forbidden = []
+    proc = None
+    try:
+        proc = start_rig(log_path)
+        wait_rig_ready(log_path)
+        time.sleep(2.0)     # let both stacks finish opening the node
+        for sc in SCENARIOS:
+            say(f"--- {sc['name']}: {sc['note']}")
+            if not wait_gesture('idle', sc['idle_timeout']):
+                results.append((sc['name'],
+                                ['gesture region never returned to idle '
+                                 'before the scenario']))
+                continue
+            time.sleep(3.5)     # outlast every 3s intent cooldown
+            tail.mark()
+            rig_send(sc['script'])
+            time.sleep(script_seconds(sc['script']) + sc['wait_after'])
+            recs = tail.records()
+            bad = [r for r in acted(recs)
+                   if (r.get('verb'), r.get('subject')) not in ALLOWED_ACTED]
+            if bad:
+                forbidden += [(sc['name'], r.get('verb'), r.get('subject'),
+                               r.get('reason')) for r in bad]
+                say('ABORTING: a forbidden intent acted; no further '
+                    'scenarios will run')
+                results.append((sc['name'], ['forbidden intent acted']))
+                break
+            results.append((sc['name'], sc['expect'](sc['name'], recs)))
+            dismiss_ui()
+
+        # -- disconnect mid-gesture: the teardown IS the stimulus ----------
+        if not forbidden:
+            say('--- disconnect-mid-hold: uhid destroyed, button down')
+            wait_gesture('idle', 30)
+            time.sleep(3.5)
+            tail.mark()
+            rig_send('down ps')
+            time.sleep(1.1)   # past 0.9: hold has fired, button still down
+            clear_wake_flag('before frame restore')
+            stop_rig(proc, log_path)
+            proc = None
+            clear_wake_flag('just after frame restore')
+            ok_gone = wait_for(lambda: (read_status() or {})
+                               .get('regions', {}).get('pad')
+                               in ('absent', 'unknown'), 20,
+                               "pad region to leave 'present'")
+            time.sleep(2.0)
+            recs = tail.records()
+            dfails = []
+            if not ok_gone:
+                dfails.append('couchd never noticed the pad vanish')
+            if acted(recs, 'show_switcher'):
+                dfails.append('switcher acted off a disconnected mid-hold '
+                              'press')
+            dfails += [f'forbidden intent acted: {r.get("verb")} '
+                       f'{r.get("subject")}' for r in acted(recs)
+                       if (r.get('verb'), r.get('subject'))
+                       not in ALLOWED_ACTED]
+            if not unit_active('couchd.service'):
+                dfails.append('couchd DIED during the disconnect')
+            results.append(('disconnect-mid-hold', dfails))
+            dismiss_ui()    # the 1.1s hold opened Kodi's poweroff menu too
+    except RuntimeError as e:
+        results.append(('rig-start', [str(e)]))
+    finally:
+        if proc is not None:
+            clear_wake_flag('before frame restore')
+            stop_rig(proc, log_path)
+        clear_wake_flag('at teardown')
+
+    # -- postflight -------------------------------------------------------
+    say('postflight')
+    time.sleep(2.0)
+    endfails = []
+    s = read_status()
+    if not s:
+        endfails.append('status.json unreadable after the run')
+    else:
+        delta = s.get('action_failures', 0) - fails0
+        if s.get('pid') != status0.get('pid'):
+            endfails.append(f"couchd RESTARTED during the sweep "
+                            f"(pid {status0.get('pid')} -> {s.get('pid')})")
+            delta = s.get('action_failures', 0)
+        if delta:
+            endfails.append(f'action_failures rose by {delta}')
+        if s.get('mode') != 'acting' or s.get('owns') != ['gestures']:
+            endfails.append(f"ownership changed: {s.get('mode')} "
+                            f"{s.get('owns')}")
+    for unit, was in inhibit_before.items():
+        if unit_active(unit) != was:
+            endfails.append(f'{unit} not restored to its pre-run state')
+    w = kodi_window()
+    if w in DISMISS_WINDOWS:
+        endfails.append(f'Kodi window {w} left open for the evening pass - '
+                        f'close it (Input.Back)')
+    if forbidden:
+        endfails.append(f'FORBIDDEN INTENTS ACTED: {forbidden}')
+    legacy_delta = ((os.path.getsize(LEGACY_INTENTS)
+                     if os.path.exists(LEGACY_INTENTS) else 0) - legacy0)
+    say(f'legacy would-do stream grew {legacy_delta} bytes '
+        f'(differ material, informational)')
+
+    # -- report -----------------------------------------------------------
+    print()
+    width = max((len(n) for n, _ in results), default=8)
+    failed = 0
+    for name, fails in results:
+        mark = 'PASS' if not fails else 'FAIL'
+        failed += bool(fails)
+        print(f'  {name:<{width}}  {mark}')
+        for f in fails:
+            print(f'  {"":<{width}}    - {f}')
+    for f in endfails:
+        print(f'  RUN: {f}')
+    print()
+    if failed or endfails:
+        say(f'{failed} scenario(s) failed, {len(endfails)} run-level '
+            f'failure(s)')
+        return 1
+    say('all scenarios passed, frame restored, 0 action failures')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

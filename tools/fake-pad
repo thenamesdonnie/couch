@@ -23,6 +23,7 @@ BT byte offsets - subclassed here for three reasons and no others:
   fake-pad down/release <btn>
   fake-pad axis <ax> <-1..1>  lx ly rx ry
   fake-pad dpad <dir>         up down left right center
+  fake-pad sleep <secs>       pause INSIDE the command stream (see below)
   fake-pad status
   fake-pad quit
 
@@ -379,6 +380,15 @@ class Rig:
                     self.pace(float(args[1]) if len(args) > 1 else 1.2)
                 if cmd != 'down':
                     self.button(name, 0)
+            elif cmd == 'sleep':
+                # Timing lives HERE, not in the sender: a driver that sleeps
+                # between FIFO writes adds the reader loop's poll latency
+                # (up to ~30ms) to every gap, which is the difference between
+                # a 48ms double-tap and a 78ms one. A `sleep` line in the same
+                # buffered write runs back-to-back with its neighbours, so the
+                # gap is pace()'s clock plus sub-ms dispatch. Capped so a typo
+                # cannot park the rig (and the inhibit frame) for an hour.
+                self.pace(max(0.0, min(30.0, float(args[0]))))
             elif cmd == 'axis' and args[0] in AXES:
                 self.axis(args[0], args[1])
             elif cmd == 'dpad' and args[0] in DPAD:
