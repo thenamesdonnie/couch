@@ -261,6 +261,7 @@ class Observed:
     # Steam logs
     steam_known: bool = False
     steam_route: str = ''                  # last OnFocusWindowChanged text
+    steam_route_at: float = None           # mono when that line was read
     ui_mode: int = None                    # SSGL UI mode (4=BPM, 7=desktop)
     ledger: dict = field(default_factory=dict)      # appid -> tuple(pids)
     # When Steam last CONSUMED a guide press ("Guide button sent to JS"),
@@ -287,6 +288,9 @@ class Observed:
     press_ended_at: float = None           # mono when that press ended
     double_armed: bool = False             # this press began inside the
     #                                        double-tap window of the last tap
+    hold_release_pending: bool = False     # the tracker classified a
+    #                                        HOLD_RELEASE no state has taken
+    #                                        yet (both edges coalesced)
 
     # The PS-button key bindings, as the addon's settings page left them.
     # BOTH stacks read the same file through ~/couch/couchd/gestureconf.py -
@@ -356,7 +360,8 @@ def make_obs(**kw):
         kodi_known=True, joystick=True, kodi_window=10000, kodi_playing=False,
         x_known=True, top_name='Kodi', top_class='Kodi', focused_class='Kodi',
         kodi_window_present=True, big_picture_window=False,
-        steam_known=True, steam_route='', ui_mode=7, ledger={},
+        steam_known=True, steam_route='', steam_route_at=1000.0, ui_mode=7,
+        ledger={},
         guide_consumed_at=None, guard_pid=None, guard_pid_ours=False,
         pad_known=True, pad_present=True, button_down=False,
         down_since_k=None, kernel_now=1000.0, press_duration=None,
@@ -561,6 +566,23 @@ def g_tap_resume_due(o):
                                                o.double_tap_seconds))
 
 
+def g_released_hold_coalesced(o):
+    """A whole hold whose press AND release landed between two passes.
+
+    The region is sampled and the button is not (the coalesced double-tap
+    lesson, one tier up): a loop stall longer than hold_seconds - a hung
+    Kodi read, an X scan - swallows both edges, the machine never sees the
+    button down, and a >=0.9s press used to fall through to ps-tap-noop and
+    drop the suspend in silence. The tracker already decided HOLD_RELEASE at
+    the release, in kernel time; `hold_release_pending` is that decision
+    held for a level-based reader, consumed when the region takes it
+    (_on_transition) and superseded by any new press. Bound-hold only: with
+    `hold` unbound the long-hold tier has no equivalent marker, which is a
+    declared gap, not an accident."""
+    return (o.binding('hold') != 'none' and not o.button_down
+            and o.hold_release_pending)
+
+
 def g_released_double(o):
     """The second half of a double-tap: released, itself a tap, and it began
     inside DOUBLE_TAP_S of the previous tap's release.
@@ -594,6 +616,22 @@ def g_double_window_over(o):
 
 def g_switcher_emitted(o):
     return _recent(o, 'show_switcher|tv|gesture:double-tap-switcher', 3.0)
+
+
+def g_double_tap_decided(o):
+    """The double-tap's bound action was emitted, WHATEVER it is bound to.
+
+    g_switcher_emitted matches only the default binding's exact intent key,
+    so with double_tap rebound (steam_menu, power_menu, tv_toggle...) the
+    region used to park in 'double-tap' for the whole 8s gesture_stale
+    fallback - suppressing repairs, and re-emitting the action when its
+    cooldown expired inside those 8s (a second guide press at +6s toggles
+    the menu it just opened; adversarial review, 5 Aug). Any recent intent
+    whose reason names the double-tap closes the state."""
+    return any(k.count('|') >= 2
+               and k.split('|', 2)[2].startswith(('gesture:double-tap',
+                                                  'gesture:ps-double-tap'))
+               and (o.mono - t) < 3.0 for k, t in o.recent.items())
 
 
 def g_handoff_emitted(o):
@@ -730,7 +768,11 @@ TRANSITIONS = {
                   ('button_down', 'down', 'ps-press'),
                   ('released', 'idle', 'pad-quiet')],
         'idle': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
-                 ('button_down', 'down', 'ps-press')],
+                 ('button_down', 'down', 'ps-press'),
+                 # Both edges of a whole HOLD swallowed by one stalled pass:
+                 # the machine never left idle, but the tracker decided
+                 # HOLD_RELEASE at the release (see g_released_hold_coalesced).
+                 ('released_hold_coalesced', 'hold-fired', 'ps-hold-coalesced')],
         # The hold is tried first, exactly as before; the long-hold tier below
         # it is unreachable unless `hold` is bound to Nothing (g_hold_fires /
         # g_long_hold_fires), so under the default bindings this list is the
@@ -756,6 +798,12 @@ TRANSITIONS = {
         # to pass through.
         'down': [('hold_fires', 'hold-fired', 'ps-held-0.9s'),
                  ('long_hold_fires', 'long-hold-fired', 'ps-held-long'),
+                 # ...and the coalesced variant: press seen, then a stall ate
+                 # the rest of the hold and the release. Tried before the
+                 # double/tap releases for the same reason hold_fires is
+                 # first: a >=0.9s press is a hold, and HOLD_RELEASE has
+                 # already disarmed the double-tap window.
+                 ('released_hold_coalesced', 'hold-fired', 'ps-hold-coalesced'),
                  ('released_double', 'double-tap', 'ps-double-tap-coalesced'),
                  ('released_tap_resume', 'tap-resume', 'ps-tap-with-paused-game'),
                  ('released', 'tap-wait', 'ps-tap-noop')],
@@ -766,6 +814,11 @@ TRANSITIONS = {
         # the live watcher's tap latency is unchanged.
         'tap-wait': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
                      ('button_down', 'down-again', 'second-press-inside-window'),
+                     # tap, then a WHOLE second press >=0.9s inside one pass
+                     # gap: the tracker called it HOLD_RELEASE (tap-then-hold
+                     # is always the hold) and disarmed the window.
+                     ('released_hold_coalesced', 'hold-fired',
+                      'ps-hold-coalesced'),
                      # ...and the same coalescing hazard one step later: when
                      # tap-2's press AND its release both land between two
                      # passes, the machine never enters 'down-again' either.
@@ -783,11 +836,16 @@ TRANSITIONS = {
         # 'tap-resume' instead, and the resume owns the pad from there.
         'down-again': [('hold_fires', 'hold-fired', 'ps-held-0.9s'),
                        ('long_hold_fires', 'long-hold-fired', 'ps-held-long'),
+                       ('released_hold_coalesced', 'hold-fired',
+                        'ps-hold-coalesced'),
                        ('released_double', 'double-tap', 'ps-double-tap'),
                        ('released_tap_resume', 'tap-resume',
                         'ps-tap-with-paused-game'),
                        ('released', 'tap-wait', 'ps-tap-noop')],
         'double-tap': [('switcher_emitted', 'idle', 'switcher-decided'),
+                       # rebound double-taps: whatever the action, its
+                       # emission closes the state (see g_double_tap_decided)
+                       ('double_tap_decided', 'idle', 'double-tap-decided'),
                        ('gesture_stale', 'idle', 'gesture-abandoned')],
         'hold-fired': [('released_no_handoff', 'idle', 'hold-action-done'),
                        ('released', 'handoff-pending', 'ps-released-after-hold'),
@@ -795,6 +853,13 @@ TRANSITIONS = {
         # A long hold has no deferred half: whatever it was bound to fired at
         # the threshold, so the release just ends the gesture.
         'long-hold-fired': [('released', 'idle', 'ps-released-after-long-hold'),
+                            # A STUCK button: both exits above need button-up,
+                            # so a release that never comes used to park here
+                            # forever, re-firing the bound action every
+                            # cooldown (tv_toggle every 20s). Same deadline as
+                            # the hold's own stuck path.
+                            ('handoff_overdue', 'timed-out',
+                             'release-never-came'),
                             ('gesture_stale', 'idle', 'gesture-abandoned')],
         'handoff-pending': [('handoff_emitted', 'idle', 'handoff-decided'),
                             ('handoff_overdue', 'timed-out', 'release-never-came')],
@@ -1059,8 +1124,17 @@ def steam_menu_holding_pad(o):
     `steam_known` is part of the predicate, not a caller's problem: an unread
     routing log means the menu state is UNKNOWN, and a toggle fired blind is
     exactly the coin-flip this gate removes.
+
+    The freshness bound: a ClientUI route read from a Steam that has since
+    exited and restarted is not evidence of an open menu, and the guide
+    press it would justify is a toggle that OPENS one on the fresh Steam
+    (adversarial review, 5 Aug). Ten minutes is generous for a real menu;
+    past it the at-handoff close is skipped and the guard window - which
+    re-reads the routing log itself - is the enforcement, as it always was.
     """
-    return bool(o.steam_known and o.steam_menu_open
+    fresh = (o.steam_route_at is not None
+             and (o.mono - o.steam_route_at) < 600.0)
+    return bool(o.steam_known and o.steam_menu_open and fresh
                 and 'steamwebhelper' not in (o.focused_class or ''))
 
 
@@ -1884,7 +1958,19 @@ GUIDE_PRESS_SH = (
 
 # The frozen game's window, unmapped so its stuck pointer grab dies with it
 # (pad-home-watcher.iconify_frozen_game, same two xinput.py calls).
+# The wait loop at the front is legacy's _SNAP_DONE.wait(4.0), cross-process:
+# iconifying frees the compositing pixmap pause-snap reads, so the unmap must
+# not beat the capture or the pause tile goes black (the two are independent
+# transient units here, with no in-process event to share). A jpg younger
+# than 15s in the paused dir is the capture landing; 4s with none and we
+# proceed anyway, exactly as the watcher does - the snap is cosmetic and the
+# unmap must not be hostage to it.
+PAUSED_DIR = os.path.expanduser('~/couch/data/paused')
 ICONIFY_SH = (
+    f'for i in $(seq 1 40); do '
+    f'[ -n "$(find "{PAUSED_DIR}" -maxdepth 1 -name "*.jpg" '
+    f'-newermt "-15 seconds" 2>/dev/null | head -1)" ] && break; '
+    f'sleep 0.1; done; '
     f'pids=$("{GAME_PIDS}" 2>/dev/null | tr "\\n" " "); [ -n "$pids" ] || exit 0; '
     f'wid=$(timeout 5 python3 "{XINPUT}" gamewin $pids 2>/dev/null); '
     f'case "$wid" in 0x*) timeout 5 python3 "{XINPUT}" iconify "$wid" ;; esac')
@@ -2148,13 +2234,33 @@ class Actuators:
 # without a world. None means "no honest oracle in stage 1": the prediction is
 # still logged, and the verdict says 'unverified' rather than inventing a pass.
 def _eff_freeze(o, it):
-    return o.pids_known and all(o.pid_states.get(p, 'T') == 'T'
-                                for p in it.args.get('pids', ()))
+    """Every pid the intent named is OBSERVABLY in state T. A pid that has
+    VANISHED does not count as frozen: defaulting missing pids to 'T' let a
+    game that quit at the instant of the hold verdict 'confirmed' for a
+    freeze that froze nothing - a lie in the exact corpus acceptance is
+    judged from (adversarial review, 5 Aug). An honest 'missed' when the
+    game exited is the correct record; the level-based re-decision already
+    copes with the world having moved."""
+    pids = it.args.get('pids', ())
+    return (o.pids_known and bool(pids)
+            and all(o.pid_states.get(p) == 'T' for p in pids))
 
 
 def _eff_thaw(o, it):
     return o.pids_known and all(o.pid_states.get(p, 'S') != 'T'
                                 for p in it.args.get('pids', ()))
+
+
+def _eff_launch(o, it):
+    """Only the resume has an oracle in stage 1: the game's pids are back
+    and none of them is frozen - exactly the thaw's world-shape, read from
+    the live tree because a resume's intent carries no pid list. Other
+    launch subjects return None (no honest oracle -> 'unverified'), which
+    beats the old state of affairs where NO launch was ever judged and a
+    systematically failing resume looked healthy (adversarial review)."""
+    if it.args.get('mode') != 'resume':
+        return None
+    return bool(o.pids_known and o.pid_states and not o.frozen_pids)
 
 
 def _eff_set_flag(o, it):
@@ -2219,6 +2325,7 @@ EFFECT_CHECKS = {
     'dismiss': _eff_dismiss, 'close_steam_menu': _eff_close_menu,
     'show_switcher': _eff_show_switcher,
     'spawn_guard': _eff_spawn_guard,
+    'launch': _eff_launch,
 }
 
 # Effects that are only visible through a KODI READ. Kodi is the one observer
@@ -2280,18 +2387,21 @@ class ActingExecutor(Executor):
     BACKOFF_MAX = 300.0
 
     def __init__(self, log, actuators, on_record=None, owned=(), sayer=say,
-                 context=None):
+                 context=None, heartbeat_fresh=None):
         self.log = log
         self.act = actuators
         self.on_record = on_record or (lambda i: None)
         self.owned = frozenset(owned)
         self.say = sayer
         self.context = context or (lambda: {})
+        self.heartbeat_fresh = heartbeat_fresh   # None = always fresh (tests)
         self.count = 0
         self.failures = 0
         self.pending = []          # C17 predictions awaiting their deadline
         self.fails = {}            # (verb, subject) -> {'n', 'until', 'said'}
         self.skipped = 0
+        self._failed_reason = None  # (reason, pass mono, key) of the last
+        #                             failed step, for dependent-skip scoping
 
     # -- the seam ---------------------------------------------------------
     def execute(self, intent, obs):
@@ -2324,6 +2434,21 @@ class ActingExecutor(Executor):
             self.log.write(rec)
             self.say(f'REFUSED {intent.human()} - {resp} is not owned')
             return rec
+        if self.heartbeat_fresh is not None and not self.heartbeat_fresh():
+            # Our lease may already look dead to the other stack (a stalled
+            # pass ages status.json past what legacy tolerates): acting NOW
+            # risks two stacks driving one world. Decline this pass; the run
+            # loop republishes the heartbeat immediately after, and the next
+            # pass acts on a lease legacy can see.
+            self.skipped += 1
+            rec.update(acted=False,
+                       action={'ok': False, 'declined': 'stale-heartbeat: '
+                               'legacy may have reclaimed this lease'})
+            self.log.write(rec)
+            self.on_record(intent)
+            self.say(f'DECLINED {intent.human()}: own heartbeat is stale - '
+                     f'republishing before acting')
+            return rec
         key = (intent.verb, intent.subject)
         # Never act twice on a decision whose first action has not been judged
         # yet: for a toggle that is the close-then-reopen dance, and for
@@ -2347,6 +2472,26 @@ class ActingExecutor(Executor):
                                'retry_in_s': round(back['until'] - obs.mono, 1)})
             self.log.write(rec)           # corpus keeps every one of these
             self.on_record(intent)        # ...the human log does not
+            return rec
+        failed = self._failed_reason
+        if (failed and intent.reason == failed[0] and obs.mono == failed[1]
+                and key != failed[2]):
+            # An earlier step of this SAME decision failed IN THIS PASS (one
+            # pass = one obs.mono): the steps of one reason are a sequence,
+            # not independent acts. A freeze that failed must not be followed
+            # by the set_flag that asserts a pause happened, or the flag lies
+            # to every reader of /tmp (adversarial review, 5 Aug). Scoped to
+            # the pass and to OTHER steps: the failing step's own retries are
+            # backoff's business, and the next pass re-derives the whole
+            # decision from the world.
+            self.skipped += 1
+            rec.update(acted=False,
+                       action={'ok': False, 'dependent_skipped':
+                               f'an earlier {failed[0]} step failed'})
+            self.log.write(rec)
+            self.on_record(intent)
+            self.say(f'SKIPPED {intent.human()}: earlier step of the same '
+                     f'decision failed')
             return rec
         gone = self._precondition_gone(intent, obs)
         if gone:
@@ -2389,12 +2534,14 @@ class ActingExecutor(Executor):
                      f'(doing nothing further; roll back with an empty '
                      f'owns.conf)')
             self._note_failure(key, obs)
+            self._failed_reason = (intent.reason, obs.mono, key)
         except Exception as e:                     # never take the daemon down
             self.failures += 1
             rec['acted'] = False
             rec['action'] = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
             self.say(f'ACTION CRASHED {intent.human()}: {type(e).__name__}: {e}')
             self._note_failure(key, obs)
+            self._failed_reason = (intent.reason, obs.mono, key)
         self.log.write(rec)
         self.on_record(intent)
         if rec['acted'] and intent.predict:
@@ -2454,13 +2601,23 @@ class ActingExecutor(Executor):
             return '; '.join(w for w in why if w)[:200]
         return None
 
+    # The verbs that ARE the way out of a game: the suspend's route/freeze
+    # and the resume's launch/thaw. Backing one of these off for the full
+    # 300s wedges the couch's only escapes while the lease sees a perfectly
+    # healthy heartbeat and never hands anything back (adversarial review,
+    # 5 Aug) - so their backoff is capped at BACKOFF_BASE. The failure is
+    # still said loudly and still skips; it just never grows to minutes.
+    ESCAPE_VERBS = ('route_pad', 'freeze', 'thaw', 'launch')
+
     # -- C11 backoff ------------------------------------------------------
     def _note_failure(self, key, obs):
         st = self.fails.setdefault(key, {'n': 0, 'until': 0.0, 'said': False})
         st['n'] += 1
         if st['n'] >= self.BACKOFF_AFTER:
+            cap = (self.BACKOFF_BASE if key[0] in self.ESCAPE_VERBS
+                   else self.BACKOFF_MAX)
             wait = min(self.BACKOFF_BASE * 2 ** (st['n'] - self.BACKOFF_AFTER),
-                       self.BACKOFF_MAX)
+                       cap)
             st['until'] = obs.mono + wait
             if not st['said']:
                 st['said'] = True
@@ -2500,11 +2657,18 @@ class ActingExecutor(Executor):
             if p['check'] is not None:
                 with contextlib.suppress(Exception):
                     got = p['check'](o, it)
+            # A registered check that only ever answers None has no oracle
+            # for THIS subject (e.g. _eff_show for steam-menu/desktop): at
+            # the deadline that is 'unverified', not 'missed' - a standing
+            # false EFFECT MISSED alarm teaches the room to ignore the real
+            # ones (adversarial review, 5 Aug).
+            p['sawbool'] = p.get('sawbool', False) or isinstance(got, bool)
             if got is True:
                 out.append((p, 'confirmed', o.mono - p['started']))
             elif o.mono >= p['deadline']:
-                out.append((p, 'unverified' if p['check'] is None else 'missed',
-                            o.mono - p['started']))
+                verdict = ('missed' if p['check'] is not None
+                           and p['sawbool'] else 'unverified')
+                out.append((p, verdict, o.mono - p['started']))
             else:
                 still.append(p)
         self.pending = still
@@ -2823,6 +2987,8 @@ class PadObserver:
     presses = property(lambda self: self.tracker.presses)
     double_armed = property(lambda self: self.tracker.double_armed)
     doubles = property(lambda self: self.tracker.doubles)
+    hold_release_pending = property(
+        lambda self: self.tracker.hold_release_k is not None)
 
     @staticmethod
     def find_pads():
@@ -3404,6 +3570,7 @@ class SteamObserver:
         self.src = world.src('steam')
         self.ledger = {}
         self.route = ''
+        self.route_at = None      # mono when that route line was READ
         self.ui_mode = None
         self.game = Tailer(GAMEPROCESS_LOG, world, 'steam:gameprocess')
         self.ui = Tailer(CONTROLLER_UI_LOG, world, 'steam:controller_ui')
@@ -3434,7 +3601,16 @@ class SteamObserver:
                 continue
             m = self.DROP.search(line)
             if m:
-                self.ledger.get(m.group(1), set()).discard(int(m.group(2)))
+                pids = self.ledger.get(m.group(1))
+                if pids is not None:
+                    pids.discard(int(m.group(2)))
+                    if not pids:
+                        # A DROP that empties the set without its REMOVE ever
+                        # arriving used to leave a phantom appid: game:X
+                        # LAUNCHING/STOPPED churn, and a permanently-truthy
+                        # ledger kept PidObserver on its 1s busy cadence
+                        # forever (adversarial review, 5 Aug).
+                        self.ledger.pop(m.group(1), None)
                 changed = True
                 continue
             m = self.REMOVE.search(line)
@@ -3452,6 +3628,7 @@ class SteamObserver:
         for line in lines:
             if 'OnFocusWindowChanged' in line:
                 self.route = line.strip()
+                self.route_at = time.monotonic()
                 changed = True
             elif 'Guide button' in line:
                 self.guide_presses += 1
@@ -3870,6 +4047,11 @@ class Couchd:
                         'to': to, 'reason': reason})
         say(f'{region}: {frm} -> {to} ({reason})')
         self.world.attention(f'transition:{region}')
+        # The region took the hold (coalesced or not): spend the tracker's
+        # HOLD_RELEASE marker so it cannot fire a second hold-fired off the
+        # same physical press once the region walks back to idle.
+        if region == 'gesture' and to in ('hold-fired', 'handoff-pending'):
+            self.pad.tracker.consume_hold_release()
 
     def _on_intent(self, intent):
         self.recent[intent.key] = time.monotonic()
@@ -3913,7 +4095,20 @@ class Couchd:
         return ActingExecutor(self.log, self.actuators,
                               on_record=self._on_intent,
                               owned=self.executor.owned,
-                              context=self.intent_context)
+                              context=self.intent_context,
+                              heartbeat_fresh=self._heartbeat_fresh)
+
+    def _heartbeat_fresh(self):
+        """Is couchd's OWN lease still visibly alive to the other stack?
+
+        Legacy re-acts the moment status.json goes >30s stale, but a couchd
+        that stalled 30-60s (an X scan, a wedged Kodi read) used to resume
+        acting the instant it unwedged - a window where BOTH stacks act on
+        one world, the one advertised impossibility (adversarial review,
+        5 Aug). Under 25s of the 30s lease is fresh; past it, decline to act
+        for one pass - the run loop rewrites status.json right after, and
+        the next pass acts on a lease legacy can see."""
+        return (time.monotonic() - self.last_status) < 25.0
 
     def refresh_owns(self):
         """Re-read owns.conf (a stat unless it changed) and apply it.
@@ -4094,7 +4289,8 @@ class Couchd:
             kodi_window_present=bool(xst and xst.kodi_present),
             big_picture_window=bool(xst and xst.big_picture),
             steam_known=self.world.src('steam').ok,
-            steam_route=self.steam.route, ui_mode=self.steam.ui_mode,
+            steam_route=self.steam.route, steam_route_at=self.steam.route_at,
+            ui_mode=self.steam.ui_mode,
             guide_consumed_at=self.steam.guide_consumed_at,
             ledger={k: tuple(sorted(v)) for k, v in self.steam.ledger.items()},
             guard_pid=guard_pid, guard_pid_ours=guard_ours,
@@ -4105,6 +4301,7 @@ class Couchd:
             press_duration=self.pad.press_duration,
             press_ended_at=self.pad.press_ended_at,
             double_armed=self.pad.double_armed,
+            hold_release_pending=self.pad.hold_release_pending,
             # Re-read every pass; gestureconf.load() is a stat() unless the
             # file changed, so a rebind takes effect on the next tick without
             # a restart, exactly as it does in the watcher.

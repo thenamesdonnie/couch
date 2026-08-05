@@ -203,6 +203,26 @@ def test_orphan_release_decides_nothing_and_arms_nothing():
     assert tr.doubles == 0
 
 
+def test_hold_release_marker_for_level_readers():
+    """feed() holds its HOLD_RELEASE decision (hold_release_k) for a
+    level-based reader whose sampled state machine missed both edges - the
+    hold twin of double_armed. Consumed explicitly, superseded by any new
+    press, never set by a tap."""
+    tr = PressTracker()
+    tr.feed(K0, 1)
+    assert tr.feed(K0 + 1.5, 0) == HOLD_RELEASE
+    assert tr.hold_release_k == K0 + 1.5
+    tr.consume_hold_release()
+    assert tr.hold_release_k is None
+    tr.feed(K0 + 3.0, 1)
+    tr.feed(K0 + 4.5, 0)
+    assert tr.hold_release_k == K0 + 4.5
+    tr.feed(K0 + 6.0, 1)                  # new press supersedes the marker
+    assert tr.hold_release_k is None
+    tr.feed(K0 + 6.0 + TAP_LEN, 0)        # a tap never sets it
+    assert tr.hold_release_k is None
+
+
 def test_release_with_no_press_ever_seen_is_ignored():
     """The daemon can start mid-press: the first BTN_MODE event it sees is a
     release. Nothing to classify, nothing armed."""

@@ -1054,14 +1054,35 @@ def test_three_failures_open_a_backoff_and_only_say_it_once():
 
 
 def test_backoff_grows_and_is_capped_at_five_minutes():
+    """Non-escape verbs grow to the full 300s cap. Uses close_steam_menu -
+    freeze moved to the escape tier (see the test below) after the 5 Aug
+    review found a 300s backoff wedging the couch's only ways out."""
+    router, log, act, sayer = rig(owned=('gestures',), fail=('signal',))
+    ex = router.acting
+    it = Intent('kill', 'stray-helper', {'pids': [999], 'resolver': 'test'},
+                'gesture:ps-hold', {'effect': 'helper gone', 'deadline_s': 5.0},
+                requires=('gesture',), cooldown=3.0)
+    for n in range(3, 20):
+        ex.fails[('kill', 'stray-helper')] = {'n': n - 1, 'until': 0.0,
+                                              'said': True}
+        router.execute(it, make_obs(mono=2000.0))
+        wait = ex.fails[('kill', 'stray-helper')]['until'] - 2000.0
+        assert wait <= ActingExecutor.BACKOFF_MAX + 0.001
+    assert wait == pytest.approx(ActingExecutor.BACKOFF_MAX)
+
+
+def test_escape_verbs_backoff_is_capped_at_base():
+    """freeze/thaw/route_pad/launch are the suspend and resume themselves:
+    a lease that only detects a DEAD daemon cannot hand back a live one
+    that will not act, so their backoff never exceeds BACKOFF_BASE."""
     router, log, act, sayer = rig(owned=('gestures',), fail=('signal',))
     ex = router.acting
     for n in range(3, 20):
         ex.fails[('freeze', APPID)] = {'n': n - 1, 'until': 0.0, 'said': True}
         router.execute(freeze_intent(), make_obs(mono=2000.0))
         wait = ex.fails[('freeze', APPID)]['until'] - 2000.0
-        assert wait <= ActingExecutor.BACKOFF_MAX + 0.001
-    assert wait == pytest.approx(ActingExecutor.BACKOFF_MAX)
+        assert wait <= ActingExecutor.BACKOFF_BASE + 0.001
+    assert wait == pytest.approx(ActingExecutor.BACKOFF_BASE)
 
 
 def test_a_success_clears_the_backoff():

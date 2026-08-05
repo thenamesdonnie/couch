@@ -568,6 +568,27 @@ def test_rebinding_the_double_tap_changes_what_it_would_do():
     assert not find(got, 'show_switcher'), 'the switcher was unbound'
 
 
+def test_a_whole_hold_swallowed_by_one_pass_still_suspends():
+    """Press AND release of a >=0.9s hold inside one stalled pass gap: the
+    machine never saw the button down, but the tracker decided HOLD_RELEASE
+    (hold_release_pending) and the table takes that decision - the suspend
+    used to fall through to ps-tap-noop and drop in silence (adversarial
+    review, 5 Aug 2026; same class as the coalesced double-tap)."""
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False)
+    rig.settle()
+    got = rig.observe(button_down=False, press_duration=1.5,
+                      hold_release_pending=True)
+    assert rig.machine.regions['gesture'] == 'hold-fired'
+    assert find(got, 'freeze')
+    # the daemon consumes the marker on the hold-fired transition
+    # (_on_transition -> tracker.consume_hold_release); the rig mimics that
+    got = rig.observe(button_down=False, press_duration=1.5,
+                      hold_release_pending=False)
+    assert rig.machine.regions['gesture'] == 'handoff-pending'
+    assert find(got, 'route_pad', 'kodi')
+    assert find(got, 'spawn_guard', 'kodi')
+
+
 def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
     o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
                  regions={'gesture': 'hold-fired', 'session': 'active',

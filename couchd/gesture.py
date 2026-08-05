@@ -276,6 +276,14 @@ class PressTracker:
         # arms the window, so tap-then-hold can only ever be a hold.
         self.last_tap_ended_k = None    # kernel ts of the last completed TAP
         self.double_armed = False       # this press began inside that window
+        # The hold twin of double_armed: feed() decided HOLD_RELEASE, and a
+        # level-based reader that never saw the press (both edges coalesced
+        # into one pass, or a loop stall swallowed the whole hold) can still
+        # learn a hold happened. Cleared on the next press, on reset(), and
+        # by consume_hold_release() when the consumer has acted on it - the
+        # same fix shape as the 5 Aug coalesced double-tap: ask the tracker,
+        # never re-derive the gesture from the states the machine visited.
+        self.hold_release_k = None      # kernel ts of the last HOLD_RELEASE
 
     # -- clock ------------------------------------------------------------
     def note_event(self, k, wall=None):
@@ -307,6 +315,7 @@ class PressTracker:
             self.down_since_k = k
             self.hold_fired = False
             self.long_hold_fired = False
+            self.hold_release_k = None   # a new press supersedes the marker
             self.presses += 1
             gap = (None if self.last_tap_ended_k is None
                    else k - self.last_tap_ended_k)
@@ -338,6 +347,7 @@ class PressTracker:
                 # tap-then-hold: the hold wins, and it disarms the window too.
                 self.last_tap_ended_k = None
                 self.double_armed = False
+                self.hold_release_k = k
                 return HOLD_RELEASE
             if self.double_armed:
                 # Three taps are one double plus one single, never two
@@ -408,3 +418,10 @@ class PressTracker:
         self.long_hold_fired = False
         self.last_tap_ended_k = None
         self.double_armed = False
+        self.hold_release_k = None
+
+    def consume_hold_release(self):
+        """The consumer (couchd's gesture region entering hold-fired or
+        handoff-pending) has taken the hold: the marker must not fire a
+        second one off the same physical press."""
+        self.hold_release_k = None
