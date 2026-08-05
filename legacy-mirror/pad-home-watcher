@@ -1072,7 +1072,16 @@ def _reconcile(dry=False):
 
     # A paused flag with nothing actually frozen is stale (game was killed
     # externally); it would make the next PS tap misfire.
-    if suspended and not states:
+    #
+    # EXCEPT 'bigpicture': a Big Picture suspend has no pids to freeze BY
+    # DESIGN (there is no reaper tree, only Steam's own UI), so "flag with
+    # nothing frozen" is its normal resting state, not staleness. couchd's
+    # model has carried this exemption since R7(a); without it here the two
+    # stacks fight every ~10s while gestures are flipped: couchd's hold
+    # writes the flag and routes the pad to Kodi, this repair deletes it,
+    # and the joystick repair below then routes the pad back to an
+    # invisible Big Picture (found by adversarial review, 5 Aug 2026).
+    if suspended and not states and _suspended_appid() != 'bigpicture':
         say('reconcile: stale suspended flag, removing')
         try:
             if not dry:

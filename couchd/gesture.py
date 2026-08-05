@@ -313,10 +313,22 @@ class PressTracker:
             self.double_armed = within_double_tap(gap, self.double_tap_s)
             return DOWN
         if value == 0:
-            if self.down_since_k is not None:
-                self.press_duration = k - self.down_since_k
-                self.press_ended_at = (time.monotonic() if mono is None
-                                       else mono)
+            if self.down_since_k is None:
+                # An orphan release: the press it ends was never seen (the
+                # daemon started mid-press) or was forgotten by reset() (the
+                # device dropped mid-press). There is NOTHING to classify -
+                # falling through here used to grade the release with the
+                # PREVIOUS press's duration, which let a BT drop manufacture
+                # a phantom tap (resuming a paused game with no pad
+                # connected) or arm a phantom double-tap window (one real
+                # tap then fired the switcher). Adversarial review, 5 Aug.
+                self.button_down = False
+                self.hold_fired = False
+                self.long_hold_fired = False
+                return None
+            self.press_duration = k - self.down_since_k
+            self.press_ended_at = (time.monotonic() if mono is None
+                                   else mono)
             was_hold = self.hold_fired or self.long_hold_fired
             self.button_down = False
             self.down_since_k = None
@@ -380,9 +392,18 @@ class PressTracker:
 
     def reset(self):
         """Device lost / ownership changed: forget the in-flight press but
-        keep the counters, which are cross-check evidence (R5)."""
+        keep the counters, which are cross-check evidence (R5).
+
+        The COMPLETED-press fields are forgotten too: after a reset there is
+        no press whose duration means anything, and a level-based reader
+        (couchd's Observed) that sees "button up, press_duration = tap"
+        after a drop would walk the tap paths off a press that no longer
+        exists - the phantom-resume hazard feed()'s orphan-release branch
+        closes from the other side."""
         self.button_down = False
         self.down_since_k = None
+        self.press_duration = None
+        self.press_ended_at = None
         self.hold_fired = False
         self.long_hold_fired = False
         self.last_tap_ended_k = None

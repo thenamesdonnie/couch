@@ -173,6 +173,45 @@ def test_reset_forgets_the_window():
     assert tap(tr, K0 + 0.2) == TAP
 
 
+def test_reset_forgets_the_completed_press_too():
+    """Pad dropped just after a tap: a level-based reader (couchd's Observed)
+    must not see 'button up, press_duration = tap' off a press that reset()
+    already disowned - that is the phantom-resume path a BT drop used to
+    open (adversarial review, 5 Aug 2026)."""
+    tr = PressTracker()
+    tap(tr, K0)
+    tr.reset()
+    assert tr.press_duration is None
+    assert tr.press_ended_at is None
+    assert tr.double_pending(wall=K0 + 0.1) is False
+
+
+def test_orphan_release_decides_nothing_and_arms_nothing():
+    """The button was down when the device dropped; the release arrives on
+    the NEW fd after reset(). There is no press to classify: grading it with
+    the previous press's duration used to return TAP and arm the double-tap
+    window, so ONE real tap later fired the switcher."""
+    tr = PressTracker()
+    tap(tr, K0)                       # a real tap, then the drop mid-press
+    tr.feed(K0 + 0.5, 1)
+    tr.reset()
+    assert tr.feed(K0 + 0.9, 0) is None       # orphan release: no decision
+    assert tr.double_armed is False
+    assert tr.last_tap_ended_k is None
+    assert tr.press_duration is None
+    assert tap(tr, K0 + 1.0) == TAP           # next real tap is a SINGLE
+    assert tr.doubles == 0
+
+
+def test_release_with_no_press_ever_seen_is_ignored():
+    """The daemon can start mid-press: the first BTN_MODE event it sees is a
+    release. Nothing to classify, nothing armed."""
+    tr = PressTracker()
+    assert tr.feed(K0, 0) is None
+    assert tr.press_duration is None
+    assert tr.double_armed is False
+
+
 def test_the_kernel_clock_is_what_the_window_is_measured_in():
     """Wall time can drift or stall relative to the pad's own timestamps;
     only the kernel numbers decide (R4)."""

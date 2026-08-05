@@ -4326,8 +4326,18 @@ class Couchd:
                         'long_hold_seconds': o.long_hold_seconds},
             'shadow_log': os.path.join(SHADOW_DIR, f'couchd-{time.strftime("%Y%m%d")}.jsonl'),
         }
-        write_atomic(os.path.join(SHADOW_DIR, 'status.json'),
-                     json.dumps(status, indent=1, default=str))
+        try:
+            write_atomic(os.path.join(SHADOW_DIR, 'status.json'),
+                         json.dumps(status, indent=1, default=str))
+        except OSError as e:
+            # The heartbeat write is the LEASE. A transient FS error (ENOSPC,
+            # a wobbly disk - this box had one today) must not take the whole
+            # daemon down through the run loop: a dead daemon stops acting
+            # NOW, while a stale heartbeat hands gestures back to legacy in
+            # 30s by design. Say it loudly and let the next interval retry;
+            # if the condition persists, the lease lapsing IS the rollback.
+            say(f'STATUS WRITE FAILED ({e}) - heartbeat at risk; legacy '
+                f'reclaims via the lease if this persists')
 
     def write_snapshot(self, o, why):
         """R8's world-snapshot corpus: the reconcile responsibility runs pad
