@@ -44,8 +44,19 @@ pad-record` = back to 4-Aug-green, and that line is cheat-sheet line 1):
 
 **NEXT (in order):**
 1. **Donnie's couch pass** — checklist in the handoff sheet (his original
-   pad checklist + the two new features). Every evening he uses the TV is
-   shadow evidence toward the C9 gates.
+   pad checklist + the three new features). Every evening he uses the TV
+   is shadow evidence toward the C9 gates.
+   **AGREED 5 Aug: the compressed 2-evening gate plan.** The C9 unit is
+   transition coverage, not calendar. Evening 1 = directed scripted pass
+   (write the numbered phone-readable step list into the handoff sheet
+   FIRST) + live differ triage between segments (expect T1 comparator
+   artifacts, fix in-loop) + injected-fault runs with legacy repairs
+   briefly paused (Donnie present = the charter's monitoring). Evening 2
+   = clean re-run + 1h organic free play. Gates close → COUCHD_OWNS
+   flips happen in a DAYTIME window, one responsibility at a time, 5-min
+   couch acceptance each. Post-cutover, Donnie reports bugs by timestamp
+   (the corpus has the full decision trace); each becomes a replay test;
+   two unexplained regressions = auto-revert to shadow per charter.
 2. **Morning after any evening:** `~/couch/tools/shadow-diff` (offline,
    never touches the TV). First real run: VALID, 0 divergences.
 3. **Donnie's sudo session** (~10 min, `couchd/stage2/INSTALL.md`):
