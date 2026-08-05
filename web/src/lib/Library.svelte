@@ -301,6 +301,7 @@
           {#if item.type === 'Series' && item.unplayedCount}
             <span class="badge mono">{item.unplayedCount}</span>
           {/if}
+          {#if item.fourK}<span class="fourk-tag mono">4K</span>{/if}
           <span class="name">{item.name}</span>
         </button>
       {/each}
@@ -331,7 +332,7 @@
         <div>
           <div class="dtitle display">{detail.name}</div>
           <div class="dim small">
-            {[detail.year, detail.runtime ? fmtRuntime(detail.runtime) : null, detail.genres.slice(0, 2).join(', ')].filter(Boolean).join(' · ')}
+            {[detail.year, detail.runtime ? fmtRuntime(detail.runtime) : null, detail.fourK ? '4K' : null, detail.genres.slice(0, 2).join(', ')].filter(Boolean).join(' · ')}
           </div>
           <div class="dactions">
             {#if detail.type === 'Movie'}
@@ -466,6 +467,19 @@
     border-radius: 6px;
     padding: 2px 7px;
     font-size: 11px;
+  }
+  .fourk-tag {
+    position: absolute;
+    top: 6px; left: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 5px;
+    padding: 2px 5px;
+    backdrop-filter: blur(4px);
   }
   .tile.opening { opacity: 0.55; }
   .tilespin {

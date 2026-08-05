@@ -89,6 +89,8 @@ function slim(i) {
     seriesImageTag: i.SeriesPrimaryImageTag || null,
     season: i.ParentIndexNumber,
     episode: i.IndexNumber,
+    // 3200 not 3840: scope-ratio 4K files report cropped widths.
+    fourK: (i.Width || 0) >= 3200,
     played: !!i.UserData?.Played,
     playCount: i.UserData?.PlayCount || 0,
     resumeSecs: ticksToSecs(i.UserData?.PlaybackPositionTicks),
@@ -104,7 +106,7 @@ const SORTS = {
   played: 'DatePlayed',
 };
 
-const FIELDS = 'ProductionYear,Overview,Genres,RunTimeTicks,Status';
+const FIELDS = 'ProductionYear,Overview,Genres,RunTimeTicks,Status,Width,Height';
 
 // Fold a title or query to bare lowercase alphanumerics: strips accents
 // (Fiancé -> fiance), punctuation and spacing, so "911" matches "9-1-1",
