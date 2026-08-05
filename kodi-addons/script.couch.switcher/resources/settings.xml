@@ -190,6 +190,22 @@
         </setting>
 
       </group>
+
+      <!-- Not a binding, so gestureconf.py never reads it: default.py reads
+           this one itself. It is the rollback switch for the switcher's own
+           animated window. Off restores the stock select dialog verbatim,
+           which also restores window id 12000 - couchd confirms the gesture
+           landed by watching the current window, so the way back has to be a
+           setting rather than a redeploy. -->
+      <group id="2" label="32037">
+
+        <setting id="ui.animated_dialog" type="boolean" label="32036" help="32048">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+
+      </group>
     </category>
 
   </section>

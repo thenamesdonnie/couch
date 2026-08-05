@@ -69,15 +69,18 @@ INHIBIT_UNITS = ('tv-waker.service', 'pad-record.service',
 # run outright and aborts the remaining scenarios.
 ALLOWED_ACTED = {('show', 'kodi'), ('show_switcher', 'tv')}
 
-# Kodi windows the sweep may close between scenarios. 12000 is the select
-# dialog the switcher addon draws. 10106 is Kodi's context menu: Kodi's OWN
-# joystick layer also maps the PS button (peripheral.joystick buttonmap +
-# gamepad-poweroff.xml's <guide holdtime="1000">), so every hold >=1s in
-# this sweep ALSO opens the tv-poweroff menu, exactly as a real-pad hold
-# does on this box. That is the console's normal behaviour, not a sweep
-# artefact - but the menu is modal and its first entry is "turn everything
-# off", so it must never be left standing for the evening couch pass.
-DISMISS_WINDOWS = (12000, 10106)
+# Kodi windows the sweep may close between scenarios. 12000 is the stock
+# select dialog the switcher addon draws; 13000-13099 is the python-window
+# pool Kodi allocates the addon's ANIMATED dialog from (no way to pin an
+# id there). 10106 is Kodi's context menu: Kodi's OWN joystick layer also
+# maps the PS button (peripheral.joystick buttonmap + gamepad-poweroff.xml's
+# <guide holdtime="1000">), so every hold >=1s in this sweep ALSO opens the
+# tv-poweroff menu, exactly as a real-pad hold does on this box. That is
+# the console's normal behaviour, not a sweep artefact - but these windows
+# are modal and one of them leads with "turn everything off", so none may
+# be left standing for the evening couch pass.
+def dismissable(w):
+    return w in (12000, 10106) or (w is not None and 13000 <= w <= 13099)
 
 PAD_NAME = 'DualSense Wireless Controller'
 FAKE_MAC = 'de:ad:be:ef:fa:ce'
@@ -324,7 +327,7 @@ def wait_gesture(state, timeout=30):
 def dismiss_ui():
     """Close whatever the scenario left on screen - the switcher's select
     dialog (12000) and/or Kodi's own tv-poweroff context menu (10106, which
-    Kodi opens on any >=1s PS hold; see DISMISS_WINDOWS) - and PROVE it
+    Kodi opens on any >=1s PS hold; see dismissable()) - and PROVE it
     closed. A dialog left open would make the next scenario's effect check
     trivially true, and a modal menu left standing is a booby trap for the
     evening couch pass. Back is only ever sent while one of the two known
@@ -335,7 +338,7 @@ def dismiss_ui():
         say('WARNING: Kodi RPC unreachable; cannot confirm dialog state')
         return False
     for _ in range(6):
-        if w not in DISMISS_WINDOWS:
+        if not dismissable(w):
             return True
         kodi('Input.Back')
         time.sleep(0.7)
@@ -515,7 +518,7 @@ def preflight():
     w = kodi_window()
     if w is None:
         say('WARNING: Kodi RPC unreachable - dialog-closed checks degraded')
-    elif w in DISMISS_WINDOWS:
+    elif dismissable(w):
         dismiss_ui()
     return s
 
@@ -755,7 +758,7 @@ def main():
         if unit_active(unit) != was:
             endfails.append(f'{unit} not restored to its pre-run state')
     w = kodi_window()
-    if w in DISMISS_WINDOWS:
+    if dismissable(w):
         endfails.append(f'Kodi window {w} left open for the evening pass - '
                         f'close it (Input.Back)')
     if forbidden:

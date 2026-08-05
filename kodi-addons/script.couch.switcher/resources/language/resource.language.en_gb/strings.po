@@ -169,3 +169,18 @@ msgstr ""
 msgctxt "#32047"
 msgid "How long the button must be down for a long hold. Must be longer than the hold time. Default 3.0."
 msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32036"
+msgid "Animated switcher dialog"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32037"
+msgid "Switcher dialog"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32048"
+msgid "Draw the switcher in the addon's own window, which slides up from the bottom of the screen. Turn this off to go back to Kodi's plain list dialog: same rows, same order, no animation."
+msgstr ""

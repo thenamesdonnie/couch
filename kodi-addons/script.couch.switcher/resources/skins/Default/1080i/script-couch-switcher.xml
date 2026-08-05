@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The on-TV switcher, drawn by default.py's SwitcherDialog.
+
+     This exists for ONE reason the stock select dialog cannot give: a console
+     entrance. A skin owns DialogSelect.xml, so an addon cannot animate it
+     without editing the skin - and every skin edit on this box has been eaten
+     by a skin update (Copacetic grid views, the include-cache fix, the
+     breadcrumb width). So the switcher brings its own window.
+
+     Everything that can be addon-local IS addon-local, for the same reason:
+     the one texture is ours (media/couch-fill.png, an 8x8 white square that
+     colordiffuse tints - flat panels need no art), and every colour is a
+     literal ARGB rather than a skin colour name. The only skin-owned things
+     referenced are two font NAMES, and a font Kodi cannot resolve falls back
+     to the default font with a log line - it degrades, it does not break.
+
+     The animation: the scrim fades (window-level) while the sheet rides up
+     (group 100), cubic/out over 280ms - fast, decelerating, the phone
+     switcher's own curve (web/src/lib/anim.js). Kodi runs window animations
+     on the render thread, so the list is focusable and stick-navigable from
+     frame one; nothing here gates input.
+
+     Control ids are a contract with default.py: 3 is the list, and it is the
+     ONLY control the python fetches. Ids 50-59 are deliberately avoided -
+     Kodi's CGUIMediaWindow claims those as the "main container" and manages
+     them itself. -->
+<window type="dialog">
+  <defaultcontrol always="true">3</defaultcontrol>
+  <animation effect="fade" start="0" end="100" time="200" tween="sine" easing="out">WindowOpen</animation>
+  <animation effect="fade" start="100" end="0" time="200" tween="sine" easing="in">WindowClose</animation>
+
+  <controls>
+
+    <!-- Scrim. Full-bleed so the room's eye goes to the sheet, not to the
+         paused game's last frame behind it. -->
+    <control type="image">
+      <left>0</left>
+      <top>0</top>
+      <width>1920</width>
+      <height>1080</height>
+      <texture>couch-fill.png</texture>
+      <colordiffuse>B3000000</colordiffuse>
+    </control>
+
+    <!-- The sheet. Bottom-anchored and full-width: a switcher is a decision
+         bar, not a floating box, and bottom-anchored is what makes the slide
+         read as "up from the edge of the screen" rather than "grew". -->
+    <control type="group" id="100">
+      <animation effect="slide" start="0,140" end="0,0" time="280" tween="cubic" easing="out">WindowOpen</animation>
+      <animation effect="slide" start="0,0" end="0,140" time="200" tween="cubic" easing="in">WindowClose</animation>
+
+      <control type="image">
+        <left>0</left>
+        <top>470</top>
+        <width>1920</width>
+        <height>610</height>
+        <texture>couch-fill.png</texture>
+        <colordiffuse>F20E1216</colordiffuse>
+      </control>
+
+      <!-- Accent rule along the top edge: the one piece of colour, and the
+           thing that makes the sheet look attached to the screen edge. -->
+      <control type="image">
+        <left>0</left>
+        <top>470</top>
+        <width>1920</width>
+        <height>4</height>
+        <texture>couch-fill.png</texture>
+        <colordiffuse>FF4DA3FF</colordiffuse>
+      </control>
+
+      <control type="label">
+        <left>96</left>
+        <top>506</top>
+        <width>1728</width>
+        <height>56</height>
+        <align>left</align>
+        <aligny>center</aligny>
+        <font>Title_Breadcrumb_Label</font>
+        <textcolor>FF8FA3B5</textcolor>
+        <label>Switch to</label>
+      </control>
+
+      <!-- The list. Same rows, same order, same trailing Cancel as the select
+           dialog it replaces - default.py builds them, this only draws them. -->
+      <control type="list" id="3">
+        <left>80</left>
+        <top>586</top>
+        <width>1760</width>
+        <height>440</height>
+        <onleft>3</onleft>
+        <onright>3</onright>
+        <onup>3</onup>
+        <ondown>3</ondown>
+        <itemgap>8</itemgap>
+        <orientation>vertical</orientation>
+
+        <itemlayout height="84" width="1760">
+          <control type="image">
+            <left>0</left>
+            <top>0</top>
+            <width>1760</width>
+            <height>84</height>
+            <texture>couch-fill.png</texture>
+            <colordiffuse>14FFFFFF</colordiffuse>
+          </control>
+          <control type="image">
+            <left>16</left>
+            <top>8</top>
+            <width>118</width>
+            <height>68</height>
+            <aspectratio align="center" aligny="center">keep</aspectratio>
+            <texture background="true">$INFO[ListItem.Art(thumb)]</texture>
+            <visible>!String.IsEmpty(ListItem.Art(thumb))</visible>
+          </control>
+          <control type="label">
+            <left>154</left>
+            <top>0</top>
+            <width>1590</width>
+            <height>84</height>
+            <align>left</align>
+            <aligny>center</aligny>
+            <font>Grid_Title</font>
+            <textcolor>FF9FB0BF</textcolor>
+          </control>
+        </itemlayout>
+
+        <focusedlayout height="84" width="1760">
+          <control type="image">
+            <left>0</left>
+            <top>0</top>
+            <width>1760</width>
+            <height>84</height>
+            <texture>couch-fill.png</texture>
+            <colordiffuse>FF22303D</colordiffuse>
+          </control>
+          <control type="image">
+            <left>0</left>
+            <top>0</top>
+            <width>6</width>
+            <height>84</height>
+            <texture>couch-fill.png</texture>
+            <colordiffuse>FF4DA3FF</colordiffuse>
+          </control>
+          <control type="image">
+            <left>16</left>
+            <top>8</top>
+            <width>118</width>
+            <height>68</height>
+            <aspectratio align="center" aligny="center">keep</aspectratio>
+            <texture background="true">$INFO[ListItem.Art(thumb)]</texture>
+            <visible>!String.IsEmpty(ListItem.Art(thumb))</visible>
+          </control>
+          <control type="label">
+            <left>154</left>
+            <top>0</top>
+            <width>1590</width>
+            <height>84</height>
+            <align>left</align>
+            <aligny>center</aligny>
+            <font>Grid_Title</font>
+            <textcolor>FFFFFFFF</textcolor>
+          </control>
+        </focusedlayout>
+      </control>
+
+    </control>
+  </controls>
+</window>

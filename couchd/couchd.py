@@ -2344,11 +2344,19 @@ def _eff_close_menu(o, it):
 
 
 def _eff_show_switcher(o, it):
-    """The switcher addon draws a Kodi SELECT dialog, so the dialog being the
+    """The switcher addon draws a Kodi dialog, so the dialog being the
     current window IS the effect. Without this the verdict was 'unverified'
     for want of a check at all - the prediction said "Kodi select dialog open"
-    and nothing ever looked."""
-    return o.kodi_known and o.kodi_window == KODI_SELECT_DIALOG
+    and nothing ever looked.
+
+    Two window shapes are the effect: the stock select dialog (12000), and
+    the addon's animated WindowXMLDialog, which Kodi allocates out of the
+    python-window pool (13000-13099) with no way to pin it. Both count -
+    the addon's ui.animated_dialog setting flips between them at runtime,
+    and the check must not decide which one the user prefers."""
+    return o.kodi_known and (o.kodi_window == KODI_SELECT_DIALOG
+                             or (o.kodi_window is not None
+                                 and 13000 <= o.kodi_window <= 13099))
 
 
 def _eff_spawn_guard(o, it):
