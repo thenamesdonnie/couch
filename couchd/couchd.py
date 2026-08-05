@@ -2933,6 +2933,7 @@ class Tailer:
         self.pos = 0
         self.last_line = 0.0
         self.seed = seed
+        self.was_absent = False
 
     def _open(self, seek_end=True):
         """First open seeks BACK a little instead of to EOF: without it
@@ -2943,7 +2944,15 @@ class Tailer:
             st = os.fstat(f.fileno())
         except OSError as e:
             self.f = None
+            if isinstance(e, FileNotFoundError):
+                self.was_absent = True
             return f'{type(e).__name__}: {e}'
+        if self.was_absent:
+            # Born after we started watching (e.g. /tmp log after a reboot):
+            # everything in it is new, so read from the top - EOF would
+            # swallow the very line whose appearance created the file.
+            seek_end = False
+            self.was_absent = False
         if seek_end:
             if self.seed:
                 f.seek(max(0, st.st_size - self.SEED_BYTES))
@@ -3127,11 +3136,17 @@ class TriggerObserver:
         self.last = ''
 
     def poll(self):
-        errs = []
+        errs, absent = [], []
         for name, tail in self.tails.items():
             lines, err = tail.read_new()
             if err:
-                errs.append(f'{name}: {err}')
+                # These logs live in /tmp and are created on first use: after
+                # a reboot they simply don't exist until something launches.
+                # Absence is quiet, not observer-blindness (5 Aug boot).
+                if err.startswith('FileNotFoundError'):
+                    absent.append(name)
+                else:
+                    errs.append(f'{name}: {err}')
             for line in lines:
                 m = self.MARK.match(line.strip())
                 if not m:
@@ -3142,7 +3157,14 @@ class TriggerObserver:
                 self.w.log.write({'kind': 'obs', 'source': 'trigger',
                                   'channel': name, 'text': m.group(1)})
                 self.w.attention(f'trigger:{m.group(1)[:24]}')
-        self.src.touch(not errs, '; '.join(errs) if errs else (self.last or 'quiet'))
+        if errs:
+            detail = '; '.join(errs)
+        elif absent:
+            detail = ', '.join(f'{n} log absent (nothing launched yet)'
+                               for n in absent)
+        else:
+            detail = self.last or 'quiet'
+        self.src.touch(not errs, detail)
 
     def close(self):
         for tail in self.tails.values():

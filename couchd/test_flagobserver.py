@@ -101,3 +101,23 @@ def test_missing_files_read_as_absent(tmp_path, monkeypatch):
     obs, world = run_observer(tmp_path, monkeypatch)
     for name in sorted(couchd.WATCHED_TMP):
         assert obs.state[name] == (None, None)
+
+
+def test_trigger_observer_treats_absent_log_as_quiet(tmp_path, monkeypatch):
+    """After a reboot /tmp is empty: the trigger logs don't exist until the
+    first launch. That is quiet, not observer-blindness (5 Aug boot)."""
+    from couchd import TriggerObserver
+    monkeypatch.setattr(TriggerObserver, 'LOGS',
+                        {'game-launch': str(tmp_path / 'game-launch.log')})
+    world = FakeWorld()
+    obs = TriggerObserver(world)
+    obs.poll()
+    src = world.sources['triggers']
+    assert src.ok
+    assert 'absent' in src.detail
+    # the log appearing later is picked up without any reset
+    (tmp_path / 'game-launch.log').write_text('12:00:00 === launch 367520\n')
+    obs.poll()
+    assert src.ok
+    assert src.events == 1
+    assert obs.last == 'launch 367520'
