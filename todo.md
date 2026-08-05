@@ -13,7 +13,52 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
-## ▶ Resume here (updated 4 Aug 2026, late night — couchd build session)
+## ▶ Resume here (updated 5 Aug 2026 ~03:15 — after Evening 1)
+
+**EVENING 1 IS DONE and it worked**: 9 real bugs found with Donnie on the
+couch, 8 fixed live + 1 deliberately stopped (see below), differ v3's
+verdict on the current-model window: 0 gating divergences across 76
+matched decisions. couchd out-decided the legacy stack during a live race
+(guard thawed a fresh freeze; couchd re-emitted the correct freeze).
+Evidence: docs/handoff-2026-08-04.md + this file's 5 Aug changelog +
+shadow/couchd-20260805.jsonl + /tmp/legacy-intents.jsonl (copy into
+~/couch/shadow/archive/ before any /tmp cleanup!).
+
+**THE AGREED DECISION (Donnie, 03:00): stop fixing legacy coordination
+bugs — accelerate the cutover.** The remaining visible issue (tap-resume
+menu/raise dance, ~5s, always converges) is the coordination class that
+couchd deletes by construction; patching it further = reimplementing
+couchd in bash. Interim workaround given: resume with A on the tile, not
+PS tap.
+
+**OVERNIGHT MANDATE (Donnie, 03:15): execute everything remaining toward
+flip-readiness while he sleeps.** Boundaries: NO real-game launches or
+anything that wakes the TV or makes noise overnight (tv-waker fires on
+launch; he is asleep at home) — synthetic/fake-pad work uses the rig's
+inhibit frame only; no COUCHD_OWNS flips without his daytime acceptance
+(charter). The work list, in order:
+1. **Acting executor** in couchd + COUCHD_OWNS plumbing + legacy yielding
+   (watcher/guard skip responsibilities couchd owns; couchd write-through
+   of /tmp flags per R5-17). Adversarial review before merge (charter).
+2. **couchd daemon fixes**: x11 observer emits NOTHING (wire its event
+   subscription — blocking window-enforcement flip); gesture-adjacent
+   show/route decisions must ride the gesture edge not the 5s tick
+   (p95 1.4s vs 250ms bound); model catch-up for all "couchd model
+   catch-up pending" T5 notes (iconify, refreeze, supersede-kill,
+   suspended-mid-window, BP ensure/adoption, desktop-overlay close,
+   snapshot, show_switcher on paused double-tap, settle window).
+3. **Replay Evening 1** through the updated model (recordings/ has the
+   real corpus + snapshots + legacy intents) — diffs should drop to
+   ~zero retrospectively; what remains is real and gets triaged.
+4. **Injected-fault rig staged** (commands scripted, NOT run overnight —
+   they need a live game; morning/daytime job, listed on his sheet).
+5. Re-run full test suites + gitleaks; commit each stage; update
+   docs/handoff sheet with a fresh "MORNING SUMMARY" section on top:
+   what's flip-ready, what needs his daytime 5 minutes.
+Charter rules stand: shadow until his acceptance, one responsibility per
+flip, daytime flips, rollback = stop couchd + old stack intact.
+
+## ▶ Previous resume block (4 Aug 2026, late night — couchd build session)
 
 **READ FIRST: `docs/handoff-2026-08-04.md`** — the phone-readable sheet for
 Donnie (what to test, the one command needed before pad use, the two

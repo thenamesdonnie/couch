@@ -1,97 +1,94 @@
 {
- "t": 1785898303.0266635,
- "pid": 1538757,
- "uptime_s": 7989.5,
+ "t": 1785898669.3152068,
+ "pid": 1740095,
+ "uptime_s": 2.7,
  "mode": "shadow",
  "attention": true,
  "regions": {
   "input_ownership": "game",
   "foreground": "game",
-  "session": "active",
+  "session": "starting",
   "enforcement": "none",
-  "gesture": "hold-fired",
+  "gesture": "idle",
   "pad": "present"
  },
  "games": {
-  "367520": "FROZEN",
-  "bigpicture": "STOPPED"
+  "367520": "RUNNING"
  },
  "last_would_do": [
-  "would route_pad game [reconcile:joystick-setting-drift]",
-  "would close_steam_menu steam [guard:steam-menu-holds-the-pad]",
-  "would show 367520 [guard:kodi-on-top-mid-game]"
+  "would request_tv_wake tv [transition:session-started]",
+  "would show 367520 [transition:session-started]",
+  "would route_pad game [transition:session-started]"
  ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 493502,
+   "events": 4,
    "detail": "1 node(s)",
-   "age_s": 0.6,
+   "age_s": 2.6,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 115,
+   "events": 6,
    "detail": "3 present",
-   "age_s": 0.1,
+   "age_s": 0.2,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 734,
+   "events": 1,
    "detail": "18 pid(s)",
-   "age_s": 0.0,
+   "age_s": 0.1,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 477,
+   "events": 1,
    "detail": "joystick=False window=10025",
-   "age_s": 3.9,
+   "age_s": 2.6,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 169,
+   "events": 1,
    "detail": "1 app(s) tracked",
-   "age_s": 0.0,
+   "age_s": 0.1,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 22,
-   "detail": "launch steam 367520",
-   "age_s": 0.0,
+   "events": 0,
+   "detail": "quiet",
+   "age_s": 0.1,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 1111,
+   "events": 0,
    "detail": "top='Hollow Knight'",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 2606,
+  "obs": 13,
   "daemon": 1,
-  "transition": 503,
-  "invariant": 42,
-  "agreement": 453,
-  "intent": 159
+  "transition": 7,
+  "intent": 3,
+  "agreement": 1,
+  "invariant": 1
  },
- "passes": 8801,
- "intents": 159,
+ "passes": 1,
+ "intents": 3,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 66,
-  "steam_guide_lines": 49,
-  "first_event_latency_s": 0.083
+  "evdev": 0,
+  "steam_guide_lines": 0,
+  "first_event_latency_s": null
  },
- "last_trigger": "launch steam 367520",
- "resource_leaks": [
-  "stale guard pidfile (pid 1698721)"
- ],
+ "last_trigger": "",
+ "resource_leaks": [],
  "bindings": {
   "tap": "none",
   "double_tap": "switcher",
