@@ -30,6 +30,8 @@ affects the console; nothing depends on it and nothing may be made to.
 | `x11.py` | the read-only python-xlib adapter (the only X code; replaced in stage 4) |
 | `test_reconcile.py` | unit + Hypothesis tests for the pure model (no daemon, no I/O) |
 | `test_gesture.py` | the tap / double-tap / hold / long-hold arithmetic |
+| `test_x11.py` | the X adapter: the root subscription, and the request/reply trap that used to swallow every event |
+| `test_edge.py` | the gesture edge - a PS press decides in the debounce, not on the 5s tick - and the x11 observer's two acquisition paths |
 | `test_gestureconf.py` | every failure path of the settings reader, and the safety rail |
 | `couchd.service` | the systemd user unit. **Not installed by the build** |
 

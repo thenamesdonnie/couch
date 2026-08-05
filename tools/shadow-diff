@@ -365,6 +365,38 @@ def assertions(couchd_i, legacy_i, edges, pairs):
     return rows
 
 
+def edge_latency(crecs, runs):
+    """couchd's OWN edge-to-decision latency, as it recorded it (R5).
+
+    The matched-offset table below measures couchd against the legacy stack,
+    which only works while there IS a legacy stack to measure against and only
+    for decisions both of them take. This is the same quantity measured from
+    the inside - kernel BTN_MODE event to decision - so a regression after the
+    flip is still attributable, and so the 5 Aug "p95 1.4s vs a 250ms bound"
+    number has a direct successor. Reported, never gating: it is couchd's
+    account of itself.
+    """
+    vals, kern, coalesced = [], [], 0
+    for r in crecs:
+        if r.get('kind') != 'latency' or r.get('event') != 'gesture-edge':
+            continue
+        if not in_runs(float(r.get('t') or 0), runs, RUN_EDGE_SLACK_S):
+            continue
+        if not r.get('intents'):
+            continue            # an edge that decided nothing has no latency
+        if isinstance(r.get('decide_latency_s'), (int, float)):
+            vals.append(float(r['decide_latency_s']))
+        if isinstance(r.get('kernel_latency_s'), (int, float)):
+            kern.append(float(r['kernel_latency_s']))
+        coalesced += int(r.get('coalesced') or 0)
+    if not vals:
+        return None
+    return {'n': len(vals), 'p50': pct(vals, 50), 'p95': pct(vals, 95),
+            'max': max(vals), 'coalesced': coalesced,
+            'kernel_p95': pct(kern, 95) if kern else None,
+            'within_bound': pct(vals, 95) <= PERCEPTUAL_BOUND_S}
+
+
 def pct(vals, p):
     vals = sorted(vals)
     if not vals:
@@ -433,6 +465,17 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         A legacy-only REPEAT of a toggle inside couchd's cooldown is T5 (same
         decision, deliberately emitted once), NOT a missed decision. The first
         of the pair must still match, or it is a real T4.
+      * MODEL CATCH-UP LANDED, 5 Aug 2026 (overnight). Every entry below that
+        ends "couchd model catch-up pending" now HAS its model: couchd emits
+        the iconify and its deiconify, the supersede-before-freeze kill, the
+        refreeze repair, the desktop-overlay close, and (as decisions it
+        records but never performs - game-launch does not yield either step)
+        the Big-Picture pre-step and the appid adoption. The rules stay: they
+        are pre-declared, and a whitelist that disappears the day the model
+        catches up cannot tell you the model REGRESSED. Read them the other
+        way round from tonight - a LEGACY-ONLY row still landing on one of
+        them means couchd's version did not fire, which is worth the look it
+        used to be exempt from.
       * YIELDED LEGACY LINES. Post-flip, the legacy scripts write their
         would-do with "yielded": true in args (shadow reversal), and the
         watcher emits a `yield` verb for gestures it no longer performs. This
@@ -827,6 +870,7 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
             'matched_total': len(pairs),
             'matched_clean': len(pairs) - len([p for p in pairs if p['flags']]),
             'counts': counts, 'offsets': offsets, 'context_records': len(ctx),
+            'edge_latency': edge_latency(crecs, runs),
             'assertions': [{k: v for k, v in a.items() if k != 'intent'}
                            for a in asserts],
             'agreement': {'total': len(agree), 'disagreements': disagreements},
@@ -913,6 +957,20 @@ def render(rep):
         out.append('    %-16s n=%-3d %6.0f %6.0f %6.0f %6.0f' %
                    (v, o['n'], o['min'] * 1000, o['p50'] * 1000, o['p95'] * 1000,
                     o['max'] * 1000))
+    el = rep.get('edge_latency')
+    if el:
+        out.append('  couchd edge-to-decision ms (its own measure, not gating): '
+                   'n=%d p50=%.0f p95=%.0f max=%.0f%s%s'
+                   % (el['n'], el['p50'] * 1000, el['p95'] * 1000,
+                      el['max'] * 1000,
+                      '' if el['kernel_p95'] is None
+                      else ' kernel-p95=%.0f' % (el['kernel_p95'] * 1000),
+                      '' if el['within_bound']
+                      else '  <-- ABOVE the %dms bound'
+                           % (PERCEPTUAL_BOUND_S * 1000)))
+        if el['coalesced']:
+            out.append('    (%d neighbouring edge(s) coalesced into a decided '
+                       'pass by the debounce)' % el['coalesced'])
     out.append('  happens-before assertions (R5, evaluated outside the windows):')
     by_name = {}
     for a in rep['assertions']:

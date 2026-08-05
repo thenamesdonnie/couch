@@ -84,6 +84,18 @@ TICK_SECONDS = 5.0            # anti-entropy tick (C16)
 ATTENTION_PERIOD = 0.2        # sampling inside an attention window
 ATTENTION_SECONDS = 3.0       # how long an observed change keeps us alert
 MIN_PERIOD = 1.0              # floor outside attention windows
+# The gesture edge (R5). A show/route decision that rides the 5s tick is a
+# second and a half of a room staring at the wrong window; the perceptual
+# bound is 250ms, so a PS-button edge runs a pass NOW. The debounce is the
+# only thing between it and the loop: 50ms coalesces the press/release pairs
+# and the burst of a spammed button into single passes, and it is an order of
+# magnitude inside the bound, so it costs nothing that can be felt.
+EDGE_DEBOUNCE = 0.05
+# Gesture deadlines (the hold threshold, the double-tap window, the handoff
+# timeout) are edges too - they are just edges with no event behind them. The
+# sleeper wakes ON them rather than at the next attention sample, and this is
+# the floor it will not go below to do it.
+EDGE_DEADLINE_FLOOR = 0.02
 KODI_READ_INTERVAL = 10.0     # never faster, whatever the tick does
 STATUS_INTERVAL = 3.0
 SNAPSHOT_INTERVAL = 30.0
@@ -116,6 +128,12 @@ PAD_WANTED = 'DualSense Wireless Controller'
 PAD_UNWANTED = re.compile(r'Motion|Touchpad', re.I)
 
 REAPER = 'reaper SteamLaunch'
+# Steam's two guide-button log lines, verbatim (steam-input-guard reads the
+# same pair). The first is a TAP Steam swallowed - and swallowing it is what
+# opens its desktop-mode overlay over the game; the second is a HOLD it
+# ignored, which opens nothing. R7(f) is exactly that distinction.
+GUIDE_SENT = 'Guide button sent to JS'
+GUIDE_SKIPPED = 'Guide button skipped due to length'
 SHAD = re.compile(r'Shadps4-sdl|mount_Shadps')
 
 
@@ -190,6 +208,19 @@ class Observed:
     steam_route: str = ''                  # last OnFocusWindowChanged text
     ui_mode: int = None                    # SSGL UI mode (4=BPM, 7=desktop)
     ledger: dict = field(default_factory=dict)      # appid -> tuple(pids)
+    # When Steam last CONSUMED a guide press ("Guide button sent to JS"),
+    # monotonic. In desktop UI mode that line is the only tell that Steam ate
+    # the press and opened its overlay over the game - the routing config is
+    # Desktop/413080 and never ClientUI, so the ClientUI arm cannot see it.
+    # A "skipped due to length" line (a HOLD) is deliberately not this: it
+    # opened nothing. See steam-input-guard.guide_consumed_since.
+    guide_consumed_at: float = None
+
+    # The enforcement window's pidfile. `guard_pid_ours` is couchd's own
+    # write-through: a pidfile holding OUR pid must never be superseded, which
+    # is the same rule the legacy watcher yields on.
+    guard_pid: int = None
+    guard_pid_ours: bool = False
 
     # pad / gesture (all times are KERNEL event timestamps, R4)
     pad_known: bool = False
@@ -271,6 +302,7 @@ def make_obs(**kw):
         x_known=True, top_name='Kodi', top_class='Kodi', focused_class='Kodi',
         kodi_window_present=True, big_picture_window=False,
         steam_known=True, steam_route='', ui_mode=7, ledger={},
+        guide_consumed_at=None, guard_pid=None, guard_pid_ours=False,
         pad_known=True, pad_present=True, button_down=False,
         down_since_k=None, kernel_now=1000.0, press_duration=None,
         press_ended_at=None, double_armed=False,
@@ -333,6 +365,16 @@ class Intent:
     predict: dict = None
     requires: tuple = ()
     cooldown: float = 30.0
+    # MODELLED BUT NEVER PERFORMED. Two of the legacy stack's decisions belong
+    # to the process the operator started (game-launch's Big-Picture pre-step
+    # and its appid adoption): game-launch does NOT yield either of them when
+    # couchd owns `transitions`, because couchd cannot stand in for the shell
+    # that is currently launching the game. couchd still has to MODEL them or
+    # its state is wrong about what the console is doing - so it decides them,
+    # writes them to the corpus, and the acting executor refuses them by
+    # construction rather than by a forgotten `if`. A model_only intent can
+    # never become a double-action on flip day.
+    model_only: bool = False
 
     def __post_init__(self):
         assert self.verb in VERBS, f'unknown verb {self.verb}'
@@ -432,8 +474,33 @@ def g_released_no_handoff(o):
 
 
 def g_released_tap_resume(o):
+    """A tap that resumes the paused game, NOW.
+
+    Donnie's 5 Aug amendment (gesture.paused_tap_decision, and the live
+    watcher's `pending_resume`): while the double-tap is bound, a tap on a
+    paused game cannot know yet that it is the whole gesture - a second tap
+    inside the window means the switcher, which is exactly when the switcher
+    is most useful. So the instant resume survives only where there is nothing
+    to escalate to; otherwise the press falls through to 'tap-wait' and
+    resumes from there when the window shuts (g_tap_resume_due).
+    """
     return (not o.button_down and gesture.is_tap(o.press_duration)
-            and o.suspended_present)
+            and o.suspended_present
+            and o.binding('double_tap') == 'none')
+
+
+def g_tap_resume_due(o):
+    """The deferred resume's window ran out with no second tap.
+
+    The suspended flag is re-read HERE rather than remembered from the press:
+    a reconcile, the phone or a guard repair may have resumed the game inside
+    those 350ms, and resuming a game that is already running would raise a
+    window over the Kodi the player is looking at.
+    """
+    return (not o.button_down and o.suspended_present
+            and gesture.is_tap(o.press_duration)
+            and gesture.double_tap_window_over(_since(o, 'gesture'),
+                                               o.double_tap_seconds))
 
 
 def g_released_double(o):
@@ -562,7 +629,21 @@ def g_enf_kodi(o):
 
 
 def g_enf_game(o):
-    return o.enforcement_target == 'game' and o.mono < o.enforcement_until
+    return (o.enforcement_target == 'game' and o.mono < o.enforcement_until
+            and not o.suspended_present)
+
+
+def g_enf_suspended_mid_window(o):
+    """R7(d): a suspend that lands inside a GAME enforcement window ends it.
+
+    Every game-mode invariant is moot the moment the game is meant to be
+    frozen - it must not be raised, it must not be thawed, and Kodi belongs on
+    top, which is the kodi window's job and not this one's. The legacy guard
+    learned to close on this (`window_close reason=suspended-mid-window`)
+    after the 4 Aug race where a resume's guard SIGCONTed a fresh freeze;
+    couchd is a single arbiter, so for it the window simply ends.
+    """
+    return o.enforcement_target == 'game' and o.suspended_present
 
 
 GUARDS = {n[2:]: f for n, f in list(globals().items()) if n.startswith('g_')}
@@ -600,6 +681,10 @@ TRANSITIONS = {
         # the live watcher's tap latency is unchanged.
         'tap-wait': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
                      ('button_down', 'down-again', 'second-press-inside-window'),
+                     # The deferred resume, before the plain expiry: a tap on a
+                     # PAUSED game waited out the double-tap window here (see
+                     # g_released_tap_resume) and now means what it always meant.
+                     ('tap_resume_due', 'tap-resume', 'paused-tap-window-expired'),
                      ('double_window_over', 'idle', 'double-tap-window-expired')],
         # Reachable ONLY from tap-wait, which is why a double-tap can never
         # follow a tap that resumed a paused game: that tap goes to
@@ -694,7 +779,11 @@ TRANSITIONS = {
                  ('enf_game', 'game', 'guard-window-game')],
         'kodi': [('enf_game', 'game', 'guard-window-superseded'),
                  ('enf_expired', 'none', 'guard-window-expired')],
-        'game': [('enf_kodi', 'kodi', 'guard-window-superseded'),
+        # R7(d): the suspend check comes FIRST. A game window whose game just
+        # got frozen has nothing left to enforce, and spending its remaining
+        # seconds fighting the player's own gesture is the 4 Aug race.
+        'game': [('enf_suspended_mid_window', 'none', 'suspended-mid-window'),
+                 ('enf_kodi', 'kodi', 'guard-window-superseded'),
                  ('enf_expired', 'none', 'guard-window-expired')],
     },
 }
@@ -807,6 +896,25 @@ def resolve_appid(o):
     return sess_appid or o.suspended or (o.session or {}).get('mode') or None
 
 
+def playing_despite_flag(o):
+    """R7(d): /tmp/game-suspended is set, and the player is demonstrably
+    playing anyway - the game is BOTH the top window and the focused one, with
+    processes that are not stopped.
+
+    That combination has exactly one honest reading: the flag is the thing
+    that is wrong (a suspend whose freeze was undone, historically by a stale
+    guard window's thaw-repair). Every consumer of the flag has to agree about
+    it or they pull in opposite directions - which is why the legacy reconcile
+    clears its own local `suspended` in that branch, and why this predicate is
+    shared here between the repair, the pad-owner rule and the "a frozen game
+    must not be what the room is looking at" repair.
+    """
+    return bool(o.suspended_present and o.pids_known and o.running_pids
+                and o.suspended != 'bigpicture'
+                and o.x_known and (o.top_class or '').startswith('steam_app')
+                and (o.focused_class or '').startswith('steam_app'))
+
+
 def want_pad_owner(o):
     """Where the pad SHOULD be, level-based.
 
@@ -818,7 +926,7 @@ def want_pad_owner(o):
     asks instead whether anything is actually in front of the room."""
     if not o.session_present:
         return 'kodi'
-    if o.suspended_present:
+    if o.suspended_present and not playing_despite_flag(o):
         return 'kodi'
     if o.running_pids:
         return 'game'
@@ -834,6 +942,35 @@ def want_pad_owner(o):
 
 def _pred(effect, deadline):
     return {'effect': effect, 'deadline_s': deadline}
+
+
+# The guard's arm (b) holds off for the first beat of its window: Steam's
+# overlay shows up ~0.3-1s after the press, and a check that ran before the
+# log line existed would waste the one shot on nothing.
+OVERLAY_ARM_DELAY = 1.2
+STEAM_UI_DESKTOP = 7            # Steam's own numbering (steam-uimode.MODES)
+STEAM_UI_BIG_PICTURE = 4
+
+
+def _desktop_overlay_open(o):
+    """R7(f): is Steam's DESKTOP-mode overlay sitting over the game?
+
+    Pure, and deliberately the same five clauses as
+    steam-input-guard.desktop_overlay_open: inside an enforcement window past
+    its first beat, a session is live, Steam CONSUMED a guide press since the
+    window opened, and steamwebhelper does not own the X focus (if it did, the
+    player is deliberately in Steam and closing it would be rude).
+    """
+    if o.ui_mode != STEAM_UI_DESKTOP or not o.session_present:
+        return False
+    if 'steamwebhelper' in (o.focused_class or ''):
+        return False
+    if o.guide_consumed_at is None:
+        return False
+    opened = o.enforcement_until - GUARD_WINDOW
+    if o.mono < opened + OVERLAY_ARM_DELAY:
+        return False
+    return o.guide_consumed_at >= opened
 
 
 # =========================================================================
@@ -874,6 +1011,67 @@ def _snapshot_intent(appid, reason):
                   requires=('gesture', 'session'), cooldown=3.0)
 
 
+def _iconify_intent(appid, reason):
+    """R7(c): unmap the frozen game's window once Kodi has the screen.
+
+    A SIGSTOPped client cannot answer the X server, so any pointer grab it
+    held at the instant it froze stays held: its cursor sprite sits over Kodi
+    and the phone's XTEST clicks are swallowed by a process that will never
+    read them. X drops a grab when the grab window stops being VIEWABLE, so
+    unmapping is what frees the pointer - raising Kodi over it does nothing.
+    (pad-home-watcher.iconify_frozen_game, game-launch's iconify_game.)
+
+    Ordering is part of the decision, not an accident: the freeze-frame is
+    read off the window's compositing pixmap, which iconifying frees, so the
+    legacy stack waits up to SNAP_WAIT_S for pause-snap before unmapping. The
+    deadline below is sized for that wait rather than for the unmap itself.
+    """
+    return Intent('iconify', appid,
+                  {'via': 'wm-change-state', 'reason': 'release-pointer-grab',
+                   'after': 'snapshot'},
+                  reason, _pred('the frozen game window is unmapped', 8.0),
+                  requires=('gesture', 'session'), cooldown=5.0)
+
+
+def _deiconify_intent(o, appid, reason):
+    """The exact undo of _iconify_intent (R7(c)).
+
+    Emitted on the resume and after any repair that thaws a game itself: a
+    thawed game left iconified is audible, holds the pad, and shows the room
+    nothing that explains either. On a window that was never iconified this is
+    just a raise, which is why it is safe to emit unconditionally on the path.
+    """
+    return Intent('show', appid, {'via': 'activate', 'reason': 'deiconify'},
+                  reason, _pred('the game window is mapped again', 8.0),
+                  requires=('gesture', 'session') if reason.startswith('gesture:')
+                  else ('session',), cooldown=5.0)
+
+
+def _supersede_guard_intent(o, reason):
+    """R7(d): close any enforcement window still open, BEFORE the freeze.
+
+    A guard opened by a recent resume spends its seconds asserting game-mode
+    invariants, one of which is "a game that should be running must be
+    thawed". The 4 Aug 2026 race: 18 processes frozen at 02:13:33, SIGCONTed
+    by the resume's guard at 02:13:34.865, leaving Kodi on screen with the
+    game audible behind it. couchd is the single arbiter, so for its OWN
+    window this is just the enforcement region ending - but a LEGACY guard
+    process may still be out there holding the pidfile, and that one has to be
+    superseded exactly as the watcher supersedes it.
+
+    Never our own pid: a pidfile holding couchd's write-through is couchd's
+    enforcement window, and SIGTERMing it would kill the daemon holding the
+    console together. That is the same rule the legacy watcher yields on.
+    """
+    if not o.guard_pid or o.guard_pid_ours:
+        return []
+    return [Intent('kill', 'steam-input-guard',
+                   {'pids': [o.guard_pid], 'resolver': 'guard-pidfile',
+                    'signal': 'SIGTERM', 'reason': 'superseded-by-freeze'},
+                   reason, _pred('the guard pidfile is gone or replaced', 5.0),
+                   requires=('gesture',), cooldown=5.0)]
+
+
 def _suspend_intents(o, appid, running, reason, defer_handoff):
     """`suspend_to_kodi`: freeze whatever is running and land on Kodi.
 
@@ -886,6 +1084,8 @@ def _suspend_intents(o, appid, running, reason, defer_handoff):
     """
     out = []
     if running:
+        # Before the STOPs, not after (the watcher's own ordering).
+        out += _supersede_guard_intent(o, reason)
         out.append(Intent(
             'freeze', appid,
             {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
@@ -908,14 +1108,20 @@ def _suspend_intents(o, appid, running, reason, defer_handoff):
     else:
         return []           # no live game, not Big Picture: nothing meaningful
     if not defer_handoff:
-        out += _handoff_intents(reason)
+        out += _handoff_intents(o, appid, reason)
     return out
 
 
-def _handoff_intents(reason):
+def _handoff_intents(o, appid, reason):
     """Kodi gets the pad, the screen, and a guard window. The three of them
-    always travel together; the watcher's handoff_to_kodi() is this."""
-    return [
+    always travel together; the watcher's handoff_to_kodi() is this.
+
+    ...and then the frozen game's window goes, because Kodi being on top is
+    not the same as the frozen client letting go of the pointer (R7(c)).
+    Only when something is actually paused: a Big Picture suspend has no
+    frozen window to unmap, and neither live script iconifies on that path.
+    """
+    out = [
         Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'}, reason,
                _pred('input.enablejoystick true', 2.0),
                requires=('gesture', 'input_ownership'), cooldown=3.0),
@@ -929,6 +1135,11 @@ def _handoff_intents(reason):
                _pred('steam menu not routed', 6.0),
                requires=('gesture',), cooldown=GUIDE_TOGGLE_COOLDOWN),
     ]
+    frozen = bool(o.pids_known and o.frozen_pids)
+    if appid and appid != 'bigpicture' and (o.suspended_present or frozen) \
+            and (o.suspended or appid) != 'bigpicture':
+        out.append(_iconify_intent(appid, reason))
+    return out
 
 
 def _switcher_intents(o, appid, running, reason, switcher_reason):
@@ -942,6 +1153,7 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
     out = []
     handed = False
     if o.session_present and running:
+        out += _supersede_guard_intent(o, reason)
         out.append(Intent(
             'freeze', appid,
             {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
@@ -962,7 +1174,7 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
             requires=('gesture', 'session'), cooldown=3.0))
         handed = True
     if handed:
-        out += _handoff_intents(reason)
+        out += _handoff_intents(o, appid, reason)
     else:
         # Nothing to suspend, but the dialog still needs a visible Kodi -
         # including on the way back from the desktop, which is where this
@@ -1073,7 +1285,7 @@ def reconcile(o):
         reason = ('gesture:hold-release' if g == 'handoff-pending'
                   else 'gesture:hold-release-timeout')
         if o.binding('hold') == 'suspend_to_kodi':
-            out += _handoff_intents(reason)
+            out += _handoff_intents(o, appid, reason)
         # ...and whatever the release itself is bound to, on top. 'none' by
         # default, so this line changes nothing until someone binds it.
         out += action_intents(o, 'hold_release', appid, running)
@@ -1105,6 +1317,11 @@ def reconcile(o):
                           'gesture:tap-resume',
                           _pred('game pids back in state S', 5.0),
                           requires=('gesture', 'session'), cooldown=3.0))
+        # R7(c), the other half: the suspend UNMAPPED this window to free its
+        # pointer grab, so the resume has to map it back or the player thaws a
+        # game they cannot see. xfwm4 deiconifies on a pager _NET_ACTIVE_WINDOW,
+        # which is what game-launch's `show <appid> via=activate` is.
+        out.append(_deiconify_intent(o, appid, 'gesture:tap-resume'))
         if o.kodi_window == 10106:
             out.append(Intent('dismiss', 'power-menu', {'via': 'Input.Back'},
                               'gesture:tap-resume',
@@ -1113,6 +1330,23 @@ def reconcile(o):
 
     # -- 2. transitions ---------------------------------------------------
     if sess == 'starting':
+        # R7(g): Big Picture is the console's UI mode for GAMING. Steam
+        # autostarts -silent into DESKTOP mode (uimode 7), where the pad talks
+        # to an overlay the guard could never see (that is R7(f) above), so
+        # game-launch switches it per game at launch time. MODEL ONLY: the
+        # shell that is launching the game does this and does not yield it,
+        # so couchd decides it for its own state and performs nothing.
+        if o.steam_known and o.ui_mode is not None \
+                and o.ui_mode != STEAM_UI_BIG_PICTURE \
+                and o.session_mode not in ('bigpicture', ''):
+            out.append(Intent('launch', 'bigpicture',
+                              {'via': 'steam-open-bigpicture', 'was': o.ui_mode,
+                               'reason': 'ensure-bp-before-game',
+                               'mode': o.session_mode, 'appid': appid},
+                              'transition:ensure-bp-before-game',
+                              _pred(f'SSGL UI mode {STEAM_UI_BIG_PICTURE}', 6.0),
+                              requires=('session',), cooldown=30.0,
+                              model_only=True))
         out.append(Intent('route_pad', 'game',
                           {'via': 'kodi-jsonrpc', 'mode': o.session_mode},
                           'transition:session-started',
@@ -1127,6 +1361,29 @@ def reconcile(o):
                           'transition:session-started',
                           _pred('tv on, input PC', 10.0),
                           requires=('session',), cooldown=30.0))
+    # R7(e): a game started from INSIDE Big Picture is invisible to our own
+    # state - game-launch was invoked as `game-launch bigpicture`, so the
+    # session line's appid field is EMPTY and every consumer that keys off it
+    # works on the string "bigpicture" instead of a number. Live, 5 Aug 2026,
+    # that made the game's own Kodi tile read a running game as "a different
+    # game was picked", and it closed and relaunched it: the operator lost his
+    # progress. The moment a real appid appears under a Big Picture session,
+    # the session line is rewritten in place. MODEL ONLY, like the pre-step
+    # above: the launching shell owns the line it wrote (and the watcher keeps
+    # its own second net for a hold that lands before that poll comes round).
+    if sess in ('starting', 'active') and o.session_present \
+            and (o.session or {}).get('appid') in (None, '', 'bigpicture') \
+            and appid and str(appid).isdigit() \
+            and (o.session or {}).get('launcher_pid'):
+        out.append(Intent('set_flag', 'session',
+                          {'value': f"{o.session['launcher_pid']} steam {appid}",
+                           'launcher': o.session['launcher_pid'],
+                           'resolver': 'ledger', 'was': o.session_mode,
+                           'reason': 'bigpicture-appid-adoption'},
+                          'transition:bigpicture-appid-adoption',
+                          _pred('/tmp/game-session names the real appid', 5.0),
+                          requires=('session',), cooldown=30.0,
+                          model_only=True))
     if sess == 'ending':
         out.append(Intent('route_pad', 'kodi', {'via': 'kodi-jsonrpc'},
                           'transition:session-ended',
@@ -1145,6 +1402,29 @@ def reconcile(o):
                                'route': o.steam_route[-60:]},
                               'guard:steam-menu-holds-the-pad',
                               _pred('routing leaves ClientUI', 3.0),
+                              requires=('enforcement', 'foreground'),
+                              cooldown=GUIDE_TOGGLE_COOLDOWN))
+        elif _desktop_overlay_open(o):
+            # R7(f), invariant 1 arm (b). In DESKTOP ui mode Steam's routing
+            # config is Desktop/413080 and NEVER ClientUI, so the arm above
+            # cannot fire and never has - which is the "resuming with the PS
+            # button ALWAYS brings up the Steam menu" report of 5 Aug 2026: a
+            # TAP is consumed by Steam and opens its overlay over the game, a
+            # HOLD is "skipped due to length" and opens nothing, which is
+            # exactly why only the tap path was ever affected.
+            #
+            # ONE SHOT per window, and that is safety, not tidiness: the guide
+            # is a TOGGLE and our own synthetic press lands in the same log as
+            # the press that armed this, so a repeating arm would flip the
+            # overlay on and off for the rest of the window. The cooldown is
+            # the latch - GUIDE_TOGGLE_COOLDOWN (8s) outlasts the whole 6s
+            # enforcement window, so it cannot fire twice inside one.
+            out.append(Intent('close_steam_menu', 'steam',
+                              {'via': 'vpad-guide', 'invariant': 1,
+                               'reason': 'desktop-overlay-after-tap',
+                               'ui_mode': o.ui_mode},
+                              'guard:desktop-overlay-after-tap',
+                              _pred('the overlay is gone', 6.0),
                               requires=('enforcement', 'foreground'),
                               cooldown=GUIDE_TOGGLE_COOLDOWN))
         if enf == 'kodi' and o.x_known and o.top_name != 'Kodi':
@@ -1217,6 +1497,39 @@ def reconcile(o):
                               'reconcile:frozen-without-suspended-flag',
                               _pred('game pids back in state S', 3.0),
                               requires=('session',)))
+            # ...and the suspend that lost its flag may well have iconified it
+            # (R7(c)): a thawed game left invisible is audible, holds the pad,
+            # and shows the room nothing that explains either.
+            out.append(_deiconify_intent(o, appid,
+                                         'reconcile:thawed-without-flag'))
+
+        # R7(d): a paused flag with the game still RUNNING. Nothing repaired
+        # this until 5 Aug, which is why the 4 Aug guard-vs-freeze race stuck:
+        # flag set, game audible behind Kodi, nothing converging. WHAT IS ON
+        # SCREEN decides which way to converge - the flag is only wrong if the
+        # player can actually see and drive the game.
+        if (o.suspended_present and o.pids_known and o.running_pids
+                and o.suspended != 'bigpicture'):
+            if playing_despite_flag(o):
+                out.append(Intent('clear_flag', 'suspended',
+                                  {'pids': sorted(o.pid_states),
+                                   'resolver': PID_RESOLVER,
+                                   'topcls': o.top_class,
+                                   'focuscls': o.focused_class},
+                                  'reconcile:stale-suspended-while-playing',
+                                  _pred('/tmp/game-suspended gone', 2.0),
+                                  requires=('session', 'foreground')))
+            else:
+                out.append(Intent('freeze', appid,
+                                  {'pids': o.running_pids,
+                                   'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
+                                   'topcls': o.top_class or '?'},
+                                  'reconcile:refreeze-lost-suspend',
+                                  _pred('all game pids in state T', 5.0),
+                                  requires=('session',)))
+                # A game that ran on behind Kodi has a live pointer grab again.
+                out.append(_iconify_intent(appid,
+                                           'reconcile:refreeze-lost-suspend'))
 
         want = want_pad_owner(o)
         have = o.regions.get('input_ownership')
@@ -1228,7 +1541,15 @@ def reconcile(o):
                               _pred(f'input.enablejoystick {want == "kodi"}', 2.0),
                               requires=('input_ownership', 'session')))
 
-        if o.suspended_present and o.x_known and o.top_class.startswith('steam_app'):
+        # A frozen game must never be what the room is looking at - but the
+        # repair above may just have decided that this flag is the thing that
+        # is wrong (game on top AND focused = the player is playing), and
+        # raising Kodi over a game someone is playing is the opposite repair.
+        # The legacy reconcile clears its local `suspended` in that branch for
+        # exactly this reason; this is the same rule, written down.
+        if o.suspended_present and o.x_known \
+                and o.top_class.startswith('steam_app') \
+                and not playing_despite_flag(o):
             out.append(Intent('show', 'kodi', {'via': 'xlib-restack',
                                                'topclass': o.top_class},
                               'reconcile:frozen-game-visible',
@@ -1335,10 +1656,14 @@ class RecordingExecutor(Executor):
     # it, every unit test that runs an intent through this object sprays
     # "would ..." lines into the LIVE /tmp/couchd.log, which is the phone's
     # log and the evening's evidence. The daemon passes nothing and gets say().
-    def __init__(self, log, on_record=None, sayer=say):
+    # `context` is the daemon's per-pass stamp (R5's edge-to-decision latency).
+    # A default of "nothing to add" keeps the pure-model tests, which construct
+    # this object with a log and nothing else, exactly as they were.
+    def __init__(self, log, on_record=None, sayer=say, context=None):
         self.log = log
         self.on_record = on_record or (lambda i: None)
         self.say = sayer
+        self.context = context or (lambda: {})
         self.count = 0
 
     def execute(self, intent, obs):
@@ -1350,6 +1675,7 @@ class RecordingExecutor(Executor):
             'regions': {k: v for k, v in obs.regions.items()},
             'predict': intent.predict,
         }
+        rec.update(self.context())
         self.log.write(rec)
         self.count += 1
         self.on_record(intent)
@@ -1693,12 +2019,14 @@ class ActingExecutor(Executor):
     BACKOFF_BASE = 30.0
     BACKOFF_MAX = 300.0
 
-    def __init__(self, log, actuators, on_record=None, owned=(), sayer=say):
+    def __init__(self, log, actuators, on_record=None, owned=(), sayer=say,
+                 context=None):
         self.log = log
         self.act = actuators
         self.on_record = on_record or (lambda i: None)
         self.owned = frozenset(owned)
         self.say = sayer
+        self.context = context or (lambda: {})
         self.count = 0
         self.failures = 0
         self.pending = []          # C17 predictions awaiting their deadline
@@ -1716,6 +2044,18 @@ class ActingExecutor(Executor):
             'regions': {k: v for k, v in obs.regions.items()},
             'predict': intent.predict,
         }
+        rec.update(self.context())
+        if intent.model_only:
+            # Decided, recorded, never performed: the responsibility for this
+            # one stays with the process that launches the game (see
+            # Intent.model_only). Not a failure and not a refusal - there is
+            # nothing here for couchd to do.
+            rec.update(acted=False,
+                       action={'ok': True, 'model_only': 'legacy keeps this '
+                               'step (game-launch does not yield it)'})
+            self.log.write(rec)
+            self.on_record(intent)
+            return rec
         if resp not in self.owned:
             # Unreachable through the router; kept because "acts only on what
             # it owns" is the whole safety claim and deserves two locks.
@@ -2012,7 +2352,13 @@ class ShadowLog:
     """Append-only JSONL we own (C21): monotonic seq + monotonic clock + wall
     clock on every record. flush always, fsync when idle."""
 
-    def __init__(self, directory=SHADOW_DIR, prefix='couchd'):
+    # `directory=None` means "wherever SHADOW_DIR points WHEN I AM BUILT", not
+    # "wherever it pointed when this module was imported". A default bound at
+    # def time is how a unit test that redirects SHADOW_DIR still ends up
+    # appending to the live evening's corpus - the same class of mistake as
+    # the /tmp/couchd.log spray, and it costs an evening of evidence.
+    def __init__(self, directory=None, prefix='couchd'):
+        directory = directory or SHADOW_DIR
         self.dir = directory
         self.prefix = prefix
         os.makedirs(directory, exist_ok=True)
@@ -2203,11 +2549,11 @@ class PadObserver:
             return
         except OSError:
             self._drop(loop, path, 'read error')
-            self.w.attention('pad-gone')
+            self.w.attention('pad-gone', edge=True)
             return
         if not data:
             self._drop(loop, path, 'eof')
-            self.w.attention('pad-gone')
+            self.w.attention('pad-gone', edge=True)
             return
         for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
             sec, usec, etype, code, value = struct.unpack_from(EVENT_FORMAT,
@@ -2230,7 +2576,10 @@ class PadObserver:
                                                if value == 0 and self.press_duration
                                                else None),
                                   'double_armed': self.tracker.double_armed})
-                self.w.attention('ps-button')
+                # THE gesture edge: every show/route/switcher decision the
+                # room can feel hangs off this event, so it runs a pass now
+                # instead of waiting for the tick (R5).
+                self.w.attention('ps-button', edge=True, kernel_t=k)
                 self.src.last_change = time.monotonic()
 
     def close(self, loop):
@@ -2658,6 +3007,8 @@ class SteamObserver:
     -process ledger (C24), controller_ui.txt is the only readable view of
     Steam's private menu/routing state."""
 
+    # Steam's own wording, both halves of it (steam-input-guard reads the same
+    # two lines out of controller_ui.txt).
     ADD = re.compile(r'AppID (\d+) adding PID (\d+)')
     DROP = re.compile(r'AppID (\d+) no longer tracking PID (\d+)')
     REMOVE = re.compile(r'Remove (\d+) from running list')
@@ -2677,6 +3028,12 @@ class SteamObserver:
         # independent channels for the same physical press; their counts
         # disagreeing means one of the two observers is blind.
         self.guide_presses = 0
+        # ...and the CONSUMED ones specifically, which is a different fact:
+        # "Guide button sent to JS" is a tap Steam ate (and opened its desktop
+        # overlay with), "Guide button skipped due to length" is a hold it
+        # ignored. R7(f)'s whole detection is that distinction.
+        self.guide_consumed_at = None
+        self.guide_consumed = 0
         self._seeded = False
 
     def poll(self):
@@ -2714,13 +3071,20 @@ class SteamObserver:
                 changed = True
             elif 'Guide button' in line:
                 self.guide_presses += 1
+                if GUIDE_SENT in line:
+                    self.guide_consumed += 1
+                    self.guide_consumed_at = time.monotonic()
                 changed = True
         if not self._seeded:
             # The first read replays log history to learn the current ledger,
             # route and UI mode. Those are state; the guide-press COUNT is a
             # rate, and must start from this run, not from Steam's backlog.
+            # Same for the consumed timestamp: a press from before couchd
+            # started must never arm an enforcement window's overlay check.
             self._seeded = True
             self.guide_presses = 0
+            self.guide_consumed = 0
+            self.guide_consumed_at = None
         if changed:
             self.src.events += 1
             self.src.last_change = time.monotonic()
@@ -2786,12 +3150,38 @@ class TriggerObserver:
 
 
 class X11Observer:
+    """X as an EVENT source, with the poll kept as belt and braces (R6).
+
+    Acquisition happens two ways - the root-window event subscription read off
+    the asyncio loop, and the periodic scan - and both end in x11.py's single
+    `_scan()`, so there is exactly one interpretation of the screen and no
+    chance of the two paths disagreeing. An event never writes a region: it
+    marks the cache dirty and wakes the pass, and the pass re-derives
+    `foreground` from the same normalization the tick uses.
+
+    A dead display degrades `foreground` to `unknown` and is retried with
+    backoff. It may never take the daemon down: X restarting under a running
+    couchd is a Tuesday, not an incident.
+    """
+
+    BACKOFF = (1.0, 2.0, 5.0, 10.0, 30.0)
+    LOG_MIN_GAP = 1.0          # at most one x11 obs record a second
+
     def __init__(self, world):
         self.w = world
         self.src = world.src('x11')
         self.adapter = None
         self._fd = None
         self._next_connect = 0.0
+        self._fails = 0
+        self._last_log = 0.0
+        self._last_shape = None
+
+    def _backoff(self):
+        wait = self.BACKOFF[min(self._fails, len(self.BACKOFF) - 1)]
+        self._fails += 1
+        self._next_connect = time.monotonic() + wait
+        return wait
 
     def _load(self):
         if self.adapter is None:
@@ -2811,12 +3201,12 @@ class X11Observer:
         try:
             a = self._load()
         except Exception as e:
-            self._next_connect = time.monotonic() + 5.0
-            self.src.touch(False, f'{type(e).__name__}: {e}')
+            wait = self._backoff()
+            self.src.touch(False, f'{type(e).__name__}: {e} (retry {wait:.0f}s)')
             return
         if not a.connect():
-            self._next_connect = time.monotonic() + 5.0
-            self.src.touch(False, a.state.reason)
+            wait = self._backoff()
+            self.src.touch(False, f'{a.state.reason} (retry {wait:.0f}s)')
             self._detach(loop)
             return
         fd = a.fileno()
@@ -2825,6 +3215,10 @@ class X11Observer:
             self._fd = fd
             with contextlib.suppress(Exception):
                 loop.add_reader(fd, self._readable, loop)
+        if self._fails:
+            self._fails = 0
+            self.w.log.write({'kind': 'obs', 'source': 'x11',
+                              'event': 'connected', 'display': a.display_name})
 
     def _detach(self, loop):
         if self._fd is not None:
@@ -2833,16 +3227,30 @@ class X11Observer:
             self._fd = None
 
     def _readable(self, loop):
+        """The event path. It interprets nothing - it counts, wakes the pass
+        and lets the pass re-derive the world through the same scan."""
         try:
-            if self.adapter.drain():
-                self.src.events += 1
-                self.src.last_change = time.monotonic()
-                self.w.attention('x11-event')
+            self.adapter.drain()
             if self.adapter.d is None:      # adapter dropped the connection
                 self._detach(loop)
+                self.src.touch(False, self.adapter.state.reason)
+                self.w.attention('x11-lost')
+                return
+            # take_events(), not drain()'s return: the tally has to be CLAIMED
+            # or the next poll counts the same events a second time.
+            n = self.adapter.take_events()
+            if n:
+                self._note(n)
+                # A window appearing or vanishing is exactly the class of
+                # change a show/route decision hangs off, so it wakes the loop.
+                self.w.attention('x11-event')
         except Exception as e:
             self.src.touch(False, f'{type(e).__name__}: {e}')
             self._detach(loop)
+
+    def _note(self, n):
+        self.src.events += n
+        self.src.last_change = time.monotonic()
 
     def poll(self, loop):
         if self.adapter is None or self.adapter.d is None:
@@ -2850,8 +3258,43 @@ class X11Observer:
         if self.adapter is None or self.adapter.d is None:
             return None
         st = self.adapter.refresh()
-        self.src.touch(st.ok, st.reason or f'top={st.top_name!r}')
+        # The scan drains the socket itself (see x11.py): whatever it swallowed
+        # is counted HERE or it is counted nowhere.
+        n = self.adapter.take_events()
+        if n:
+            self._note(n)
+        if self.adapter.d is None:
+            self._detach(loop)
+            self.src.touch(False, self.adapter.state.reason)
+            return None
+        self.src.touch(st.ok, st.reason or
+                       f'top={st.top_name!r} ev={self.adapter.events}')
+        self._log_change(st, n)
         return st
+
+    def _log_change(self, st, n):
+        """Give the corpus an x11 channel at last: one record whenever the
+        NORMALIZED view moves, rate-limited, so the differ's observer-health
+        gate can see this source is alive and the morning triage can read what
+        the screen was doing."""
+        shape = (st.ok, st.top_name, st.top_class, st.focused_class,
+                 st.kodi_present, st.big_picture, st.game_windows)
+        if shape == self._last_shape:
+            return
+        now = time.monotonic()
+        if self._last_shape is not None and now - self._last_log < self.LOG_MIN_GAP:
+            return
+        self._last_shape = shape
+        self._last_log = now
+        self.w.log.write({'kind': 'obs', 'source': 'x11', 'event': 'screen',
+                          'top': [st.top_name, st.top_class],
+                          'focused': st.focused_class,
+                          'kodi_present': st.kodi_present,
+                          'big_picture': st.big_picture,
+                          'game_windows': list(st.game_windows),
+                          'n_windows': st.n_windows,
+                          'events': self.adapter.events,
+                          'events_since': n})
 
     def close(self, loop):
         self._detach(loop)
@@ -2875,6 +3318,12 @@ class World:
         self.attention_events = 0
         self.wake = asyncio.Event()
         self.self_writes = {}     # flag name -> (content, mono) we wrote
+        # The gesture EDGE: the observation that must be decided on now, not
+        # at the next tick (R5's 250ms perceptual bound). Set by attention()
+        # and consumed by exactly one pass.
+        self.edge = None
+        self.edges = 0
+        self.edges_coalesced = 0
 
     def src(self, name):
         return self.sources.setdefault(name, Source(name))
@@ -2902,15 +3351,49 @@ class World:
             return content is None
         return content is not None and content.strip() == str(want).strip()
 
-    def attention(self, reason):
+    def attention(self, reason, edge=False, kernel_t=None):
         """An observed change: sample at ATTENTION_PERIOD for a few seconds so
         a fault is seen before the legacy repair loops erase it (blocker 10).
         Also wakes the loop immediately - a slow tick must never swallow a
-        button press."""
+        button press.
+
+        `edge=True` marks the change as one a DECISION hangs off directly (the
+        PS button's own transitions, above all): the loop then runs a pass
+        after EDGE_DEBOUNCE rather than at the attention floor, and the
+        decisions it produces are stamped with their edge-to-decision latency.
+        Edges inside the debounce COALESCE onto the first one - a press and
+        its release 30ms apart are two edges but one pass, and the latency is
+        measured from the edge that has not been decided yet.
+        """
         self.attention_until = time.monotonic() + ATTENTION_SECONDS
         self.attention_reason = reason
         self.attention_events += 1
+        if edge:
+            self.edges += 1
+            if self.edge is None:
+                self.edge = {'reason': reason, 'mono': time.monotonic(),
+                             'kernel_t': kernel_t, 'seq': self.edges}
+            else:
+                # An earlier edge is still waiting to be decided: keep ITS
+                # timestamp (the latency that matters is the oldest undecided
+                # one) and record that this one rode along.
+                self.edges_coalesced += 1
+                self.edge['coalesced'] = self.edge.get('coalesced', 0) + 1
+                self.edge['reason'] = reason
+                if kernel_t is not None:
+                    self.edge['kernel_t'] = kernel_t
         self.wake.set()
+
+    def take_edge(self):
+        """Hand the pending edge to the pass that is about to run. Exactly one
+        pass ever sees a given edge, which is what keeps the latency number
+        honest and stops a decided edge re-triggering the loop."""
+        edge, self.edge = self.edge, None
+        return edge
+
+    @property
+    def edge_pending(self):
+        return self.edge is not None
 
     @property
     def attentive(self):
@@ -2926,7 +3409,11 @@ class Couchd:
         self.machine = Machine(on_transition=self._on_transition)
         # Shadow is the default and the fallback: the recorder is always here,
         # the acting half is built only while owns.conf names something (R1).
-        self.recorder = RecordingExecutor(self.log, on_record=self._on_intent)
+        self.edge = None            # the edge this pass is deciding (R5)
+        self.edge_intents = 0
+        self.last_edge_latency = None
+        self.recorder = RecordingExecutor(self.log, on_record=self._on_intent,
+                                          context=self.intent_context)
         self.actuators = Actuators(kodi_rpc=self._kodi_rpc,
                                    on_flag_write=self.world.note_self_write)
         self.executor = ExecutorRouter(self.recorder, self._make_acting,
@@ -3020,7 +3507,8 @@ class Couchd:
     def _make_acting(self):
         return ActingExecutor(self.log, self.actuators,
                               on_record=self._on_intent,
-                              owned=self.executor.owned)
+                              owned=self.executor.owned,
+                              context=self.intent_context)
 
     def refresh_owns(self):
         """Re-read owns.conf (a stat unless it changed) and apply it.
@@ -3082,6 +3570,31 @@ class Couchd:
             f'taking the guard')
         self.log.write({'kind': 'daemon', 'event': 'guard-pidfile-scavenged',
                         'stale_pid': pid})
+
+    def guard_pidfile_holder(self):
+        """(pid, is-ours) for /tmp/steam-input-guard.pid, or (None, False).
+
+        The model needs both halves. A LIVE foreign pid there is an
+        enforcement window somebody else is running, and a freeze has to
+        supersede it before the STOPs (R7(d)); a pid that is couchd's own
+        write-through is couchd's OWN window, and SIGTERMing that would kill
+        the daemon holding the console together - which is precisely the rule
+        the legacy watcher yields on.
+        """
+        raw = self.flags.state.get('steam-input-guard.pid', (None, None))[0]
+        try:
+            pid = int((raw or '').strip())
+        except (TypeError, ValueError):
+            return None, False
+        if pid == os.getpid():
+            return pid, True
+        try:
+            import psutil
+            if not psutil.pid_exists(pid):
+                return None, False
+        except Exception:
+            pass
+        return pid, self._guard_pidfile_ours
 
     def sync_guard_pidfile(self, o):
         """Write-through of /tmp/steam-input-guard.pid while couchd owns the
@@ -3158,6 +3671,7 @@ class Couchd:
         xst = self.x11.poll(loop)
         pad_src = self.world.src('pad')
         conf = self.gesture_conf()
+        guard_pid, guard_ours = self.guard_pidfile_holder()
         return Observed(
             now=time.time(), mono=time.monotonic(),
             flags_known=self.world.src('flags').ok,
@@ -3176,7 +3690,9 @@ class Couchd:
             big_picture_window=bool(xst and xst.big_picture),
             steam_known=self.world.src('steam').ok,
             steam_route=self.steam.route, ui_mode=self.steam.ui_mode,
+            guide_consumed_at=self.steam.guide_consumed_at,
             ledger={k: tuple(sorted(v)) for k, v in self.steam.ledger.items()},
+            guard_pid=guard_pid, guard_pid_ours=guard_ours,
             pad_known=pad_src.ok, pad_present=self.pad.present,
             button_down=self.pad.button_down,
             down_since_k=self.pad.down_since_k,
@@ -3202,6 +3718,13 @@ class Couchd:
         # Ownership first: an intent must be routed by the file as it is NOW,
         # not as it was when the daemon started.
         self.refresh_owns()
+        # Claim the edge BEFORE observing: everything decided from here on is
+        # this edge's consequence, and a second edge arriving mid-pass has to
+        # get its own pass rather than being credited to this one. Passes are
+        # never reentrant - the loop is single-threaded and pass_once is
+        # synchronous - so "one edge, one pass" needs nothing but this.
+        self.edge = self.world.take_edge()
+        self.edge_intents = 0
         o = self.observe(loop)
         self.machine.step(o)
         o = replace(o, regions=dict(self.machine.regions),
@@ -3222,7 +3745,52 @@ class Couchd:
             self.executor.execute(it, o)
         self.sync_guard_pidfile(o)
         self.passes += 1
+        self.log_edge(o, intents)
         return o, intents
+
+    # -- R5: edge-to-decision latency ------------------------------------
+    def intent_context(self):
+        """The per-intent stamp both executors add to their JSONL record.
+
+        This is the number R5 gates: how long after the physical edge (the
+        kernel timestamp of the BTN_MODE event, where there is one) couchd
+        DECIDED. The differ's matched-offset distribution measures the same
+        thing from the outside, against the legacy stack; this measures it
+        from the inside, so a regression is attributable without a second
+        stack to compare against.
+        """
+        e = self.edge
+        if not e:
+            return {'trigger': 'tick'}
+        self.edge_intents += 1
+        out = {'trigger': 'edge',
+               'edge': {'reason': e['reason'], 'edge_seq': e['seq'],
+                        'coalesced': e.get('coalesced', 0)},
+               'edge_latency_s': round(max(0.0, time.monotonic() - e['mono']), 4)}
+        if e.get('kernel_t'):
+            # Kernel time is the honest zero (R4): it is when the button
+            # actually moved, not when we got round to reading it.
+            out['edge_kernel_latency_s'] = round(
+                max(0.0, self.pad.kernel_now() - e['kernel_t']), 4)
+        return out
+
+    def log_edge(self, o, intents):
+        """One record per decided edge, so the distribution is greppable
+        without re-deriving it from the intent stream."""
+        e = self.edge
+        if not e:
+            return
+        self.last_edge_latency = round(max(0.0, time.monotonic() - e['mono']), 4)
+        rec = {'kind': 'latency', 'event': 'gesture-edge', 't': o.now,
+               'reason': e['reason'], 'edge_seq': e['seq'],
+               'coalesced': e.get('coalesced', 0),
+               'decide_latency_s': self.last_edge_latency,
+               'intents': [i.key for i in intents],
+               'gesture': o.regions.get('gesture')}
+        if e.get('kernel_t'):
+            rec['kernel_latency_s'] = round(
+                max(0.0, self.pad.kernel_now() - e['kernel_t']), 4)
+        self.log.write(rec)
 
     def anti_entropy(self, o):
         """Things that run on the slow tick only, never at attention rate."""
@@ -3331,6 +3899,11 @@ class Couchd:
                                round(self.pad.first_event_latency, 3)
                                if self.pad.first_event_latency else None)},
             'last_trigger': self.triggers.last,
+            # R5: how many decisions rode the gesture edge rather than the
+            # tick, and how many neighbouring edges the debounce absorbed.
+            'edges': {'seen': self.world.edges,
+                      'coalesced': self.world.edges_coalesced,
+                      'last_latency_s': self.last_edge_latency},
             'resource_leaks': list(self.owned.get('leaks', ())),
             # What the PS button is actually bound to right now, so the phone
             # can show it without re-reading Kodi's addon_data itself.
@@ -3435,16 +4008,63 @@ class Couchd:
                         o, self.world.attention_reason if self.world.attentive
                         else 'periodic')
                 notify('WATCHDOG=1')
-                await self._sleep_until_next(mono)
+                await self._sleep_until_next(mono, self.gesture_deadline(o))
         finally:
             await self.shutdown(loop)
 
-    async def _sleep_until_next(self, started):
+    def gesture_deadline(self, o):
+        """When the next gesture guard could flip with no further events.
+
+        The hold threshold, the double-tap window and the handoff timeout are
+        decisions taken by a CLOCK, not by an event, and sampling for them at
+        the attention rate charges every one of them up to 200ms of latency
+        for nothing. Returning the moment itself lets the sleeper wake on it.
+        Monotonic seconds from now, or None.
+        """
+        if o is None:
+            return None
+        out = []
+        g = o.regions.get('gesture')
+        if o.button_down and o.down_since_k is not None:
+            # kernel clock -> "how much longer", which is the same number in
+            # any timebase because both are advancing at one second a second.
+            held = max(0.0, o.kernel_now - o.down_since_k)
+            if o.binding('hold') != 'none':
+                out.append(o.hold_seconds - held)
+            if o.binding('long_hold') != 'none' and o.binding('hold') == 'none':
+                out.append(o.long_hold_seconds - held)
+        since = o.mono - o.region_since.get('gesture', o.mono)
+        if g == 'tap-wait':
+            out.append(o.double_tap_seconds - since)
+        if g in ('hold-fired', 'handoff-pending'):
+            out.append(HANDOFF_TIMEOUT - since)
+        out = [d for d in out if d is not None and d > 0]
+        return min(out) if out else None
+
+    async def _sleep_until_next(self, started, deadline=None):
         """The pacing rule, in one place (R6). Base tick TICK_SECONDS; an
         observed change wakes us early but never lets us sample faster than
         ATTENTION_PERIOD; outside an attention window nothing ever runs
-        faster than MIN_PERIOD. Kodi has its own >=10s limiter."""
+        faster than MIN_PERIOD. Kodi has its own >=10s limiter.
+
+        Two things outrank all of that, and only these two (R5):
+
+          * a gesture EDGE runs a pass after EDGE_DEBOUNCE. Nothing else may
+            be that fast, and nothing may make the tick or the watchdog wait
+            on it: the loop still pings the watchdog and still runs its slow
+            tick on schedule, because both are keyed off elapsed time rather
+            than off how the pass was triggered;
+          * a gesture DEADLINE (the hold threshold and friends) wakes us at
+            the moment itself instead of at the next attention sample.
+        """
+        if self.world.edge_pending:
+            # An edge arrived while the pass was running: it gets its own pass
+            # immediately, minus the debounce that coalesces its neighbours.
+            await asyncio.sleep(EDGE_DEBOUNCE)
+            return
         target = ATTENTION_PERIOD if self.world.attentive else TICK_SECONDS
+        if deadline is not None:
+            target = min(target, max(deadline, EDGE_DEADLINE_FLOOR))
         while not self.stop.is_set():
             elapsed = time.monotonic() - started
             if elapsed >= target:
@@ -3455,6 +4075,12 @@ class Couchd:
             except (asyncio.TimeoutError, TimeoutError):
                 return
             if self.stop.is_set():
+                return
+            if self.world.edge_pending:
+                # The button moved. Coalesce for EDGE_DEBOUNCE (a press and
+                # its release land tens of ms apart and are one decision), then
+                # decide - no attention floor, no minimum period.
+                await asyncio.sleep(EDGE_DEBOUNCE)
                 return
             # woken by an observer: respond fast, but honour the floor
             floor = ATTENTION_PERIOD if self.world.attentive else MIN_PERIOD

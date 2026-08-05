@@ -726,6 +726,50 @@ def test_snapshots_of_different_games_never_pair_up():
         assert len(s['LEGACY-ONLY']) == 1 and len(s['COUCHD-ONLY']) == 1, s
 
 
+# ------------------------------------------------- couchd's own edge latency
+def latency(t, decide, intents=('show|kodi|gesture:ps-hold',), kernel=None,
+            coalesced=0):
+    return {'kind': 'latency', 'event': 'gesture-edge', 't': T0 + t,
+            'reason': 'ps-button', 'edge_seq': int(t * 10) + 1,
+            'coalesced': coalesced, 'decide_latency_s': decide,
+            'kernel_latency_s': kernel, 'intents': list(intents),
+            'gesture': 'hold-fired'}
+
+
+def test_edge_latency_is_summarised_from_couchds_own_records():
+    """R5's number measured from the inside, so it survives the flip: the
+    matched-offset table needs a legacy stack to compare against, this does
+    not."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'show', 'kodi')],
+                  [couchd(0.05, 'show', 'kodi'),
+                   latency(0.05, 0.06, kernel=0.09),
+                   latency(1.05, 0.07, kernel=0.11),
+                   latency(2.05, 0.20, kernel=0.24, coalesced=1)])
+        el = rep['edge_latency']
+        assert el['n'] == 3
+        assert el['p50'] == 0.07
+        assert el['within_bound'] is True
+        assert el['coalesced'] == 1
+        assert 'edge-to-decision' in sd.render(rep)
+
+
+def test_an_edge_that_decided_nothing_is_not_a_latency_sample():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'show', 'kodi')],
+                  [couchd(0.05, 'show', 'kodi'), latency(0.05, 0.06, intents=())])
+        assert rep['edge_latency'] is None
+
+
+def test_edge_latency_above_the_bound_is_called_out_but_never_gates():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'show', 'kodi')],
+                  [couchd(0.05, 'show', 'kodi'), latency(0.05, 1.4)])
+        assert rep['edge_latency']['within_bound'] is False
+        assert 'ABOVE the 250ms bound' in sd.render(rep)
+        assert rep['gating_count'] == 0
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):

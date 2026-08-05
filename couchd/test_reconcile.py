@@ -224,15 +224,69 @@ def test_hold_freezes_then_hands_off_on_release():
 
 
 def test_tap_with_a_paused_game_resumes_it():
+    """...one double-tap window later, which is Donnie's 5 Aug amendment.
+
+    The resume is state logic above the binding dispatch (a paused game with
+    no way back is what the safety rail exists to prevent), but while the
+    double-tap IS bound the tap cannot yet know it is the whole gesture - a
+    double-tap on a paused game opens the switcher, which is exactly when the
+    switcher is most useful. So the resume waits out the window and only then
+    fires. gesture.paused_tap_decision is the shared rule; the live watcher's
+    `pending_resume` is the same deferral.
+    """
     rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
               joystick=True).settle()
     k0 = 6000.0
     _press(rig, k0)
     got = rig.observe(button_down=False, press_duration=0.3)
+    assert rig.machine.regions['gesture'] == 'tap-wait', 'deferred, not fired'
+    assert not find(got, 'launch'), 'the window has not run out yet'
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.3)
+    assert rig.machine.regions['gesture'] == 'tap-resume'
     launch = find(got, 'launch')
     assert launch and launch[0].args['mode'] == 'resume'
     assert launch[0].subject == APPID
     assert not find(got, 'freeze')
+    # ...and the window the suspend unmapped comes back with it (R7(c)).
+    back = [i for i in find(got, 'show', APPID)
+            if i.args.get('reason') == 'deiconify']
+    assert back, verbs(got)
+
+
+def test_an_unbound_double_tap_makes_the_paused_tap_instant_again():
+    """The deferral is charged only where there is something to escalate to.
+
+    With `double_tap` bound to Nothing the resume fires on the release, exactly
+    as it did before the amendment - which is also what stops the latency from
+    being a permanent tax on the recovery path.
+    """
+    binds = dict(DEFAULT_BINDINGS, double_tap='none')
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True, bindings=binds).settle()
+    k0 = 6100.0
+    _press(rig, k0)
+    got = rig.observe(button_down=False, press_duration=0.3)
+    assert rig.machine.regions['gesture'] == 'tap-resume'
+    assert find(got, 'launch')
+
+
+def test_a_deferred_resume_is_dropped_if_the_game_came_back_meanwhile():
+    """The flag is re-read when the window shuts, not remembered from the
+    press: a reconcile, the phone or a guard repair may have resumed inside
+    those 350ms, and resuming twice raises a window over the Kodi the player
+    is looking at."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    k0 = 6200.0
+    _press(rig, k0)
+    rig.observe(button_down=False, press_duration=0.3)
+    assert rig.machine.regions['gesture'] == 'tap-wait'
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.3, suspended=None,
+                      pid_states={200: 'S'})
+    assert rig.machine.regions['gesture'] == 'idle'
+    assert not find(got, 'launch')
 
 
 def test_08_second_press_is_a_tap_and_09_is_a_hold():
@@ -243,7 +297,9 @@ def test_08_second_press_is_a_tap_and_09_is_a_hold():
     _press(rig, k0)
     rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.8)
     assert rig.machine.regions['gesture'] == 'down'          # not yet a hold
-    got = rig.observe(button_down=False, press_duration=0.8)
+    rig.observe(button_down=False, press_duration=0.8)
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.8)
     assert find(got, 'launch'), 'a 0.8s press is a tap'
 
     rig2 = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False).settle()
@@ -370,18 +426,26 @@ def test_a_second_press_after_the_window_is_a_new_first_tap():
     assert rig.machine.regions['gesture'] == 'tap-wait', 're-armed, not fired'
 
 
-def test_a_tap_that_resumes_a_paused_game_cannot_become_a_double():
-    """The first tap already handed the pad back to the game; a Kodi dialog
-    on top of that would be unnavigable, so the switcher stays out of it."""
+def test_a_double_tap_on_a_paused_game_opens_the_switcher_instead():
+    """Donnie's 5 Aug amendment, from the Evening-1 couch: a double-tap on a
+    PAUSED game is the switcher, not two resumes.
+
+    Before it, the first tap resumed unconditionally and the second landed on a
+    game that was already running - so the switcher, which is most useful
+    exactly there (you are sat on Kodi wondering what else is open), could
+    never be reached from a paused game at all.
+    """
     rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
               joystick=True).settle()
     k0 = 13000.0
     got = _tap(rig, k0)
-    assert find(got, 'launch'), 'unchanged: a tap still resumes'
-    assert rig.machine.regions['gesture'] == 'tap-resume', 'not tap-wait'
-    rig.observe()                                   # resume decided -> idle
+    assert not find(got, 'launch'), 'the first tap waits out the window'
+    assert rig.machine.regions['gesture'] == 'tap-wait'
     got = _tap(rig, k0 + 0.2, double_armed=True)
-    assert not find(got, 'show_switcher')
+    assert rig.machine.regions['gesture'] == 'double-tap'
+    assert find(got, 'show_switcher'), verbs(got)
+    # ...and it never resumed on the way through.
+    assert not find(got, 'launch')
 
 
 # =========================================================================
@@ -978,6 +1042,308 @@ class ConsoleModel(RuleBasedStateMachine):
         # convergence: nothing new on an unchanged world
         recent = dict(self.recent)
         assert reconcile(replace(o, recent=recent)) == []
+
+
+# =========================================================================
+# Evening-1 model catch-up: the "couchd model catch-up pending" T5 notes
+#
+# Each of these reproduces a decision the LEGACY stack took on the couch on
+# 4-5 Aug 2026 and couchd's model did not. The observation values are the real
+# ones out of shadow/archive/legacy-intents-evening1-20260805.jsonl wherever
+# the corpus has them (appid 367520, the 18-process freeze set, the guard pid
+# and the window id from the iconify lines), so a test failing here means the
+# model disagrees with something that actually happened in the room.
+# =========================================================================
+#: the freeze set of the 5 Aug 02:05:35 PS-hold, verbatim
+E1_PIDS = [1651480, 1651481, 1651482, 1651618, 1651649, 1651654, 1651656,
+           1651660, 1651663, 1651672, 1651683, 1651690, 1651708, 1651720,
+           1651730, 1651732, 1651737, 1651749]
+E1_GUARD_PID = 1694350          # the guard superseded at 02:34:32
+E1_TOPCLS = 'steam_app_367520'
+
+
+def _running(pids, state='S'):
+    return {p: state for p in pids}
+
+
+def test_t5_iconify_the_frozen_game_at_the_handoff():
+    """R7(c): legacy `iconify 367520 via=wm-change-state` at 02:33:46.
+
+    A SIGSTOPped client keeps whatever pointer grab it froze holding, so its
+    cursor sits over Kodi and the phone's clicks are eaten; X only drops a
+    grab when the grab window stops being viewable. Raising Kodi does not do
+    it - unmapping does.
+    """
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    k0 = 20000.0
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95)
+    assert find(got, 'freeze'), verbs(got)
+    assert not find(got, 'iconify'), 'not while the button is still down'
+    # release: the world now has the flag and the stopped processes in it
+    got = rig.observe(button_down=False, press_duration=1.1, suspended=APPID,
+                      pid_states=_running(E1_PIDS, 'T'))
+    icon = find(got, 'iconify')
+    assert icon, verbs(got)
+    assert icon[0].subject == APPID
+    assert icon[0].args['via'] == 'wm-change-state'
+    # ...and it comes AFTER Kodi has the screen, exactly as the watcher does it
+    order = [i.verb for i in got]
+    assert order.index('show') < order.index('iconify')
+
+
+def test_t5_a_big_picture_suspend_has_no_window_to_iconify():
+    """Nothing was frozen, so there is no stuck grab and no window to unmap -
+    and neither live script emits an iconify on that path."""
+    rig = Rig(session=BP_SESSION, pid_states={}, joystick=False,
+              big_picture_window=True, top_name='Steam Big Picture Mode',
+              top_class='steamwebhelper').settle()
+    assert rig.machine.regions['foreground'] == 'bigpicture'
+    k0 = 20100.0
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0)
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95)
+    got = rig.observe(button_down=False, press_duration=1.1,
+                      suspended='bigpicture')
+    assert find(got, 'route_pad', 'kodi')
+    assert not find(got, 'iconify'), verbs(got)
+
+
+def test_t5_the_resume_maps_the_frozen_window_back():
+    """R7(c) the other way round: legacy `show 367520 via=activate
+    reason=deiconify window=0x7e00001` on every resume. A thawed game left
+    iconified is audible, holds the pad, and shows the room nothing."""
+    rig = Rig(session=SESSION, suspended=APPID,
+              pid_states=_running(E1_PIDS, 'T'), joystick=True).settle()
+    k0 = 20200.0
+    _tap(rig, k0)
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.08)
+    assert find(got, 'launch'), verbs(got)
+    back = [i for i in find(got, 'show', APPID)
+            if i.args.get('reason') == 'deiconify']
+    assert back and back[0].args['via'] == 'activate'
+
+
+def test_t5_a_repair_thaw_maps_the_window_back_too():
+    """The watcher's `map_game_window(appid, 'reconcile:thawed-without-flag')`
+    after the lost-thaw repair, for the same reason."""
+    o = make_obs(session=SESSION, suspended=None,
+                 pid_states=_running(E1_PIDS[:3], 'T'), joystick=False,
+                 regions={'session': 'active', 'input_ownership': 'game'})
+    got = reconcile(o)
+    assert find(got, 'thaw'), verbs(got)
+    back = [i for i in find(got, 'show', APPID)
+            if i.args.get('reason') == 'deiconify']
+    assert back and back[0].reason == 'reconcile:thawed-without-flag'
+
+
+def test_t5_a_freeze_supersedes_an_open_guard_window_first():
+    """R7(d): legacy `kill steam-input-guard pids=[1694350]
+    reason=superseded-by-freeze` at 02:34:32, BEFORE the STOPs.
+
+    A guard opened by a recent resume asserts "a game that should be running
+    must be thawed"; a PS hold inside that window raced its own repair and
+    lost (4 Aug, 18 processes SIGCONTed 1.8s after being frozen).
+    """
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS,
+              guard_pid=E1_GUARD_PID).settle()
+    k0 = 20300.0
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95)
+    kill = find(got, 'kill', 'steam-input-guard')
+    assert kill, verbs(got)
+    assert kill[0].args['pids'] == [E1_GUARD_PID]
+    assert kill[0].args['signal'] == 'SIGTERM'
+    assert kill[0].args['reason'] == 'superseded-by-freeze'
+    order = [i.verb for i in got]
+    assert order.index('kill') < order.index('freeze'), 'before the STOPs'
+
+
+def test_t5_a_freeze_never_supersedes_couchds_own_guard_window():
+    """The pidfile holding couchd's own write-through IS couchd's enforcement
+    window. SIGTERMing it would kill the daemon holding the console together -
+    the same rule the legacy watcher yields on."""
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS,
+              guard_pid=E1_GUARD_PID, guard_pid_ours=True).settle()
+    k0 = 20400.0
+    rig.observe(button_down=True, down_since_k=k0, kernel_now=k0)
+    got = rig.observe(button_down=True, down_since_k=k0, kernel_now=k0 + 0.95)
+    assert find(got, 'freeze')
+    assert not find(got, 'kill'), verbs(got)
+
+
+def test_t5_a_suspend_inside_a_game_window_ends_the_window():
+    """R7(d): the guard's `window_close reason=suspended-mid-window`.
+
+    Every game-mode invariant is moot once the game is meant to be frozen, and
+    spending the remaining seconds fighting the player's own gesture is how
+    the 4 Aug race happened. couchd is the single arbiter, so for it the
+    enforcement REGION is what closes.
+    """
+    rig = Rig(session=SESSION, pid_states=_running(E1_PIDS), joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    rig.machine.regions['enforcement'] = 'game'
+    o = rig.observe(enforcement_target='game',
+                    enforcement_until=rig.mono + 6.0)
+    assert rig.machine.regions['enforcement'] == 'game'
+    rig.observe(enforcement_target='game', enforcement_until=rig.mono + 6.0,
+                suspended=APPID, pid_states=_running(E1_PIDS, 'T'))
+    assert rig.machine.regions['enforcement'] == 'none'
+    assert ('enforcement', 'game', 'none', 'suspended-mid-window') \
+        in rig.transitions
+    # ...and it stays closed rather than flapping straight back in
+    rig.observe(enforcement_target='game', enforcement_until=rig.mono + 6.0,
+                suspended=APPID, pid_states=_running(E1_PIDS, 'T'))
+    assert rig.machine.regions['enforcement'] == 'none'
+
+
+def test_t5_refreezes_a_game_whose_suspend_was_undone():
+    """R7(d): `freeze ... reason=reconcile:refreeze-lost-suspend`.
+
+    Flag set, game running, Kodi on screen: nothing converged this state until
+    5 Aug, which is why the 4 Aug guard-vs-freeze race stuck - the room heard
+    a game it could not see and no loop repaired it.
+    """
+    o = make_obs(session=SESSION, suspended=APPID,
+                 pid_states=_running(E1_PIDS[:4]), joystick=True,
+                 top_name='Kodi', top_class='Kodi', focused_class='Kodi',
+                 regions={'session': 'active', 'foreground': 'kodi'})
+    got = reconcile(o)
+    fr = find(got, 'freeze')
+    assert fr and fr[0].reason == 'reconcile:refreeze-lost-suspend'
+    assert fr[0].args['pids'] == E1_PIDS[:4]
+    assert fr[0].args['resolver']
+    # a game that ran on behind Kodi has a live pointer grab again
+    assert find(got, 'iconify'), verbs(got)
+
+
+def test_t5_but_clears_the_flag_when_the_player_is_actually_playing():
+    """The other half of the same repair: what is ON SCREEN says which way to
+    converge. Game on top AND focused = the flag is the wrong thing, not the
+    game - and Kodi must NOT be raised over it."""
+    o = make_obs(session=SESSION, suspended=APPID,
+                 pid_states=_running(E1_PIDS[:4]), joystick=False,
+                 top_name='ELDEN RING', top_class=E1_TOPCLS,
+                 focused_class=E1_TOPCLS,
+                 regions={'session': 'active', 'foreground': 'game',
+                          'input_ownership': 'game'})
+    got = reconcile(o)
+    clear = find(got, 'clear_flag', 'suspended')
+    assert clear and clear[0].reason == 'reconcile:stale-suspended-while-playing'
+    assert not find(got, 'freeze'), verbs(got)
+    assert not find(got, 'show', 'kodi'), 'never raise Kodi over a live game'
+    assert not find(got, 'route_pad'), 'and the pad stays with the game'
+
+
+def test_t5_closes_steams_desktop_overlay_after_a_tap_resume():
+    """R7(f): legacy `close_steam_menu reason=desktop-overlay-after-tap` at
+    02:38:41 and 02:39:09.
+
+    In desktop UI mode (7) Steam's routing config is Desktop/413080 and never
+    ClientUI, so invariant 1's original arm cannot fire and never has. What
+    Steam does log is the press itself: a TAP is "sent to JS" (consumed - it
+    opened the overlay), a HOLD is "skipped due to length" (it opened
+    nothing), which is exactly why only the tap-resume path was ever affected.
+    """
+    o = make_obs(session=SESSION, ui_mode=7, focused_class='Kodi',
+                 mono=5000.0, guide_consumed_at=4998.5,
+                 enforcement_target='kodi', enforcement_until=5003.0,
+                 regions={'enforcement': 'kodi'})
+    got = find(reconcile(o), 'close_steam_menu')
+    assert got, [i.key for i in reconcile(o)]
+    assert got[0].reason == 'guard:desktop-overlay-after-tap'
+    assert got[0].args['reason'] == 'desktop-overlay-after-tap'
+    # the latch: a toggle whose cooldown outlasts the whole 6s window, so it
+    # can never fire twice inside one (our own press is logged like Steam's)
+    assert got[0].cooldown > 6.0
+
+
+def test_t5_the_desktop_overlay_arm_waits_out_the_first_beat():
+    """Steam's overlay shows up 0.3-1s after the press; a check that ran
+    before the log line existed would waste the one shot on nothing."""
+    o = make_obs(session=SESSION, ui_mode=7, focused_class='Kodi',
+                 mono=5000.0, guide_consumed_at=4999.6,
+                 enforcement_target='kodi', enforcement_until=5005.4,
+                 regions={'enforcement': 'kodi'})
+    assert not find(reconcile(o), 'close_steam_menu')
+
+
+def test_t5_the_desktop_overlay_arm_is_desktop_mode_only():
+    """In Big Picture the original ClientUI arm covers it, and firing both
+    would close the menu and immediately reopen it."""
+    o = make_obs(session=SESSION, ui_mode=4, focused_class='Kodi',
+                 mono=5000.0, guide_consumed_at=4998.5,
+                 enforcement_target='kodi', enforcement_until=5003.0,
+                 regions={'enforcement': 'kodi'})
+    assert not find(reconcile(o), 'close_steam_menu')
+    # ...and never while the player is deliberately IN Steam
+    o = replace(o, ui_mode=7, focused_class='steamwebhelper')
+    assert not find(reconcile(o), 'close_steam_menu')
+
+
+def test_t5_big_picture_is_ensured_before_a_game_launch():
+    """R7(g): legacy `launch bigpicture reason=ensure-bp-before-game was=7`
+    at 02:50:57. Steam autostarts -silent into DESKTOP mode, where the pad
+    talks to an overlay the guard could never see (that is R7(f))."""
+    o = make_obs(session=SESSION, ui_mode=7, joystick=False,
+                 regions={'session': 'starting'})
+    got = find(reconcile(o), 'launch', 'bigpicture')
+    assert got, [i.key for i in reconcile(o)]
+    assert got[0].args['was'] == 7
+    assert got[0].args['reason'] == 'ensure-bp-before-game'
+    # MODEL ONLY: the shell that is launching the game does this step and does
+    # not yield it, so couchd decides it and performs nothing.
+    assert got[0].model_only is True
+    # already in Big Picture: legacy does nothing at all, and neither do we
+    assert not find(reconcile(replace(o, ui_mode=4)), 'launch', 'bigpicture')
+
+
+def test_t5_the_real_appid_is_adopted_under_a_big_picture_session():
+    """R7(e): legacy `set_flag session reason=bigpicture-appid-adoption`.
+
+    A game started from inside Big Picture leaves the session line's appid
+    field EMPTY, so every consumer works on the string "bigpicture" - which on
+    5 Aug made the game's own Kodi tile read a running game as "a different
+    game was picked", closed it and relaunched it. The operator lost his
+    progress to that.
+    """
+    o = make_obs(session=BP_SESSION, ledger={APPID: (200,)},
+                 pid_states={200: 'S'}, joystick=False,
+                 regions={'session': 'active'})
+    got = find(reconcile(o), 'set_flag', 'session')
+    assert got, [i.key for i in reconcile(o)]
+    assert got[0].args['value'] == f'{BP_SESSION["launcher_pid"]} steam {APPID}'
+    assert got[0].args['reason'] == 'bigpicture-appid-adoption'
+    assert got[0].model_only is True
+    # a session that already names its appid needs no adoption
+    o2 = make_obs(session=SESSION, ledger={APPID: (200,)},
+                  pid_states={200: 'S'}, joystick=False,
+                  regions={'session': 'active'})
+    assert not find(reconcile(o2), 'set_flag', 'session')
+
+
+def test_model_only_intents_are_never_performed():
+    """The safety half of the two catch-ups above: they are decisions couchd
+    RECORDS, and the acting executor cannot perform them even when it owns the
+    responsibility they are tagged with."""
+    from couchd import ActingExecutor, ShadowLog
+    import types
+    log = types.SimpleNamespace(written=[], counts={})
+    log.write = log.written.append
+    said = []
+    ex = ActingExecutor(log, actuators=None, owned=('transitions',),
+                        sayer=said.append)
+    o = make_obs(session=SESSION, ui_mode=7, joystick=False,
+                 regions={'session': 'starting'})
+    it = find(reconcile(o), 'launch', 'bigpicture')[0]
+    rec = ex.execute(it, o)
+    assert rec['acted'] is False
+    assert rec['action']['ok'] is True and 'model_only' in rec['action']
+    assert ex.count == 0 and ex.failures == 0
+    assert not said, 'not a failure and not a refusal: nothing to say'
 
 
 TestConsoleModel = ConsoleModel.TestCase
