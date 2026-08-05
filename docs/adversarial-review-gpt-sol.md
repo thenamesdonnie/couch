@@ -1,234 +1,191 @@
-# Adversarial review brief for GPT 5.6 sol
+# Second-opinion adversarial reviews — the howff method, for couch
 
-Written 5 Aug 2026, for Donnie to run on/after Sunday's quota reset.
-Everything below the line marked **PROMPT STARTS HERE** is written TO the
-reviewer and is safe to paste verbatim into a fresh sol conversation.
+Written 5 Aug 2026, for Sunday's quota reset. This mirrors the process
+that worked in venue-finder (`~/venue-finder/docs/audits/`, 26 Jul + 2
+Aug): **blind two-reviewer pairs** - gpt-5.6-sol via Codex CLI and a
+Claude subagent, given the IDENTICAL prompt, neither seeing the other -
+then Fable diffs the two reports, verifies every high-severity claim
+against live code/corpus/state, and writes a synthesis. In howff every
+sol CRITICAL that got spot-checked verified true, and the disagreements
+were exactly where the value was.
 
-## How to run it (Donnie's half)
+## How to run one lens (Donnie's half)
 
-Two ways, depending on what sol has access to:
+1. Pick ONE lens from the list below. One system per review - the howff
+   INDEX proves four short reviews beat one drowning one.
+2. Build the prompt: SHARED PREAMBLE + that lens's MISSION block. Paste
+   into Codex CLI pointed at `~/couch`, **read-only sandbox**.
+3. Same combined prompt to a Claude session as a subagent review (any
+   day - the Claude half doesn't need Sunday's quota).
+4. Neither sees the other's report. Save them as
+   `docs/audits/<lens>-review-<date>-sol.md` and `...-claude.md`.
+5. Adjudication: a Fable session reads both, verifies each CONFIRMED
+   claim against the code (and the shadow corpus / status.json where
+   relevant), resolves splits, writes `...-synthesis.md`, and only then
+   fixes what survives. When all lenses are done, an INDEX file with
+   cross-cutting themes (howff's T1-T4 section paid for the whole
+   exercise - the same root cause showing up in three reviews is the
+   real finding).
 
-**A. Agentic, with repo access** (Codex-style CLI pointed at `~/couch`,
-or any mode where sol can read files itself). Paste the whole prompt.
-The safety rules inside are load-bearing: the daemon it is reviewing is
-LIVE on the TV box. If the tool asks for a working directory, give it
-`~/couch` and nothing wider.
-
-**B. Chat only, no repo access.** Paste the prompt, then feed it files
-as it asks. Give it the manifest order (bottom of this doc). One lens
-per conversation works better than the whole codebase in one: four
-short focused reviews beat one long drowning one - that is exactly how
-the 5 Aug Fable fleet was run, and it worked.
-
-Either way: it REPORTS, you decide. Nothing it says gets applied without
-the usual gate (a Claude session verifying each claimed finding against
-the code before fixing, same as 5 Aug). A finding from any model is a
-claim, not a fact.
-
-Why a different model at all: four Fable reviewers swept this codebase
-on 5 Aug and found real bugs, but they share one brain's blind spots -
-every one of them "verified sound" the same regions with the same
-reasoning. A different model family reads with different habits. Point
-sol especially at the places the fleet certified clean.
+A finding from any model is a claim, not a fact. Nothing is applied
+without the adjudication pass - sol has no memory of this repo and will
+occasionally review code that doesn't exist.
 
 ---
 
-## PROMPT STARTS HERE
+## SHARED PREAMBLE (paste first, both reviewers)
 
-You are an adversarial code reviewer for a home-console control system.
-Your job is to REFUTE its correctness: assume it is broken, construct
-concrete failure scenarios, and report what survives your own attempts
-to disprove it. You are the second, independent review fleet - a
-different model family was run over this codebase on 5 Aug 2026 and its
-findings are already fixed, so your value is precisely the things it
-could not see. Do not flatter, do not summarise the architecture back,
-do not pad. Findings only.
+You are an adversarial second-opinion reviewer for a home-console
+control system at `~/couch`. You are read-only in the repo. A different
+review fleet swept this codebase on 5 Aug 2026 and its findings are
+fixed - your value is what it could not see. Orient with
+`docs/couchd-charter.md` and `couchd/README.md` first; skim, don't read
+everything. Findings only: no architecture summaries, no praise, no
+wholesale-rewrite proposals. Concrete and surgical.
 
-### Hard rules (the system you are reviewing is LIVE)
+**Hard rules - the system is LIVE on a real TV box:**
+- Read-only. Never edit, never commit, never run `systemctl`.
+- Never run `tools/fake-pad`, `tools/gesture-sweep`, `tools/fault-rig`.
+- Never write `couchd/owns.conf`, `/tmp/game-*`, `/tmp/tv-wake-request`,
+  anything under `shadow/` or `recordings/`.
+- You MAY run the suites read-only
+  (`couchd/.venv/bin/python -m pytest couchd/ tools/ -q`; 654 pass) and
+  `git log`/`git show`. `couchd/gesture.py` is pure - you may exercise
+  it standalone with synthetic timestamps.
+- READ THE LIVE STATE before grading severity:
+  `couchd/owns.conf` (what couchd currently executes; today:
+  `gestures`), `shadow/status.json` (mode/owns/failures), and
+  `~/.kodi/userdata/addon_data/script.couch.switcher/settings.xml`
+  (gesture bindings; absent = defaults). Howff's reviews mis-graded
+  severity by assuming config instead of reading it.
 
-This repo runs a real living-room console. The daemon (`couchd`) is
-actively executing controller gestures on real hardware, and its owner's
-household uses it nightly. Therefore, if you have any execution ability:
+**System in one page:** a Linux TV box runs Kodi, Steam, and a phone
+web remote. A legacy layer of scripts (`legacy-mirror/`, live copies in
+`~/.local/bin`) handled PS-button gestures, game launch/suspend/resume,
+a post-handoff enforcement window (`steam-input-guard`), and drift
+repairs. It is being replaced by one daemon, `couchd`
+(`couchd/couchd.py`, ~4800 lines): observes everything (pad evdev,
+/tmp flags, process trees, Kodi JSON-RPC :9090, X11, Steam logs), runs
+a sampled state machine (regions: gesture/session/pad/input_ownership/
+foreground/enforcement), derives intents in a pure `reconcile()`.
+Responsibilities flip one at a time via `couchd/owns.conf`; a flipped
+one means couchd EXECUTES and legacy yields but keeps logging would-dos.
+Ownership is a lease on `shadow/status.json`'s heartbeat (>30s stale =
+legacy re-acts). Timing arithmetic is shared in `couchd/gesture.py`
+(SR4: both stacks must decide identically; kernel timestamps only, hold
+0.9s, double-tap window 0.35s release-to-press). Evidence: every
+observation/decision/intent/effect-verdict lands in
+`shadow/couchd-YYYYMMDD.jsonl`; the offline differ `tools/shadow-diff`
+compares the stacks and its verdict gates the next flip. The phone
+remote is Node/Express (`server/`) + Svelte 5 (`web/`), no auth by
+design (trusted LAN). Stage 2 (`couchd/inputproc.py` + `couchd/stage2/`)
+is a built-but-never-installed evdev-grab input process.
 
-- READ-ONLY. Never edit files, never commit.
-- Never run `systemctl` start/stop/restart on anything.
-- Never run `tools/fake-pad`, `tools/gesture-sweep`, or `tools/fault-rig`
-  (they drive a synthetic controller against the live daemon).
-- Never write to `couchd/owns.conf`, `/tmp/game-*`, `/tmp/tv-wake-request`,
-  `~/couch/shadow/`, or `~/couch/recordings/`.
-- You MAY run the test suites read-only:
-  `couchd/.venv/bin/python -m pytest couchd/ tools/ -q` (654 passing as
-  of 5 Aug evening), and `git log`/`git show`.
-- If you cannot execute anything, say so and work from the files you are
-  given; never invent line numbers or file contents.
+**Fixed on 5 Aug (commits `a414699..d43fb75`) - do not re-report;
+`git log` that day before claiming anything here:** coalesced-gesture
+drops (consumable tracker markers), the flip orphaning the enforcement
+window (couchd now spawns the guard), the differ passing dead actuators
+as "gating 0", phone install killing Steam / half-suspend / MJPEG
+backpressure / CSRF, fake-pad signal safety, big-picture stale-flag
+fight, phantom gestures after BT drops, escape-verb backoff, the
+stale-heartbeat dual-acting window.
 
-### The system, in one page
+**Known and deliberately open - not findings:** legacy bugs 1/2/4
+(big-picture flag lifecycle, "bigpicture" appid literal, guard pidfile
+on normal exit; whitelisted in the differ); the 1.2s settle window
+unmodeled in stage 1 (owner ruling pending); phone suspend/quit not
+yielding to couchd (ruling pending); `hold=switcher` handing off
+mid-press (pinned decision, challenged, ruling pending); couchd not
+autostarting on boot; Kodi's own PS-hold poweroff menu (console-level,
+known).
 
-A Linux box under a TV runs Kodi (media), Steam (games), and a phone web
-remote. A tacked-on "console layer" of shell/python scripts in
-`~/.local/bin` (mirrored in `legacy-mirror/`) historically handled the
-PS-button gestures on a DualSense pad, game launch/suspend/resume, an
-enforcement window after each handoff (`steam-input-guard`), and drift
-repairs. That layer is being replaced by ONE explicit daemon, `couchd`
-(`couchd/couchd.py`, ~4800 lines), via a strangler pattern:
+**Output format (strict):** numbered findings, most severe first. Each:
+real `file:line`; one-sentence defect; a CONCRETE failure scenario
+(inputs/state -> wrong behaviour - no scenario, no finding); severity
+CRITICAL (could misbehave during an evening's use or corrupt the
+flip/evidence machinery) / HIGH (wrong decisions or data) / MEDIUM
+(latent) / LOW (hygiene); and CONFIRMED (traced end to end) vs
+PLAUSIBLE (could not fully verify) - never dress the second as the
+first. Cap ~25, deduped; an empty severity is a fine answer. Close with
+one line per region you actually attacked and found sound, then a
+**§Meta**: what you couldn't verify and why.
 
-- couchd OBSERVES everything (pad evdev, /tmp flag files, process trees,
-  Kodi JSON-RPC on port 9090, X11, Steam's own logs), runs a sampled
-  state machine (regions: gesture, session, pad, input_ownership,
-  foreground, enforcement), and derives intents in a pure `reconcile()`.
-- Responsibilities flip one at a time via `couchd/owns.conf`. A flipped
-  responsibility means couchd EXECUTES those intents and the legacy
-  script yields (it still logs what it would have done). Ownership is a
-  LEASE: legacy re-acts if couchd's `shadow/status.json` heartbeat goes
-  stale (>30s). Currently flipped: `gestures` (the PS button vocabulary:
-  tap / double-tap -> switcher dialog / 0.9s hold -> suspend-to-Kodi /
-  long-hold). Everything else is still legacy's.
-- Evidence corpus: every observation, decision, intent, acted action,
-  and effect verdict goes to `shadow/couchd-YYYYMMDD.jsonl`. An offline
-  differ (`tools/shadow-diff`) compares couchd's stream against the
-  legacy scripts' would-do logs and GATES the next flip.
-- The timing arithmetic all gestures share lives in `couchd/gesture.py`
-  (PressTracker: kernel-timestamp based, hold 0.9s, double-tap window
-  0.35s measured release-to-next-press). Design rule SR4: both stacks
-  must decide identically from this one module.
-- The phone remote is a Node/Express server (`server/`) + Svelte 5
-  frontend (`web/`), no auth by design (trusted LAN).
-- Stage 2 (`couchd/inputproc.py` + `couchd/stage2/`) is a BUILT BUT NOT
-  INSTALLED evdev-grab input process: it will own the pad device and
-  re-inject events into a virtual pad. It has never run in production.
+---
 
-Design documents worth reading before deep-diving code:
-`docs/couchd-charter.md` (the non-negotiables), `docs/couchd-stage1-design.md`,
-`docs/couchd-stage2-design.md`, `couchd/README.md`.
+## LENS MISSIONS (pick one per review)
 
-### Already found and fixed - do NOT re-report these
+### Lens 1 — stage 2 input process (highest value: never reviewed)
 
-The 5 Aug fleet's findings are fixed in commits `a414699..d43fb75`.
-Skim `git log --oneline` for the day before claiming anything in these
-areas is broken; the fix may already exist:
+MISSION: `couchd/inputproc.py`, `couchd/stage2/` (INSTALL.md, runbooks,
+udev rules), `couchd/test_inputproc.py`. This process will one day sit
+between the physical pad and everything else; a bug becomes total input
+loss in the living room. Hunt: SR4 agreement - inputproc uses
+`PressTracker.poll()` where stage 1 does not, and it PREDATES the 5 Aug
+consumable markers (`hold_release_k`/`double_tap_k`) - construct any
+event sequence the two stacks classify differently. The
+withhold/re-inject logic (a press withheld from the virtual pad that
+turns out to be a tap must be re-injected with the chord spacing): what
+does a crash between withhold and re-inject do? Grab/ungrab failure
+paths, the evdev grab held across daemon death, the udev rules'
+match breadth, the E-runbook's claimed invariants vs the code.
 
-- Coalesced gestures (whole hold or whole double-tap swallowed by
-  stalled passes) - fixed via consumable tracker markers.
-- The gestures flip orphaning the enforcement window - couchd now spawns
-  the real `steam-input-guard` on acted handoffs.
-- The differ passing dead actuators / owner-inaction as "gating 0" -
-  it gates on action failures, missed effects, SHADOW-ONLY rows now.
-- Phone install button killing Steam under a live session; phone
-  suspend being a half-suspend; MJPEG backpressure; CSRF on bare POSTs.
-- fake-pad's inhibit frame signal safety; big-picture stale-flag fight;
-  phantom gestures after a Bluetooth drop; escape-verb backoff;
-  stale-heartbeat dual-acting window.
+### Lens 2 — daemon core cross-region behaviour
 
-### Known and deliberately open - not findings
+MISSION: `couchd/couchd.py` (the `TRANSITIONS` table ~line 730, guards
+above it, `reconcile()`, the observers), `couchd/x11.py`,
+`couchd/owns.py`. The 5 Aug fleet verified each region ALONE. Hunt
+multi-region interleavings: session ending mid-gesture, pad reconnect
+during an enforcement window, foreground flapping during a handoff,
+Kodi restarting mid-suspend. `x11.py` end to end: python-Xlib with no
+socket timeout on the shared thread - error paths, Display lifecycle,
+compositor restart. `gesture.py` as mathematics: kernel-clock
+extrapolation, marker/`double_armed`/`settle_swallows` interactions -
+find a timestamp sequence that double-fires or drops.
 
-- Legacy bugs 1, 2, 4 in the old stack (big-picture suspend flag
-  lifecycle, appid literal "bigpicture", guard pidfile on normal exit):
-  known, whitelisted in the differ, owner chose not to fix yet.
-- The 1.2s post-transition settle window exists in `gesture.py` and the
-  legacy watcher but is NOT modeled in couchd stage 1 - awaiting an
-  owner ruling, pre-declared.
-- The phone's direct suspend/quit buttons do not yield to couchd -
-  owner ruling pending.
-- `hold` rebound to `switcher` hands off mid-press - pinned earlier
-  design decision, challenged, awaiting ruling.
-- couchd does not autostart on boot (graphical-session.target quirk) -
-  known.
-- Kodi's own joystick layer maps the PS button too (>=1s hold opens its
-  tv-poweroff context menu) - console-level behaviour, known.
+### Lens 3 — the legacy stack and the seam
 
-### Where to dig - the previous fleet's blind spots first
+MISSION: `legacy-mirror/pad-home-watcher` (~1400 lines), `game-launch`,
+`steam-input-guard`, `tv-waker`, plus `couchd/owns.py` as the lease both
+sides read. Nobody has read these end to end since the yield gates and
+the game-launch flock were bolted on. Hunt: yield-gate failure modes
+(owns.py unimportable mid-run, stat-cache staleness, the 30s lease at
+its boundaries), the new flock's interaction with every verb arm and
+with the backgrounded guard spawns, signal handling, what each script
+does when its /tmp flags are half-written, and any place the two stacks
+can still both act or both abstain on one responsibility.
 
-Ranked. These are the regions the 5 Aug reviewers either certified
-sound with shared reasoning, or never entered at all:
+### Lens 4 — the phone arm beyond the hotspots
 
-1. **`couchd/inputproc.py` + `couchd/stage2/`** (~1000 lines): the
-   not-yet-installed input process. NOBODY has adversarially reviewed
-   it against the live gesture.py it must agree with (SR4). It will one
-   day sit between the physical pad and everything else; a bug here
-   becomes total input loss. Check: the withhold/re-inject logic vs
-   PressTracker semantics (it uses `poll()`, stage 1 does not - do the
-   two stacks still decide identically for every gesture, including the
-   5 Aug consumable markers which inputproc predates?), grab/ungrab
-   failure paths, the udev rules in stage2/, what happens on daemon
-   crash while holding the evdev grab.
-2. **`couchd/x11.py`** and every X11 code path: python-Xlib with no
-   socket timeouts on a thread the whole daemon shares. The fleet noted
-   stall hazards but never audited the module itself: error handling,
-   resource leaks (Display objects), what a compositor restart does.
-3. **The state machine's cross-region interactions**: each region was
-   verified alone. Look for multi-region interleavings: session ending
-   DURING a gesture, pad reconnect DURING enforcement, foreground
-   flapping during a handoff. The table is in `couchd/couchd.py` around
-   line 730 (`TRANSITIONS`), guards above it.
-4. **`gesture.py` timing arithmetic as mathematics**: kernel-clock
-   extrapolation (`kernel_now`), the interaction of the new markers
-   (`hold_release_k`, `double_tap_k`) with `double_armed` and
-   `settle_swallows`. Try to construct an event sequence (timestamps +
-   press/release values) that double-fires, drops, or misclassifies.
-   You can run the module standalone: it is pure.
-5. **The legacy scripts themselves** (`legacy-mirror/`): pad-home-watcher
-   (~1400 lines), game-launch, steam-input-guard, tv-waker. They still
-   run everything not flipped, they got yield-gates and a flock bolted
-   on recently, and no fleet reviewer read them end-to-end. Especially:
-   the yield gate's failure modes (what if owns.py import breaks
-   mid-run), the new flock in game-launch, signal handling.
-6. **`server/` beyond the fixed findings**: kodi.js's connection state
-   machine, screen.js's ffmpeg lifecycle, jellyfin.js's direct DB read
-   of Kodi's sqlite, the request/queue endpoints (index.js is ~900
-   lines and only its hotspots were reviewed).
-7. **`web/` (Svelte 5)**: never reviewed at all. Phone-side state
-   machines, the WebSocket reconnect, anything that can hammer the
-   server or wedge the UI mid-evening.
-8. **The Kodi addons** (`kodi-addons/`, esp. script.couch.switcher):
-   never reviewed. They run inside Kodi's python and draw the dialog
-   the flagship gesture depends on.
-9. **`tools/shadow-diff` as a statistician**: the 5 Aug fixes made it
-   gate on more things; check the new arithmetic for double-counting,
-   and whether its matching (verb/subject/time-window) can mispair two
-   unrelated decisions and grade agreement from noise.
+MISSION: `server/index.js` (~900 lines - only its hotspots were
+reviewed), `server/kodi.js` connection state machine, `server/screen.js`
+ffmpeg lifecycle, `server/jellyfin.js` (direct sqlite reads of Kodi's
+DB), the request/queue endpoints, then `web/src` by component (never
+reviewed at all: WebSocket reconnect, polling, anything that can hammer
+the server or wedge the phone mid-evening). Also `kodi-addons/`,
+especially `script.couch.switcher` - it runs inside Kodi's python and
+draws the dialog the flagship gesture depends on.
 
-### Report format (strict)
+### Lens 5 — the evidence machinery as a statistician
 
-Numbered findings, most severe first. For each:
+MISSION: `tools/shadow-diff` (post-5-Aug: it now gates on action
+failures, missed effects, SHADOW-ONLY rows, pid-set repeats - check the
+new arithmetic for double-counting and for pairs the matcher
+(verb/subject/time-window) can mispair, grading agreement from noise),
+`tools/test_shadow_diff.py` for tests that enshrine bugs as expected
+output, `tools/intents-archive`, and the ShadowLog writer in
+`couchd/couchd.py`. The differ's verdict gates responsibility flips: a
+false green here is the most expensive bug the repo can host.
 
-1. `file:line` (real, verified - if you cannot see the file, say
-   "unverified location").
-2. One sentence: the defect.
-3. The CONCRETE failure scenario: inputs/state -> wrong behaviour. A
-   finding without a scenario is a vibe; do not include it.
-4. Severity: **CRITICAL** = could misbehave during an evening's use or
-   corrupt the flip/evidence machinery; **HIGH** = real defect, wrong
-   decisions or data; **MEDIUM** = latent, needs a trigger; **LOW** =
-   hygiene.
-5. Label **CONFIRMED** (you traced the code end to end) or **PLAUSIBLE**
-   (you could not fully verify). Never present PLAUSIBLE as CONFIRMED.
+---
 
-Close with a short list of what you attacked and found sound, one line
-each - the absence of findings in a region you never entered is not
-soundness, so only list what you actually tried to break.
+## Adjudication template (the Fable session's half)
 
-### File manifest (for chat mode, in feeding order per lens)
-
-- Lens 1 (input): `couchd/gesture.py`, `couchd/inputproc.py`,
-  `couchd/stage2/*.md`, `couchd/stage2/*.rules`, `couchd/test_inputproc.py`
-- Lens 2 (daemon core): `couchd/couchd.py` in quarters, then
-  `couchd/x11.py`, `couchd/owns.py`
-- Lens 3 (legacy + seam): `legacy-mirror/pad-home-watcher`,
-  `legacy-mirror/game-launch`, `legacy-mirror/steam-input-guard`,
-  `couchd/owns.py` again for the lease
-- Lens 4 (phone arm): `server/index.js`, `server/kodi.js`,
-  `server/screen.js`, `server/sys.js`, `server/steam.js`, then `web/src`
-  by component
-- Lens 5 (evidence): `tools/shadow-diff`, `tools/test_shadow_diff.py`,
-  `tools/intents-archive`
-
-## PROMPT ENDS HERE
-
-## Afterwards (Donnie's half again)
-
-Bring sol's report back to a Claude session with: "verify these external
-review findings against the code before believing them, then fix what
-survives, same gate as 5 Aug". Cross-model findings especially need the
-verification pass - sol has no memory of this repo and will sometimes
-describe last month's code or hallucinate a line number, and one wrong
-"fix" the evening before a flip costs more than ten missed findings.
+For the synthesis doc, follow howff's shape
+(`~/venue-finder/docs/audits/*-synthesis.md`):
+per finding - AGREE/DISAGREE between reviewers, VERIFIED/REFUTED against
+code (quote the line), severity re-grade with reasoning, fix applied or
+queued or declined-with-reason. Splits get resolved by reading the live
+state, not by trusting either reviewer. End with cross-cutting themes
+once multiple lenses exist. File name:
+`docs/audits/<lens>-review-<date>-synthesis.md`, and add the row to a
+dated INDEX when the set completes.
