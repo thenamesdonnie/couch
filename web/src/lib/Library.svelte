@@ -1,5 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
+  import { dragDismiss } from './drag.js';
   import { portal } from './portal.js';
   import { api, fmtTime } from './state.svelte.js';
   import { cache, loadContinue, loadLibrary, loadUpcoming, ui } from './store.svelte.js';
@@ -322,7 +323,7 @@
 
 {#if detail}
   <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (detail = null)} role="presentation">
-    <div use:slideUp out:slideDown class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.name}>
+    <div use:slideUp out:slideDown use:dragDismiss={{ onClose: () => (detail = null) }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.name}>
       <div class="sheetbar">
         <span class="sheettitle">{detail.name}</span>
         <button class="closebtn" onclick={() => (detail = null)} aria-label="Close"><Icon name="x" size={16} /></button>
@@ -606,6 +607,11 @@
     flex-direction: column;
     overflow: hidden;
     overscroll-behavior: contain;
+    /* This sheet is NOT its own scroll container (only .eplist/.overview
+       scroll), so the global .sheet touch-action:pan-y lets a pan on the
+       header/art chain to the page behind. none here; the inner scrollers
+       keep their own pan-y. */
+    touch-action: none;
   }
   /* The sheet itself no longer scrolls: the episode list (and, when space is
      tight, the overview) scroll on their own so the art, actions and season

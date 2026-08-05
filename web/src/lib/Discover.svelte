@@ -1,5 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
+  import { dragDismiss } from './drag.js';
   import { portal } from './portal.js';
   import { untrack } from 'svelte';
   import { api } from './state.svelte.js';
@@ -219,7 +220,7 @@
 
 {#if detail}
   <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (detail = null)} role="presentation">
-    <div use:slideUp out:slideDown class="dsheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.title}>
+    <div use:slideUp out:slideDown use:dragDismiss={{ onClose: () => (detail = null) }} class="dsheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.title}>
       {#if detail.backdrop}
         <div class="dback" style:background-image={'url(/api/art/tmdb?p=' + encodeURIComponent(detail.backdrop) + ')'}></div>
         <div class="dback-fade"></div>
@@ -325,7 +326,7 @@
 
 {#if showRequests}
   <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (showRequests = false)} role="presentation">
-    <div use:slideUp out:slideDown class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Your requests">
+    <div use:slideUp out:slideDown use:dragDismiss={{ onClose: () => (showRequests = false) }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Your requests">
       <div class="sheetbar">
         <span class="sheettitle">Requests</span>
         <button class="closebtn" onclick={() => (showRequests = false)} aria-label="Close"><Icon name="x" size={16} /></button>

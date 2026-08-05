@@ -57,12 +57,16 @@ export function fadeIn(node) {
 import { cubicOut } from 'svelte/easing';
 
 export function slideDown(node) {
+  // A drag-dismiss (lib/drag.js) records how far the sheet already travelled;
+  // ride out from there rather than snapping back to the top first.
+  const from = Math.min(parseFloat(node.dataset.dragY || '0') || 0, 100);
+  delete node.dataset.dragY;
   return {
-    duration: 280,
+    duration: 280 * (1 - from / 100),
     easing: cubicOut,
     tick: (t) => {
       node.style.overflow = 'hidden';
-      node.style.transform = `translateY(${(1 - t) * 100}%)`;
+      node.style.transform = `translateY(${from + (1 - t) * (100 - from)}%)`;
     },
   };
 }
