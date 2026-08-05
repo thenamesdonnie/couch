@@ -86,7 +86,22 @@ export async function popular(kind) {
 // backdrop. mediaType keeps movie/tv apart at the endpoint.
 export async function detail(mediaType, tmdbId) {
   const d = await js(`/${mediaType === 'tv' ? 'tv' : 'movie'}/${tmdbId}`);
+  // Per-season status so the picker can grey out what's already here or on
+  // its way. Season 0 (specials) is skipped, as Jellyseerr's own UI does.
+  let seasonList;
+  if (mediaType === 'tv') {
+    const statusBySeason = new Map((d.mediaInfo?.seasons || []).map((s) => [s.seasonNumber, s.status]));
+    seasonList = (d.seasons || [])
+      .filter((s) => s.seasonNumber > 0)
+      .map((s) => ({
+        number: s.seasonNumber,
+        episodes: s.episodeCount || null,
+        year: (s.airDate || '').slice(0, 4) || null,
+        status: MEDIA_STATUS[statusBySeason.get(s.seasonNumber)] || null,
+      }));
+  }
   return {
+    seasonList,
     mediaType,
     tmdbId,
     title: d.title || d.name || '',
@@ -104,9 +119,11 @@ export async function detail(mediaType, tmdbId) {
   };
 }
 
-export function requestMedia(mediaType, tmdbId) {
+export function requestMedia(mediaType, tmdbId, seasons) {
   const body = { mediaType, mediaId: Number(tmdbId) };
-  if (mediaType === 'tv') body.seasons = 'all';
+  if (mediaType === 'tv') {
+    body.seasons = Array.isArray(seasons) && seasons.length ? seasons.map(Number) : 'all';
+  }
   return js('/request', { method: 'POST', body });
 }
 

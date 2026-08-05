@@ -50,6 +50,12 @@
   let detail = $state(null);
   let detailLoading = $state(false);
   let openingId = $state(null);
+  let pickedSeasons = $state(new Set());
+
+  // Seasons still up for grabs: not already requested/downloading/available.
+  const selectableSeasons = $derived(
+    detail?.mediaType === 'tv' ? (detail.seasonList || []).filter((s) => !s.status) : []
+  );
 
   const tmdbUrl = (p) => (p ? '/api/art/tmdb?p=' + encodeURIComponent(p) : null);
 
@@ -63,8 +69,11 @@
       const d = await api(`/api/discover/detail?type=${item.mediaType}&tmdbId=${item.tmdbId}`);
       const full = { ...item, ...d };
       await decodeImages([tmdbUrl(full.poster), tmdbUrl(full.backdrop)]);
+      // Everything still missing starts selected, so one tap requests the lot.
+      pickedSeasons = new Set((full.seasonList || []).filter((s) => !s.status).map((s) => s.number));
       detail = full;
     } catch {
+      pickedSeasons = new Set();
       detail = { ...item }; // fall back to the slim card
     } finally {
       detailLoading = false;
@@ -73,15 +82,32 @@
   }
 
   async function request(item) {
-    if (statusOf(item)) return;
+    // A show with a picker may be requestable even while "partly available";
+    // there the guard is an empty selection, not the show-level status.
+    const usePicker = item.mediaType === 'tv' && item.seasonList?.length;
+    if (usePicker ? !pickedSeasons.size || requested.has(item.tmdbId) : statusOf(item)) return;
     busyId = item.tmdbId;
     try {
-      await api('/api/discover/request', { mediaType: item.mediaType, tmdbId: item.tmdbId });
+      const body = { mediaType: item.mediaType, tmdbId: item.tmdbId };
+      if (usePicker) body.seasons = [...pickedSeasons].sort((a, b) => a - b);
+      await api('/api/discover/request', body);
       requested = new Set([...requested, item.tmdbId]);
       detail = null;
     } finally {
       busyId = null;
     }
+  }
+
+  function toggleSeason(n) {
+    const next = new Set(pickedSeasons);
+    if (next.has(n)) next.delete(n); else next.add(n);
+    pickedSeasons = next;
+  }
+
+  function toggleAllSeasons() {
+    pickedSeasons = pickedSeasons.size === selectableSeasons.length
+      ? new Set()
+      : new Set(selectableSeasons.map((s) => s.number));
   }
 
   function statusOf(item) {
@@ -184,9 +210,44 @@
         {#if detail.tagline}<p class="tagline">{detail.tagline}</p>{/if}
         {#if detail.overview}<p class="small dim overview">{detail.overview}</p>{/if}
         {#if detailLoading && !detail.overview}<p class="dim small">Loading...</p>{/if}
+        {#if selectableSeasons.length && statusOf(detail) !== 'available' && !requested.has(detail.tmdbId)}
+          <div class="seasonshead">
+            <span class="small dim">Seasons</span>
+            {#if selectableSeasons.length > 1}
+              <button class="allbtn" onclick={toggleAllSeasons}>
+                {pickedSeasons.size === selectableSeasons.length ? 'None' : 'All'}
+              </button>
+            {/if}
+          </div>
+          <div class="seasons">
+            {#each detail.seasonList as s (s.number)}
+              {#if s.status}
+                <span class="season done" class:ok={s.status === 'available'} title={s.status}>
+                  S{s.number}<Icon name={s.status === 'available' ? 'check' : 'dots'} size={11} />
+                </span>
+              {:else}
+                <button class="season" class:on={pickedSeasons.has(s.number)} onclick={() => toggleSeason(s.number)}>
+                  S{s.number}
+                </button>
+              {/if}
+            {/each}
+          </div>
+        {/if}
         <div class="daction">
           {#if statusOf(detail) === 'available'}
             <span class="statusline ok">Already on Jellyfin</span>
+          {:else if requested.has(detail.tmdbId)}
+            <span class="statusline">Requested</span>
+          {:else if selectableSeasons.length}
+            <button class="primary big" disabled={busyId === detail.tmdbId || !pickedSeasons.size} onclick={() => request(detail)}>
+              {#if !pickedSeasons.size}
+                Pick a season
+              {:else if pickedSeasons.size === detail.seasonList.length}
+                Request series
+              {:else}
+                Request {pickedSeasons.size} season{pickedSeasons.size > 1 ? 's' : ''}
+              {/if}
+            </button>
           {:else if statusOf(detail)}
             <span class="statusline">{statusOf(detail) === 'requested' ? 'Requested' : statusOf(detail)}</span>
           {:else}
@@ -459,6 +520,37 @@
     color: #c99a3a;
     font-size: 13px;
   }
+  .seasonshead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 18px;
+  }
+  .allbtn {
+    font-size: 12px;
+    color: var(--accent);
+    background: none;
+    padding: 4px 8px;
+  }
+  .seasons { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+  .season {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    padding: 8px 13px;
+    border-radius: 999px;
+    background: var(--raise);
+    color: var(--muted);
+    border: 1px solid transparent;
+  }
+  .season.on {
+    color: var(--accent);
+    background: var(--accent-tint);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .season.done { opacity: 0.6; }
+  .season.done.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); opacity: 1; }
   .tagline { font-style: italic; color: var(--muted); margin: 14px 0 0; font-size: 14px; }
   .overview { margin: 10px 0 0; line-height: 1.5; }
   .daction { margin-top: 18px; }

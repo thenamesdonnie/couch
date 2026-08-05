@@ -637,9 +637,9 @@ app.get('/api/discover/detail', wrap(async (req) => {
 }));
 
 app.post('/api/discover/request', wrap(async (req) => {
-  const { mediaType, tmdbId } = req.body ?? {};
+  const { mediaType, tmdbId, seasons } = req.body ?? {};
   if (!['movie', 'tv'].includes(mediaType) || !tmdbId) throw new Error('mediaType and tmdbId required');
-  await jellyseerr.requestMedia(mediaType, tmdbId);
+  await jellyseerr.requestMedia(mediaType, tmdbId, seasons);
 }));
 
 app.get('/api/discover/requests', wrap(async () => ({ requests: await jellyseerr.listRequests() })));
