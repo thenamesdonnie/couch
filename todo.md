@@ -110,6 +110,19 @@ Late afternoon while Donnie was out (commits 500c6ae, 87c40fa):
 
 ### TV upgrade (researched 5 Aug 2026, decision Donnie's)
 
+**GPU swap plan (researched 5 Aug, Donnie leaning yes):** 9070 XT into this
+box (PSU swap needed, ~300W card), 4070 to the main PC. On Linux amdgpu can't
+do HDMI 2.1 (4K60 max over native HDMI) BUT: (a) DP->HDMI 2.1 adapters are
+proven at 4K120+HDR+VRR on AMD+LG OLED - buy BOTH the UGREEN 85564 (CH7218,
+best, VRR needs a not-yet-mainlined kernel patch) and Cable Matters 102101
+(works on stock 6.14, VRR firmware must be flashed from a Windows DP machine
+= Donnie's main PC, some flicker reports); (b) AMD started landing OFFICIAL
+native HDMI 2.1 FRL+VRR kernel patches mid-2026, expected in a released
+kernel ~7.3/7.4, so the adapter is a bridge not a life sentence. AMD also
+unlocks Kodi GBM HDR + gamescope HDR properly. Sequence: RAM freeze
+investigation closed -> PSU+GPU swap -> display-stack work. Whisper ASR
+(Bazarr) is CUDA today, needs CPU/Vulkan rework after the swap.
+
 **Switch-day is prepped (5 Aug):** webOS backend built beside the Android TV
 one; `tv`/`tv-waker`/couch House tab all flip over when
 `~/.config/tv-remote/tv.json` exists. Day-one steps: plug in the LG, put it
