@@ -23,6 +23,7 @@ import * as radarr from './radarr.js';
 import * as steam from './steam.js';
 import * as youtube from './youtube.js';
 import { activeDownloads } from './downloads.js';
+import * as ytprogress from './ytprogress.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
@@ -108,6 +109,7 @@ async function reassess() {
     }
     state.pad = sys.padState();
     state.game = sys.gameSession();
+    trackYt(state.playing);
     await applyYouTubeDefault(state.playing);
     lastState = state;
     broadcast({ type: 'state', state });
@@ -128,6 +130,58 @@ async function reassess() {
 function scheduleReassess(delay = 1500) {
   if (reassessTimer) return;
   reassessTimer = setTimeout(reassess, delay);
+}
+
+// Which app-launched YouTube video is on the TV. Needed because once the
+// plugin resolves, Kodi only reports the raw googlevideo url - the id is
+// gone - so the play route pins it here and reassess records the clock
+// against it. Videos started from inside Kodi itself aren't identifiable
+// and simply aren't tracked.
+let currentYt = null;
+
+function trackYt(pl) {
+  if (!currentYt) return;
+  if (!pl || !pl.isStream) { currentYt = null; return; }
+  // A different video started from the plugin's own menus shows a fresh
+  // plugin url with its id; stop tracking rather than mislabel it.
+  if (pl.isYouTube && pl.file.includes('video_id=') && !pl.file.includes(currentYt.id)) {
+    currentYt = null;
+    return;
+  }
+  ytprogress.track(currentYt.id, pl.position, pl.duration);
+}
+
+// While a tracked video plays, sample the clock every 10s so the resume point
+// is never far behind (events alone leave up to 30s gaps).
+setInterval(() => {
+  if (currentYt && lastState.playing) scheduleReassess(0);
+}, 10000);
+
+// After Player.Open on a plugin url, wait for the stream to actually start,
+// then jump to the saved spot, a touch back for context.
+async function seekWhenReady(seconds) {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const players = await rpc('Player.GetActivePlayers');
+      const p = players.find((x) => x.type === 'video');
+      if (!p) continue;
+      const props = await rpc('Player.GetProperties', { playerid: p.playerid, properties: ['totaltime'] });
+      const total = (props.totaltime.hours * 3600) + (props.totaltime.minutes * 60) + props.totaltime.seconds;
+      if (total > seconds) {
+        await rpc('Player.Seek', {
+          playerid: p.playerid,
+          value: { time: {
+            hours: Math.floor(seconds / 3600),
+            minutes: Math.floor((seconds % 3600) / 60),
+            seconds: Math.floor(seconds % 60),
+            milliseconds: 0,
+          } },
+        });
+        return;
+      }
+    } catch { /* kodi busy resolving; keep waiting */ }
+  }
 }
 
 const events = new KodiEvents();
@@ -496,10 +550,10 @@ app.post('/api/cast', wrap(async (req) => {
 app.get('/api/youtube/search', wrap(async (req) => {
   const q = String(req.query.q || '').trim();
   if (!q) return { results: [] };
-  return { results: await youtube.search(q) };
+  return { results: ytprogress.decorate(await youtube.search(q)) };
 }));
 
-app.get('/api/youtube/trending', wrap(async () => ({ results: await youtube.trending() })));
+app.get('/api/youtube/trending', wrap(async () => ({ results: ytprogress.decorate(await youtube.trending()) })));
 
 // The subscription and recommendation feeds, read from the Kodi plugin's own
 // folders (Files.GetDirectory) so they match exactly what the TV shows and use
@@ -526,15 +580,18 @@ app.get('/api/youtube/feed', wrap(async (req) => {
   }
   const durations = await youtube.durationsFor(items.map((i) => i.id)).catch(() => ({}));
   for (const i of items) i.duration = durations[i.id] || '';
-  return { results: items };
+  return { results: ytprogress.decorate(items) };
 }));
 
 app.post('/api/youtube/play', wrap(async (req) => {
   const id = String(req.body?.id || '');
   if (!/^[\w-]{6,15}$/.test(id)) throw new Error('bad video id');
+  const resume = ytprogress.resumePoint(id);
   await rpc('Player.Open', {
     item: { file: `plugin://plugin.video.youtube/play/?video_id=${id}` },
   });
+  currentYt = { id };
+  if (resume > 10) seekWhenReady(Math.max(0, resume - 5)).catch(() => {});
   scheduleReassess(3000);
 }));
 

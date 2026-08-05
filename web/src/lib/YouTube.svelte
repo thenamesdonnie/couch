@@ -77,16 +77,18 @@
 {:else}
   <div class="ylist">
     {#each list as v (v.id)}
-      <button class="yrow" onclick={() => play(v)}>
+      <button class="yrow" class:seen={v.watched} onclick={() => play(v)}>
         <span class="ythumb">
           <img use:fadeimg src={'/api/art/yt?id=' + v.id} alt="" loading="lazy" />
           {#if v.duration}<span class="dur mono">{v.duration}</span>{/if}
+          {#if v.progress}<span class="ybar"><span style:width={v.progress * 100 + '%'}></span></span>{/if}
         </span>
         <span class="ymeta">
           <span class="ytitle">{v.title}</span>
           {#if v.channel}<span class="ychannel dim small">{v.channel}</span>{/if}
+          {#if v.resumeSecs}<span class="ychannel dim small">resumes</span>{/if}
         </span>
-        <span class="yplay"><Icon name="play" size={16} /></span>
+        <span class="yplay"><Icon name={v.watched ? 'check' : 'play'} size={16} /></span>
       </button>
     {/each}
   </div>
@@ -105,6 +107,15 @@
     background: none;
     text-align: left;
   }
+  .yrow.seen { opacity: 0.55; }
+  .yrow.seen .yplay { color: var(--faint); }
+  .ybar {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.25);
+  }
+  .ybar span { display: block; height: 100%; background: var(--accent); }
   .ythumb {
     position: relative;
     width: 120px;
