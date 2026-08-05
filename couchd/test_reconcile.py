@@ -589,6 +589,52 @@ def test_a_whole_hold_swallowed_by_one_pass_still_suspends():
     assert find(got, 'spawn_guard', 'kodi')
 
 
+def test_a_whole_double_swallowed_by_two_passes_still_fires_the_switcher():
+    """BOTH taps of a 60ms double coalesced (two stalled passes in a row):
+    the machine never left idle, so every released_double edge - which only
+    exists in the in-flight states - was unreachable and the switcher was
+    dropped in silence. Caught live by tools/gesture-sweep, 5 Aug 17:02.
+    The tracker's consumable double_tap marker drives the idle edge."""
+    rig = Rig(joystick=True)
+    rig.settle()
+    got = rig.observe(button_down=False, press_duration=0.08,
+                      double_tap_pending=True)
+    assert rig.machine.regions['gesture'] == 'double-tap'
+    assert find(got, 'show_switcher', 'tv')
+    # the daemon consumes the marker on the double-tap transition; without
+    # it the state must still close normally and NOT re-enter
+    got = rig.observe(button_down=False, press_duration=0.08,
+                      double_tap_pending=False)
+    assert rig.machine.regions['gesture'] == 'idle'
+    got = rig.observe(button_down=False, press_duration=0.08,
+                      double_tap_pending=False)
+    assert rig.machine.regions['gesture'] == 'idle'
+    assert not find(got, 'show_switcher', 'tv')
+
+
+def test_hold_marker_is_spent_when_the_region_finishes_with_the_press():
+    """The stuck-hold shape that tools/gesture-sweep caught live (5 Aug
+    16:59): the release of a timed-out hold sets the tracker marker while
+    the region sits in 'timed-out', so consuming only on hold-fired entry
+    left it armed - idle re-entered hold-fired as a phantom and ate every
+    press for the next ~12s (five burst taps, zero switchers)."""
+    from couchd import hold_marker_spent
+    # taking the hold spends it, both coalesced and live
+    assert hold_marker_spent('gesture', 'idle', 'hold-fired')
+    assert hold_marker_spent('gesture', 'down', 'hold-fired')
+    assert hold_marker_spent('gesture', 'hold-fired', 'handoff-pending')
+    # ...and so does completing the gesture back to idle from any hold state
+    assert hold_marker_spent('gesture', 'timed-out', 'idle')
+    assert hold_marker_spent('gesture', 'handoff-pending', 'idle')
+    assert hold_marker_spent('gesture', 'hold-fired', 'idle')
+    assert hold_marker_spent('gesture', 'long-hold-fired', 'idle')
+    # tap traffic never does
+    assert not hold_marker_spent('gesture', 'tap-wait', 'idle')
+    assert not hold_marker_spent('gesture', 'down', 'tap-wait')
+    assert not hold_marker_spent('gesture', 'double-tap', 'idle')
+    assert not hold_marker_spent('session', 'none', 'idle')
+
+
 def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
     o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
                  regions={'gesture': 'hold-fired', 'session': 'active',

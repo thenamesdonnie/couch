@@ -291,6 +291,9 @@ class Observed:
     hold_release_pending: bool = False     # the tracker classified a
     #                                        HOLD_RELEASE no state has taken
     #                                        yet (both edges coalesced)
+    double_tap_pending: bool = False       # ...and its double twin: a
+    #                                        DOUBLE_TAP decided while the
+    #                                        machine sat in idle throughout
 
     # The PS-button key bindings, as the addon's settings page left them.
     # BOTH stacks read the same file through ~/couch/couchd/gestureconf.py -
@@ -583,6 +586,19 @@ def g_released_hold_coalesced(o):
             and o.hold_release_pending)
 
 
+def g_released_double_coalesced(o):
+    """BOTH taps of a double landed inside stalled passes: the machine sat
+    in idle throughout, so none of the in-flight states that ask
+    g_released_double ever ran. Caught live by the sweep's 60ms scenario
+    (5 Aug 17:02, two coalesced passes in a row under post-restart load).
+    Guarded on the tracker's CONSUMABLE double_tap marker, never on raw
+    double_armed - which deliberately survives the release and would
+    re-fire from idle forever (the stale-arming hazard the bf34a27 comment
+    warned about). Consumed on any entry to the double-tap state."""
+    return (o.binding('double_tap') != 'none' and not o.button_down
+            and o.double_tap_pending)
+
+
 def g_released_double(o):
     """The second half of a double-tap: released, itself a tap, and it began
     inside DOUBLE_TAP_S of the previous tap's release.
@@ -772,7 +788,12 @@ TRANSITIONS = {
                  # Both edges of a whole HOLD swallowed by one stalled pass:
                  # the machine never left idle, but the tracker decided
                  # HOLD_RELEASE at the release (see g_released_hold_coalesced).
-                 ('released_hold_coalesced', 'hold-fired', 'ps-hold-coalesced')],
+                 ('released_hold_coalesced', 'hold-fired', 'ps-hold-coalesced'),
+                 # ...and a whole DOUBLE swallowed by two: both taps
+                 # coalesced, decided by the tracker's consumable marker
+                 # (see g_released_double_coalesced).
+                 ('released_double_coalesced', 'double-tap',
+                  'ps-double-tap-coalesced')],
         # The hold is tried first, exactly as before; the long-hold tier below
         # it is unreachable unless `hold` is bound to Nothing (g_hold_fires /
         # g_long_hold_fires), so under the default bindings this list is the
@@ -944,6 +965,26 @@ TRANSITIONS = {
                  ('enf_expired', 'none', 'guard-window-expired')],
     },
 }
+
+
+def hold_marker_spent(region, frm, to):
+    """Has the gesture region FINISHED with the press the tracker's
+    HOLD_RELEASE marker describes?
+
+    Two cases spend it: the region TAKES the hold (entering hold-fired,
+    coalesced or live, or handoff-pending off the release), and the region
+    COMPLETES a hold gesture back to idle from any of its states. The second
+    case is not decoration: a stuck hold's release arrives while the region
+    is already in 'timed-out' - the timeout path handled the press - and an
+    unspent marker then re-entered hold-fired from idle as a phantom hold,
+    eating every press that landed during the ~12s walk (caught live by
+    tools/gesture-sweep's burst scenario, 5 Aug 16:59: five taps, zero
+    switchers)."""
+    if region != 'gesture':
+        return False
+    return (to in ('hold-fired', 'handoff-pending')
+            or (frm in ('hold-fired', 'handoff-pending', 'timed-out',
+                        'long-hold-fired') and to == 'idle'))
 
 
 class Machine:
@@ -2989,6 +3030,8 @@ class PadObserver:
     doubles = property(lambda self: self.tracker.doubles)
     hold_release_pending = property(
         lambda self: self.tracker.hold_release_k is not None)
+    double_tap_pending = property(
+        lambda self: self.tracker.double_tap_k is not None)
 
     @staticmethod
     def find_pads():
@@ -4047,11 +4090,13 @@ class Couchd:
                         'to': to, 'reason': reason})
         say(f'{region}: {frm} -> {to} ({reason})')
         self.world.attention(f'transition:{region}')
-        # The region took the hold (coalesced or not): spend the tracker's
-        # HOLD_RELEASE marker so it cannot fire a second hold-fired off the
-        # same physical press once the region walks back to idle.
-        if region == 'gesture' and to in ('hold-fired', 'handoff-pending'):
+        if hold_marker_spent(region, frm, to):
             self.pad.tracker.consume_hold_release()
+        if region == 'gesture' and to == 'double-tap':
+            # Whichever edge got here - live, coalesced-from-down, or the
+            # idle marker - the double is taken; the marker must not re-fire
+            # it once the switcher decides and the region returns to idle.
+            self.pad.tracker.consume_double_tap()
 
     def _on_intent(self, intent):
         self.recent[intent.key] = time.monotonic()
@@ -4302,6 +4347,7 @@ class Couchd:
             press_ended_at=self.pad.press_ended_at,
             double_armed=self.pad.double_armed,
             hold_release_pending=self.pad.hold_release_pending,
+            double_tap_pending=self.pad.double_tap_pending,
             # Re-read every pass; gestureconf.load() is a stat() unless the
             # file changed, so a rebind takes effect on the next tick without
             # a restart, exactly as it does in the watcher.

@@ -223,6 +223,26 @@ def test_hold_release_marker_for_level_readers():
     assert tr.hold_release_k is None
 
 
+def test_double_tap_marker_for_level_readers():
+    """The double twin of the hold marker: DOUBLE_TAP held (double_tap_k)
+    for a machine that sat in idle through both taps, consumed explicitly,
+    superseded by any new press. Distinct from double_armed, which
+    deliberately survives the release and must never drive an idle-state
+    edge (it would re-fire forever)."""
+    tr = PressTracker()
+    tap(tr, K0)
+    assert tap(tr, K0 + 0.2) == DOUBLE_TAP
+    assert tr.double_tap_k is not None
+    tr.consume_double_tap()
+    assert tr.double_tap_k is None
+    tap(tr, K0 + 5.0)
+    assert tap(tr, K0 + 5.2) == DOUBLE_TAP
+    tr.feed(K0 + 9.0, 1)                  # a new press supersedes the marker
+    assert tr.double_tap_k is None
+    tr.feed(K0 + 9.0 + TAP_LEN, 0)
+    assert tr.double_tap_k is None        # a single tap never sets it
+
+
 def test_release_with_no_press_ever_seen_is_ignored():
     """The daemon can start mid-press: the first BTN_MODE event it sees is a
     release. Nothing to classify, nothing armed."""

@@ -284,6 +284,12 @@ class PressTracker:
         # same fix shape as the 5 Aug coalesced double-tap: ask the tracker,
         # never re-derive the gesture from the states the machine visited.
         self.hold_release_k = None      # kernel ts of the last HOLD_RELEASE
+        # ...and the double twin: a DOUBLE_TAP decision held for a reader
+        # whose machine sat in idle through BOTH taps (two stalled passes in
+        # a row - the 60ms sweep case, 5 Aug 17:02). double_armed cannot
+        # serve here: it deliberately survives the release for explanation,
+        # so an idle-state guard on it would re-fire forever.
+        self.double_tap_k = None        # kernel ts of the last DOUBLE_TAP
 
     # -- clock ------------------------------------------------------------
     def note_event(self, k, wall=None):
@@ -315,7 +321,8 @@ class PressTracker:
             self.down_since_k = k
             self.hold_fired = False
             self.long_hold_fired = False
-            self.hold_release_k = None   # a new press supersedes the marker
+            self.hold_release_k = None   # a new press supersedes the markers
+            self.double_tap_k = None
             self.presses += 1
             gap = (None if self.last_tap_ended_k is None
                    else k - self.last_tap_ended_k)
@@ -354,6 +361,7 @@ class PressTracker:
                 # overlapping doubles: the window closes when it is used.
                 self.last_tap_ended_k = None
                 self.doubles += 1
+                self.double_tap_k = k
                 return DOUBLE_TAP
             self.last_tap_ended_k = k
             return TAP
@@ -419,9 +427,15 @@ class PressTracker:
         self.last_tap_ended_k = None
         self.double_armed = False
         self.hold_release_k = None
+        self.double_tap_k = None
 
     def consume_hold_release(self):
         """The consumer (couchd's gesture region entering hold-fired or
         handoff-pending) has taken the hold: the marker must not fire a
         second one off the same physical press."""
         self.hold_release_k = None
+
+    def consume_double_tap(self):
+        """Same contract as consume_hold_release, for the double marker:
+        entering the double-tap state spends it, whichever edge got there."""
+        self.double_tap_k = None
