@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="script.couch.refresh" name="Couch Refresh" version="1.0.0" provider-name="ds2000">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="xbmc.python.script" library="default.py">
+    <provides>executable</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary>Rebuild the current container on demand</summary>
+    <description>A one-line script with no UI. Kodi's JSON-RPC has no way to run a builtin, so scripts that change what a plugin directory would return (pausing a game, which swaps its Games-row tile for a freeze-frame) have no way to make the home screen notice. This addon exists purely so Addons.ExecuteAddon can reach Container.Refresh from outside Kodi. Run by ~/couch/tools/kodi-refresh-games, which only calls it while the home screen is showing.</description>
+    <platform>all</platform>
+  </extension>
+</addon>

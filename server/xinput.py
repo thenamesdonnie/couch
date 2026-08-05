@@ -115,12 +115,23 @@ def main():
         # and helper windows too. Falls back to the biggest non-furniture
         # window for native games with unhelpful window pids.
         #
-        #   xinput.py gamewin [pid ...]
+        #   xinput.py gamewin [--any-state] [pid ...]
+        #
+        # --any-state drops the viewable requirement: a suspended game's window
+        # gets iconified (see `iconify` below) to release the pointer grab it
+        # was holding, and the resume path still has to find it to map it back.
+        # Matching is otherwise identical - geometry stays readable while a
+        # window is unmapped, so the biggest-match rule is unchanged.
         #
         # Callers: pause-snap, which grabs this window while the game is
-        # frozen. Printing an id costs nothing and touches nothing.
+        # frozen; game-launch and pad-home-watcher, either side of a suspend.
+        # Printing an id costs nothing and touches nothing.
         wanted = set()
+        any_state = False
         for a in sys.argv[2:]:
+            if a == '--any-state':
+                any_state = True
+                continue
             try:
                 wanted.add(int(a))
             except ValueError:
@@ -137,7 +148,7 @@ def main():
                 return
             for c in children:
                 try:
-                    if c.get_attributes().map_state == X.IsViewable:
+                    if any_state or c.get_attributes().map_state == X.IsViewable:
                         g = c.get_geometry()
                         area = g.width * g.height
                         try:
@@ -212,9 +223,28 @@ def main():
     if cmd == 'activate':
         wid = int(sys.argv[2], 16)
         w = d.create_resource_object('window', wid)
-        # Ask the window manager (xfwm4) to raise + focus it properly.
+        # Ask the window manager (xfwm4) to raise + focus it properly. Source 2
+        # is "pager", which is also what makes xfwm4 DEICONIFY the window - so
+        # this is the exact undo of the `iconify` below, and on a window that
+        # was never iconified it is just a raise.
         send_root(w, '_NET_ACTIVE_WINDOW', [2, 0, 0, 0, 0])
         print('activated')
+        return
+
+    if cmd == 'iconify':
+        # ICCCM WM_CHANGE_STATE -> IconicState (3).
+        #
+        # Why a suspend needs this: a SIGSTOPped game cannot answer the X
+        # server, so an active pointer grab it held at the moment it froze
+        # stays held. Its cursor sprite sits on top of Kodi and the phone's
+        # XTEST clicks are swallowed by the frozen client. X releases a grab
+        # when the grab window stops being viewable, so unmapping the window is
+        # what actually frees the pointer - raising Kodi over it does not.
+        # `activate` maps it back on resume.
+        wid = int(sys.argv[2], 16)
+        w = d.create_resource_object('window', wid)
+        send_root(w, 'WM_CHANGE_STATE', [3, 0, 0, 0, 0])
+        print('iconified')
         return
 
     if cmd == 'showdesktop':

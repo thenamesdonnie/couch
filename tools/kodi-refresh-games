@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Nudge Kodi's home screen into rebuilding the Games row, but only when that
+is free.
+
+The problem: the Games row is a plugin directory (script.copacetic.helper's
+games route). Kodi caches a plugin listing for as long as the container is
+alive, so a game that gets paused - which swaps its tile for the freeze-frame
+pause-snap just captured, and appends ' . paused' to its label - keeps showing
+the old tile until the player leaves the row and comes back.
+
+The fix, deliberately the timid one: ask Kodi what is on screen, and refresh
+only when the answer is somewhere a refresh cannot cost anything - the home
+screen, or the Games listing itself. Kodi's JSON-RPC has no method that runs a
+builtin, so the refresh goes through script.couch.refresh, a one-line addon
+that exists purely to be a door for this.
+
+What was actually measured on this box (5 Aug 2026), by adding a ninth game to
+the row behind Kodi's back and asking Container.NumItems what the container
+believed:
+
+  in the Games listing (Videos, folder plugin://...?info=games)
+      before refresh 8 - the listing really is cached, this is the bug
+      after refresh  9 - Container.Refresh rebuilds it, live, in about a second
+  on the home screen (10000)
+      Container.FolderPath and Container.NumItems both come back EMPTY, i.e.
+      Kodi has no active container there at all, so Container.Refresh has
+      nothing to act on and the games widget does not rebuild.
+
+So the honest limit: this fixes the case that matters - the player launched a
+game from the Games row, so that listing is what Kodi is sitting on when the
+game is paused and Kodi comes forward, and the freeze-frame tile now appears
+without backing out and going in again. A player who wandered off to the home
+screen first still sees the old tile in the home widget until they re-enter
+the row. The home-screen call is kept because it is free and because a home
+screen with focus inside a widget does have an active container; it is not
+relied on. Escalating past this (ReloadSkin, skin edits) is deliberately NOT
+done: skin changes revert on update and a reload would be visible.
+
+Anywhere else, this exits without touching Kodi: refreshing a container the
+player is browsing would throw away their position, which is a far worse bug
+than a stale tile.
+
+Fire and forget, and safe to call from anywhere:
+
+  /home/ds2000/couch/tools/kodi-refresh-games >/dev/null 2>&1 &
+
+It never exits non-zero for an unhappy Kodi, never blocks longer than
+TIMEOUT*2 and prints nothing unless asked (-v).
+"""
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from couchenv import kodi_auth, kodi_url  # noqa: E402  (path set above)
+
+HOME_WINDOW = 10000     # the skin's home screen
+GAMES_PATH = 'plugin://script.copacetic.helper/?info=games'
+REFRESH_ADDON = 'script.couch.refresh'
+TIMEOUT = 1             # seconds per call: cosmetic work never makes anyone wait
+
+
+def jrpc(method, params=None):
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method,
+                       'params': params or {}})
+    try:
+        r = subprocess.run(
+            ['curl', '-s', '-m', str(TIMEOUT), '-u', kodi_auth(),
+             '-H', 'content-type: application/json', '-d', body, kodi_url()],
+            capture_output=True, text=True, timeout=TIMEOUT + 1)
+        return json.loads(r.stdout).get('result')
+    except Exception:
+        return None
+
+
+def main(argv):
+    verbose = '-v' in argv
+    props = jrpc('GUI.GetProperties', {'properties': ['currentwindow']}) or {}
+    win = (props.get('currentwindow') or {}).get('id')
+    labels = jrpc('XBMC.GetInfoLabels',
+                  {'labels': ['Container.FolderPath']}) or {}
+    path = labels.get('Container.FolderPath') or ''
+    if win != HOME_WINDOW and not path.startswith(GAMES_PATH):
+        if verbose:
+            print('window %s showing %r - leaving it alone' % (win, path))
+        return 0
+    jrpc('Addons.ExecuteAddon', {'addonid': REFRESH_ADDON})
+    if verbose:
+        print('refresh sent')
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception:
+        sys.exit(0)     # a cosmetic refresh may never be the reason a caller fails

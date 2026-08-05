@@ -57,7 +57,15 @@ REASON_CLASS = (('repair', 'repair'), ('reconcile', 'repair'), ('entropy', 'repa
                 ('ps-', 'gesture'), ('hold', 'gesture'), ('tap', 'gesture'))
 DEFAULT_COOLDOWN_CLASS = 'transition'
 PID_SET_VERBS = {'freeze', 'thaw', 'quit', 'kill'}   # R4: pid sets are diffable args
-CONTEXT_VERBS = {'invoked'}          # trigger channels (R4), context not actions
+# Trigger channels (R4): the user's finger, not a reconcile decision. couchd cannot
+# predict a launch, so these are counted and shown as context, never diffed.
+CONTEXT_VERBS = {'invoked', 'launch', 'request_tv_wake'}
+# The routing/raising cluster game-launch fires while a launch is in flight. Unmatched
+# inside LAUNCH_WINDOW_S of a launch it is a launch-sequence artifact, not a divergence.
+LAUNCH_CLUSTER_VERBS = ('route_pad', 'show')
+LAUNCH_WINDOW_S = 15.0
+# legacy says show(game); couchd says show(<appid>). Same window, different vocabulary.
+SUBJECT_ALIASES = {'show': ('game',)}
 PERCEPTUAL_BOUND_S = 0.250           # C10/T6 routing+raise bound, p95 gated
 PERCEPTUAL_VERBS = ('route_pad', 'show')
 OBSERVER_BLIND_LIMIT_S = 300.0       # R5 observer-health gate: >5 min blind = INVALID
@@ -74,6 +82,11 @@ OPTIONAL_SOURCES = ('trigger', 'world')
 ACTIVITY_CHECKS = {'pad': lambda w: bool((w.get('pad') or {}).get('present')),
                    'pids': lambda w: bool(w.get('pids'))}
 GESTURE_IDLE_IGNORE = ('pad-quiet', 'init', 'startup')   # not real release edges
+# R5's "route_pad after the release edge" assumes the release-driven path. A hold that
+# TIMES OUT is decided with the button still down, on purpose, so the assertion does
+# not apply - it is reported n/a, never as an ordering violation.
+HB_RELEASE_EXEMPT = ('timeout',)
+INFO_ROWS_SHOWN = 12                 # cap on the two non-gating info sections
 # Comparison only means anything while couchd was actually running: daemon start/stop
 # records carve the evening into runs. Legacy actions outside them are not divergences
 # (R6: a stopped couchd is never an error), and health is judged inside runs only.
@@ -140,6 +153,17 @@ def canon(subject):
     return str(subject).strip().lower()
 
 
+def subj_match(verb, a, b):
+    """Subject equality, with the documented per-verb aliases."""
+    ca, cb = canon(a), canon(b)
+    if ca == cb:
+        return True
+    for alias in SUBJECT_ALIASES.get(verb, ()):
+        if (ca == alias and cb.isdigit()) or (cb == alias and ca.isdigit()):
+            return True
+    return False
+
+
 def pid_set(it):
     """frozenset of pid strings, or None when this intent carries no pid set."""
     a = it['args']
@@ -171,7 +195,7 @@ def match(legacy, couchd):
         for n, ci in enumerate(couchd):
             if n in taken or ci['verb'] != li['verb']:
                 continue
-            if canon(ci['subject']) != canon(li['subject']):
+            if not subj_match(li['verb'], ci['subject'], li['subject']):
                 continue
             dt = ci['t'] - li['t']
             if abs(dt) <= tol and (best_dt is None or abs(dt) < abs(best_dt)):
@@ -193,25 +217,57 @@ def cooldown_s(reason):
     return COOLDOWN[DEFAULT_COOLDOWN_CLASS]
 
 
-def cooldown_associate(pairs, l_only):
-    """Legacy repeats inside couchd's dedup window belong to the matched intent."""
+def associate_repeats(pairs, leftovers, side):
+    """One decision, several records: attach repeats/fan-out to their matched pair.
+
+    Two asymmetries make this necessary, and they run in OPPOSITE directions:
+      legacy side  - the old scripts re-do an action every reconcile tick, while
+                     couchd emits once per (verb, subject, reason) cooldown window;
+      couchd side  - couchd splits one real decision across several reasons (a
+                     hold-release route_pad AND a joystick-drift repair, 120ms apart),
+                     while the old stack writes the pad once.
+    A strict 1:1 join orphans the siblings and reports them as one-sided divergences.
+    """
     still, assoc = [], []
-    for li in l_only:
+    for it in leftovers:
         hit = None
         for p in pairs:
-            if p['legacy']['verb'] != li['verb'] or \
-                    canon(p['legacy']['subject']) != canon(li['subject']):
+            other = p['legacy' if side == 'legacy' else 'couchd']
+            if other['verb'] != it['verb'] or \
+                    not subj_match(it['verb'], other['subject'], it['subject']):
                 continue
-            anchor = min(p['couchd']['t'], p['legacy']['t'])
-            if anchor <= li['t'] <= anchor + cooldown_s(p['couchd']['reason']):
+            span = max(TOLERANCE.get(it['verb'], DEFAULT_TOLERANCE),
+                       cooldown_s(it['reason'] if side == 'couchd'
+                                  else p['couchd']['reason']))
+            anchor = p['legacy']['t']       # both sides hang off the legacy action
+            lo = anchor if side == 'legacy' else anchor - span   # repeats only follow
+            if lo <= it['t'] <= anchor + span:
                 hit = p
                 break
         if hit is None:
-            still.append(li)
+            still.append(it)
         else:
-            hit['repeats'].append(li)
-            assoc.append((li, hit))
+            hit['repeats'].append(it)
+            assoc.append((it, hit, side))
     return still, assoc
+
+
+def launch_sequence_split(leftovers, launches, side):
+    """A launch is the user's finger, not a decision either stack could predict.
+
+    The route_pad/show cluster fired while a launch is in flight is a consequence of
+    that finger, so an unmatched one inside the launch window is an artifact of the
+    two stacks reacting at different points of the same sequence - reported, never
+    gating. Anything outside the window stays a real divergence.
+    """
+    still, seq = [], []
+    for it in leftovers:
+        near = [l for l in launches if abs(l - it['t']) <= LAUNCH_WINDOW_S]
+        if it['verb'] in LAUNCH_CLUSTER_VERBS and near:
+            seq.append((it, min(near, key=lambda l: abs(l - it['t'])), side))
+        else:
+            still.append(it)
+    return still, seq
 
 
 def compare_pair(p):
@@ -235,14 +291,21 @@ def compare_pair(p):
 
 # ---- happens-before assertions (R5, independent of the tolerance windows) -----
 def release_edges(obs, transitions):
-    """PS release edges: pad BTN_MODE=0 kernel timestamps first, gesture->idle next."""
-    out = [float(r.get('kernel_t') or r.get('t')) for r in obs
-           if r.get('source') == 'pad' and r.get('event') == 'BTN_MODE'
-           and not r.get('value')]
-    out += [float(r.get('kernel_t') or r.get('t')) for r in transitions
-            if r.get('region') == 'gesture' and r.get('to') == 'idle'
-            and canon(r.get('reason')) not in GESTURE_IDLE_IGNORE]
-    return sorted(out)
+    """PS release edges, best channel first.
+
+    The pad's BTN_MODE=0 carries a KERNEL timestamp: that is the release, full stop.
+    Gesture->idle transitions are only a fallback for when the pad observer was blind,
+    because they are written when the gesture machine *decides* (handoff-decided,
+    double-tap-window-expired) - in the same pass as the intent they would be judging,
+    which manufactures 0ms 'the intent preceded the release' failures.
+    """
+    kernel = sorted(float(r.get('kernel_t') or r['t']) for r in obs
+                    if r.get('source') == 'pad' and r.get('event') == 'BTN_MODE'
+                    and not r.get('value'))
+    fallback = sorted(float(r.get('kernel_t') or r['t']) for r in transitions
+                      if r.get('region') == 'gesture' and r.get('to') == 'idle'
+                      and canon(r.get('reason')) not in GESTURE_IDLE_IGNORE)
+    return {'kernel': kernel, 'fallback': fallback}
 
 
 def assertions(couchd_i, legacy_i, edges, pairs):
@@ -251,9 +314,18 @@ def assertions(couchd_i, legacy_i, edges, pairs):
     for it in couchd_i:
         if it['verb'] != 'route_pad' or canon(it['subject']) != 'kodi':
             continue
+        if any(x in canon(it['reason']) for x in HB_RELEASE_EXEMPT):
+            rows.append({'name': 'route_pad(kodi) after gesture release', 'ok': None,
+                         'detail': 'exempt: %s decides with the button still down'
+                                   % it['reason'], 'intent': None})
+            continue
         r = it['args'].get('release_t', it['args'].get('gesture_release_t'))
-        near = [float(r)] if r is not None else \
-            [x for x in edges if abs(x - it['t']) <= GESTURE_ASSOC_S]
+        near, src = ([float(r)], 'args') if r is not None else ([], '')
+        for chan in ('kernel', 'fallback'):     # kernel edge wins whenever one exists
+            if near:
+                break
+            near, src = [x for x in edges.get(chan, ())
+                         if abs(x - it['t']) <= GESTURE_ASSOC_S], chan
         if not near:
             rows.append({'name': 'route_pad(kodi) after gesture release', 'ok': None,
                          'detail': 'no release edge within %.0fs - unassociated'
@@ -262,8 +334,9 @@ def assertions(couchd_i, legacy_i, edges, pairs):
         edge = min(near, key=lambda x: abs(x - it['t']))
         ok = it['t'] >= edge
         rows.append({'name': 'route_pad(kodi) after gesture release', 'ok': ok,
-                     'detail': 'route_pad %+.3fs relative to release edge'
-                               % (it['t'] - edge), 'intent': None if ok else it})
+                     'src': src,
+                     'detail': 'route_pad %+.3fs relative to release edge (%s)'
+                               % (it['t'] - edge, src), 'intent': None if ok else it})
     for it in legacy_i + couchd_i:
         if it['verb'] != 'set_flag':
             continue
@@ -305,9 +378,27 @@ def disagrees(rec):
     """True when an agreement record (R4 freeze-set / channel metric) really diverges."""
     if rec.get('agree') is False:
         return True
+    if rec.get('agree') is True:
+        return False
     return any(isinstance(v, (list, tuple)) and v and
                any(w in k for w in ('only', 'diff', 'missing', 'extra'))
                for k, v in rec.items())
+
+
+def agreement_label(rec):
+    """(label, why) for a disagreeing freeze-set record.
+
+    R5's whitelist pre-declares gameprocess-ledger vs game-pids on transient reaper
+    children. So: couchd's would-freeze set agreeing with the process tree, with the
+    difference confined to Steam's ledger, is the pre-declared case. couchd's own set
+    drifting from the tree is not - that is the T4 the metric exists to catch.
+    """
+    tree_vs_couchd = rec.get('tree_minus_couchd') or rec.get('couchd_minus_tree')
+    ledger = (rec.get('ledger_minus_tree') or []) + (rec.get('tree_minus_ledger') or [])
+    if not tree_vs_couchd and ledger:
+        return 'T5', ('R5 whitelist: Steam ledger vs process tree (%d pid(s)); couchd '
+                      'agrees with the tree' % len(ledger))
+    return '', 'couchd\'s would-freeze set differs from the process tree'
 
 
 # ---- pre-declared whitelist (R5 + R7) ---------------------------------------
@@ -328,19 +419,88 @@ def bp_hold_context(t, couchd_i, legacy_i):
 
 def triage(section, li, ci, flags, couchd_i, legacy_i):
     """Pre-fill the T column where a divergence matches the written-first whitelist."""
+    # R7(g) FIRST, ahead of R7(b): these rows have subject "bigpicture" too, but
+    # they are a deliberate pre-step, not the appid-literal bug R7(b) describes.
+    # Legacy puts Steam into Big Picture before every game so the pad talks to a
+    # UI the guard can repair (desktop mode's overlay is invisible to it).
+    if section == 'LEGACY-ONLY' and li['verb'] == 'launch' and \
+            canon(li['args'].get('reason')) in ('ensure-bp-before-game',
+                                                'ensure-bp-timeout'):
+        return 'T5', 'R7(g) pre-declared: legacy switches Steam to Big Picture ' \
+                     'before a game launch (uimode 7 -> 4); couchd model ' \
+                     'catch-up pending'
     for it in [x for x in (li, ci) if x]:
         if canon(it['subject']) == 'bigpicture' or \
                 canon(it['args'].get('appid')) == 'bigpicture':
             return 'T5', 'R7(b) pre-declared: legacy records appid literal ' \
                          '"bigpicture" (retriage as T3 - real legacy bug)'
+    # R7(f): Steam in DESKTOP ui mode swallows the guide press a tap-resume
+    # sends and opens its overlay over the game. Legacy's guard learned to
+    # detect that from the routing log and close it; couchd models neither the
+    # detection nor the close.
+    if section == 'LEGACY-ONLY' and li['verb'] == 'close_steam_menu' and \
+            canon(li['args'].get('reason')) == 'desktop-overlay-after-tap':
+        return 'T5', 'R7(f) pre-declared: legacy closes Steam\'s desktop-mode ' \
+                     'overlay after a tap-resume; couchd model catch-up pending'
+    # R7(e): a game started from inside Big Picture has no appid in our own
+    # state, so legacy re-reads it from Steam's gameprocess ledger and rewrites
+    # the session line mid-flight. couchd derives regions from the same ledger
+    # but does not yet model the rewrite.
+    if section == 'LEGACY-ONLY' and li['verb'] == 'set_flag' and \
+            canon(li['args'].get('reason')) == 'bigpicture-appid-adoption':
+        return 'T5', 'R7(e) pre-declared: legacy adopts the real appid for a ' \
+                     'game launched inside Big Picture; couchd model ' \
+                     'catch-up pending'
     if section == 'LEGACY-ONLY' and li['verb'] in ('set_flag', 'clear_flag'):
         return 'T5', 'R5 whitelist: flag verbs are absent from couchd\'s stream'
+    # R5 whitelist, written before evening one: "single arbiter replaces guard
+    # supersede". The guard's window bookkeeping and its kill-the-previous-guard
+    # handshake are a protocol between two competing enforcers; couchd IS the
+    # arbiter, so it models the same thing as its enforcement region, not intents.
+    if section == 'LEGACY-ONLY' and canon(li['origin']) == 'guard' and \
+            li['verb'] in ('kill', 'window_open', 'window_close'):
+        return 'T5', 'R5 whitelist: single arbiter replaces the guard supersede ' \
+                     'protocol (couchd models this as its enforcement region)'
     if section == 'BOTH-BUT-DIFFERENT' and 'SET-MISMATCH' in flags:
         lp, cp = pid_set(li), pid_set(ci)
         if lp is not None and cp is not None and (lp <= cp or cp <= lp) and \
                 len(lp ^ cp) <= REAPER_SLACK:
             return 'T5', 'R5 whitelist: gameprocess ledger vs game-pids, transient ' \
                          'reaper children'
+    # R7(c): the frozen game's window is iconified at suspend and mapped back
+    # at resume, because a SIGSTOPped client keeps whatever pointer grab it
+    # froze holding (cursor over Kodi, XTEST clicks eaten) and X only drops a
+    # grab when the grab window stops being viewable. Legacy-only tonight:
+    # couchd model catch-up pending.
+    if section == 'LEGACY-ONLY' and li['verb'] == 'iconify' and \
+            canon(li['args'].get('via')) == 'wm-change-state':
+        return 'T5', 'R7(c) pre-declared: legacy iconifies the frozen game at ' \
+                     'suspend to release its stuck pointer grab; couchd model ' \
+                     'catch-up pending'
+    if section == 'LEGACY-ONLY' and li['verb'] == 'show' and \
+            canon(li['args'].get('via')) == 'activate':
+        return 'T5', 'R7(c) pre-declared: legacy maps the frozen game back ' \
+                     '(_NET_ACTIVE_WINDOW) on resume and after a repair thaw, ' \
+                     'before any normal raise; couchd model catch-up pending'
+    # R7(d): the 4 Aug 2026 guard-vs-freeze race. Legacy grew a repair for the
+    # state it left behind (flag set, game running) and a pre-emptive close of
+    # any open guard window; couchd's model has neither yet.
+    if section == 'LEGACY-ONLY' and li['verb'] == 'freeze' and \
+            canon(li['args'].get('reason')) == 'reconcile:refreeze-lost-suspend':
+        return 'T5', 'R7(d) pre-declared: legacy re-freezes a game whose ' \
+                     'suspend was undone by a stale guard window; couchd ' \
+                     'model catch-up pending'
+    if section == 'LEGACY-ONLY' and li['verb'] == 'kill' and \
+            canon(li['subject']) == 'steam-input-guard' and \
+            canon(li['args'].get('reason')) == 'superseded-by-freeze':
+        return 'T5', 'R7(d) pre-declared: legacy closes an open guard window ' \
+                     'before freezing, so its thaw-repair cannot undo the ' \
+                     'freeze; couchd model catch-up pending'
+    if section == 'LEGACY-ONLY' and li['verb'] == 'window_close' and \
+            canon(li['args'].get('reason')) == 'suspended-mid-window':
+        return 'T5', 'R7(d) pre-declared: legacy\'s game-mode guard ends its ' \
+                     'window when a suspend lands inside it; couchd model ' \
+                     'catch-up pending'
     if section == 'LEGACY-ONLY' and li['verb'] == 'route_pad' and \
             canon(li['subject']) != 'kodi' and bp_hold_context(li['t'], couchd_i,
                                                                legacy_i):
@@ -362,19 +522,25 @@ def world_series(obs, snaps):
 
 
 def daemon_runs(crecs, fallback):
-    """[(start, end)] windows in which couchd was actually observing."""
+    """[(start, end)] windows in which couchd was actually observing.
+
+    With no daemon records at all we cannot know, so the whole data span is one run.
+    When they exist, a run whose start record is missing (the log rotated at midnight
+    mid-run) is anchored to couchd's own first record - NOT to the legacy stream,
+    which is cumulative across days and once stretched run 1 back three hours.
+    """
     marks = sorted((float(r['t']), r.get('event')) for r in crecs
                    if r.get('kind') == 'daemon' and isinstance(r.get('t'), (int, float)))
     if not marks:
         return [tuple(fallback)]
-    last = max([float(r['t']) for r in crecs
-                if isinstance(r.get('t'), (int, float))] or [fallback[1]])
+    cts = [float(r['t']) for r in crecs if isinstance(r.get('t'), (int, float))]
+    first, last = (min(cts), max(cts)) if cts else fallback
     runs, start = [], None
     for t, ev in marks:
         if ev == 'start':
             start = t if start is None else start
         elif ev == 'stop':
-            runs.append((start if start is not None else fallback[0], t))
+            runs.append((start if start is not None else first, t))
             start = None
     if start is not None:
         runs.append((start, last))
@@ -485,9 +651,11 @@ def mkrow(section, li, ci, offset, flags, notes, couchd_i, legacy_i):
             'origin': ref['origin']}
 
 
-def build(legacy_path, shadow_path, snapshots_path=None):
+def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=True):
     """Everything the report needs, as plain data (also the --json payload)."""
     notes = []
+    if since:
+        notes.append('--since %s: everything before it ignored' % fmt_t(since))
     lrecs, l_ok = load_jsonl(legacy_path, notes, 'legacy')
     crecs, c_ok = load_jsonl(shadow_path, notes, 'couchd')
     snaps = [r for r in crecs if r.get('kind') == 'snapshot' and 't' in r]
@@ -502,12 +670,23 @@ def build(legacy_path, shadow_path, snapshots_path=None):
     blinds = [r for r in crecs if r.get('kind') == 'observer_blind']
     agree = [r for r in crecs if r.get('kind') == 'agreement']
     bad_inv = [r for r in crecs if r.get('kind') == 'invariant' and not r.get('ok')]
-    ts = [float(r['t']) for r in lrecs + crecs + snaps
-          if isinstance(r.get('t'), (int, float))]
-    runs = daemon_runs(crecs, (min(ts), max(ts)) if ts else (0.0, 0.0))
+    # The run windows come from couchd's OWN records only. Including the legacy
+    # stream here once stretched run 1 back three hours, because /tmp/legacy-
+    # intents.jsonl is cumulative across days while the shadow log rotates nightly.
+    ats = [float(r['t']) for r in lrecs + crecs + snaps
+           if isinstance(r.get('t'), (int, float))]
+    span = (min(ats), max(ats)) if ats else (0.0, 0.0)
+    runs = daemon_runs(crecs, span)
+    starts = [float(r['t']) for r in crecs if r.get('kind') == 'daemon'
+              and r.get('event') == 'start' and isinstance(r.get('t'), (int, float))]
+    if since:
+        runs = [(max(a, since), b) for a, b in runs if b > since] or [(since, span[1])]
+    model_t = max(starts) if starts else runs[0][0]     # newest model = newest start
+    current = [r for r in runs if r[0] >= model_t - 0.001]   # started with this model
     ctx = [i for i in legacy_all + couchd_all if i['verb'] in CONTEXT_VERBS]
     legacy_i = [i for i in legacy_all if i['verb'] not in CONTEXT_VERBS]
-    couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS]
+    couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS
+                and in_runs(i['t'], runs, RUN_EDGE_SLACK_S)]
     outside = [i for i in legacy_i if not in_runs(i['t'], runs, RUN_EDGE_SLACK_S)]
     if outside:
         legacy_i = [i for i in legacy_i if i not in outside]
@@ -529,7 +708,12 @@ def build(legacy_path, shadow_path, snapshots_path=None):
                             r.get('intents')))
 
     pairs, l_only, c_only = match(legacy_i, couchd_i)
-    l_only, assoc = cooldown_associate(pairs, l_only)
+    l_only, assoc = associate_repeats(pairs, l_only, 'legacy')
+    c_only, c_assoc = associate_repeats(pairs, c_only, 'couchd')
+    assoc += c_assoc
+    launches = sorted(i['t'] for i in ctx if i['verb'] in ('launch', 'invoked'))
+    l_only, l_seq = launch_sequence_split(l_only, launches, 'legacy')
+    c_only, c_seq = launch_sequence_split(c_only, launches, 'couchd')
     for p in pairs:
         compare_pair(p)
     asserts = assertions(couchd_i, legacy_i, release_edges(obs, trans), pairs)
@@ -540,7 +724,12 @@ def build(legacy_path, shadow_path, snapshots_path=None):
                     p['flags'].append('ORDER')
                     p['notes'].append('%s: %s' % (a['name'], a['detail']))
 
-    rows = [mkrow('COUCHD-ONLY', None, it, None, [], [], couchd_i, legacy_i)
+    # An ordering violation gates wherever it lands, matched or not (R5).
+    viol = {id(a['intent']): a for a in asserts if a['ok'] is False and a['intent']}
+    rows = [mkrow('COUCHD-ONLY', None, it, None,
+                  ['ORDER'] if id(it) in viol else [],
+                  ['%s: %s' % (viol[id(it)]['name'], viol[id(it)]['detail'])]
+                  if id(it) in viol else [], couchd_i, legacy_i)
             for it in c_only]
     rows += [mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i)
              for it in l_only]
@@ -548,14 +737,31 @@ def build(legacy_path, shadow_path, snapshots_path=None):
                    p['flags'], p['notes'], couchd_i, legacy_i)
              for p in pairs if p['flags']]
     rows.sort(key=lambda r: (SECTIONS.index(r['section']), r['t']))
+    lverbs = {i['verb'] for i in legacy_i}
+    cverbs = {i['verb'] for i in couchd_i}
     for r in rows:
-        r['context'] = snapshot_near(snaps, r['t']) if snaps else ''
-    cooled = [{'t': li['t'], 'verb': li['verb'], 'subject': li['subject'],
-               'args': arg_str(li), 'offset': li['t'] - p['couchd']['t'],
-               'note': 'cooldown-associated to couchd seq=%s reason=%s (window %.0fs)'
-                       % (p['couchd']['seq'], p['couchd']['reason'],
-                          cooldown_s(p['couchd']['reason']))}
-              for li, p in assoc]
+        r['context'] = snapshot_near(snaps, r['t']) if (snaps and context) else ''
+        r['run'] = next((n for n, (a, b) in enumerate(runs, 1)
+                         if a - RUN_EDGE_SLACK_S <= r['t'] <= b + RUN_EDGE_SLACK_S), 0)
+        r['stale'] = not in_runs(r['t'], current, RUN_EDGE_SLACK_S)
+        absent = (r['section'] == 'LEGACY-ONLY' and r['verb'] not in cverbs) or \
+                 (r['section'] == 'COUCHD-ONLY' and r['verb'] not in lverbs)
+        if absent:                      # vocabulary gap, not a decision divergence
+            r['note'] = '; '.join(x for x in (r['note'], 'verb never appears in the '
+                                  'other stream at all (structural)') if x)
+    cooled = [{'t': it['t'], 'verb': it['verb'], 'subject': it['subject'], 'side': side,
+               'args': arg_str(it), 'offset': it['t'] - p['legacy']['t'],
+               'note': '%s repeat of the pair at %s (%s), window %.0fs' %
+                       ('legacy' if side == 'legacy' else 'couchd fan-out',
+                        fmt_t(p['legacy']['t']),
+                        it['reason'] if side == 'couchd' else p['couchd']['reason'],
+                        cooldown_s(p['couchd']['reason']))}
+              for it, p, side in assoc]
+    launch_rows = [{'t': it['t'], 'verb': it['verb'], 'subject': it['subject'],
+                    'side': side, 'args': arg_str(it), 'offset': it['t'] - lt,
+                    'note': 'launch-sequence artifact: %+.1fs from the launch at %s '
+                            '(non-gating)' % (it['t'] - lt, fmt_t(lt))}
+                   for it, lt, side in sorted(l_seq + c_seq, key=lambda x: x[0]['t'])]
 
     verbs = sorted({i['verb'] for i in legacy_i + couchd_i})
     counts = {v: {s: sum(1 for r in rows if r['section'] == s and r['verb'] == v)
@@ -566,22 +772,38 @@ def build(legacy_path, shadow_path, snapshots_path=None):
         if o:
             offsets[v] = {'n': len(o), 'min': min(o), 'p50': pct(o, 50),
                           'p95': pct(o, 95), 'max': max(o)}
+    run_rows = [{'n': n, 'start': a, 'end': b, 'stale': (a, b) not in current,
+                 'intents': sum(1 for i in couchd_i if a <= i['t'] <= b),
+                 'rows': sum(1 for r in rows if r['run'] == n)}
+                for n, (a, b) in enumerate(runs, 1)]
     if len(runs) > 1:
-        notes.append('couchd ran %d times this evening (%s); gaps between runs are '
-                     'not blindness' % (len(runs), ', '.join(
-                         '%s..%s' % (fmt_t(a), fmt_t(b)) for a, b in runs)))
-    health = observer_health(obs, blinds, snaps, runs, notes)
-    disagreements = [r for r in agree if disagrees(r)]
+        notes.append('couchd ran %d times (%s); gaps between runs are not blindness, '
+                     'and runs before the newest daemon start (%s) carry an older '
+                     'model - marked stale, excluded from gating'
+                     % (len(runs), ', '.join('%s..%s' % (fmt_t(a), fmt_t(b))
+                                             for a, b in runs), fmt_t(model_t)))
+    health = observer_health(obs, blinds, snaps, current, notes)
+    disagreements = [dict(r, label=agreement_label(r)[0], why=agreement_label(r)[1])
+                     for r in agree if disagrees(r)
+                     and in_runs(float(r.get('t', 0)), current, RUN_EDGE_SLACK_S)]
     reasons = list(health['reasons'])
     if not l_ok:
         reasons.append('legacy intent stream missing or empty - nothing to compare')
     if not c_ok:
         reasons.append('couchd shadow stream missing or empty - nothing to compare')
-    hard = [r for r in rows if 'SET-MISMATCH' in r['flags'] or 'ORDER' in r['flags']]
+    # A violation carried by an intent that is only a fan-out repeat of a decision we
+    # already judged is reported, not double-counted.
+    on_rows = {round(r['t'], 6) for r in rows if 'ORDER' in r['flags']}
+    absorbed = len([a for a in viol.values()
+                    if round(a['intent']['t'], 6) not in on_rows])
+    hard = [r for r in rows if ('SET-MISMATCH' in r['flags'] or 'ORDER' in r['flags'])
+            and not r['stale']]
     gating = [r for r in hard if r['label'] != 'T5']   # pre-declared = not gating
     return {'inputs': {'legacy': legacy_path, 'couchd': shadow_path,
                        'snapshots': snapshots_path if snaps else None},
             'notes': notes, 'rows': rows, 'cooldown_associated': cooled,
+            'launch_sequence': launch_rows, 'runs': run_rows, 'model_t': model_t,
+            'absorbed_violations': absorbed,
             'matched_total': len(pairs),
             'matched_clean': len(pairs) - len([p for p in pairs if p['flags']]),
             'counts': counts, 'offsets': offsets, 'context_records': len(ctx),
@@ -589,7 +811,8 @@ def build(legacy_path, shadow_path, snapshots_path=None):
                            for a in asserts],
             'agreement': {'total': len(agree), 'disagreements': disagreements},
             'observer_health': health,
-            'gating_count': len(gating) + len(disagreements),
+            'gating_count': len(gating) + len([d for d in disagreements
+                                               if d['label'] != 'T5']),
             'whitelisted_hard': len(hard) - len(gating),
             'validity': {'verdict': 'INVALID' if reasons else 'VALID',
                          'reasons': reasons}}
@@ -611,25 +834,48 @@ def render(rep):
         for r in rows:
             off = ' off=%+.3fs' % r['offset'] if r['offset'] is not None else ''
             flg = ' [%s]' % ','.join(r['flags']) if r['flags'] else ''
-            out.append('  %-3s %s  %s(%s)%s  %s%s' %
+            out.append('  %-3s %s  %s(%s)%s  %s%s%s' %
                        (r['label'] or '..', fmt_t(r['t']), r['verb'], r['subject'],
-                        flg, r['args'], off))
+                        flg, r['args'], off,
+                        '  ~run%d stale-model' % r['run'] if r['stale'] else ''))
             out += ['        %s' % x for x in (r['note'], r['context']) if x]
     ag = rep['agreement']
     out += ['', '== AGREEMENT (freeze-set / channel cross-checks, gating per R4) == '
                 '(%d of %d disagree)' % (len(ag['disagreements']), ag['total'])]
-    out += ['  ..  %s  %s: %s' % (fmt_t(float(r.get('t', 0))), r.get('metric', '?'),
-                                  json.dumps({k: v for k, v in r.items()
-                                              if k not in ('kind', 't', 'mono', 'seq')
-                                              })[:150]) for r in ag['disagreements']] \
-        or ['  (none)']
-    if rep['cooldown_associated']:
-        out += ['', '== COOLDOWN-ASSOCIATED == (%d legacy repeats inside couchd\'s '
-                    'dedup window - not divergences)' % len(rep['cooldown_associated'])]
-        for r in rep['cooldown_associated']:
-            out.append('  ..  %s  %s(%s)  %s off=%+.3fs\n        %s' %
-                       (fmt_t(r['t']), r['verb'], r['subject'], r['args'], r['offset'],
+    out += ['  %-3s %s  %s\n        %s' %
+            (r.get('label') or '..', fmt_t(float(r.get('t', 0))),
+             r.get('metric') or 'freeze_set', r.get('why', ''))
+            for r in ag['disagreements']] or ['  (none)']
+    if rep['launch_sequence']:
+        out += ['', '== LAUNCH-SEQUENCE == (%d unmatched rows inside %ds of a launch '
+                    '- artifacts of the same finger, non-gating)'
+                % (len(rep['launch_sequence']), LAUNCH_WINDOW_S)]
+        for r in rep['launch_sequence'][:INFO_ROWS_SHOWN]:
+            out.append('  ..  %s  %-6s %s(%s)  %s\n        %s' %
+                       (fmt_t(r['t']), r['side'], r['verb'], r['subject'], r['args'],
                         r['note']))
+        if len(rep['launch_sequence']) > INFO_ROWS_SHOWN:
+            out.append('  ... %d more (--json for all)'
+                       % (len(rep['launch_sequence']) - INFO_ROWS_SHOWN))
+    if rep['cooldown_associated']:
+        out += ['', '== COOLDOWN-ASSOCIATED == (%d repeats/fan-out of an already '
+                    'matched decision - not divergences)'
+                % len(rep['cooldown_associated'])]
+        for r in rep['cooldown_associated'][:INFO_ROWS_SHOWN]:
+            out.append('  ..  %s  %-6s %s(%s)  %s off=%+.3fs\n        %s' %
+                       (fmt_t(r['t']), r['side'], r['verb'], r['subject'], r['args'],
+                        r['offset'], r['note']))
+        if len(rep['cooldown_associated']) > INFO_ROWS_SHOWN:
+            out.append('  ... %d more (--json for all)'
+                       % (len(rep['cooldown_associated']) - INFO_ROWS_SHOWN))
+    if len(rep['runs']) > 1:
+        out += ['', '== RUNS == (rows in stale-model runs are informational only)']
+        for r in rep['runs']:
+            out.append('  run%d  %s..%s (%3.0f min)  intents=%-3d rows=%-3d %s'
+                       % (r['n'], fmt_t(r['start']), fmt_t(r['end']),
+                          (r['end'] - r['start']) / 60.0, r['intents'], r['rows'],
+                          'STALE-MODEL (pre %s)' % fmt_t(rep['model_t'])
+                          if r['stale'] else 'current model'))
     out += ['', '== SUMMARY ==',
             '  matched %d (%d clean, %d differing); gating (SET-MISMATCH/ORDER/'
             'agreement, per R4/R5): %d, +%d pre-declared T5 not gating'
@@ -648,11 +894,24 @@ def render(rep):
                    (v, o['n'], o['min'] * 1000, o['p50'] * 1000, o['p95'] * 1000,
                     o['max'] * 1000))
     out.append('  happens-before assertions (R5, evaluated outside the windows):')
-    for a in rep['assertions'] or [{'ok': None, 'name': '(no assertable intents)',
-                                    'detail': ''}]:
-        out.append('    %s %s - %s' % ('PASS' if a['ok'] else
-                                       ('FAIL' if a['ok'] is False else 'n/a '),
-                                       a['name'], a['detail']))
+    by_name = {}
+    for a in rep['assertions']:
+        b = by_name.setdefault(a['name'], {'pass': 0, 'fail': 0, 'na': 0, 'ex': []})
+        b['pass' if a['ok'] else ('fail' if a['ok'] is False else 'na')] += 1
+        if a['ok'] is False and len(b['ex']) < 3:
+            b['ex'].append(a['detail'])
+    for name, b in sorted(by_name.items()) or [('(no assertable intents)', None)]:
+        if b is None:
+            out.append('    n/a  (no assertable intents)')
+            continue
+        out.append('    %s %s - %d pass, %d fail, %d unassociated'
+                   % ('FAIL' if b['fail'] else 'PASS', name, b['pass'], b['fail'],
+                      b['na']))
+        out += ['           e.g. %s' % e for e in b['ex']]
+    if rep['absorbed_violations']:
+        out.append('    (%d failure(s) sit on fan-out repeats of a decision already '
+                   'judged above - reported, not double-counted)'
+                   % rep['absorbed_violations'])
     out.append('  observer health (obs are change-driven; heartbeat max gap %.0fs):'
                % h['heartbeat_gap'])
     for s in h['sources']:
@@ -663,6 +922,22 @@ def render(rep):
     out.append('  EVENING VALIDITY: %s' % rep['validity']['verdict'])
     out += ['    - %s' % r for r in rep['validity']['reasons']]
     return '\n'.join(out)
+
+
+def parse_since(text, day):
+    """--since as HH:MM[:SS] against the report's date, or a raw epoch."""
+    if not text:
+        return None
+    try:
+        return float(text) if float(text) > 100000 else None
+    except ValueError:
+        pass
+    for fmt in ('%Y%m%d %H:%M:%S', '%Y%m%d %H:%M'):
+        try:
+            return datetime.strptime('%s %s' % (day, text), fmt).timestamp()
+        except ValueError:
+            continue
+    raise SystemExit('--since: expected HH:MM, HH:MM:SS or an epoch, got %r' % text)
 
 
 def main(argv=None):
@@ -678,14 +953,16 @@ def main(argv=None):
     ap.add_argument('--shadow-dir', default=os.path.expanduser('~/couch/shadow'))
     ap.add_argument('--snapshots', help='world-snapshot JSONL for divergence context')
     ap.add_argument('--no-context', action='store_true')
+    ap.add_argument('--since', help='ignore everything before HH:MM[:SS] (of --date) '
+                    'or an epoch; runs before the newest daemon start are marked '
+                    'stale automatically, so this is only for narrowing further')
     ap.add_argument('--json', action='store_true', help='machine-readable report')
     a = ap.parse_args(argv)
     day = a.date or datetime.now().strftime('%Y%m%d')
     legacy = a.legacy_opt or a.legacy or '/tmp/legacy-intents.jsonl'
     shadow = a.shadow or os.path.join(a.shadow_dir, 'couchd-%s.jsonl' % day)
-    snaps = None if a.no_context else (
-        a.snapshots or os.path.join(a.shadow_dir, 'snapshots-%s.jsonl' % day))
-    rep = build(legacy, shadow, snaps)
+    snaps = a.snapshots or os.path.join(a.shadow_dir, 'snapshots-%s.jsonl' % day)
+    rep = build(legacy, shadow, snaps, parse_since(a.since, day), not a.no_context)
     print(json.dumps(rep, indent=1, default=str) if a.json else render(rep))
     return 0 if rep['validity']['verdict'] == 'VALID' and not rep['gating_count'] else 1
 

@@ -157,7 +157,7 @@ def test_cooldown_association():
         s = sections(rep)
         assert rep['matched_total'] == 1
         assert len(rep['cooldown_associated']) == 2, rep['cooldown_associated']
-        assert all('cooldown-associated' in c['note']
+        assert all('legacy repeat of the pair' in c['note']
                    for c in rep['cooldown_associated'])
         assert [round(r['t'] - T0, 1) for r in s['LEGACY-ONLY']] == [40.0], \
             s['LEGACY-ONLY']
@@ -176,6 +176,49 @@ def test_cooldown_class_from_reason():
         assert sd.cooldown_s('ps-hold') == 3.0
         assert sd.cooldown_s('guard-enforce') == 5.0
         assert sd.cooldown_s('session-started') == 10.0     # default class
+
+
+def test_couchd_fanout_associates_to_one_legacy_action():
+    """The real 02:13:38 shape: couchd splits ONE decision across several reasons
+    (hold-release-timeout, then a joystick-drift repair 120ms later) while the old
+    stack writes the pad once. A strict 1:1 join orphaned the siblings."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(37.780, 'route_pad', 'kodi')],
+                  [couchd(38.000, 'route_pad', 'kodi',
+                          reason='gesture:hold-release-timeout'),
+                   couchd(38.123, 'route_pad', 'kodi',
+                          reason='reconcile:joystick-setting-drift')])
+        assert rep['matched_total'] == 1
+        assert not sections(rep)['COUCHD-ONLY'], sections(rep)['COUCHD-ONLY']
+        assert len(rep['cooldown_associated']) == 1
+        c = rep['cooldown_associated'][0]
+        assert c['side'] == 'couchd' and 'fan-out' in c['note']
+        assert 'joystick-setting-drift' in c['note']
+
+
+def test_couchd_fanout_before_the_legacy_action_also_associates():
+    """The 00:17:51.641 case: the drift repair fired 0.77s BEFORE legacy routed, and
+    the session-ended intent 0.14s after; greedy took the closer and orphaned it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(52.408, 'route_pad', 'kodi', src='game-launch')],
+                  [couchd(51.641, 'route_pad', 'kodi',
+                          reason='reconcile:joystick-setting-drift'),
+                   couchd(52.550, 'route_pad', 'kodi',
+                          reason='transition:session-ended')])
+        assert rep['matched_total'] == 1
+        assert not sections(rep)['COUCHD-ONLY'], sections(rep)['COUCHD-ONLY']
+        assert rep['cooldown_associated'][0]['offset'] < 0     # the earlier sibling
+
+
+def test_fanout_outside_the_window_stays_a_divergence():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'route_pad', 'kodi')],
+                  [couchd(0.1, 'route_pad', 'kodi', reason='gesture:hold-release'),
+                   couchd(90.0, 'route_pad', 'kodi', reason='gesture:hold-release')])
+        assert len(sections(rep)['COUCHD-ONLY']) == 1
+        assert not rep['cooldown_associated']
 
 
 # ---------------------------------------------------------------- pid mismatch
@@ -212,6 +255,57 @@ def test_order_violation_despite_in_window_match():
         assert rep['gating_count'] == 1
         fails = [a for a in rep['assertions'] if a['ok'] is False]
         assert fails and 'gesture release' in fails[0]['name']
+
+
+def test_kernel_edge_wins_over_the_gesture_transition():
+    """The transition is written in the SAME pass as the intent it would judge
+    (handoff-decided), which manufactured 0ms 'preceded the release' failures on the
+    real 5 Aug corpus. The pad's kernel-stamped BTN_MODE release is the truth."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(20.0, 'route_pad', 'kodi')],
+                  [couchd(20.1, 'route_pad', 'kodi', reason='gesture:hold-release'),
+                   obs(19.7, 'pad', event='BTN_MODE', value=0, kernel_t=T0 + 19.65),
+                   transition(20.1, 'gesture', 'handoff-pending', 'idle',
+                              reason='handoff-decided')])
+        a = [x for x in rep['assertions'] if 'gesture release' in x['name']]
+        assert [x['ok'] for x in a] == [True], a
+        assert 'kernel' in a[0]['detail']
+        assert not sections(rep)['BOTH-BUT-DIFFERENT']
+
+
+def test_hold_release_timeout_is_exempt_from_the_ordering_rule():
+    """A hold that times out is decided with the button still down, by design."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(20.0, 'route_pad', 'kodi')],
+                  [couchd(20.1, 'route_pad', 'kodi',
+                          reason='gesture:hold-release-timeout'),
+                   obs(20.4, 'pad', event='BTN_MODE', value=0, kernel_t=T0 + 20.42)])
+        a = [x for x in rep['assertions'] if 'gesture release' in x['name']]
+        assert [x['ok'] for x in a] == [None], a
+        assert 'exempt' in a[0]['detail']
+        assert rep['gating_count'] == 0
+        assert not sections(rep)['BOTH-BUT-DIFFERENT']
+
+
+def test_a_release_driven_route_pad_still_gates():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(20.0, 'route_pad', 'kodi')],
+                  [couchd(20.1, 'route_pad', 'kodi', reason='gesture:hold-release'),
+                   obs(20.4, 'pad', event='BTN_MODE', value=0, kernel_t=T0 + 20.42)])
+        assert rep['gating_count'] == 1
+        assert 'ORDER' in sections(rep)['BOTH-BUT-DIFFERENT'][0]['flags']
+
+
+def test_ordering_violation_gates_even_when_unmatched():
+    """R5 evaluates happens-before independently of matching, so a couchd-only
+    intent that beat its own release edge gates too."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [couchd(20.1, 'route_pad', 'kodi', reason='gesture:hold-release'),
+                   obs(20.4, 'pad', event='BTN_MODE', value=0, kernel_t=T0 + 20.42)])
+        row = sections(rep)['COUCHD-ONLY'][0]
+        assert 'ORDER' in row['flags'] and 'release edge' in row['note']
+        assert rep['gating_count'] == 1
 
 
 def test_pad_kernel_timestamp_beats_log_write_time():
@@ -260,6 +354,37 @@ def test_t5_r7a_bigpicture_hold():
         rows = {r['verb'] + r['section']: r for r in rep['rows']}
         r = rows['route_padLEGACY-ONLY']
         assert r['label'] == 'T5' and 'R7(a)' in r['note'], r
+
+
+def test_t5_r7c_pointer_grab_iconify_and_deiconify():
+    """The suspend unmaps the frozen game (a SIGSTOPped client keeps its pointer
+    grab) and the resume maps it back. Legacy-only until couchd's model catches
+    up, so both verbs are pre-declared rather than gating."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'iconify', '730', src='watcher',
+                          via='wm-change-state', reason='release-pointer-grab',
+                          window='0x4200007'),
+                   legacy(30.0, 'show', '730', src='game-launch',
+                          via='activate', reason='deiconify',
+                          window='0x4200007')],
+                  [])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        for verb in ('iconify', 'show'):
+            r = rows[verb + 'LEGACY-ONLY']
+            assert r['label'] == 'T5' and 'R7(c)' in r['note'], r
+            assert 'catch-up pending' in r['note'], r
+        assert rep['gating_count'] == 0
+
+
+def test_a_normal_raise_is_still_diffable():
+    """Only the activate-flavoured show is pre-declared; focus_game's ordinary
+    xlib-restack raise must stay a real divergence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'show', 'game', src='game-launch',
+                               via='xlib-restack')], [])
+        r = {x['verb'] + x['section']: x for x in rep['rows']}['showLEGACY-ONLY']
+        assert r['label'] == '', r
 
 
 # ------------------------------------------------------------ agreement records
@@ -376,10 +501,50 @@ def test_gap_between_daemon_runs_is_not_blindness():
                    daemon(3600.0, 'start'),          # an hour of daemon downtime
                    couchd(3610.0, 'iconify', 'steam-bigpicture')],
                   heartbeat(0, 330) + heartbeat(3600, 3930))
-        h = rep['observer_health']
-        assert len(h['runs']) == 2, h['runs']
+        assert len(rep['runs']) == 2, rep['runs']
         assert rep['validity']['verdict'] == 'VALID', rep['validity']
         assert any('couchd ran 2 times' in n for n in rep['notes'])
+        # health is judged inside the CURRENT-model run only
+        assert rep['observer_health']['runs'] == [(T0 + 3600, T0 + 3930 - 30)] or \
+            len(rep['observer_health']['runs']) == 1, rep['observer_health']['runs']
+
+
+def test_older_runs_are_marked_stale_model_and_never_gate():
+    """A restart means new code: rows from before the newest daemon start are
+    informational, not evidence about the model running now."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'freeze', '730', pids=[1, 2], resolver='game-pids'),
+                   legacy(3610.0, 'freeze', '730', pids=[1, 2], resolver='game-pids')],
+                  [daemon(0.0, 'start'),
+                   couchd(10.1, 'freeze', '730', pids=[1, 2, 3, 4, 5],
+                          resolver='gameprocess_log'),          # stale-model mismatch
+                   daemon(300.0, 'stop'),
+                   daemon(3600.0, 'start'),
+                   couchd(3610.1, 'freeze', '730', pids=[1, 2],
+                          resolver='gameprocess_log')],
+                  heartbeat(0, 330) + heartbeat(3600, 3930))
+        rows = sections(rep)['BOTH-BUT-DIFFERENT']
+        assert len(rows) == 1 and rows[0]['stale'] is True, rows
+        assert rows[0]['run'] == 1
+        assert rep['gating_count'] == 0, rep['gating_count']   # stale never gates
+        txt = sd.render(rep)
+        assert 'STALE-MODEL' in txt and 'stale-model' in txt
+        assert [r['stale'] for r in rep['runs']] == [True, False]
+
+
+def test_since_narrows_the_window():
+    with tempfile.TemporaryDirectory() as tmp:
+        lp = write(tmp, 'legacy.jsonl', [legacy(10.0, 'show', 'kodi'),
+                                         legacy(3610.0, 'show', 'kodi')])
+        cp = write(tmp, 'couchd.jsonl', [daemon(0.0, 'start'),
+                                         couchd(3610.1, 'show', 'kodi')])
+        rep = sd.build(lp, cp, None, since=T0 + 1800)
+        assert rep['matched_total'] == 1
+        assert not sections(rep)['LEGACY-ONLY'], sections(rep)['LEGACY-ONLY']
+        assert any('--since' in n for n in rep['notes'])
+        assert sd.parse_since('02:05', '20260805') > 0
+        assert sd.parse_since(None, '20260805') is None
 
 
 # ----------------------------------------------------- graceful degradation
@@ -419,10 +584,88 @@ def test_partial_lines_and_context_verbs():
         cp = write(tmp, 'couchd.jsonl', [couchd(1.0, 'launch', '730',
                                                 reason='trigger:argv')])
         rep = sd.build(lp, cp, None)
-        assert rep['context_records'] == 1
-        assert rep['matched_total'] == 1
+        # invoked + both launches are trigger context: a launch is the user's finger,
+        # not a decision couchd could ever have predicted
+        assert rep['context_records'] == 3
+        assert rep['matched_total'] == 0
         assert any('unparseable' in n for n in rep['notes'])
         assert not rep['rows']
+
+
+# ------------------------------------------------------------- the launch block
+def test_launch_and_tv_wake_are_context_never_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'invoked', 'steam', src='game-launch'),
+                   legacy(0.1, 'launch', '367520', src='game-launch', mode='steam'),
+                   legacy(0.2, 'request_tv_wake', 'tv', src='game-launch')],
+                  [couchd(60.0, 'show', 'kodi', reason='guard:kodi-on-top')])
+        assert rep['context_records'] == 3
+        assert not sections(rep)['LEGACY-ONLY'], sections(rep)['LEGACY-ONLY']
+        assert len(sections(rep)['COUCHD-ONLY']) == 1      # far from the launch
+
+
+def test_launch_cluster_downgrades_to_launch_sequence():
+    """The real 02:05 shape: game-launch routes and raises during the launch, couchd
+    reacts to session-started a few seconds off. Not a decision divergence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'launch', '367520', src='game-launch', mode='steam'),
+                   legacy(1.0, 'show', 'game', src='game-launch', mode='steam'),
+                   legacy(300.0, 'show', 'game', src='game-launch')],   # far away
+                  [couchd(0.05, 'show', '367520', reason='transition:session-started'),
+                   couchd(12.0, 'show', '367520', reason='guard:kodi-on-top-mid-game')])
+        s = sections(rep)
+        # show(game) canonicalises against show(<appid>), so the first one MATCHES
+        assert rep['matched_total'] == 1, rep['matched_total']
+        assert len(rep['launch_sequence']) == 1, rep['launch_sequence']
+        assert rep['launch_sequence'][0]['side'] == 'couchd'
+        assert 'launch-sequence artifact' in rep['launch_sequence'][0]['note']
+        assert [r['verb'] for r in s['LEGACY-ONLY']] == ['show']   # the 300s one
+        assert 'LAUNCH-SEQUENCE' in sd.render(rep)
+
+
+def test_subject_alias_show_game_matches_show_appid():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'show', 'game', src='game-launch')],
+                  [couchd(0.4, 'show', '367520', reason='transition:session-started')])
+        assert rep['matched_total'] == 1 and not rep['rows']
+
+
+def test_alias_does_not_leak_to_other_verbs():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'route_pad', 'game')],
+                  [couchd(0.1, 'route_pad', '367520')])
+        assert rep['matched_total'] == 0
+        assert len(sections(rep)['LEGACY-ONLY']) == 1
+        assert len(sections(rep)['COUCHD-ONLY']) == 1
+
+
+def test_t5_guard_supersede_is_pre_declared():
+    """R5's written-before-evening-one entry: single arbiter replaces guard supersede."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'kill', 'steam-input-guard', src='guard', pids=[999],
+                          resolver='guard-pidfile'),
+                   legacy(0.1, 'window_open', 'kodi', src='guard'),
+                   legacy(9.0, 'window_close', 'kodi', src='guard'),
+                   legacy(20.0, 'kill', 'runaway', src='watcher', pids=[5])],
+                  [couchd(60.0, 'show', 'kodi')])
+        rows = {(r['verb'], r['t'] - T0): r for r in sections(rep)['LEGACY-ONLY']}
+        assert all(r['label'] == 'T5' for k, r in rows.items() if k[1] < 10), rows
+        assert 'single arbiter' in rows[('kill', 0.0)]['note']
+        assert rows[('kill', 20.0)]['label'] == ''      # not the guard: still triage
+        assert rep['gating_count'] == 0
+
+
+def test_verb_absent_from_the_other_stream_is_annotated():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'window_open', 'kodi', src='guard')],
+                  [couchd(30.0, 'close_steam_menu', 'steam',
+                          reason='gesture:hold-release')])
+        notes = {r['verb']: r['note'] for r in rep['rows']}
+        assert 'never appears in the other stream' in notes['window_open']
+        assert 'never appears in the other stream' in notes['close_steam_menu']
 
 
 def test_snapshot_context_uses_real_schema():

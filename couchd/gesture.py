@@ -54,6 +54,44 @@ LONG_HOLD_S = 3.0
 # tap-then-HOLD is always a hold (see is_double_tap).
 DOUBLE_TAP_S = 0.35
 
+# A heavy transition - a suspend, a resume, the on-TV switcher - takes the
+# screen, the pad routing and up to 18 processes with it, and it is not
+# instantaneous. Presses that land while it is still happening are not new
+# intents; they are the tail of the burst that asked for it.
+#
+# Before this window existed, a spammed PS button composed whole gestures out
+# of that tail. Live, 4 Aug 2026, in 0.6 seconds:
+#   02:21:51.717  double-tap -> switcher (freezes the game)
+#   02:21:51.888  tap        -> resume   (thaws it again)
+#   02:21:52.168  double-tap -> switcher (freezes it again)
+# The room saw Kodi, the switcher and the game flicker past. Pre-double-tap the
+# same spam only flapped Steam's menu, so this is a regression the feature
+# brought with it, not a pre-existing sharp edge.
+#
+# 1.2s: above the ~0.9s a suspend needs to freeze the tree, hand over the pad
+# and raise Kodi, and below the ~1.5s at which a deliberate second gesture
+# starts to feel refused.
+SETTLE_S = 1.2
+
+
+def settle_swallows(now, settle_until):
+    """Is `now` inside a settle window? The rule every caller shares.
+
+    A press inside the window is swallowed WHOLE. Two consequences that matter
+    more than the drop itself:
+
+      * it must also clear whatever half-formed tap sequence it would have
+        seeded, or the tail of a burst composes a fresh double-tap out of the
+        last two presses exactly as the window expires - which is the bug,
+        arriving 1.2s later;
+      * a hold that STARTS inside the window is swallowed too. It is part of
+        the same burst, and a burst that happens to hold the button down on its
+        last press did not mean something different by it. (A hold already in
+        progress when the window opens is untouched: its release still has to
+        run, or a pad handed halfway over is stranded.)
+    """
+    return settle_until is not None and now < settle_until
+
 # InputPlumber's write_chord_events spacing, ported as earned knowledge:
 # a synthesised press/release pair sent back-to-back is dropped or coalesced
 # by consumers, 80ms apart is seen by everything, release order reversed.
@@ -128,6 +166,34 @@ def is_double_tap(gap, second_duration, window=DOUBLE_TAP_S, hold=HOLD_SECONDS):
     only arms the window on a completed TAP, so a hold never arms one.
     """
     return within_double_tap(gap, window) and is_tap(second_duration, hold)
+
+
+def paused_tap_decision(deferred, gap, second_duration, double_tap_bound,
+                        window=DOUBLE_TAP_S, hold=HOLD_SECONDS):
+    """What a tap should do while a game is PAUSED. Returns one of:
+
+      'double_tap'  the second half landed inside the window - open the
+                    switcher, which is what a double-tap means everywhere else
+      'defer'       wait out the window; a second tap may still be coming
+      'resume'      act now, exactly as a paused tap always has
+
+    A tap on a paused game jumps back into it (the recovery path, above the
+    binding dispatch - see pad-home-watcher.resume_game). That made the first
+    tap unconditional, so a double-tap on a paused game could only ever resume.
+    Donnie's call, 5 Aug 2026, overriding the earlier ruling: a double-tap on a
+    paused game should open the switcher, because that is exactly when the
+    switcher is most useful - you are already on Kodi wondering what else is
+    running.
+
+    The cost is one double-tap window of latency, and it is charged ONLY here:
+    with the double-tap unbound there is nothing to wait for and the resume is
+    instant again, and an unpaused tap never reaches this function at all.
+    """
+    if not double_tap_bound:
+        return 'resume'      # nothing to wait for, and nothing to escalate to
+    if deferred and is_double_tap(gap, second_duration, window, hold):
+        return 'double_tap'
+    return 'defer'
 
 
 def double_tap_window_over(since_tap, window=DOUBLE_TAP_S):

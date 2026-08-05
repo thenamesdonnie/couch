@@ -18,7 +18,8 @@ import pytest
 
 import gesture
 from gesture import (DOUBLE_TAP, DOUBLE_TAP_S, DOWN, HOLD, HOLD_RELEASE,
-                     HOLD_SECONDS, LONG_HOLD, LONG_HOLD_S, TAP, PressTracker)
+                     HOLD_SECONDS, LONG_HOLD, LONG_HOLD_S, SETTLE_S, TAP,
+                     PressTracker, paused_tap_decision, settle_swallows)
 
 TAP_LEN = 0.08          # a comfortable tap, well under the hold threshold
 K0 = 5000.0             # an arbitrary kernel epoch
@@ -271,6 +272,120 @@ def test_the_long_hold_is_extrapolated_like_the_hold_is():
     tr.feed(K0, 1, wall=K0)          # the only event this press will produce
     assert tr.poll(wall=K0 + 5.0) == HOLD
     assert tr.poll(wall=K0 + 5.0) == LONG_HOLD
+
+
+# ------------------------------------------------------- the settle window
+# A faithful mirror of pad-home-watcher.watch()'s press/release branch order,
+# small enough to read: press swallowed inside a settle window (and seeding
+# nothing), otherwise the ordinary tap / double-tap / hold arithmetic, with a
+# heavy transition arming a new window. The watcher itself is a 1000-line
+# select loop over evdev and cannot be imported; keeping the ORDER honest here
+# is what makes these tests mean something.
+HEAVY = {'suspend', 'switcher', 'resume'}
+
+
+def _run(presses, double_tap_bound=True, hold_bound=True):
+    """presses = [(down_at, up_at), ...] in monotonic seconds.
+
+    Returns (dispatched gestures, settle-suppressed press count)."""
+    fired, suppressed = [], 0
+    settle_until, last_tap_at, swallowed = None, None, False
+
+    def dispatch(g):
+        fired.append(g)
+        if g in ('suspend', 'switcher', 'resume'):
+            nonlocal settle_until
+            settle_until = fired_at[0] + SETTLE_S
+
+    fired_at = [0.0]
+    for down, up in presses:
+        fired_at[0] = up
+        if settle_swallows(down, settle_until):
+            suppressed += 1
+            swallowed, last_tap_at = True, None   # seeds nothing
+            continue
+        swallowed = False
+        if hold_bound and up - down >= HOLD_SECONDS:      # the hold path
+            last_tap_at = None
+            dispatch('suspend')
+            continue
+        gap = None if last_tap_at is None else down - last_tap_at
+        if double_tap_bound and gesture.is_double_tap(gap, up - down):
+            last_tap_at = None
+            dispatch('switcher')
+        else:
+            last_tap_at = up
+    assert swallowed in (True, False)
+    return fired, suppressed
+
+
+def test_a_spam_burst_dispatches_one_gesture():
+    """The 4 Aug 2026 regression: five taps in 0.6s became
+    switcher -> resume -> switcher and the TV flickered through all three."""
+    burst = [(t, t + TAP_LEN) for t in (0.00, 0.20, 0.40, 0.60, 0.80)]
+    fired, suppressed = _run(burst)
+    assert fired == ['switcher'], fired      # the FIRST double-tap, and no more
+    assert suppressed == 3
+
+
+def test_a_press_inside_the_window_seeds_no_new_gesture():
+    """The subtle half: a swallowed press must also clear the half-formed tap
+    sequence, or the tail of a burst composes a fresh double-tap the moment the
+    window expires - the same bug, arriving 1.2s late."""
+    # tap, tap (=switcher, window opens at 0.28), then a press inside the
+    # window, then a tap just after it expires. The pair either side of the
+    # boundary must NOT read as a double-tap.
+    fired, suppressed = _run([(0.00, 0.08), (0.20, 0.28),
+                              (1.30, 1.38),          # swallowed (< 1.48)
+                              (1.50, 1.58)])         # window over, lone tap
+    assert fired == ['switcher'] and suppressed == 1
+
+
+def test_a_hold_starting_inside_the_window_is_suppressed():
+    """Documented choice: it is part of the same burst. A burst that happens to
+    hold the button on its last press did not mean something different by it."""
+    fired, suppressed = _run([(0.00, 0.08), (0.20, 0.28),   # -> switcher
+                              (0.40, 0.40 + HOLD_SECONDS + 0.1)])
+    assert fired == ['switcher'] and suppressed == 1
+
+
+def test_a_deliberate_second_gesture_still_lands_after_the_window():
+    """The window refuses a burst, not the user. Past SETTLE_S it is over."""
+    fired, _ = _run([(0.00, 0.08), (0.20, 0.28),            # -> switcher
+                     (2.00, 2.08), (2.20, 2.28)])           # -> switcher again
+    assert fired == ['switcher', 'switcher']
+
+
+def test_settle_swallows_is_inclusive_of_neither_end():
+    assert settle_swallows(1.0, None) is False       # no window at all
+    assert settle_swallows(1.0, 1.2) is True
+    assert settle_swallows(1.2, 1.2) is False        # the deadline itself is out
+
+
+# ------------------------------------------ a tap on a PAUSED game (5 Aug 2026)
+def test_paused_double_tap_opens_the_switcher():
+    assert paused_tap_decision(True, 0.20, TAP_LEN, True) == 'double_tap'
+
+
+def test_paused_first_tap_defers_while_the_double_tap_is_bound():
+    assert paused_tap_decision(False, None, TAP_LEN, True) == 'defer'
+
+
+def test_paused_tap_resumes_instantly_when_the_double_tap_is_unbound():
+    """The latency is charged only where the ambiguity exists."""
+    assert paused_tap_decision(False, None, TAP_LEN, False) == 'resume'
+    assert paused_tap_decision(True, 0.20, TAP_LEN, False) == 'resume'
+
+
+def test_a_slow_second_tap_on_a_paused_game_is_not_a_double():
+    """Past the window it is two separate taps: the first already resumed."""
+    assert paused_tap_decision(True, DOUBLE_TAP_S + 0.01, TAP_LEN, True) == 'defer'
+
+
+def test_tap_then_hold_on_a_paused_game_is_never_a_double():
+    """The same rule is_double_tap enforces everywhere: a tap-then-HOLD is a
+    hold. It must not be answered with the switcher."""
+    assert paused_tap_decision(True, 0.20, HOLD_SECONDS + 0.1, True) == 'defer'
 
 
 if __name__ == '__main__':

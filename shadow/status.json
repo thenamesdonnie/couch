@@ -1,7 +1,7 @@
 {
- "t": 1785890311.7458625,
- "pid": 1514876,
- "uptime_s": 1212.7,
+ "t": 1785898174.043124,
+ "pid": 1538757,
+ "uptime_s": 7860.5,
  "mode": "shadow",
  "attention": false,
  "regions": {
@@ -10,83 +10,87 @@
   "session": "none",
   "enforcement": "none",
   "gesture": "idle",
-  "pad": "absent"
+  "pad": "present"
  },
- "games": {},
+ "games": {
+  "367520": "STOPPED",
+  "bigpicture": "STOPPED"
+ },
  "last_would_do": [
-  "would show_switcher tv [gesture:double-tap-switcher]",
-  "would show kodi [gesture:double-tap-switcher]"
+  "would show kodi [transition:session-ended]",
+  "would route_pad kodi [transition:session-ended]",
+  "would clear_flag suspended [reconcile:stale-suspended-flag]"
  ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 8,
-   "detail": "0 node(s)",
-   "age_s": 1.4,
+   "events": 476592,
+   "detail": "1 node(s)",
+   "age_s": 1.7,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 5,
+   "events": 111,
    "detail": "1 present",
    "age_s": 0.1,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 0,
+   "events": 699,
    "detail": "0 pid(s)",
    "age_s": 0.0,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 42,
-   "detail": "joystick=True window=10000",
+   "events": 471,
+   "detail": "joystick=True window=10025",
    "age_s": 0.1,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 1,
+   "events": 149,
    "detail": "0 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 0,
-   "detail": "quiet",
+   "events": 21,
+   "detail": "quit (save and close)",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 7,
+   "events": 999,
    "detail": "top='Kodi'",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 65,
+  "obs": 2485,
   "daemon": 1,
-  "transition": 13,
-  "invariant": 1,
-  "intent": 2,
-  "agreement": 1
+  "transition": 426,
+  "invariant": 42,
+  "agreement": 444,
+  "intent": 153
  },
- "passes": 527,
- "intents": 2,
+ "passes": 8544,
+ "intents": 153,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 2,
-  "steam_guide_lines": 0,
-  "first_event_latency_s": 3.723
+  "evdev": 63,
+  "steam_guide_lines": 47,
+  "first_event_latency_s": 0.083
  },
- "last_trigger": "",
+ "last_trigger": "quit (save and close)",
  "resource_leaks": [
-  "stale guard pidfile (pid 1375392)"
+  "stale guard pidfile (pid 1698721)"
  ],
  "bindings": {
   "tap": "none",

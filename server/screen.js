@@ -9,7 +9,7 @@ import os from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { rpc } from './kodi.js';
-import { PAUSED_DIR } from './games.js';
+import { PAUSED_DIR, listGames } from './games.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const XINPUT = path.join(__dirname, 'xinput.py');
@@ -289,6 +289,29 @@ async function anyGameRunning() {
   } catch { return false; }
 }
 
+// The frozen game's own window id, iconified and all (the suspend unmaps it to
+// drop the pointer grab it was holding - see xinput.py iconify). 'paused' when
+// X cannot name it at all: activateWindow takes that sentinel and resumes by
+// the flag, since there is nothing to raise anyway.
+async function pausedWindowId() {
+  try {
+    const pids = (await run(path.join(os.homedir(), '.local/bin/game-pids'), []))
+      .trim().split(/\s+/).filter(Boolean);
+    if (!pids.length) return 'paused';
+    const wid = (await run('python3', [XINPUT, 'gamewin', '--any-state', ...pids])).trim();
+    return /^0x[0-9a-f]+$/i.test(wid) ? wid : 'paused';
+  } catch { return 'paused'; }
+}
+
+// A paused game is named by its appid on disk; the library knows it by name.
+function pausedLabel(appid) {
+  try {
+    const g = listGames().find((x) => String(x.id) === String(appid));
+    if (g && g.name) return g.name;
+  } catch { /* library unreadable - the appid still names it */ }
+  return appid || 'Game';
+}
+
 export async function windows() {
   const out = await run('python3', [XINPUT, 'windows']);
   let list;
@@ -296,12 +319,43 @@ export async function windows() {
   if (suspendedFlag()) {
     // The frozen game keeps its row, marked, and now wearing the frame it was
     // frozen on: the switcher answers "where was I?" without resuming first.
-    const frame = pausedFrame(suspendedAppid());
+    const appid = suspendedAppid();
+    const frame = pausedFrame(appid);
+    const thumb = frame ? { thumb: `/api/art/game?p=${encodeURIComponent(frame)}` } : {};
+    let marked = 0;
     for (const w of list) {
       if (!(w.cls || '').startsWith('steam_app')) continue;
       w.title += ' · paused';
       w.paused = true;
-      if (frame) w.thumb = `/api/art/game?p=${encodeURIComponent(frame)}`;
+      Object.assign(w, thumb);
+      marked += 1;
+    }
+    if (!marked) {
+      // Nothing in the list carries Proton's class - a shadPS4 game never
+      // does, and an iconified window would not if a window manager dropped it
+      // from _NET_CLIENT_LIST (xfwm4 keeps them, but the only route back into
+      // a frozen game must not rest on that: this same endpoint feeds BOTH the
+      // phone switcher and the Kodi addon). So ask X which window the frozen
+      // processes own, iconified and all, and mark that row if it is already
+      // here; only if it is genuinely absent is a synthetic row appended.
+      // Either way activateWindow routes it by its paused flag, not by its id.
+      const wid = await pausedWindowId();
+      const own = wid !== 'paused'
+        && list.find((w) => String(w.id).toLowerCase() === wid.toLowerCase());
+      if (own) {
+        own.title += ' · paused';
+        own.paused = true;
+        Object.assign(own, thumb);
+      } else {
+        list.push({
+          id: wid,
+          title: `${pausedLabel(appid)} · paused`,
+          kodi: false,
+          cls: 'paused-game',
+          paused: true,
+          ...thumb,
+        });
+      }
     }
   }
   return [...list, { ...DESKTOP }];
@@ -338,9 +392,17 @@ export async function activateWindow(id) {
     const wid = (await run('python3', [XINPUT, 'kodiwin'])).trim();
     return run('python3', [XINPUT, 'activate', wid]);
   }
+  if (id === 'paused') {
+    // The synthetic row windows() falls back to when the frozen game has no
+    // listable window. There is nothing to raise; the resume is the whole
+    // answer, and game-launch maps the window back on its way in.
+    if (!suspended) throw new Error('nothing is paused');
+    gameLaunch('resume');
+    return 'resuming';
+  }
   if (!/^0x[0-9a-f]+$/i.test(id)) throw new Error('bad window id');
   const target = (await windows()).find((w) => w.id.toLowerCase() === id.toLowerCase());
-  if (target && (target.cls || '').startsWith('steam_app')) {
+  if (target && (target.paused || (target.cls || '').startsWith('steam_app'))) {
     if (suspended) {
       gameLaunch('resume'); // thaw + pad to game + guard, like a PS tap
       return 'resuming';
