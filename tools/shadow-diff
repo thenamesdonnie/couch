@@ -15,6 +15,14 @@ Examples:
   tools/shadow-diff --date 20260804 --no-context   # skip world-snapshot context lines
   tools/shadow-diff --date 20260805 --window 00:38-03:15   # pin ONE evening
 
+DIRECTION is a per-responsibility, per-window question (first flip: 5 Aug 2026
+13:01). While couchd owns nothing, legacy ACTS and couchd SHADOWS - the
+original arrangement. The moment couchd owns a responsibility the two swap for
+that responsibility only: couchd's acted intents become the acting stream and
+the legacy scripts' `"yielded": true` would-dos become the shadow. The join,
+the divergence classes and the whitelist are identical either way; only the
+labels change, and every window says which way round it was read.
+
 Staleness is a MODEL question: runs are compared against each other when they
 share the model_version couchd stamps on its start record, however many times
 it was restarted between them. A corpus older than that fingerprint falls back
@@ -67,6 +75,28 @@ PID_SET_VERBS = {'freeze', 'thaw', 'quit', 'kill'}   # R4: pid sets are diffable
 # Trigger channels (R4): the user's finger, not a reconcile decision. couchd cannot
 # predict a launch, so these are counted and shown as context, never diffed.
 CONTEXT_VERBS = {'invoked', 'launch', 'request_tv_wake'}
+# ---- post-flip vocabulary (first flip 5 Aug 2026 13:01) ----------------------
+# When couchd owns a responsibility the legacy scripts stop performing it and
+# write their would-do instead. Two shapes come out of pad-home-watcher:
+#   * every yielded decision line carries args.yielded==true (and owner), which
+#     is the SAME role couchd's stream had before the flip - shadow data;
+#   * a gesture whose bound action they no longer run is announced with a bare
+#     `yield` verb naming the GESTURE, not the action's verbs, because
+#     recomputing each bound action's full effect list without running it would
+#     be reimplementing couchd inside the watcher. It predicts no action, so it
+#     is context: counted, never diffed. (The one exception the watcher does
+#     spell out is the suspend, whose pid set is free to read and worth
+#     diffing; that arrives as an ordinary yielded `freeze`.)
+YIELD_MARKER_VERBS = {'yield'}
+# intent reason prefix -> C9 responsibility. Mirrors couchd/owns.py's
+# BY_REASON_PREFIX exactly; this tool imports nothing from the daemon (it must
+# read a corpus on any box), so keep the two changing together or a flipped
+# responsibility reads here as though it were never flipped.
+RESPONSIBILITY_BY_PREFIX = {'gesture': 'gestures', 'transition': 'transitions',
+                            'guard': 'guard', 'reconcile': 'reconcile'}
+ACTING, SHADOWING = 'couchd-acting', 'legacy-acting'
+# The outcomes couchd's acting executor records, in report order.
+ACTING_OUTCOMES = ('acted', 'skipped', 'failed', 'refused', 'model-only')
 # The routing/raising cluster game-launch fires while a launch is in flight. Unmatched
 # inside LAUNCH_WINDOW_S of a launch it is a launch-sequence artifact, not a divergence.
 LAUNCH_CLUSTER_VERBS = ('route_pad', 'show')
@@ -99,8 +129,24 @@ INFO_ROWS_SHOWN = 12                 # cap on the two non-gating info sections
 # (R6: a stopped couchd is never an error), and health is judged inside runs only.
 RUN_EDGE_SLACK_S = 10.0
 IGNORE_ARG_KEYS = {'pids', 'pid_set', 'frozen_pids', 'pid', 'resolver', 'argv',
-                   'snapshot', 't', 'mono', 'seq', 'ts', 'release_t'}
-SECTIONS = ('COUCHD-ONLY', 'LEGACY-ONLY', 'BOTH-BUT-DIFFERENT')
+                   'snapshot', 't', 'mono', 'seq', 'ts', 'release_t',
+                   # the yield markers themselves: bookkeeping about WHO acted,
+                   # never a property of the decision the two stacks took.
+                   'yielded', 'owner'}
+SECTIONS = ('COUCHD-ONLY', 'LEGACY-ONLY', 'BOTH-BUT-DIFFERENT',
+            'ACTED-ONLY', 'SHADOW-ONLY')
+# The direction-reversed names for the two one-sided classes. The FACTS are the
+# same either way round - one stack decided something the other did not - but
+# post-flip "LEGACY-ONLY" would read as "couchd missed it" when the row is a
+# would-do from a script that no longer acts, and "COUCHD-ONLY" would hide that
+# couchd actually DID the thing. So the reversed windows get their own words.
+REVERSED_SECTION = {'COUCHD-ONLY': 'ACTED-ONLY', 'LEGACY-ONLY': 'SHADOW-ONLY'}
+SECTION_SHORT = {'COUCHD-ONLY': 'COUCHD-O', 'LEGACY-ONLY': 'LEGACY-O',
+                 'BOTH-BUT-DIFFERENT': 'BOTH-DIF', 'ACTED-ONLY': 'ACTED-O',
+                 'SHADOW-ONLY': 'SHADOW-O'}
+SECTION_MEANING = {
+    'ACTED-ONLY': ' (couchd ACTED, the yielded legacy shadow predicted nothing)',
+    'SHADOW-ONLY': ' (legacy would have; couchd, which owns it, did NOT)'}
 
 
 # ---- loading -----------------------------------------------------------------
@@ -160,7 +206,16 @@ def as_intent(rec, side):
     return {'t': t, 'verb': str(rec['verb']), 'subject': rec.get('subject'),
             'args': args, 'side': side, 'reason': rec.get('reason'),
             'origin': rec.get('src') or rec.get('reason') or side,
-            'seq': rec.get('seq'), 'raw': rec}
+            'seq': rec.get('seq'), 'raw': rec,
+            # post-flip role markers. `yielded` is the legacy scripts saying
+            # "this is a would-do, somebody else owns it"; `acted` exists only
+            # on records couchd's ACTING executor wrote (True performed, False
+            # decided-then-declined), and is absent on everything the recording
+            # executor wrote, which is the whole pre-flip corpus.
+            'yielded': args.get('yielded') is True,
+            'acted': rec.get('acted'),
+            'responsibility': rec.get('responsibility'),
+            'direction': SHADOWING}
 
 
 def canon(subject):
@@ -202,6 +257,170 @@ def arg_diff(a, b):
     return ['%s=%s|%s' % (k, a['args'][k], b['args'][k])
             for k in sorted(set(a['args']) & set(b['args']) - IGNORE_ARG_KEYS)
             if canon(a['args'][k]) != canon(b['args'][k])]
+
+
+# ---- ownership direction (who ACTED, per responsibility, per window) ---------
+def ownership_windows(crecs, span):
+    """[(t0, t1, frozenset(owned))] - who owned what, when, from couchd's OWN
+    records only.
+
+    Three record shapes carry it, and between them they cover every way
+    ownership can move:
+      daemon start        states the owns.conf the process booted with;
+      daemon owns-changed states a RUNTIME flip (couchd re-reads the file every
+                          tick, so the 13:01 flip needed no restart of
+                          anything, and left exactly one record behind);
+      daemon stop         hands everything back - ownership is a LEASE kept
+                          alive by couchd's status.json heartbeat, so a stopped
+                          daemon owns nothing and the legacy scripts are acting
+                          again within 30s (couchd/owns.py couchd_alive).
+
+    A corpus with none of them, or one written before couchd stamped `owns` on
+    its start record, yields ONE window owning nothing - which is both the
+    shipped state and the safe reading, because it makes this differ behave
+    exactly as it did before the flip existed.
+    """
+    marks = []
+    for r in crecs:
+        if r.get('kind') != 'daemon' or not isinstance(r.get('t'), (int, float)):
+            continue
+        if r.get('event') == 'start':
+            marks.append((float(r['t']), frozenset(r.get('owns') or ())))
+        elif r.get('event') == 'owns-changed':
+            marks.append((float(r['t']), frozenset(r.get('now') or ())))
+        elif r.get('event') == 'stop':
+            marks.append((float(r['t']), frozenset()))
+    out, cur, t0 = [], frozenset(), span[0]
+    for t, owned in sorted(marks, key=lambda m: m[0]):
+        if owned == cur or t < t0:
+            continue
+        if t > t0:
+            out.append((t0, t, cur))
+        t0, cur = t, owned
+    end = max(span[1], t0)
+    if end > t0 or not out:         # never a zero-length tail window
+        out.append((t0, end, cur))
+    return out
+
+
+def owned_at(windows, resp, t):
+    """Did couchd own `resp` at time t? Anything unknown answers no, which is
+    the direction the differ has always read."""
+    if not resp:
+        return False
+    for a, b, owned in windows:
+        if a <= t <= b:
+            return resp in owned
+    return False
+
+
+def responsibility_of(it):
+    """The C9 responsibility an intent belongs to, or None.
+
+    couchd stamps it on every record its acting executor writes; otherwise it
+    is the reason prefix, which is the same taxonomy. The legacy scripts stamp
+    no responsibility at all - their yielded lines say "somebody else owns
+    this" outright, which is all the direction needs from them.
+    """
+    if it.get('responsibility'):
+        return str(it['responsibility'])
+    return RESPONSIBILITY_BY_PREFIX.get(canon(it.get('reason')).split(':', 1)[0])
+
+
+def direction_of(it, windows):
+    """ACTING (couchd acts, legacy shadows) or SHADOWING, for ONE intent.
+
+    Each side is asked the question it can answer for itself, so the two never
+    have to agree in advance: a legacy line knows it yielded, and a couchd
+    record that went through the acting executor carries `acted` whether or not
+    the action then fired. The ownership windows are the fallback for couchd
+    records with neither - and for a stream replayed through the model, which
+    has no acting executor at all.
+    """
+    if it['side'] == 'legacy':
+        return ACTING if it['yielded'] else SHADOWING
+    if it.get('acted') is not None:
+        return ACTING
+    return ACTING if owned_at(windows, responsibility_of(it), it['t']) \
+        else SHADOWING
+
+
+def section_for(section, direction):
+    """The reversed name for a one-sided class when couchd is the actor."""
+    return REVERSED_SECTION.get(section, section) if direction == ACTING \
+        else section
+
+
+def acting_outcome(rec):
+    """(outcome, detail) for one record couchd's acting executor wrote.
+
+    Mirrors ActingExecutor.execute()'s branches in order. Everything that is
+    not `acted` is couchd DECLINING on purpose or failing loudly - never a
+    silent nothing - and each branch says which.
+    """
+    a = rec.get('action') if isinstance(rec.get('action'), dict) else {}
+    if rec.get('acted'):
+        return 'acted', ''
+    if a.get('model_only'):
+        return 'model-only', str(a['model_only'])
+    if a.get('refused'):
+        return 'refused', str(a['refused'])
+    if a.get('precondition_gone'):
+        return 'skipped', 'precondition gone: %s' % a['precondition_gone']
+    if a.get('skipped'):
+        return 'skipped', str(a['skipped'])
+    if a.get('backoff'):
+        return 'skipped', ('C11 backoff after %s consecutive failure(s), '
+                           'retry in %ss' % (a.get('consecutive_failures'),
+                                             a.get('retry_in_s')))
+    if a.get('ok') is False:
+        return 'failed', str(a.get('error') or 'no reason recorded')
+    return 'skipped', 'acted=false with no outcome recorded'
+
+
+def acting_health(crecs, runs):
+    """C17 read from the ACTING side: what couchd did, per verb.
+
+    Post-flip the question stops being only "did the two stacks agree" and
+    becomes "did couchd's action land". Every record the acting executor writes
+    carries `acted` plus an `action` outcome, and the kind:'effect' records that
+    follow say whether the predicted effect actually arrived inside its C17
+    deadline. All of it is HEALTH rather than divergence: a skip changed nothing
+    in the world, so there is no legacy would-do for it to contradict.
+    """
+    per, examples = {}, []
+    for r in crecs:
+        if r.get('kind') != 'intent' or 'acted' not in r:
+            continue
+        t = r.get('t')
+        if not isinstance(t, (int, float)) or \
+                not in_runs(float(t), runs, RUN_EDGE_SLACK_S):
+            continue
+        verb = str(r.get('verb') or '?')
+        outcome, detail = acting_outcome(r)
+        per.setdefault(verb, dict.fromkeys(ACTING_OUTCOMES, 0))[outcome] += 1
+        if outcome in ('failed', 'refused') and len(examples) < INFO_ROWS_SHOWN:
+            examples.append({'t': float(t), 'verb': verb, 'outcome': outcome,
+                             'subject': r.get('subject'), 'detail': detail})
+    effects = {}
+    for r in crecs:
+        if r.get('kind') != 'effect':
+            continue
+        t = r.get('t')
+        if not isinstance(t, (int, float)) or \
+                not in_runs(float(t), runs, RUN_EDGE_SLACK_S):
+            continue
+        e = effects.setdefault(str(r.get('verb') or '?'),
+                               {'confirmed': 0, 'missed': 0, 'unverified': 0})
+        v = str(r.get('verdict'))
+        e[v] = e.get(v, 0) + 1
+    totals = dict.fromkeys(ACTING_OUTCOMES, 0)
+    for row in per.values():
+        for k, v in row.items():
+            totals[k] += v
+    return {'per_verb': per, 'effects': effects, 'totals': totals,
+            'examples': examples, 'records': sum(totals.values()),
+            'effect_records': sum(sum(e.values()) for e in effects.values())}
 
 
 # ---- matching (greedy interval join, R2 + cooldown many-to-one) ---------------
@@ -248,6 +467,12 @@ def associate_repeats(pairs, leftovers, side):
                      hold-release route_pad AND a joystick-drift repair, 120ms apart),
                      while the old stack writes the pad once.
     A strict 1:1 join orphans the siblings and reports them as one-sided divergences.
+
+    The asymmetry belongs to the ROLES, not to the stacks: the ACTING side's
+    repeats can only follow its own action, while the shadow's fan-out may sit
+    either side of it. So the anchor and the "repeats only follow" rule swap
+    with the pair's direction, and post-flip a yielded legacy repeat is allowed
+    to precede couchd's action exactly as couchd's used to precede legacy's.
     """
     still, assoc = [], []
     for it in leftovers:
@@ -260,8 +485,9 @@ def associate_repeats(pairs, leftovers, side):
             span = max(TOLERANCE.get(it['verb'], DEFAULT_TOLERANCE),
                        cooldown_s(it['reason'] if side == 'couchd'
                                   else p['couchd']['reason']))
-            anchor = p['legacy']['t']       # both sides hang off the legacy action
-            lo = anchor if side == 'legacy' else anchor - span   # repeats only follow
+            actor = 'couchd' if p.get('direction') == ACTING else 'legacy'
+            anchor = p[actor]['t']          # both sides hang off the ACTION
+            lo = anchor if side == actor else anchor - span   # repeats only follow
             if lo <= it['t'] <= anchor + span:
                 hit = p
                 break
@@ -497,11 +723,23 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         way round from tonight - a LEGACY-ONLY row still landing on one of
         them means couchd's version did not fire, which is worth the look it
         used to be exempt from.
-      * YIELDED LEGACY LINES. Post-flip, the legacy scripts write their
-        would-do with "yielded": true in args (shadow reversal), and the
-        watcher emits a `yield` verb for gestures it no longer performs. This
-        differ does not yet read either field - teaching it to is the first
-        job of flip day, before the first flipped evening is triaged.
+      * YIELDED LEGACY LINES - IMPLEMENTED 5 Aug 2026, the afternoon of the
+        first flip (COUCHD_OWNS="gestures" went live at 13:01). Post-flip the
+        legacy scripts write their would-do with "yielded": true in args, and
+        the watcher emits a bare `yield` verb for gestures it no longer
+        performs. Both are now read: a yielded line is SHADOW data and joins
+        from that side (unmatched, it lands in SHADOW-ONLY, never LEGACY-ONLY);
+        a bare `yield` marker predicts no action and is held as context. The
+        whitelist below is direction-agnostic on purpose - it is keyed on the
+        UNREVERSED section name, so an entry that was written about a
+        legacy-only row still fires for the same row read as SHADOW-ONLY. Read
+        those the way the catch-up note above says: post-flip a SHADOW-ONLY row
+        on a pre-declared entry means couchd's version did not fire.
+      * BP PRE-STEP STILL NOT DIFFED (replay finding 5, carried forward). The
+        R7(g) entry below fires on a LEGACY-ONLY `launch`, but `launch` is a
+        CONTEXT_VERB: it is held as context and never compared in EITHER
+        direction, so couchd emitting - or not emitting - its Big-Picture
+        pre-step is invisible here. The entry's silence is not coverage.
     """
     # R7(g) FIRST, ahead of R7(b): these rows have subject "bigpicture" too, but
     # they are a deliberate pre-step, not the appid-literal bug R7(b) describes.
@@ -731,11 +969,17 @@ def snapshot_near(snaps, t):
                                    ' '.join(bits))
 
 
-def mkrow(section, li, ci, offset, flags, notes, couchd_i, legacy_i):
-    """One report row, with the T column pre-filled from the whitelist if it hits."""
+def mkrow(section, li, ci, offset, flags, notes, couchd_i, legacy_i,
+          direction=SHADOWING):
+    """One report row, with the T column pre-filled from the whitelist if it hits.
+
+    triage() is asked about the UNREVERSED section, so every pre-declared entry
+    keeps firing after the flip; the row then carries the reversed name.
+    """
     lab, note = triage(section, li, ci, flags, couchd_i, legacy_i)
     ref = li or ci
-    return {'section': section, 'label': lab, 't': ref['t'], 'verb': ref['verb'],
+    return {'section': section_for(section, direction), 'direction': direction,
+            'label': lab, 't': ref['t'], 'verb': ref['verb'],
             'subject': ref['subject'], 'flags': sorted(set(flags)), 'offset': offset,
             'args': ' || '.join(arg_str(x) for x in (li, ci) if x),
             'note': '; '.join([n for n in notes if n] + ([note] if note else [])),
@@ -846,9 +1090,19 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
                          'marks a whole evening stale after any later restart. '
                          'Use --window to pin the evening you mean'
                          % fmt_t(model_t))
+    # WHO WAS ACTING, per responsibility, per stretch of the evening. Computed
+    # before anything is diffed, because it decides which stream is the shadow.
+    windows = ownership_windows(crecs, span)
+    for i in legacy_all + couchd_all:
+        i['direction'] = direction_of(i, windows)
     ctx = [i for i in legacy_all + couchd_all if i['verb'] in CONTEXT_VERBS]
-    legacy_i = [i for i in legacy_all if i['verb'] not in CONTEXT_VERBS]
-    couchd_i = [i for i in couchd_all if i['verb'] not in CONTEXT_VERBS
+    # A bare `yield` marker names a gesture whose bound action couchd now runs.
+    # It predicts no verb, so there is nothing to join it to: counted, shown as
+    # context, and never a divergence in either direction.
+    yields = [i for i in legacy_all + couchd_all if i['verb'] in YIELD_MARKER_VERBS]
+    skip = CONTEXT_VERBS | YIELD_MARKER_VERBS
+    legacy_i = [i for i in legacy_all if i['verb'] not in skip]
+    couchd_i = [i for i in couchd_all if i['verb'] not in skip
                 and in_runs(i['t'], runs, RUN_EDGE_SLACK_S)]
     outside = [i for i in legacy_i if not in_runs(i['t'], runs, RUN_EDGE_SLACK_S)]
     if outside:
@@ -860,6 +1114,13 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     if ctx:
         notes.append('%d trigger-channel record(s) (%s) held as context, not diffed'
                      % (len(ctx), ','.join(sorted(CONTEXT_VERBS))))
+    if yields:
+        notes.append('%d bare `yield` marker(s) held as context: the watcher '
+                     'names the gesture it no longer performs, not the verbs '
+                     'couchd ran in its place, so there is nothing to join '
+                     '(%s)' % (len(yields), ', '.join(sorted(
+                         {'%s/%s' % (i['subject'], i['args'].get('action'))
+                          for i in yields}))[:120]))
     if bad_inv:
         notes.append('%d failing invariant record(s): %s' % (len(bad_inv), '; '.join(
             sorted({'%s %s' % (r.get('name'), r.get('leaks') or '')
@@ -871,6 +1132,13 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
                             r.get('intents')))
 
     pairs, l_only, c_only = match(legacy_i, couchd_i)
+    for p in pairs:
+        # One side claiming the reversed direction is enough: a yielded legacy
+        # would-do and a couchd record with `acted` on it are the same fact
+        # said by each stack about itself, and either alone is conclusive.
+        p['direction'] = ACTING if ACTING in (p['legacy']['direction'],
+                                              p['couchd']['direction']) \
+            else SHADOWING
     l_only, assoc = associate_repeats(pairs, l_only, 'legacy')
     c_only, c_assoc = associate_repeats(pairs, c_only, 'couchd')
     assoc += c_assoc
@@ -889,15 +1157,26 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
 
     # An ordering violation gates wherever it lands, matched or not (R5).
     viol = {id(a['intent']): a for a in asserts if a['ok'] is False and a['intent']}
+    # C17 health, not divergence: an intent couchd decided and then DECLINED
+    # (precondition gone, still inside a deadline, in backoff, refused,
+    # model-only) left the world untouched, so there is no effect for the other
+    # stream to disagree with - it belongs in ACTING HEALTH, per verb, not in a
+    # divergence column that would read as "couchd did something legacy did
+    # not". An ordering violation still outranks that and keeps its row.
+    declined = [it for it in c_only
+                if it['acted'] is False and id(it) not in viol]
+    dropped = {id(it) for it in declined}       # by identity: two records can
+    c_only = [it for it in c_only if id(it) not in dropped]   # be equal by value
     rows = [mkrow('COUCHD-ONLY', None, it, None,
                   ['ORDER'] if id(it) in viol else [],
                   ['%s: %s' % (viol[id(it)]['name'], viol[id(it)]['detail'])]
-                  if id(it) in viol else [], couchd_i, legacy_i)
+                  if id(it) in viol else [], couchd_i, legacy_i, it['direction'])
             for it in c_only]
-    rows += [mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i)
+    rows += [mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i,
+                   it['direction'])
              for it in l_only]
     rows += [mkrow('BOTH-BUT-DIFFERENT', p['legacy'], p['couchd'], p['offset'],
-                   p['flags'], p['notes'], couchd_i, legacy_i)
+                   p['flags'], p['notes'], couchd_i, legacy_i, p['direction'])
              for p in pairs if p['flags']]
     rows.sort(key=lambda r: (SECTIONS.index(r['section']), r['t']))
     lverbs = {i['verb'] for i in legacy_i}
@@ -907,16 +1186,21 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
         r['run'] = next((n for n, (a, b) in enumerate(runs, 1)
                          if a - RUN_EDGE_SLACK_S <= r['t'] <= b + RUN_EDGE_SLACK_S), 0)
         r['stale'] = not in_runs(r['t'], current, RUN_EDGE_SLACK_S)
-        absent = (r['section'] == 'LEGACY-ONLY' and r['verb'] not in cverbs) or \
-                 (r['section'] == 'COUCHD-ONLY' and r['verb'] not in lverbs)
+        absent = (r['section'] in ('LEGACY-ONLY', 'SHADOW-ONLY')
+                  and r['verb'] not in cverbs) or \
+                 (r['section'] in ('COUCHD-ONLY', 'ACTED-ONLY')
+                  and r['verb'] not in lverbs)
         if absent:                      # vocabulary gap, not a decision divergence
             r['note'] = '; '.join(x for x in (r['note'], 'verb never appears in the '
                                   'other stream at all (structural)') if x)
     cooled = [{'t': it['t'], 'verb': it['verb'], 'subject': it['subject'], 'side': side,
-               'args': arg_str(it), 'offset': it['t'] - p['legacy']['t'],
+               'args': arg_str(it),
+               'offset': it['t'] - p['couchd' if p['direction'] == ACTING
+                                    else 'legacy']['t'],
                'note': '%s repeat of the pair at %s (%s), window %.0fs' %
                        ('legacy' if side == 'legacy' else 'couchd fan-out',
-                        fmt_t(p['legacy']['t']),
+                        fmt_t(p['couchd' if p['direction'] == ACTING
+                                else 'legacy']['t']),
                         it['reason'] if side == 'couchd' else p['couchd']['reason'],
                         cooldown_s(p['couchd']['reason']))}
               for it, p, side in assoc]
@@ -944,6 +1228,23 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
         notes.append('couchd ran %d times (%s); gaps between runs are not blindness'
                      % (len(runs), ', '.join('%s..%s' % (fmt_t(a), fmt_t(b))
                                              for a, b in runs)))
+    # The direction table, clipped to whatever stretch is under review, so it
+    # cannot describe an evening the verdict does not cover.
+    lo, hi = (window if window else (runs[0][0], runs[-1][1]))
+    own_rows = [{'from': max(a, lo), 'to': min(b, hi), 'owned': sorted(o),
+                 'label': ('couchd acting / legacy shadowing for %s (legacy '
+                           'still acting on everything else)' % ', '.join(sorted(o))
+                           if o else
+                           'legacy acting / couchd shadowing (couchd owns nothing)')}
+                for a, b, o in windows if b >= lo and a <= hi]
+    owned_here = sorted({n for w in own_rows for n in w['owned']})
+    if owned_here:
+        notes.append('DIRECTION REVERSED for %s inside this window: couchd\'s '
+                     'acted intents are the acting stream and the legacy '
+                     'scripts\' yielded would-dos are the shadow (rows in '
+                     'ACTED-ONLY / SHADOW-ONLY, read that way round)'
+                     % ', '.join(owned_here))
+    acting = acting_health(crecs, current)
     health = observer_health(obs, blinds, snaps, current, notes)
     disagreements = [dict(r, label=agreement_label(r)[0], why=agreement_label(r)[1])
                      for r in agree if disagrees(r)
@@ -990,6 +1291,15 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
             'matched_total': len(pairs),
             'matched_clean': len(pairs) - len([p for p in pairs if p['flags']]),
             'counts': counts, 'offsets': offsets, 'context_records': len(ctx),
+            'yield_markers': len(yields),
+            'ownership': {'windows': own_rows, 'owned': owned_here,
+                          'reversed': bool(owned_here)},
+            'acting_health': acting,
+            'acting_declined': [{'t': it['t'], 'verb': it['verb'],
+                                 'subject': it['subject'],
+                                 'outcome': acting_outcome(it['raw'])[0],
+                                 'detail': acting_outcome(it['raw'])[1]}
+                                for it in sorted(declined, key=lambda i: i['t'])],
             'scope': scope,
             'edge_latency': edge_latency(crecs, runs),
             'assertions': [{k: v for k, v in a.items() if k != 'intent'}
@@ -1011,17 +1321,30 @@ def render(rep):
         out.append('                    window=%s..%s (%.0f min)' %
                    (fmt_t(h['window'][0]), fmt_t(h['window'][1]), h['span_s'] / 60.0))
     out += ['  ! %s' % n for n in rep['notes']]
+    own = rep['ownership']
+    out += ['', '== OWNERSHIP == (which stack ACTED, from couchd\'s own daemon '
+                'records; the other one is the shadow)']
+    for w in own['windows']:
+        out.append('  %s..%s  %s' % (fmt_t(w['from']), fmt_t(w['to']), w['label']))
+    if not own['windows']:
+        out.append('  (no daemon records: read as couchd owning nothing)')
     for sec in SECTIONS:
         rows = [r for r in rep['rows'] if r['section'] == sec]
-        out += ['', '== %s == (%d)' % (sec, len(rows))]
+        if not rows and sec in REVERSED_SECTION.values():
+            continue        # pre-flip evenings never mention the reversed classes
+        out += ['', '== %s ==%s (%d)' % (sec, SECTION_MEANING.get(sec, ''),
+                                         len(rows))]
         if not rows:
             out.append('  (none)')
         for r in rows:
             off = ' off=%+.3fs' % r['offset'] if r['offset'] is not None else ''
             flg = ' [%s]' % ','.join(r['flags']) if r['flags'] else ''
-            out.append('  %-3s %s  %s(%s)%s  %s%s%s' %
+            out.append('  %-3s %s  %s(%s)%s  %s%s%s%s' %
                        (r['label'] or '..', fmt_t(r['t']), r['verb'], r['subject'],
                         flg, r['args'], off,
+                        '  <couchd acting>'
+                        if r.get('direction') == ACTING
+                        and r['section'] == 'BOTH-BUT-DIFFERENT' else '',
                         '  ~run%d stale-model' % r['run'] if r['stale'] else ''))
             out += ['        %s' % x for x in (r['note'], r['context']) if x]
     ag = rep['agreement']
@@ -1066,18 +1389,53 @@ def render(rep):
             'agreement, per R4/R5): %d, +%d pre-declared T5 not gating'
             % (rep['matched_total'], rep['matched_clean'],
                rep['matched_total'] - rep['matched_clean'], rep['gating_count'],
-               rep['whitelisted_hard']),
-            '  %-18s %8s %8s %8s' % ('verb', 'COUCHD-O', 'LEGACY-O', 'BOTH-DIF')]
+               rep['whitelisted_hard'])]
+    # The reversed columns only appear on an evening that actually had a flip
+    # in it, so a shadow evening's summary reads exactly as it always did.
+    cols = [s for s in SECTIONS if s not in REVERSED_SECTION.values()
+            or any(c[s] for c in rep['counts'].values())]
+    out.append('  %-18s %s' % ('verb', ' '.join('%8s' % SECTION_SHORT[s]
+                                                for s in cols)))
     for v, c in sorted(rep['counts'].items()):
         if any(c.values()):
-            out.append('  %-18s %8d %8d %8d' % (v, c['COUCHD-ONLY'], c['LEGACY-ONLY'],
-                                                c['BOTH-BUT-DIFFERENT']))
+            out.append('  %-18s %s' % (v, ' '.join('%8d' % c[s] for s in cols)))
     out.append('  matched-offset ms (min/p50/p95/max), bound %dms for %s:'
                % (PERCEPTUAL_BOUND_S * 1000, '/'.join(PERCEPTUAL_VERBS)))
     for v, o in sorted(rep['offsets'].items()):
         out.append('    %-16s n=%-3d %6.0f %6.0f %6.0f %6.0f' %
                    (v, o['n'], o['min'] * 1000, o['p50'] * 1000, o['p95'] * 1000,
                     o['max'] * 1000))
+    ah = rep['acting_health']
+    if ah['records'] or ah['effect_records']:
+        t = ah['totals']
+        out.append('  ACTING HEALTH (C17, couchd\'s own actions - health, not '
+                   'divergence): acted %d, skipped %d, failed %d, refused %d, '
+                   'model-only %d' % (t['acted'], t['skipped'], t['failed'],
+                                      t['refused'], t['model-only']))
+        out.append('    %-16s %7s %7s %7s %7s %7s   %s'
+                   % ('verb', 'acted', 'skipped', 'failed', 'refused', 'mdl-only',
+                      'effects (confirmed/missed/unverified)'))
+        for v in sorted(set(ah['per_verb']) | set(ah['effects'])):
+            row = ah['per_verb'].get(v, dict.fromkeys(ACTING_OUTCOMES, 0))
+            e = ah['effects'].get(v)
+            out.append('    %-16s %7d %7d %7d %7d %7d   %s'
+                       % (v, row['acted'], row['skipped'], row['failed'],
+                          row['refused'], row['model-only'],
+                          '%d/%d/%d' % (e.get('confirmed', 0), e.get('missed', 0),
+                                        e.get('unverified', 0)) if e else '-'))
+        for x in ah['examples']:
+            out.append('      %s %s %s(%s): %s' % (x['outcome'].upper(),
+                                                   fmt_t(x['t']), x['verb'],
+                                                   x['subject'], x['detail']))
+    if rep['acting_declined']:
+        out.append('    (%d unmatched intent(s) couchd decided and then DECLINED '
+                   'are counted above, not as divergences - a skip changes '
+                   'nothing for the shadow to disagree with)'
+                   % len(rep['acting_declined']))
+        for x in rep['acting_declined'][:INFO_ROWS_SHOWN]:
+            out.append('      %s %s(%s) %s: %s' % (fmt_t(x['t']), x['verb'],
+                                                   x['subject'], x['outcome'],
+                                                   x['detail']))
     el = rep.get('edge_latency')
     if el:
         out.append('  couchd edge-to-decision ms (its own measure, not gating): '
@@ -1125,6 +1483,11 @@ def render(rep):
     out.append('    window %s..%s (%s), staleness by %s%s'
                % (fmt_t(s['from']), fmt_t(s['to']), s['source'], s['model_rule'],
                   ' %s' % s['model'] if s['model'] else ''))
+    out.append('    direction: %s'
+               % ('couchd ACTING on %s (legacy shadowing it); legacy acting on '
+                  'the rest' % ', '.join(own['owned']) if own['reversed']
+                  else 'legacy acting, couchd shadowing (couchd owns nothing '
+                       'in this window)'))
     out.append('    judged %d decision(s): %d matched pair(s) + %d divergence '
                'row(s); %d row(s) skipped as stale-model%s'
                % (s['decisions'], s['matched_evaluated'], s['rows_evaluated'],

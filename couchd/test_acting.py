@@ -209,12 +209,15 @@ def test_input_is_known_but_not_actable_by_stage_one():
     assert o.actable == []            # stage 2's input process owns that one
 
 
-def test_shipped_owns_conf_is_empty():
-    """The file in the repo must ship OFF; a flip is a daytime edit."""
+def test_shipped_owns_conf_parses_clean():
+    """The live file may name flipped responsibilities (a flip IS a daytime
+    edit of this file - gestures went live 5 Aug 2026), but it must always
+    parse with zero warnings and only known names: a corrupt flip fails here
+    before it can fail the box."""
     o = owns.load(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                'owns.conf'), force=True)
-    assert o.names == frozenset()
     assert o.warnings == ()
+    assert o.names <= set(owns.RESPONSIBILITIES)
 
 
 def test_load_is_stat_cached_but_sees_changes(tmp_path):
@@ -692,10 +695,13 @@ def test_bash_parser_owns_nothing_without_a_file(tmp_path):
 @pytest.mark.skipif(not os.path.exists(GAME_LAUNCH_SRC),
                     reason='game-launch is not installed on this box')
 def test_bash_parser_agrees_with_the_shipped_file():
+    """Whatever the live file currently says, both parsers must read it the
+    same way - the file's content changes on flip day, the agreement never."""
     shipped = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'owns.conf')
+    o = owns.load(shipped, force=True)
     for name in owns.RESPONSIBILITIES:
-        assert bash_couchd_owns(shipped, name) is False
+        assert bash_couchd_owns(shipped, name) is (name in o.names)
 
 
 # =========================================================================
@@ -1218,7 +1224,7 @@ def test_empty_owns_is_byte_identical_to_a_recording_only_executor():
         RecordingExecutor(router_log, sayer=sink),
         lambda: ActingExecutor(router_log, act, owned=router.owned, sayer=sink),
         sayer=sink, log=router_log)
-    router.set_owns(owns.load())          # the shipped file: empty
+    router.set_owns(owns.parse('COUCHD_OWNS=""'))   # empty = pure shadow
     for o in worlds:
         for it in reconcile(o):
             plain.execute(it, o)

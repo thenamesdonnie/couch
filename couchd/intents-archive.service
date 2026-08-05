@@ -1,0 +1,6 @@
+[Unit]
+Description=Archive /tmp/legacy-intents.jsonl into ~/couch/shadow (R5: corpora live off /tmp)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/couch/tools/intents-archive

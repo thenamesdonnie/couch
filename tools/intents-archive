@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Append new /tmp/legacy-intents.jsonl lines to a per-day archive in
+~/couch/shadow/. R5 wants every evidence corpus OFF /tmp and off the
+retention rotation; the legacy stream was the last one living only in /tmp
+(the 5 Aug 05:19 crash+reboot wiped Evening 1's live copy mid-flip, which
+made the first post-flip differ run read one-sided).
+
+Byte-offset incremental: a state file remembers (dev, ino, offset); a new
+inode or a shrunken file (reboot, truncation) resets the offset to 0. Only
+complete lines are copied, so a mid-write tail is never split. Runs from
+intents-archive.timer every 2 minutes; safe to run by hand any time.
+"""
+import json
+import os
+import sys
+
+SRC = '/tmp/legacy-intents.jsonl'
+SHADOW = os.path.expanduser('~/couch/shadow')
+STATE = os.path.join(SHADOW, '.intents-archive-state.json')
+
+
+def main():
+    if not os.path.exists(SRC):
+        return 0
+    try:
+        st = os.stat(SRC)
+    except OSError:
+        return 0
+    state = {}
+    try:
+        with open(STATE) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        pass
+    offset = state.get('offset', 0)
+    if (state.get('dev'), state.get('ino')) != (st.st_dev, st.st_ino) \
+            or st.st_size < offset:
+        offset = 0
+    if st.st_size == offset:
+        return 0
+    with open(SRC, 'rb') as f:
+        f.seek(offset)
+        chunk = f.read()
+    end = chunk.rfind(b'\n')
+    if end < 0:
+        return 0                      # no complete line yet
+    chunk = chunk[:end + 1]
+    import time
+    day = time.strftime('%Y%m%d')
+    dst = os.path.join(SHADOW, f'legacy-intents-{day}.jsonl')
+    with open(dst, 'ab') as f:
+        f.write(chunk)
+    tmp = STATE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump({'dev': st.st_dev, 'ino': st.st_ino,
+                   'offset': offset + len(chunk)}, f)
+    os.replace(tmp, STATE)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

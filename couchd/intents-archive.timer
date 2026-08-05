@@ -1,0 +1,9 @@
+[Unit]
+Description=Archive the legacy-intents stream every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

@@ -90,13 +90,53 @@ def run(tmp, lrecs, crecs, snaps=None, window=None):
     return sd.build(lp, cp, sp, window=window)
 
 
-def daemon_rec(t, event, model=None):
+def daemon_rec(t, event, model=None, owns=None):
     """A daemon start/stop mark, optionally carrying the model fingerprint
-    couchd stamps on every start from 5 Aug 2026."""
+    couchd stamps on every start from 5 Aug 2026, and the owns.conf it booted
+    with (the differ reads direction out of these)."""
     r = {'kind': 'daemon', 'event': event, 't': T0 + t, 'pid': 4242}
     if model:
         r['model_version'] = model
+    if owns is not None:
+        r['owns'] = list(owns)
     return r
+
+
+# ------------------------------------------------- post-flip record shapes
+# The first flip was 5 Aug 2026 13:01 (COUCHD_OWNS="gestures"). From then on
+# couchd's acting executor stamps `acted` + `action` on every intent it takes,
+# and pad-home-watcher writes its would-do with args.yielded instead of doing
+# it. These three helpers mirror those real shapes.
+def acted(t, verb, subject=None, reason='gesture:ps-hold', ok=True,
+          responsibility='gestures', action=None, **args):
+    """couchd's ACTING record: `acted` true if the action fired, false if it
+    was declined (precondition gone, deadline pending, backoff) or failed."""
+    r = couchd(t, verb, subject, reason=reason, **args)
+    r['acted'] = bool(ok)
+    r['responsibility'] = responsibility
+    r['action'] = {'ok': True} if action is None else action
+    return r
+
+
+def yielded(t, verb, subject=None, src='watcher', **args):
+    """A legacy would-do: computed and written, never performed."""
+    return legacy(t, verb, subject, src=src, yielded=True, owner='couchd',
+                  **args)
+
+
+def yield_marker(t, gesture='double-tap', action='switcher',
+                 reason='ps-double-tap'):
+    """The bare marker the watcher writes for a bound gesture it no longer
+    performs: it names the GESTURE, not the verbs couchd ran instead."""
+    return legacy(t, 'yield', gesture, gesture=gesture, action=action,
+                  reason=reason, yielded=True, owner='couchd')
+
+
+def owns_changed(t, now, was=()):
+    """The runtime flip record. couchd re-reads owns.conf every tick, so the
+    13:01 flip left exactly one of these and restarted nothing."""
+    return {'kind': 'daemon', 'event': 'owns-changed', 't': T0 + t,
+            'was': list(was), 'now': list(now), 'acting': bool(now)}
 
 
 # ---------------------------------------------------------------- clean evening
@@ -914,6 +954,240 @@ def test_a_nul_hole_glued_to_a_real_record_still_yields_the_record():
         rep = sd.build(lp, cp, None)
         assert rep['matched_total'] == 1
         assert any('NUL bytes' in n for n in rep['notes'])
+
+
+# ------------------------------------------- post-flip: the roles reverse
+def test_couchd_owning_gestures_reverses_the_roles():
+    """The whole point of flip day: couchd's acted freeze is the ACTION and
+    the watcher's yielded freeze is the shadow of it. Same join, same
+    tolerance, same clean pair - the streams have simply swapped jobs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(0.0, 'freeze', '730', pids=[100, 101],
+                           resolver='game-pids', gesture='hold',
+                           action='suspend_to_kodi', reason='ps-hold')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100, 101])])
+        assert rep['ownership']['reversed'] is True
+        assert rep['ownership']['owned'] == ['gestures']
+        assert rep['matched_total'] == 1 and rep['matched_clean'] == 1
+        assert not rep['rows'], rep['rows']
+        assert rep['validity']['verdict'] == 'VALID', rep['validity']
+        txt = sd.render(rep)
+        assert 'couchd acting / legacy shadowing for gestures' in txt
+        assert 'couchd ACTING on gestures' in txt
+        assert any('DIRECTION REVERSED' in n for n in rep['notes'])
+
+
+def test_the_same_decisions_with_owns_empty_keep_the_old_direction():
+    """The identical pair of decisions recorded before the flip: nothing is
+    yielded, couchd owns nothing, and every label reads the old way round."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'freeze', '730', pids=[100, 101],
+                          resolver='game-pids'),
+                   legacy(5.0, 'dismiss', 'power-menu')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   couchd(0.1, 'freeze', '730', pids=[100, 101],
+                          reason='gesture:ps-hold')])
+        assert rep['ownership']['reversed'] is False
+        assert rep['ownership']['owned'] == []
+        assert [r['section'] for r in rep['rows']] == ['LEGACY-ONLY']
+        assert rep['rows'][0]['direction'] == 'legacy-acting'
+        txt = sd.render(rep)
+        assert 'legacy acting / couchd shadowing' in txt
+        assert '== SHADOW-ONLY ==' not in txt and '== ACTED-ONLY ==' not in txt
+
+
+def test_an_unmatched_yielded_would_do_is_never_a_legacy_only_row():
+    """A would-do couchd did not act on is still a divergence - but it is the
+    OTHER one: 'couchd, which owns this, did not do it', not 'couchd never
+    decided it'. Reporting it as LEGACY-ONLY would poison the evening."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(5.0, 'route_pad', 'kodi', reason='handoff',
+                           via='kodi-jsonrpc')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100])])
+        s = sections(rep)
+        assert not s['LEGACY-ONLY'], s['LEGACY-ONLY']
+        assert [r['verb'] for r in s['SHADOW-ONLY']] == ['route_pad']
+        assert s['SHADOW-ONLY'][0]['direction'] == 'couchd-acting'
+        assert [r['verb'] for r in s['ACTED-ONLY']] == ['freeze']
+        assert 'legacy would have; couchd, which owns it, did NOT' \
+            in sd.render(rep)
+
+
+def test_bare_yield_markers_are_context_not_divergences():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yield_marker(0.0),
+                   yield_marker(30.0, 'hold-release', 'power_menu',
+                                'ps-hold-release')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.2, 'show_switcher', 'tv',
+                         reason='gesture:double-tap-switcher')])
+        assert rep['yield_markers'] == 2
+        assert not [r for r in rep['rows'] if r['verb'] == 'yield'], rep['rows']
+        assert any('bare `yield` marker' in n for n in rep['notes'])
+        # the marker names the gesture, so the switcher couchd DID run has
+        # nothing to join to and stays a plain one-sided row
+        assert [r['section'] for r in rep['rows']] == ['ACTED-ONLY']
+
+
+def test_the_t5_whitelist_still_fires_on_a_reversed_row():
+    """The pre-declared entries are keyed on the UNREVERSED section, so a
+    whitelist written about a legacy-only row keeps working when the same row
+    arrives as SHADOW-ONLY."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(0.0, 'set_flag', 'suspended', value='730',
+                           reason='ps-hold')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(30.0, 'show', 'kodi', reason='gesture:hold-release')])
+        row = [r for r in rep['rows'] if r['verb'] == 'set_flag'][0]
+        assert row['section'] == 'SHADOW-ONLY'
+        assert row['label'] == 'T5' and 'flag verbs' in row['note']
+        assert rep['gating_count'] == 0
+
+
+def test_post_flip_a_yielded_repeat_may_precede_couchds_action():
+    """The repeat asymmetry belongs to the ROLES, not to the stacks: the
+    actor's repeats can only follow its own action, the shadow's fan-out may
+    sit either side of it. Post-flip that freedom moves to the legacy lines,
+    so a would-do 2.6s BEFORE couchd acted is a sibling, not a divergence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(7.5, 'route_pad', 'kodi', reason='reconcile'),
+                   yielded(10.0, 'route_pad', 'kodi', reason='handoff')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(10.1, 'route_pad', 'kodi',
+                         reason='gesture:hold-release')])
+        assert rep['matched_total'] == 1
+        assert len(rep['cooldown_associated']) == 1, rep['cooldown_associated']
+        assert rep['cooldown_associated'][0]['offset'] < 0
+        assert not sections(rep)['SHADOW-ONLY'], sections(rep)['SHADOW-ONLY']
+
+
+def test_a_flip_mid_evening_switches_direction_at_the_ownership_record():
+    """One corpus, both directions: the owns-changed record is the boundary,
+    and rows either side of it are labelled by the direction in force then."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'dismiss', 'power-menu'),
+                   yielded(200.0, 'route_pad', 'kodi', reason='handoff')],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   couchd(50.0, 'iconify', '730', reason='gesture:ps-hold'),
+                   owns_changed(100.0, ['gestures']),
+                   acted(250.0, 'close_steam_menu', 'steam',
+                         reason='gesture:hold-release')],
+                  heartbeat(0, 300))
+        w = rep['ownership']['windows']
+        assert len(w) == 2, w
+        assert w[0]['owned'] == [] and w[1]['owned'] == ['gestures']
+        assert round(w[1]['from'] - T0) == 100
+        by_verb = {r['verb']: r for r in rep['rows']}
+        assert by_verb['dismiss']['section'] == 'LEGACY-ONLY'
+        assert by_verb['iconify']['section'] == 'COUCHD-ONLY'
+        assert by_verb['route_pad']['section'] == 'SHADOW-ONLY'
+        assert by_verb['close_steam_menu']['section'] == 'ACTED-ONLY'
+        txt = sd.render(rep)
+        assert 'couchd owns nothing' in txt and 'shadowing for gestures' in txt
+
+
+def test_acting_health_counts_acted_skipped_and_failed_per_verb():
+    """C17 from the acting side. A skip changed nothing in the world, so it
+    is health rather than a divergence the shadow could contradict."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(0.0, 'freeze', '730', pids=[100],
+                           resolver='game-pids', gesture='hold',
+                           action='suspend_to_kodi', reason='ps-hold')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100]),
+                   acted(20.0, 'close_steam_menu', 'steam',
+                         reason='gesture:hold-release', ok=False,
+                         action={'ok': True, 'precondition_gone':
+                                 'the toggle target is already closed'}),
+                   acted(40.0, 'route_pad', 'kodi',
+                         reason='gesture:hold-release', ok=False,
+                         action={'ok': False, 'error': 'kodi rpc failed'}),
+                   {'kind': 'effect', 't': T0 + 1.0, 'verdict': 'confirmed',
+                    'verb': 'freeze', 'subject': '730', 'latency_s': 0.4,
+                    'reason': 'gesture:ps-hold'},
+                   {'kind': 'effect', 't': T0 + 45.0, 'verdict': 'missed',
+                    'verb': 'route_pad', 'subject': 'kodi', 'latency_s': 5.0,
+                    'reason': 'gesture:hold-release'}])
+        ah = rep['acting_health']
+        assert ah['totals'] == {'acted': 1, 'skipped': 1, 'failed': 1,
+                                'refused': 0, 'model-only': 0}, ah['totals']
+        assert ah['per_verb']['close_steam_menu']['skipped'] == 1
+        assert ah['per_verb']['route_pad']['failed'] == 1
+        assert ah['effects']['freeze']['confirmed'] == 1
+        assert ah['effects']['route_pad']['missed'] == 1
+        # neither declined intent is a divergence row
+        assert not [r for r in rep['rows']
+                    if r['verb'] in ('close_steam_menu', 'route_pad')], rep['rows']
+        assert len(rep['acting_declined']) == 2
+        txt = sd.render(rep)
+        assert 'ACTING HEALTH' in txt
+        assert 'acted 1, skipped 1, failed 1' in txt
+        assert 'FAILED' in txt and 'kodi rpc failed' in txt
+        assert 'DECLINED' in txt
+
+
+def test_a_backoff_skip_is_health_and_a_model_only_refusal_is_named():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [yielded(0.0, 'freeze', '730', pids=[100],
+                                resolver='game-pids')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100]),
+                   acted(10.0, 'kill', 'steam-input-guard',
+                         reason='gesture:hold-release', ok=False,
+                         action={'ok': False, 'backoff': True,
+                                 'consecutive_failures': 3, 'retry_in_s': 30.0}),
+                   acted(20.0, 'launch', 'bigpicture',
+                         reason='transition:ensure-bp-before-game',
+                         responsibility='transitions', ok=False,
+                         action={'ok': True, 'model_only': 'legacy keeps this '
+                                 'step (game-launch does not yield it)'})])
+        ah = rep['acting_health']
+        assert ah['per_verb']['kill']['skipped'] == 1
+        assert ah['per_verb']['launch']['model-only'] == 1
+        assert sd.acting_outcome({'acted': False,
+                                  'action': {'ok': False, 'refused':
+                                             'guard is not owned'}}) \
+            == ('refused', 'guard is not owned')
+        assert 'C11 backoff after 3 consecutive failure(s)' in sd.render(rep)
+
+
+def test_ownership_is_handed_back_when_the_daemon_stops():
+    """Ownership is a LEASE: a stopped couchd owns nothing, and the legacy
+    scripts are acting again within 30s whatever owns.conf still says."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(10.0, 'show', 'kodi')],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(10.1, 'show', 'kodi', reason='gesture:hold-release'),
+                   daemon_rec(60.0, 'stop'),
+                   daemon_rec(600.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   couchd(610.0, 'show', 'desktop', reason='gesture:ps-hold')],
+                  heartbeat(0, 90) + heartbeat(600, 660))
+        owned = [w['owned'] for w in rep['ownership']['windows']]
+        assert ['gestures'] in owned and [] in owned, owned
+        assert sd.owned_at(sd.ownership_windows(
+            [{'kind': 'daemon', 'event': 'start', 't': 0.0,
+              'owns': ['gestures']},
+             {'kind': 'daemon', 'event': 'stop', 't': 100.0}], (0.0, 200.0)),
+            'gestures', 150.0) is False
+
+
+def test_a_corpus_with_no_daemon_records_reads_as_owning_nothing():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(0.0, 'show', 'kodi')],
+                  [couchd(0.1, 'show', 'kodi', reason='gesture:hold-release')])
+        assert rep['ownership']['reversed'] is False
+        assert len(rep['ownership']['windows']) == 1
+        assert rep['ownership']['windows'][0]['owned'] == []
 
 
 if __name__ == '__main__':
