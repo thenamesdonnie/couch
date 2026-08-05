@@ -1,5 +1,16 @@
 # Next session brief — couch / couchd (written 5 Aug 2026 ~15:00)
 
+> **17:15 UPDATE (review-fleet pass, commits a414699..d43fb75):** four
+> adversarial reviewers swept the codebase on Donnie's instruction and
+> every confirmed finding is fixed: the guard is wired into couchd's
+> acted handoffs, the coalescing family is closed with consumable
+> tracker markers, the differ now gates on action failures / missed
+> effects / owner-inaction, the server's install/suspend hazards are
+> gone, and the rigs are signal-safe. Final gesture-sweep 12/12; suites
+> 441 + 213. Model fingerprint `d1adeed4083a` since ~17:10 - use
+> `--window` for tonight's differ read. Fresh rulings queue in todo.md's
+> NEXT. The health-check command and rules below are unchanged.
+
 Read this first, then `todo.md`'s top "Resume here" block. Read
 `docs/couchd-charter.md` before changing any couchd design decision.
 Everything below is current as of commit `bee3cd8`.

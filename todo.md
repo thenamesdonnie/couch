@@ -101,12 +101,48 @@ Late afternoon while Donnie was out (commits 500c6ae, 87c40fa):
   couch restarted on the fix; phone UI verified serving.
 - Suites: 608 passing (couchd 430 + tools 178).
 
-**NEXT:** (1) Donnie's evening pass = the acceptance for `gestures`;
-(2) morning after: `tools/shadow-diff --window` over the evening;
-(3) then the next flip (`reconcile` argued next), one at a time;
-(4) fault rig (needs him + a live game); (5) three rulings below.
+Review-fleet pass (~16:00-17:15, Donnie's "wire it in now then fix
+everything else", commits a414699..d43fb75):
+- Four Fable adversarial reviewers swept the codebase; every confirmed
+  finding is FIXED except three design questions left for Donnie (below).
+- **Guard wired in** (a414699): couchd's acted handoffs spawn the real
+  steam-input-guard exactly where legacy's handoff_to_kodi did; the verb
+  is pre-declared T5 in the differ (legacy's spawn was implicit).
+- **couchd model** (99901a4, d43fb75): the whole coalescing family is
+  closed with CONSUMABLE tracker markers (hold_release_k + double_tap_k,
+  twins of double_armed but spendable) - a whole hold or whole double
+  swallowed by stalled passes now decides from idle; escape verbs cap
+  backoff at 30s; a failed step skips its same-pass dependents; freeze
+  effects no longer count vanished pids as frozen; launch-resume has a
+  real oracle; couchd declines to act on a stale own-heartbeat (closes
+  the both-stacks window); rebind hazards closed; iconify waits for the
+  pause snap; stale Steam routes can't justify guide presses.
+- **Differ gates honestly** (e393061): action failures, missed effects,
+  SHADOW-ONLY owner-inaction and pid-set-different repeats all gate now;
+  crashed runs split correctly (the 05:19 freeze reads right); rollover
+  seeds anchors from yesterday. "gating 0" finally means something.
+- **Server** (0109a45): install() can't kill Steam under a session;
+  phone suspend = full game-launch suspend; MJPEG backpressure; CSRF
+  cover on POSTs; corrupt appinfo.vdf can't spin the loop; game-launch
+  suspend/resume/quit serialize on a flock.
+- **Rigs** (e921dac): fake-pad signal-safe + atomic claim; sweep
+  re-checks safety before every press; intents-archive survives crashes.
+- **The sweep caught two of my own regressions live** (16:59 burst, 17:02
+  60ms) that 441 unit tests could not - both fixed, final sweep 12/12.
+- Model fingerprint is now `d1adeed4083a` (several restarts this
+  afternoon; tonight's differ read MUST use --window from ~17:10).
 
-**Suites:** couchd 430, tools 178, gitleaks clean.
+**NEXT:** (1) Donnie's evening pass = the acceptance for `gestures`;
+(2) morning after: `tools/shadow-diff --window` over the evening (the
+differ now gates on acting health too);
+(3) then the next flip (`reconcile` argued next), one at a time;
+(4) fault rig (needs him + a live game); (5) rulings: the three below
+PLUS two new from the fleet: should hold=switcher defer its handoff to
+release like suspend does (currently hands off mid-press, a pinned
+earlier decision the review challenged), and should ACTED-ONLY differ
+rows gate post-flip (currently hand-triage).
+
+**Suites:** couchd 441, tools 213, gitleaks clean.
 
 ### TV upgrade (researched 5 Aug 2026, decision Donnie's)
 
