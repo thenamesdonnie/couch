@@ -1,7 +1,7 @@
 {
- "t": 1785941067.4587357,
+ "t": 1785943862.3997483,
  "pid": 589381,
- "uptime_s": 783.5,
+ "uptime_s": 3578.4,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -13,7 +13,7 @@
  "owns_warnings": [],
  "model_version": "ecd01e9fdfa3",
  "git": "1af728983618",
- "acted": 0,
+ "acted": 10,
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
@@ -27,39 +27,43 @@
   "pad": "absent"
  },
  "games": {},
- "last_would_do": [],
+ "last_would_do": [
+  "would show_switcher tv [gesture:double-tap-switcher]",
+  "would show kodi [gesture:double-tap-switcher]",
+  "would show_switcher tv [gesture:double-tap-switcher]"
+ ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 0,
+   "events": 92,
    "detail": "0 node(s)",
-   "age_s": 1.5,
+   "age_s": 0.1,
    "stale": false
   },
   "flags": {
    "ok": true,
    "events": 5,
    "detail": "0 present",
-   "age_s": 0.1,
+   "age_s": 0.0,
    "stale": false
   },
   "pids": {
    "ok": true,
    "events": 0,
    "detail": "0 pid(s)",
-   "age_s": 0.0,
+   "age_s": 4.9,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 27,
+   "events": 133,
    "detail": "joystick=True window=10000",
-   "age_s": 0.1,
+   "age_s": 5.0,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 1,
+   "events": 2,
    "detail": "0 app(s) tracked",
    "age_s": 0.0,
    "stale": false
@@ -73,31 +77,36 @@
   },
   "x11": {
    "ok": true,
-   "events": 0,
-   "detail": "top='Kodi' ev=0",
+   "events": 706,
+   "detail": "top='Kodi' ev=706",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 37,
+  "obs": 238,
   "daemon": 2,
-  "transition": 6,
-  "invariant": 1
+  "transition": 66,
+  "invariant": 1,
+  "latency": 40,
+  "agreement": 15,
+  "intent": 10,
+  "effect": 10,
+  "decision": 14
  },
- "passes": 447,
- "intents": 0,
+ "passes": 2462,
+ "intents": 10,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 0,
-  "steam_guide_lines": 0,
-  "first_event_latency_s": null
+  "evdev": 22,
+  "steam_guide_lines": 1,
+  "first_event_latency_s": 7.372
  },
  "last_trigger": "",
  "edges": {
-  "seen": 0,
-  "coalesced": 0,
-  "last_latency_s": null
+  "seen": 45,
+  "coalesced": 5,
+  "last_latency_s": 0.6124
  },
  "resource_leaks": [],
  "bindings": {
