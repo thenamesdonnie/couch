@@ -37,6 +37,14 @@ anything that wakes the TV or makes noise overnight (tv-waker fires on
 launch; he is asleep at home) — synthetic/fake-pad work uses the rig's
 inhibit frame only; no COUCHD_OWNS flips without his daytime acceptance
 (charter). The work list, in order:
+0. **FIRST: couchd is stuck "activating" as of 03:05** — watchdog killed
+   it ~03:00, restart hangs before sd_notify READY (last log line
+   02:57:51, single thread). Diagnose the startup hang (run foreground,
+   faulthandler/SIGABRT for the stack; suspect a blocking observer init —
+   Kodi socket / Steam log seed / pad node — that lacks a timeout under
+   tonight's new conditions: BP mode churn, paused game). Fix + add a
+   startup watchdog test. A down shadow costs nothing tonight, but the
+   overnight work needs it healthy.
 1. **Acting executor** in couchd + COUCHD_OWNS plumbing + legacy yielding
    (watcher/guard skip responsibilities couchd owns; couchd write-through
    of /tmp flags per R5-17). Adversarial review before merge (charter).
