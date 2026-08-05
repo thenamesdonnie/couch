@@ -33,12 +33,14 @@ Rollback is `systemctl --user stop couchd`; its absence is never an error.
 import asyncio
 import contextlib
 import errno
+import faulthandler
 import fcntl
 import json
 import os
 import re
 import signal
 import socket
+import stat as stat_module
 import struct
 import sys
 import time
@@ -1559,8 +1561,16 @@ class FlagObserver:
         for name in sorted(WATCHED_TMP):
             path = os.path.join(TMP_DIR, name)
             try:
-                content = open(path).read().strip()
-                mtime = os.stat(path).st_mtime
+                st = os.lstat(path)
+                mtime = st.st_mtime
+                # Only regular files carry readable content. vpad.fifo is a
+                # FIFO: a blocking open() with no writer parks the whole
+                # daemon in wait_for_partner (the 5 Aug 03:00 startup hang).
+                # For special files, existence IS the observation.
+                if stat_module.S_ISREG(st.st_mode):
+                    content = open(path).read().strip()
+                else:
+                    content = f'<{stat_module.filemode(st.st_mode)[0]}>'
             except OSError:
                 content, mtime = None, None
             prev = self.state.get(name)
@@ -2616,6 +2626,10 @@ def notify(state):
 
 
 def main():
+    # The systemd watchdog kills with SIGABRT; with faulthandler enabled that
+    # SIGABRT lands in the journal as a Python traceback instead of a bare
+    # core dump, so the next hang is diagnosable from the log alone.
+    faulthandler.enable()
     load_env()
     d = Couchd()
     if not d.acquire_lock():
