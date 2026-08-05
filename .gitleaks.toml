@@ -1,0 +1,17 @@
+# gitleaks config - extends the default rules with one scoped allowlist.
+#
+# The shadow evidence corpora (shadow/*.jsonl) record observed Kodi/Jellyfin
+# payloads verbatim. Jellyfin media items carry a "Key" field whose value is
+# the item's UUID (identical to ItemId, sits next to PlayCount/LastPlayedDate)
+# - a library identifier, not a credential. It trips the generic-api-key rule
+# ~562 times in couchd-20260804.jsonl. Allowlist is scoped to the evidence
+# files only; a real key pasted into code still gets caught.
+
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+    '''shadow/.*\.jsonl''',
+    '''shadow/archive/.*''',
+]
