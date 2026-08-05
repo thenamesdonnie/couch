@@ -237,6 +237,31 @@ const USER_SERVICES = ['couch', 'rota', 'light-watch', 'cinema-watch', 'tv-waker
 // watchnow is a system unit, not a user one; is-active needs no sudo.
 const SYSTEM_SERVICES = ['watchnow'];
 
+// GPU telemetry regardless of vendor: nvidia-smi while the 4070 is in, the
+// amdgpu sysfs files after the 9070 XT swap. Same shape either way.
+function amdGpuHealth() {
+  try {
+    for (const card of fs.readdirSync('/sys/class/drm').filter((c) => /^card\d+$/.test(c))) {
+      const dev = `/sys/class/drm/${card}/device`;
+      let hw;
+      try { hw = fs.readdirSync(`${dev}/hwmon`)[0]; } catch { continue; }
+      if (!hw) continue;
+      const rd = (p) => { try { return Number(fs.readFileSync(p, 'utf8').trim()); } catch { return null; } };
+      const temp = rd(`${dev}/hwmon/${hw}/temp1_input`);
+      if (temp === null) continue;
+      const memUsed = rd(`${dev}/mem_info_vram_used`);
+      const memTotal = rd(`${dev}/mem_info_vram_total`);
+      return {
+        temp: Math.round(temp / 1000),
+        util: rd(`${dev}/gpu_busy_percent`) ?? 0,
+        memUsed: memUsed !== null ? Math.round(memUsed / 1048576) : 0,
+        memTotal: memTotal !== null ? Math.round(memTotal / 1048576) : 0,
+      };
+    }
+  } catch { /* no amd gpu either */ }
+  return null;
+}
+
 export async function health() {
   const [gpuRaw, userStates, systemStates, dockerRaw, kodiPid, steamPid] = await Promise.all([
     exec('nvidia-smi', ['--query-gpu=temperature.gpu,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits']),
@@ -250,6 +275,8 @@ export async function health() {
   if (gpuRaw) {
     const [temp, util, memUsed, memTotal] = gpuRaw.split(',').map((v) => Number(v.trim()));
     gpu = { temp, util, memUsed, memTotal };
+  } else {
+    gpu = amdGpuHealth();
   }
   const services = {};
   (userStates || '').split('\n').forEach((state, i) => { services[USER_SERVICES[i]] = state; });
