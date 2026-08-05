@@ -173,7 +173,15 @@ function readInstalldir(appid) {
 
 function gameRunning() {
   return new Promise((resolve) => {
-    execFile('pgrep', ['-f', 'steamapps/common'], (err, out) => resolve(!err && out.trim().length > 0));
+    // game-pids, not pgrep -f steamapps/common: the old pattern both missed
+    // Proton games (S:\ cmdlines, no "steamapps") - which let install()
+    // restart Steam under a LIVE game - and false-matched bystanders, which
+    // blocked downloads nothing was running to block. Exit 0 = session up,
+    // exit 1 = none. Anything else (script missing, /proc hiccup) reads as
+    // RUNNING: refusing a download is recoverable, a restart mid-game isn't.
+    execFile(path.join(HOME, '.local/bin/game-pids'), (err) => {
+      resolve(!err || err.code !== 1);
+    });
   });
 }
 

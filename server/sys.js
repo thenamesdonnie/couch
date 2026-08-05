@@ -53,9 +53,17 @@ export function quitGame() { launcher(['quit']); }
 // Mirror of pad-home-watcher's suspend_game: freeze the live game processes,
 // record what was frozen, then the caller hands the pad back to Kodi via
 // JSON-RPC. Console-style suspend, zero CPU while frozen.
+//
+// game-pids, not pgrep -f: a cmdline pattern can match a bystander whose
+// arguments merely mention steamapps (an editor with a game file open, a
+// shell sitting in the directory) and SIGSTOP it, and it also MISSES the
+// real game under Proton, whose cmdline is an S:\ path with no "steamapps"
+// in it. game-pids walks Steam's reaper/pv-adverb process tree instead -
+// the same identification couchd and screen.js already use. Exit 1 means
+// "no game session", and any error means we freeze nothing.
 function gamePids() {
   return new Promise((resolve) => {
-    execFile('pgrep', ['-f', 'steamapps/common|Shadps4-sdl|mount_Shadps'], (err, out) => {
+    execFile(path.join(BIN, 'game-pids'), (err, out) => {
       resolve(err ? [] : out.trim().split('\n').filter(Boolean).map(Number));
     });
   });
