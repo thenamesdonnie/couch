@@ -39,13 +39,20 @@ the real pad is already back and stop trying to reconnect it. So `up`:
   (a) stops tv-waker, pad-record and pad-battery for the duration and puts
       back exactly the ones that were running, in a finally that runs on
       SIGTERM/SIGINT too (this is the ONE place stage-2 code runs systemctl);
+      the signal handlers that make that true are installed BEFORE the frame
+      is entered - see install_signal_handlers() for why the window between
+      "frame entered" and "serving" used to be fatal;
   (b) snapshots ~/couch/recordings/ before and asserts it is unchanged after,
       shouting if it is not;
   (c) REFUSES to start if a real DualSense is connected - a fake pad while
-      the real one is live is how you lose an evening.
+      the real one is live is how you lose an evening;
+  (d) claims the pidfile under an exclusive flock BEFORE the frame is
+      entered and before any device exists, so two near-simultaneous `up`s
+      cannot both end up holding a uhid pad (see claim_pidfile()).
 
 Rollback is: fake-pad quit, or kill it. Everything it touched is restored.
 """
+import errno
 import fcntl
 import os
 import re
@@ -101,6 +108,91 @@ DPAD = {'up': 0, 'right': 2, 'down': 4, 'left': 6, 'center': 15}
 
 def stamp(msg):
     print(f'{time.strftime("%H:%M:%S")} fake-pad: {msg}', flush=True)
+
+
+# =========================================================================
+# signals and the single-instance claim
+# =========================================================================
+# One flag for the whole process. serve()'s loop reads it; so do the
+# checkpoints in daemon().
+STOPPING = {'now': False}
+
+
+def install_signal_handlers():
+    """SIGTERM/SIGINT set STOPPING and NEVER raise. Called at the very top of
+    daemon(), before the SafetyFrame is entered.
+
+    This ordering is load-bearing, and getting it wrong left the box with
+    tv-waker/pad-record/pad-battery stopped and nothing to restore them:
+
+      * the handlers used to be installed inside serve(), but the frame is
+        entered at the top of daemon(). A SIGINT during SafetyFrame.__enter__
+        - which spends up to 20s per `systemctl stop`, three of them - raised
+        KeyboardInterrupt out of __enter__, so the with-body was never
+        entered and __exit__ never ran;
+      * a SIGTERM anywhere between __enter__ returning and serve() installing
+        its handlers (device create + wait_ready, ~8s) was default-fatal:
+        the process died outright with the units still stopped.
+
+    Setting a flag rather than raising is the point. A handler that raises
+    can still tear the process out of __enter__ mid-inhibit; a flag cannot.
+    The cost is that a signal arriving inside a blocking systemctl call is
+    only noticed when that call returns (<=20s), and that is the right trade:
+    late-but-restored beats prompt-but-abandoned. For the same reason a
+    SECOND signal during teardown is also swallowed - the restore finishes.
+    `kill -9` is the operator's remaining escape hatch, and it is the one
+    that does leave the units stopped.
+
+    Deliberately silent: no print() in the handler. Python runs handlers
+    between bytecodes in the main thread, so printing from one while the main
+    thread holds the (non-reentrant) stdout buffer lock can deadlock. The
+    checkpoints do the talking instead.
+    """
+    def onsig(_signum, _frame):
+        STOPPING['now'] = True
+    signal.signal(signal.SIGTERM, onsig)
+    signal.signal(signal.SIGINT, onsig)
+
+
+def claim_pidfile(path=PIDFILE, attempts=5):
+    """Claim being THE rig, atomically. Returns the held fd, or None if
+    another live rig already owns it.
+
+    The pidfile used to be written inside serve(), ~8s after startup: two
+    `up`s launched within that window both passed daemon_alive(), both
+    created a uhid DualSense, and the second clobbered the first's FIFO and
+    pidfile. The first pad was then live but unreachable, and killing what
+    the pidfile pointed at restored tv-waker while a fake pad was still
+    plugged in - the exact state the safety frame exists to prevent.
+
+    So the claim happens FIRST, before the frame and before any device, and
+    it is an flock rather than a "does this pid exist?" test: the lock is
+    held by the kernel for as long as the process lives, so a rig that died
+    hard leaves a stale pidfile that the next `up` can take, while a rig that
+    is merely slow to start cannot be raced. The inode re-check closes the
+    unlink race (we may have locked a file the previous owner has just
+    removed on its way out).
+    """
+    for _ in range(attempts):
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        try:
+            same = os.stat(path).st_ino == os.fstat(fd).st_ino
+        except OSError:
+            same = False
+        if not same:
+            os.close(fd)             # locked a file that is already unlinked
+            time.sleep(0.05)
+            continue
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        os.fsync(fd)
+        return fd
+    return None
 
 
 # =========================================================================
@@ -419,48 +511,71 @@ class Rig:
 
 
 def daemon():
-    with SafetyFrame():
-        dev = make_device()
-        stamp(f'creating uhid DualSense, uniq={FAKE_MAC}')
-        try:
-            dev.create_kernel_device()
-            if not wait_ready(dev):
-                stamp('WARNING: device did not report ready (3 input nodes + '
-                      'power_supply). hid_playstation may not have bound.')
-            stamp('device up:\n' + describe(dev))
-            serve(Rig(dev))
-        finally:
+    """Claim, arm, inhibit, create, serve - strictly in that order.
+
+    The claim and the signal handlers both precede the SafetyFrame so that
+    EVERY path out of here - signal, exception, quit - unwinds through
+    __exit__ and puts the inhibited units back. STOPPING is checked at the
+    two checkpoints where a signal that arrived during a long blocking step
+    (the systemctl stops, create+wait_ready) can be honoured without leaving
+    a device behind.
+    """
+    lock_fd = claim_pidfile()
+    if lock_fd is None:
+        raise SystemExit(f'fake-pad is already up (another rig holds '
+                         f'{PIDFILE})')
+    install_signal_handlers()
+    try:
+        with SafetyFrame():
+            if STOPPING['now']:
+                stamp('signalled while inhibiting - no device was created')
+                return
+            dev = make_device()
+            stamp(f'creating uhid DualSense, uniq={FAKE_MAC}')
             try:
-                dev.destroy()
-            except Exception as e:
-                stamp(f'destroy failed: {e}')
-            stamp('uhid device destroyed')
-            remove_our_files()
+                dev.create_kernel_device()
+                if not wait_ready(dev):
+                    stamp('WARNING: device did not report ready (3 input '
+                          'nodes + power_supply). hid_playstation may not '
+                          'have bound.')
+                stamp('device up:\n' + describe(dev))
+                if STOPPING['now']:
+                    stamp('signalled while the device was coming up - not '
+                          'serving')
+                else:
+                    serve(Rig(dev))
+            finally:
+                try:
+                    dev.destroy()
+                except Exception as e:
+                    stamp(f'destroy failed: {e}')
+                stamp('uhid device destroyed')
+    finally:
+        remove_our_files()
+        try:
+            os.close(lock_fd)        # releases the flock
+        except OSError:
+            pass
 
 
 def serve(rig):
+    """The command pump. Signals are ALREADY armed by daemon() - this
+    function no longer installs handlers of its own, it just reads the one
+    process-wide STOPPING flag, so there is no window where the two
+    installations disagree about what a SIGTERM means."""
     if os.path.exists(FIFO):
         os.remove(FIFO)
     os.mkfifo(FIFO, 0o600)
     rfd = os.open(FIFO, os.O_RDONLY | os.O_NONBLOCK)
     wfd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)   # keep it from EOF-ing
-    with open(PIDFILE, 'w') as f:
-        f.write(str(os.getpid()))
     rig.write_status()
     stamp(f'listening on {FIFO} (fake-pad quit to stop)')
-
-    stopping = {'now': False}
-
-    def onsig(signum, frame):
-        stopping['now'] = True
-    signal.signal(signal.SIGTERM, onsig)
-    signal.signal(signal.SIGINT, onsig)
 
     buf = b''
     poller = select.poll()
     poller.register(rfd, select.POLLIN)
     try:
-        while not stopping['now']:
+        while not STOPPING['now']:
             rig.dev.dispatch(10)
             for _fd, _mask in poller.poll(20):
                 try:
@@ -475,7 +590,7 @@ def serve(rig):
                 while b'\n' in buf:
                     line, buf = buf.split(b'\n', 1)
                     if not rig.handle(line.decode('utf-8', 'replace').strip()):
-                        stopping['now'] = True
+                        STOPPING['now'] = True
                         break
     finally:
         os.close(rfd)
@@ -512,11 +627,43 @@ def daemon_alive():
         return False
 
 
+def fifo_send(line):
+    """Write one command line to the rig's FIFO, NON-BLOCKING.
+
+    Opening a FIFO for writing blocks until a reader opens it - forever, if
+    the rig died hard and left its files behind. That parked the operator's
+    shell on a dead rig, which is the worst moment to be stuck: the inhibit
+    units are down and the only thing that restores them is the process that
+    just vanished. O_NONBLOCK turns exactly that case into ENXIO ("no
+    reader"), which we report and exit on. Same rule gesture-sweep's
+    rig_send() follows.
+    """
+    try:
+        fd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ENXIO:
+            sys.exit(f'fake-pad: nothing is reading {FIFO} - the rig died '
+                     f'and left its files behind. Check `systemctl --user '
+                     f'status {" ".join(INHIBIT_UNITS)}` (they may still be '
+                     f'stopped), delete {FIFO} and {PIDFILE}, then '
+                     f'fake-pad up.')
+        sys.exit(f'fake-pad: cannot open {FIFO}: {e}')
+    try:
+        os.write(fd, line.rstrip('\n').encode() + b'\n')
+    except OSError as e:
+        sys.exit(f'fake-pad: write to {FIFO} failed: {e}')
+    finally:
+        os.close(fd)
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ('-h', '--help'):
         sys.exit(__doc__)
     if args[0] == 'up':
+        # A courtesy check only - it is a snapshot and two `up`s can both
+        # pass it. The binding refusal is claim_pidfile()'s flock, inside
+        # daemon(), before anything exists to leak.
         if daemon_alive():
             sys.exit('fake-pad is already up')
         # Deliberately FOREGROUND: this process holds the device, the safety
@@ -541,8 +688,7 @@ def main():
         # directly returns the snapshot taken at startup, which reports
         # "reports sent: 0" forever and is quietly misleading.
         if daemon_alive():
-            with open(FIFO, 'w') as f:
-                f.write('status\n')
+            fifo_send('status')
             time.sleep(0.3)
         if os.path.exists(STATUSFILE):
             sys.stdout.write(open(STATUSFILE).read())
@@ -550,8 +696,9 @@ def main():
         sys.exit('fake-pad is not up')
     if not daemon_alive():
         sys.exit('fake-pad is not up (run: fake-pad up)')
-    with open(FIFO, 'w') as f:
-        f.write(' '.join(args) + '\n')
+    # daemon_alive() is a snapshot; the rig can die in the microsecond after
+    # it, so the send itself must not be able to block. See fifo_send().
+    fifo_send(' '.join(args))
 
 
 if __name__ == '__main__':

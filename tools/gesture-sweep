@@ -31,6 +31,14 @@ Run it with couchd ACTING on gestures (owns.conf), no real pad, no game
 session. It sequences scenarios on couchd's own status.json regions, reads
 the verdicts from the shadow JSONL, and prints a PASS/FAIL table; exit 0
 means every expectation held and the frame restored what it stopped.
+
+The no-session precondition is re-checked before EVERY stimulus, not just at
+preflight (still_safe_to_press): a game that starts mid-run, or a
+/tmp/game-suspended that appears mid-run, would turn the next scenario's
+hold into a real SIGSTOP of a live session and the next tap into a real
+resume. On either, the run stops where it is, tears down through the normal
+frame restore, and reports a run-level failure - an aborted sweep is never
+a pass.
 """
 import json
 import os
@@ -46,6 +54,7 @@ FIFO = '/tmp/fake-pad.fifo'
 PIDFILE = '/tmp/fake-pad.pid'
 STATUS = os.path.expanduser('~/couch/shadow/status.json')
 TV_WAKE_REQUEST = '/tmp/tv-wake-request'
+GAME_SUSPENDED = '/tmp/game-suspended'
 LEGACY_INTENTS = '/tmp/legacy-intents.jsonl'
 KODI_RPC = ('127.0.0.1', 9090)
 KODI_SELECT_DIALOG = 12000
@@ -189,7 +198,19 @@ class Tail:
     def records(self):
         """Everything appended since mark(). NUL-hole and mid-write safe:
         a line that will not parse is skipped, the offset only advances over
-        complete lines."""
+        complete lines.
+
+        NULs are stripped from ANYWHERE in the line, not just its ends -
+        tools/shadow-diff's load_jsonl() does the same and for the same
+        reason. An unclean shutdown leaves a HOLE, not a truncation: the
+        05:19 power event left 1154 NUL bytes in snapshots-20260805.jsonl
+        where the tail was allocated but never reached the platter. Those
+        bytes carry no newline, so they arrive GLUED BETWEEN two real
+        records. Stripping only the ends left the NULs in the middle, the
+        json.loads failed, and the record was silently dropped - i.e. a
+        scenario's own evidence could vanish and read as "nothing happened",
+        which in this rig grades as a FAIL against a daemon that behaved.
+        """
         out = []
         try:
             with open(self.path, 'rb') as f:
@@ -202,7 +223,7 @@ class Tail:
             return out
         self.offset += end + 1
         for line in data[:end].split(b'\n'):
-            line = line.strip(b'\x00').strip()
+            line = line.replace(b'\x00', b'').strip()
             if not line:
                 continue
             try:
@@ -470,9 +491,9 @@ def preflight():
     # A stale suspended flag turns every plain tap into a REAL tap-resume:
     # launch <appid> mode=resume + show <appid>, i.e. game-launch spawning
     # and a /tmp/tv-wake-request touch. Refuse to start until it is gone.
-    if os.path.exists('/tmp/game-suspended'):
-        die('/tmp/game-suspended exists; a tap would act a real resume. '
-            'Let the legacy reconcile clear it (or clear it) first')
+    if os.path.exists(GAME_SUSPENDED):
+        die(f'{GAME_SUSPENDED} exists; a tap would act a real resume. '
+            f'Let the legacy reconcile clear it (or clear it) first')
     # The daemon must be RUNNING the code we are asserting about: a model
     # file newer than the daemon's start means the fixes on disk are not the
     # fixes in memory, and the sweep would grade the wrong build.
@@ -497,6 +518,37 @@ def preflight():
     elif w in DISMISS_WINDOWS:
         dismiss_ui()
     return s
+
+
+def still_safe_to_press():
+    """Re-check, immediately before EVERY stimulus, the two preflight facts
+    that decide whether a PS press is synthetic or real. Returns a reason
+    string if the box has changed under us, None if it is still safe.
+
+    preflight() is a check-ONCE, and the box is not frozen for the ~90s a
+    sweep takes: Steam can launch a game (a friend's invite, a scheduled
+    update finishing, a stray pad-home action), and /tmp/game-suspended can
+    appear from the legacy stack at any moment. Either one re-points the
+    bindings at real work - `hold` becomes suspend_to_kodi against a LIVE
+    game (a real SIGSTOP of somebody's session) and a tap becomes a real
+    resume (game-launch spawned, the TV woken). Those are not sweep
+    artefacts to grade, they are damage.
+
+    Deliberately cheap - one status.json read and one stat - because it runs
+    ten times a run, and deliberately BEFORE the send rather than after: the
+    only useful moment to notice is while the button is still up.
+    """
+    s = read_status()
+    if not s:
+        return 'status.json became unreadable mid-run'
+    region = (s.get('regions') or {}).get('session')
+    if region != 'none':
+        return (f'session region turned {region!r} mid-run: a game is live '
+                f'and a hold would really suspend it')
+    if os.path.exists(GAME_SUSPENDED):
+        return (f'{GAME_SUSPENDED} appeared mid-run: a tap would act a real '
+                f'resume (game-launch + TV wake)')
+    return None
 
 
 def clear_wake_flag(when):
@@ -538,12 +590,27 @@ def wait_rig_ready(log_path):
 
 
 def stop_rig(proc, log_path):
+    """Quit the rig, and never wait 30s on a rig that cannot hear us.
+
+    fake-pad claims its pidfile at process start now (before the FIFO
+    exists), so rig_alive() can be true while there is nothing to write to -
+    a rig killed early, or one still inside the ~20s of systemctl stops.
+    A failed `quit` therefore goes straight to a SIGTERM on the process
+    group, which fake-pad's handlers turn into the same clean unwind through
+    its safety frame."""
+    quit_sent = False
     if rig_alive():
         try:
             rig_send('quit')
-        except OSError:
-            pass
+            quit_sent = True
+        except OSError as e:
+            say(f'could not deliver quit to the rig ({e}); signalling it')
     if proc is not None:
+        if not quit_sent:
+            try:
+                os.killpg(os.getpgid(proc.pid), 15)
+            except OSError:
+                pass
         try:
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
@@ -579,6 +646,7 @@ def main():
 
     results = []
     forbidden = []
+    aborts = []
     proc = None
     try:
         proc = start_rig(log_path)
@@ -592,6 +660,14 @@ def main():
                                  'before the scenario']))
                 continue
             time.sleep(3.5)     # outlast every 3s intent cooldown
+            unsafe = still_safe_to_press()
+            if unsafe:
+                say(f'ABORTING: {unsafe}')
+                say('no further scenarios will run; tearing down through the '
+                    'frame')
+                aborts.append(unsafe)
+                results.append((sc['name'], [f'not run: {unsafe}']))
+                break
             tail.mark()
             rig_send(sc['script'])
             time.sleep(script_seconds(sc['script']) + sc['wait_after'])
@@ -609,37 +685,46 @@ def main():
             dismiss_ui()
 
         # -- disconnect mid-gesture: the teardown IS the stimulus ----------
-        if not forbidden:
+        if not forbidden and not aborts:
             say('--- disconnect-mid-hold: uhid destroyed, button down')
             wait_gesture('idle', 30)
             time.sleep(3.5)
-            tail.mark()
-            rig_send('down ps')
-            time.sleep(1.1)   # past 0.9: hold has fired, button still down
-            clear_wake_flag('before frame restore')
-            stop_rig(proc, log_path)
-            proc = None
-            clear_wake_flag('just after frame restore')
-            ok_gone = wait_for(lambda: (read_status() or {})
-                               .get('regions', {}).get('pad')
-                               in ('absent', 'unknown'), 20,
-                               "pad region to leave 'present'")
-            time.sleep(2.0)
-            recs = tail.records()
-            dfails = []
-            if not ok_gone:
-                dfails.append('couchd never noticed the pad vanish')
-            if acted(recs, 'show_switcher'):
-                dfails.append('switcher acted off a disconnected mid-hold '
-                              'press')
-            dfails += [f'forbidden intent acted: {r.get("verb")} '
-                       f'{r.get("subject")}' for r in acted(recs)
-                       if (r.get('verb'), r.get('subject'))
-                       not in ALLOWED_ACTED]
-            if not unit_active('couchd.service'):
-                dfails.append('couchd DIED during the disconnect')
-            results.append(('disconnect-mid-hold', dfails))
-            dismiss_ui()    # the 1.1s hold opened Kodi's poweroff menu too
+            unsafe = still_safe_to_press()
+            if unsafe:
+                # The stimulus here is a button held DOWN across a teardown;
+                # against a live game that is a real suspend. Skip it and let
+                # the finally restore the frame.
+                say(f'ABORTING: {unsafe}')
+                aborts.append(unsafe)
+                results.append(('disconnect-mid-hold', [f'not run: {unsafe}']))
+            else:
+                tail.mark()
+                rig_send('down ps')
+                time.sleep(1.1)   # past 0.9: hold fired, button still down
+                clear_wake_flag('before frame restore')
+                stop_rig(proc, log_path)
+                proc = None
+                clear_wake_flag('just after frame restore')
+                ok_gone = wait_for(lambda: (read_status() or {})
+                                   .get('regions', {}).get('pad')
+                                   in ('absent', 'unknown'), 20,
+                                   "pad region to leave 'present'")
+                time.sleep(2.0)
+                recs = tail.records()
+                dfails = []
+                if not ok_gone:
+                    dfails.append('couchd never noticed the pad vanish')
+                if acted(recs, 'show_switcher'):
+                    dfails.append('switcher acted off a disconnected mid-hold '
+                                  'press')
+                dfails += [f'forbidden intent acted: {r.get("verb")} '
+                           f'{r.get("subject")}' for r in acted(recs)
+                           if (r.get('verb'), r.get('subject'))
+                           not in ALLOWED_ACTED]
+                if not unit_active('couchd.service'):
+                    dfails.append('couchd DIED during the disconnect')
+                results.append(('disconnect-mid-hold', dfails))
+                dismiss_ui()  # the 1.1s hold opened Kodi's poweroff menu too
     except RuntimeError as e:
         results.append(('rig-start', [str(e)]))
     finally:
@@ -675,6 +760,11 @@ def main():
                         f'close it (Input.Back)')
     if forbidden:
         endfails.append(f'FORBIDDEN INTENTS ACTED: {forbidden}')
+    if aborts:
+        endfails.append(f'RUN ABORTED - the box changed under the sweep: '
+                        f'{"; ".join(aborts)}. The scenarios after the abort '
+                        f'did NOT run, so this is an incomplete sweep, not a '
+                        f'pass')
     legacy_delta = ((os.path.getsize(LEGACY_INTENTS)
                      if os.path.exists(LEGACY_INTENTS) else 0) - legacy0)
     say(f'legacy would-do stream grew {legacy_delta} bytes '

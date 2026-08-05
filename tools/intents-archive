@@ -9,14 +9,85 @@ Byte-offset incremental: a state file remembers (dev, ino, offset); a new
 inode or a shrunken file (reboot, truncation) resets the offset to 0. Only
 complete lines are copied, so a mid-write tail is never split. Runs from
 intents-archive.timer every 2 minutes; safe to run by hand any time.
+
+Three properties this has to hold, because the thing it copies is EVIDENCE
+and the failure mode of evidence plumbing is silence:
+
+  DURABILITY. The archive write is fsync'd - file AND directory - before the
+  state file's offset advances. Without that ordering a hard crash (and this
+  box has had one, 05:19 on 5 Aug) can persist "I copied up to byte N" while
+  the bytes themselves never reached the platter, and those lines are then
+  gone from both copies forever. Slow and honest beats fast and lossy at one
+  run every two minutes.
+
+  NO SILENT DUPLICATION. A state file that exists but will not parse used to
+  fall back to offset 0, which re-appended the whole source and doubled every
+  line in the day's archive - the same corruption as loss, only harder to
+  spot. A corrupt state file is now a REFUSAL (exit 1, loud on stderr): the
+  next clean state, or a human, wins. Recovery is a human decision: delete
+  the state file to restart from offset 0 (accepting duplicates in the day's
+  archive), or write a correct offset back into it. A MISSING state file is
+  still the ordinary first run and copies from 0.
+
+  RIGHT DAY. Lines are filed by THEIR OWN `t`, not by the clock at copy time.
+  The timer fires every two minutes, so a run at 00:00:30 is normally
+  carrying lines written at 23:59 - filing those under today would smear the
+  evening across two archives and make an evening's differ read short at both
+  ends. Lines whose `t` will not parse fall back to the copy-time day.
 """
 import json
 import os
 import sys
+import time
 
 SRC = '/tmp/legacy-intents.jsonl'
 SHADOW = os.path.expanduser('~/couch/shadow')
 STATE = os.path.join(SHADOW, '.intents-archive-state.json')
+
+
+def line_day(line, default):
+    """The archive day a source line belongs to, from its own `t` field.
+
+    `default` (the copy-time day) is used for anything unparseable - a
+    mid-write line that slipped through, a NUL hole from an unclean
+    shutdown - because an un-filed line is worse than a slightly misfiled
+    one.
+    """
+    try:
+        rec = json.loads(line.decode('utf-8', 'replace'))
+        return time.strftime('%Y%m%d', time.localtime(float(rec['t'])))
+    except (ValueError, TypeError, KeyError, OverflowError, OSError):
+        return default
+
+
+def split_by_day(chunk, default_day):
+    """[(day, bytes)] in source order, one entry per day present."""
+    days = {}
+    for line in chunk.splitlines(keepends=True):
+        days.setdefault(line_day(line, default_day), []).append(line)
+    return [(day, b''.join(lines)) for day, lines in days.items()]
+
+
+def append_durably(path, data):
+    """Append and get the bytes onto the platter - file, then directory.
+
+    The directory fsync is not paranoia: on a first run the archive file is
+    freshly created, and its directory entry is a separate metadata write. A
+    crash between the two leaves the bytes allocated and the name gone.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+    try:
+        written = 0
+        while written < len(data):    # os.write may be short; the offset the
+            written += os.write(fd, data[written:])   # state advances by is
+        os.fsync(fd)                  # len(chunk), so it must ALL land
+    finally:
+        os.close(fd)
+    dfd = os.open(os.path.dirname(path) or '.', os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def main():
@@ -27,11 +98,25 @@ def main():
     except OSError:
         return 0
     state = {}
-    try:
-        with open(STATE) as f:
-            state = json.load(f)
-    except (OSError, ValueError):
-        pass
+    if os.path.exists(STATE):
+        try:
+            with open(STATE) as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                raise ValueError('state file is not a JSON object')
+            offset = state.get('offset', 0)
+            if not isinstance(offset, int) or isinstance(offset, bool) \
+                    or offset < 0:
+                raise ValueError(f'bad offset {offset!r}')
+        except (OSError, ValueError) as e:
+            # REFUSING, not resetting: an offset we cannot read is not an
+            # offset of 0, and copying from 0 would duplicate every line
+            # already archived today. See NO SILENT DUPLICATION above.
+            print(f'intents-archive: REFUSING to copy - {STATE} will not '
+                  f'parse ({e}). Nothing has been archived. Fix or delete '
+                  f'the state file (deleting it re-copies from byte 0 and '
+                  f'WILL duplicate today\'s archive).', file=sys.stderr)
+            return 1
     offset = state.get('offset', 0)
     if (state.get('dev'), state.get('ino')) != (st.st_dev, st.st_ino) \
             or st.st_size < offset:
@@ -45,15 +130,17 @@ def main():
     if end < 0:
         return 0                      # no complete line yet
     chunk = chunk[:end + 1]
-    import time
-    day = time.strftime('%Y%m%d')
-    dst = os.path.join(SHADOW, f'legacy-intents-{day}.jsonl')
-    with open(dst, 'ab') as f:
-        f.write(chunk)
+    today = time.strftime('%Y%m%d')
+    for day, data in split_by_day(chunk, today):
+        append_durably(os.path.join(SHADOW, f'legacy-intents-{day}.jsonl'),
+                       data)
+    # Only now, with every archived byte durable, may the offset advance.
     tmp = STATE + '.tmp'
     with open(tmp, 'w') as f:
         json.dump({'dev': st.st_dev, 'ino': st.st_ino,
                    'offset': offset + len(chunk)}, f)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, STATE)
     return 0
 
