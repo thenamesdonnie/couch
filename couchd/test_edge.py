@@ -383,6 +383,146 @@ def test_couchds_own_guard_window_is_never_superseded(tmp_path, monkeypatch):
 
 
 # =========================================================================
+# C17 vs the sampler: an effect only Kodi can show (bug 2)
+#
+# The switcher dialog was demonstrably on screen 13:57:04.8-13:57:11.7 and
+# verdicted 'unverified' at 13:57:07.9, because the only observer that can see
+# it reads every 10s. The deadline was never the problem - nothing LOOKED.
+# =========================================================================
+def test_the_switcher_dialog_is_an_effect_the_model_can_check():
+    o = make_obs(kodi_window=couchd.KODI_SELECT_DIALOG)
+    it = couchd.Intent('show_switcher', 'tv', {}, 'gesture:double-tap-switcher')
+    assert couchd.EFFECT_CHECKS['show_switcher'](o, it) is True
+    assert couchd.EFFECT_CHECKS['show_switcher'](make_obs(kodi_window=10025),
+                                                 it) is False
+
+
+def test_every_kodi_only_effect_asks_for_a_targeted_read():
+    """The structural guarantee: if the only way to see an effect is a Kodi
+    read, the verb must be one the daemon goes and looks for - otherwise its
+    verdict is decided by the 10s limiter rather than by the world."""
+    kodi_only = {'route_pad', 'dismiss', 'show_switcher'}
+    assert kodi_only <= set(couchd.KODI_OBSERVED_EFFECTS)
+    for verb in couchd.KODI_OBSERVED_EFFECTS:
+        assert verb in couchd.EFFECT_CHECKS, verb
+
+
+def test_the_switchers_deadline_leaves_room_for_several_targeted_reads():
+    """Sane relative to the observation cadence, which is what the targeted
+    read makes it: the dialog draws in a measured 1.3-1.5s and the reads come
+    every KODI_EFFECT_READ_FLOOR."""
+    o = make_obs(regions={'gesture': 'double-tap'})
+    it = [i for i in couchd.reconcile(o) if i.verb == 'show_switcher'][0]
+    deadline = float(it.predict['deadline_s'])
+    assert deadline >= 4 * couchd.KODI_EFFECT_READ_FLOOR
+    assert deadline > 1.5, 'longer than the measured draw time'
+    assert it.cooldown >= deadline, 'and no re-decide before it is judged'
+
+
+def test_a_targeted_read_jumps_the_limiter_exactly_once(tmp_path, monkeypatch):
+    d = daemon(tmp_path, monkeypatch)
+    k = d.kodi
+    reads = []
+    k._read_all = lambda: (reads.append(time.monotonic()), (True, 12000, False))[1]
+    k.password = 'x'
+    poll = couchd.KodiObserver.poll          # the fixture stubs the bound one
+
+    async def drive():
+        await poll(k)                        # the first read of the process
+        n = len(reads)
+        assert n == 1
+        await poll(k)                        # limiter: nothing
+        assert len(reads) == n
+        assert k.request_read('show_switcher') is True
+        await poll(k)                        # ...but a targeted read goes
+        assert len(reads) == n + 1
+        assert k.forced_reads == 1
+        # the floor stops a burst of actions becoming a burst of reads
+        assert k.request_read('route_pad') is False
+        await poll(k)
+        assert len(reads) == n + 1
+
+    asyncio.run(drive())
+
+
+def test_the_targeted_read_wakes_the_loop(tmp_path, monkeypatch):
+    d = daemon(tmp_path, monkeypatch)
+    d.world.wake.clear()
+    assert d.kodi.request_read('show_switcher') is True
+    assert d.world.wake.is_set(), 'the pass that judges it must come soon'
+    assert 'kodi-effect' in d.world.attention_reason
+
+
+def test_the_daemon_keeps_looking_while_the_prediction_is_outstanding(
+        tmp_path, monkeypatch):
+    """One read at +0.2s would miss a dialog that draws at +1.4s, and the next
+    scheduled one lands after the deadline. So the ask repeats while - and
+    only while - something is pending."""
+    d = daemon(tmp_path, monkeypatch)
+    asked = []
+    d.kodi.request_read = lambda why: asked.append(why) or True
+
+    class Pending:
+        def __init__(self, verbs):
+            self.verbs = verbs
+
+        def pending_verbs(self):
+            return self.verbs
+
+        def execute(self, it, o):
+            return {'acted': False}
+
+        def check_pending(self, o):
+            return []
+
+        def set_owns(self, cur):
+            return False
+
+        owned = frozenset()
+        count = failures = 0
+        acting = None
+    d.executor = Pending(['show_switcher'])
+    d.pass_once(loop=None)
+    assert asked and asked[0].startswith('pending:show_switcher')
+    asked.clear()
+    d.executor = Pending(['freeze'])          # not a Kodi-observable effect
+    d.pass_once(loop=None)
+    assert not asked
+
+
+# =========================================================================
+# a gesture that decided nothing says so (bug 3)
+# =========================================================================
+def test_a_hold_with_no_session_records_its_no_op(tmp_path, monkeypatch):
+    d = daemon(tmp_path, monkeypatch)
+    o = make_obs(regions={'gesture': 'handoff-pending', 'session': 'none'},
+                 session=None, region_since={'gesture': 500.0})
+    d.note_noop_gesture(o, [])
+    recs = [json.loads(l) for l in
+            (tmp_path / f'couchd-{time.strftime("%Y%m%d")}.jsonl').read_text()
+            .strip().splitlines()]
+    noop = [r for r in recs if r.get('event') == 'gesture-no-op']
+    assert noop and noop[0]['gesture'] == 'handoff-pending'
+    assert noop[0]['session'] is False and 'no session' in noop[0]['why']
+    # ...once per gesture, not once per pass
+    d.note_noop_gesture(o, [])
+    assert len([r for r in json.loads('[%s]' % ','.join(
+        (tmp_path / f'couchd-{time.strftime("%Y%m%d")}.jsonl').read_text()
+        .strip().splitlines())) if r.get('event') == 'gesture-no-op']) == 1
+
+
+def test_a_gesture_that_did_decide_something_records_no_no_op(tmp_path,
+                                                              monkeypatch):
+    d = daemon(tmp_path, monkeypatch)
+    o = make_obs(regions={'gesture': 'handoff-pending'},
+                 region_since={'gesture': 500.0})
+    d.note_noop_gesture(o, [couchd.Intent('route_pad', 'kodi', {}, 'g')])
+    path = tmp_path / f'couchd-{time.strftime("%Y%m%d")}.jsonl'
+    body = path.read_text() if path.exists() else ''
+    assert 'gesture-no-op' not in body
+
+
+# =========================================================================
 # the model fingerprint (what the differ keys staleness off)
 # =========================================================================
 def test_the_model_version_is_a_hash_of_the_decision_making_source():

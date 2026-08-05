@@ -19,6 +19,8 @@ from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
+import couchd
+import gesture
 from gesture import DOUBLE_TAP_S
 from gestureconf import ACTIONS, DEFAULT_BINDINGS
 from couchd import (GUARDS, HOLD_SECONDS, REGIONS, REPAIR_COOLDOWN, TRANSITIONS,
@@ -608,7 +610,8 @@ def test_the_default_hold_still_defers_its_handoff_to_the_release():
 
 
 def test_a_bound_hold_release_fires_on_top_of_the_handoff():
-    o = make_obs(regions={'gesture': 'handoff-pending'},
+    o = make_obs(session=SESSION, regions={'gesture': 'handoff-pending',
+                                           'session': 'active'},
                  bindings=bind(hold_release='desktop'))
     got = reconcile(o)
     assert verbs(got) == [('route_pad', 'kodi'), ('show', 'kodi'),
@@ -1450,6 +1453,206 @@ def test_t4_3_the_repair_thaw_and_its_deiconify_share_a_cooldown():
     back = [i for i in find(got, 'show', APPID)
             if i.args.get('reason') == 'deiconify'][0]
     assert back.cooldown == thaw.cooldown == REPAIR_COOLDOWN
+
+
+# =========================================================================
+# COALESCED EDGES: a double-tap the passes did not see in pieces
+#
+# The region is SAMPLED and the button is not. Two edges landing between two
+# passes leave the machine looking at the last one only, so the path a real
+# double-tap walks depends on how the presses fell relative to the 50ms
+# debounce - which is sampling luck, not something the player did.
+#
+# Live proof, 5 Aug 13:57:11.5 (the owner's own double-tap, 48ms between
+# tap-1's release and tap-2's press): latency record edge_seq 19,
+# coalesced:1, no intent, machine stuck in 'down', while the yielded watcher
+# recorded that legacy would have opened the switcher. Measured boundary:
+# >=120ms fired, 48ms did not.
+#
+# The table now asks the tracker (SR4's single source of truth) from every
+# state with a press in flight, so the gap between the two taps no longer
+# decides whether the gesture exists.
+# =========================================================================
+def _edges(rig, taps, gap, length=0.1, lengths=None, k0=40000.0, **world):
+    """Drive `taps` presses `gap` apart, coalescing any pair of edges that
+    lands inside one pass - exactly what the daemon's debounce does.
+
+    A pass is emitted per PASS, not per edge: edges closer together than the
+    debounce arrive at the machine as one observation, which is the whole
+    bug. `gap` is release-to-next-press, in seconds.
+    """
+    out = []
+    k = k0
+    pending = []                     # edges not yet shown to the machine
+    for n in range(taps):
+        pending.append(('down', k))
+        k += (lengths[n] if lengths else length)
+        pending.append(('up', k))
+        k += gap
+    # group edges into passes: an edge opens a pass, everything inside
+    # DEBOUNCE of it rides along
+    passes, cur = [], []
+    for kind, t in pending:
+        if not cur or t - cur[0][1] < couchd.EDGE_DEBOUNCE:
+            cur.append((kind, t))
+        else:
+            passes.append(cur)
+            cur = [(kind, t)]
+    if cur:
+        passes.append(cur)
+    tracker = gesture.PressTracker()
+    for group in passes:
+        for kind, t in group:
+            tracker.feed(t, 1 if kind == 'down' else 0, mono=t)
+        last_t = group[-1][1]
+        out.append(rig.observe(
+            dt=max(0.05, last_t - (rig.mono - 1000.0) - 40000.0 + 0.05),
+            button_down=tracker.button_down,
+            down_since_k=tracker.down_since_k,
+            kernel_now=last_t,
+            press_duration=tracker.press_duration,
+            double_armed=tracker.double_armed, **world))
+    return out
+
+
+def _switcher_fired(passes):
+    return any(find(p, 'show_switcher') for p in passes)
+
+
+def test_a_double_tap_with_a_120ms_gap_fires_the_switcher():
+    """The gap that always worked: every edge got its own pass, so the machine
+    walked idle->down->tap-wait->down-again->double-tap."""
+    rig = Rig(joystick=True).settle()
+    assert _switcher_fired(_edges(rig, 2, gap=0.120))
+    assert rig.machine.regions['gesture'] in ('double-tap', 'idle')
+
+
+def test_a_double_tap_with_the_owners_48ms_gap_fires_it_too():
+    """13:57:11.5, the press that was silently dropped: tap-1's release and
+    tap-2's press coalesce, the machine never leaves 'down', and the release
+    used to fall through to ps-tap-noop."""
+    rig = Rig(joystick=True).settle()
+    passes = _edges(rig, 2, gap=0.048)
+    assert _switcher_fired(passes), [verbs(p) for p in passes]
+    assert ('gesture', 'down', 'double-tap', 'ps-double-tap-coalesced') \
+        in rig.transitions
+
+
+def test_a_double_tap_whose_taps_share_one_pass_entirely_fires_it():
+    """0ms gap: both edges of tap-2 land in the same pass as each other."""
+    rig = Rig(joystick=True).settle()
+    passes = _edges(rig, 2, gap=0.0, length=0.04)
+    assert _switcher_fired(passes), [verbs(p) for p in passes]
+
+
+def test_a_second_tap_that_lands_whole_inside_one_pass_fires_it():
+    """The same hazard one step later: tap-1 walked into 'tap-wait' normally,
+    then tap-2's press AND release both landed between two passes, so the
+    machine never entered 'down-again' either."""
+    rig = Rig(joystick=True).settle()
+    passes = _edges(rig, 2, gap=0.06, lengths=[0.09, 0.04])
+    assert _switcher_fired(passes), [verbs(p) for p in passes]
+    assert ('gesture', 'tap-wait', 'double-tap', 'ps-double-tap-coalesced') \
+        in rig.transitions
+
+
+def test_a_first_tap_shorter_than_the_debounce_is_a_KNOWN_residual():
+    """The one case this fix does NOT close, pinned so it cannot rot quietly.
+
+    If tap-1's press and release BOTH land inside one pass, no pass ever sees
+    the button down, the machine never leaves 'idle', and there is no press in
+    flight for the tracker's arming to attach to. Closing it means firing a
+    double-tap from 'idle' - and `double_armed` stays set after a release, so
+    an idle machine carrying a stale arming would fire the switcher again for
+    free. That trade is not worth it at these numbers: it needs BOTH taps
+    under the 50ms debounce, and the fastest real tap in the whole corpus is
+    69ms against a 350ms double-tap window.
+
+    If it ever does bite, the fix is a one-shot the tracker owns (a
+    consumed-doubles counter on Observed), not a freshness window here.
+    """
+    rig = Rig(joystick=True).settle()
+    passes = _edges(rig, 2, gap=0.06, length=0.04)
+    assert not _switcher_fired(passes)
+    assert rig.machine.regions['gesture'] == 'idle', 'never entered a gesture'
+
+
+def test_the_double_tap_boundary_is_the_tracker_not_the_sampling():
+    """The whole point, as one assertion: across every gap from 'same pass'
+    to comfortably-apart, the SAME physical gesture produces the same
+    decision. Below DOUBLE_TAP_S it is a double-tap; above it, it is not."""
+    for gap in (0.0, 0.03, 0.048, 0.08, 0.12, 0.2, 0.3):
+        rig = Rig(joystick=True).settle()
+        assert _switcher_fired(_edges(rig, 2, gap=gap)), f'gap {gap}s'
+    rig = Rig(joystick=True).settle()
+    assert not _switcher_fired(_edges(rig, 2, gap=0.5)), 'past the window'
+
+
+def test_a_rapid_triple_tap_opens_the_switcher_exactly_once():
+    """13:57:05, and the semantics pinned deliberately.
+
+    The tracker closes a double-tap window when it USES it, so three taps are
+    one double plus one single - and a fourth tap re-arms against the third.
+    couchd trusts that (it is legacy's `last_tap_at` rule, in gesture.py), and
+    what stops the burst re-firing the dialog is the switcher intent's own 3s
+    cooldown: the region may bounce through 'double-tap' again, the DECISION
+    happens once. Legacy reaches the same end through its 1.2s settle window,
+    which couchd does not model - a declared gap, not this bug.
+    """
+    rig = Rig(joystick=True).settle()
+    passes = _edges(rig, 4, gap=0.06, length=0.07)
+    fired = [i for p in passes for i in find(p, 'show_switcher')]
+    assert len(fired) == 1, [verbs(p) for p in passes]
+
+
+def test_a_coalesced_double_tap_still_suspends_a_running_game_first():
+    """The dialog is Kodi's, so the suspend half must survive the fix."""
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              top_name='ELDEN RING', top_class=E1_TOPCLS).settle()
+    passes = _edges(rig, 2, gap=0.048)
+    flat = [i for p in passes for i in p]
+    assert [(i.verb, i.subject) for i in flat if i.verb in
+            ('freeze', 'show_switcher')] == [('freeze', APPID),
+                                             ('show_switcher', 'tv')]
+
+
+def test_a_stale_arming_can_never_fire_from_an_idle_machine():
+    """`double_armed` stays set through a release, so the guard is only safe
+    where a press has happened since the machine arrived. 'idle' is
+    deliberately NOT one of those states."""
+    o = make_obs(regions={'gesture': 'idle'}, double_armed=True,
+                 press_duration=0.08, button_down=False)
+    m = Machine()
+    m.regions.update(o.regions)
+    m.step(o)
+    assert m.regions['gesture'] == 'idle'
+    assert not find(reconcile(o), 'show_switcher')
+
+
+# =========================================================================
+# a hold with no session decides NOTHING (bug 3)
+# =========================================================================
+def test_a_hold_with_no_session_emits_no_handoff():
+    """pad-home-watcher.hold_ready() returns os.path.exists(SESSION) for
+    suspend_to_kodi, so legacy never spends the hold at all. couchd used to
+    emit the full handoff regardless - idempotent on a Kodi screen, but from
+    the desktop it would raise Kodi where the old stack did nothing."""
+    o = make_obs(regions={'gesture': 'handoff-pending', 'session': 'none'},
+                 session=None, top_name='Thunar', top_class='Thunar')
+    assert reconcile(o) == []
+
+
+def test_a_hold_with_a_session_still_hands_off():
+    o = make_obs(session=SESSION, regions={'gesture': 'handoff-pending',
+                                           'session': 'active'})
+    got = reconcile(o)
+    assert find(got, 'route_pad', 'kodi') and find(got, 'show', 'kodi')
+
+
+def test_the_timeout_arm_is_gated_the_same_way():
+    o = make_obs(regions={'gesture': 'timed-out', 'session': 'none'},
+                 session=None)
+    assert reconcile(o) == []
 
 
 TestConsoleModel = ConsoleModel.TestCase

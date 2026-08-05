@@ -97,6 +97,12 @@ EDGE_DEBOUNCE = 0.05
 # the floor it will not go below to do it.
 EDGE_DEADLINE_FLOOR = 0.02
 KODI_READ_INTERVAL = 10.0     # never faster, whatever the tick does
+# ...except ONE targeted read after couchd acts on something only a Kodi read
+# can confirm (see KODI_OBSERVED_EFFECTS). It is not a second cadence: it is a
+# single read, asked for by name, and the limiter governs everything else.
+KODI_EFFECT_READ_FLOOR = 0.5  # two targeted reads may not come closer than this
+# The window id Kodi gives a select dialog - what script.couch.switcher draws.
+KODI_SELECT_DIALOG = 12000
 STATUS_INTERVAL = 3.0
 SNAPSHOT_INTERVAL = 30.0
 SNAPSHOT_MIN_GAP = 2.0        # attention-triggered snapshots are rate-limited
@@ -557,6 +563,13 @@ def g_released_double(o):
     """The second half of a double-tap: released, itself a tap, and it began
     inside DOUBLE_TAP_S of the previous tap's release.
 
+    This is THE double-tap decision, and it is the tracker's, not the table's
+    (SR4). Every state with a press in flight - 'down', 'tap-wait' and
+    'down-again' - asks it, because which of those states the machine happens
+    to be sitting in depends on how the edges fell relative to the passes, and
+    that is sampling luck rather than anything the player did. What the player
+    did is what `double_armed` records, in kernel time, at the press.
+
     `double_armed` is the tracker's, computed in KERNEL time (R4) - the
     tap-wait state below only says a second press is plausible, this says it
     actually was one. The hold transition is tried first in every state that
@@ -720,8 +733,28 @@ TRANSITIONS = {
         # it is unreachable unless `hold` is bound to Nothing (g_hold_fires /
         # g_long_hold_fires), so under the default bindings this list is the
         # one it has always been.
+        # `released_double` sits here, above the ordinary release, because the
+        # REGION IS SAMPLED AND THE BUTTON IS NOT. A pass is a level-based look
+        # at the world, so when two edges land between two passes the machine
+        # sees only the last one: tap-1's release and tap-2's press 48ms apart
+        # both fall inside one 50ms debounce, the pass sees "still down", and
+        # the machine never leaves this state - so tap-2's release used to fall
+        # through to ps-tap-noop and the double-tap was dropped in silence.
+        # (Live, 5 Aug 13:57:11.5: a real double-tap by the owner, edge_seq 19,
+        # coalesced:1, no intent, while the yielded watcher shows legacy firing
+        # the switcher. >=120ms fired, 48ms did not.)
+        #
+        # The fix is to ask the arbiter instead of inferring from the path
+        # taken: gesture.PressTracker already decided this release completes a
+        # double (it computes double_armed at the PRESS, in kernel time, and
+        # holds it through the release), and g_released_double is that
+        # decision. SR4 says the arithmetic lives in gesture.py and both stacks
+        # read it; the table's job is to trust it from every state where a
+        # press is in flight, not to re-derive it from the states it happened
+        # to pass through.
         'down': [('hold_fires', 'hold-fired', 'ps-held-0.9s'),
                  ('long_hold_fires', 'long-hold-fired', 'ps-held-long'),
+                 ('released_double', 'double-tap', 'ps-double-tap-coalesced'),
                  ('released_tap_resume', 'tap-resume', 'ps-tap-with-paused-game'),
                  ('released', 'tap-wait', 'ps-tap-noop')],
         # A tap that did nothing (no paused game to resume) is not final until
@@ -731,6 +764,13 @@ TRANSITIONS = {
         # the live watcher's tap latency is unchanged.
         'tap-wait': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
                      ('button_down', 'down-again', 'second-press-inside-window'),
+                     # ...and the same coalescing hazard one step later: when
+                     # tap-2's press AND its release both land between two
+                     # passes, the machine never enters 'down-again' either.
+                     # Reaching this rule requires a press since we arrived
+                     # here (nothing else can set double_armed), so a stale
+                     # arming cannot fire it.
+                     ('released_double', 'double-tap', 'ps-double-tap-coalesced'),
                      # The deferred resume, before the plain expiry: a tap on a
                      # PAUSED game waited out the double-tap window here (see
                      # g_released_tap_resume) and now means what it always meant.
@@ -1273,7 +1313,16 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
     out.append(Intent('show_switcher', 'tv',
                       {'via': 'kodi-addon:script.couch.switcher',
                        'suspended_first': handed},
-                      switcher_reason, _pred('Kodi select dialog open', 3.0),
+                      switcher_reason,
+                      # 3s is the right deadline and always was: the addon
+                      # starts, asks the couch server for the window list and
+                      # draws in a measured 1.3-1.5s. What was wrong was the
+                      # LOOKING - the only observer that can see this dialog
+                      # reads every 10s, so the verdict was decided by the
+                      # sampler. KODI_OBSERVED_EFFECTS now keeps a targeted
+                      # read coming while this prediction is outstanding, so
+                      # the deadline is judged against the world.
+                      _pred('Kodi select dialog open', 3.0),
                       requires=('gesture',), cooldown=3.0))
     return out
 
@@ -1371,7 +1420,17 @@ def reconcile(o):
     if g in ('handoff-pending', 'timed-out'):
         reason = ('gesture:hold-release' if g == 'handoff-pending'
                   else 'gesture:hold-release-timeout')
-        if o.binding('hold') == 'suspend_to_kodi':
+        # NO SESSION, NO HANDOFF - matching pad-home-watcher.hold_ready(), which
+        # returns os.path.exists(SESSION) for suspend_to_kodi and therefore
+        # never spends the hold at all when nothing is running. couchd used to
+        # emit the whole handoff regardless; on a Kodi screen that is
+        # idempotent, but from the DESKTOP it would raise Kodi where the old
+        # stack did nothing, which is a behaviour change nobody declared.
+        # It may well be a better console - "PS hold always returns the room to
+        # Kodi" is a real feature - but it is the owner's call, not a side
+        # effect of the flip, so the hold stays a no-op decision until he makes
+        # it (see the note in tools/shadow-diff's triage docstring).
+        if o.binding('hold') == 'suspend_to_kodi' and o.session_present:
             out += _handoff_intents(o, appid, reason)
         # ...and whatever the release itself is bound to, on top. 'none' by
         # default, so this line changes nothing until someone binds it.
@@ -2120,12 +2179,31 @@ def _eff_close_menu(o, it):
     return o.steam_known and not o.steam_menu_open
 
 
+def _eff_show_switcher(o, it):
+    """The switcher addon draws a Kodi SELECT dialog, so the dialog being the
+    current window IS the effect. Without this the verdict was 'unverified'
+    for want of a check at all - the prediction said "Kodi select dialog open"
+    and nothing ever looked."""
+    return o.kodi_known and o.kodi_window == KODI_SELECT_DIALOG
+
+
 EFFECT_CHECKS = {
     'freeze': _eff_freeze, 'thaw': _eff_thaw,
     'set_flag': _eff_set_flag, 'clear_flag': _eff_clear_flag,
     'route_pad': _eff_route_pad, 'show': _eff_show,
     'dismiss': _eff_dismiss, 'close_steam_menu': _eff_close_menu,
+    'show_switcher': _eff_show_switcher,
 }
+
+# Effects that are only visible through a KODI READ. Kodi is the one observer
+# with a rate limiter on it (>=10s, R6: the anti-entropy tick may never drive
+# Kodi's read rate), so an effect that lands in 200ms and is looked for on a
+# 10s cadence gets judged by whichever came first - which is why a switcher
+# dialog that was demonstrably on screen from 13:57:04.8 verdicted
+# 'unverified' at 13:57:07.9. After acting on one of these the daemon asks
+# for ONE targeted read (Couchd.pass_once -> KodiObserver.request_read), so
+# the check races the deadline fairly instead of losing to the limiter.
+KODI_OBSERVED_EFFECTS = ('route_pad', 'dismiss', 'show_switcher')
 
 
 class ActingExecutor(Executor):
@@ -2574,6 +2652,11 @@ class ExecutorRouter(Executor):
 
     def check_pending(self, o):
         return self.acting.check_pending(o) if self.acting else []
+
+    def pending_verbs(self):
+        """Verbs whose predicted effect has not been judged yet - what the
+        daemon uses to decide it should go and LOOK (C17)."""
+        return [p['intent'].verb for p in self.acting.pending] if self.acting else []
 
 
 # =========================================================================
@@ -3027,6 +3110,9 @@ class KodiObserver:
         self.playing = None
         self.last_read = 0.0
         self.connected = False
+        self._forced = None        # a targeted read asked for by name
+        self._last_forced = 0.0
+        self.forced_reads = 0
         load_env()
         self.url = os.environ.get('KODI_URL', 'http://localhost:8090') + '/jsonrpc'
         self.user = os.environ.get('KODI_USER', 'kodi')
@@ -3115,11 +3201,33 @@ class KodiObserver:
         playing = bool(players.get('result'))
         return joystick, window, playing
 
+    def request_read(self, why):
+        """Ask for ONE targeted read on the next pass, ahead of the limiter.
+
+        C17 judges an action by watching the world get there. For the effects
+        only Kodi can show us that is a race between a 200ms effect and a 10s
+        sampling interval, and the interval wins - which is not evidence about
+        the model, it is evidence about the sampler. So couchd asks for a
+        single read when it has just done something Kodi can confirm, and
+        wakes the loop so the next pass carries it. Rate-limited in its own
+        right (KODI_EFFECT_READ_FLOOR): a burst of actions is still one read.
+        """
+        if time.monotonic() - self._last_forced < KODI_EFFECT_READ_FLOOR:
+            return False
+        self._forced = why
+        self.w.attention(f'kodi-effect:{why}')
+        return True
+
     async def poll(self):
-        """Never faster than KODI_READ_INTERVAL, whatever the tick does."""
+        """Never faster than KODI_READ_INTERVAL, whatever the tick does - with
+        the one exception request_read() exists for."""
         now = time.monotonic()
-        if now - self.last_read < KODI_READ_INTERVAL:
+        forced, self._forced = self._forced, None
+        if forced is None and now - self.last_read < KODI_READ_INTERVAL:
             return
+        if forced is not None:
+            self._last_forced = now
+            self.forced_reads += 1
         self.last_read = now
         if not self.password:
             self.joystick = self.window = self.playing = None
@@ -3143,7 +3251,7 @@ class KodiObserver:
             self.src.last_change = time.monotonic()
             self.w.log.write({'kind': 'obs', 'source': 'kodi', 'event': 'settings',
                               'joystick': joystick, 'window': window,
-                              'playing': playing})
+                              'playing': playing, 'targeted': forced})
             self.w.attention('kodi-settings')
 
 
@@ -3663,6 +3771,7 @@ class Couchd:
         # Shadow is the default and the fallback: the recorder is always here,
         # the acting half is built only while owns.conf names something (R1).
         self.model = model_version()   # fingerprinted once, at construction
+        self._noop_since = None        # last gesture said to have decided nothing
         self.edge = None            # the edge this pass is deciding (R5)
         self.edge_intents = 0
         self.last_edge_latency = None
@@ -4002,11 +4111,54 @@ class Couchd:
                             'regions': dict(o.regions)})
             say('invariant violation: ' + '; '.join(f'{n}({d})' for n, d in bad))
         for it in intents:
-            self.executor.execute(it, o)
+            rec = self.executor.execute(it, o)
+            # C17 needs the world looked at, not just waited on: an effect only
+            # a Kodi read can show gets one targeted read on the next pass, so
+            # the check races the deadline instead of the 10s limiter.
+            if (rec or {}).get('acted') and it.verb in KODI_OBSERVED_EFFECTS:
+                self.kodi.request_read(it.verb)
+        # ...and keep looking while the prediction is outstanding. The switcher
+        # dialog takes 1.3-1.5s to draw, so one read at +0.2s would miss it and
+        # the next scheduled one lands 10s later, past the deadline. Bounded
+        # twice over: only while something is pending, and never faster than
+        # KODI_EFFECT_READ_FLOOR.
+        waiting = [v for v in self.executor.pending_verbs()
+                   if v in KODI_OBSERVED_EFFECTS]
+        if waiting:
+            self.kodi.request_read('pending:' + waiting[0])
+        self.note_noop_gesture(o, intents)
         self.sync_guard_pidfile(o)
         self.passes += 1
         self.log_edge(o, intents)
         return o, intents
+
+    def note_noop_gesture(self, o, intents):
+        """A gesture that fired and decided NOTHING, said out loud once.
+
+        A silent no-op is indistinguishable from a dropped press, both in the
+        room and in the corpus - which is exactly how the coalesced double-tap
+        went unnoticed. The one that is deliberate (a hold with no session:
+        legacy's hold_ready gate, see reconcile) therefore records itself as a
+        decision, so the evening's evidence says "decided to do nothing" rather
+        than saying nothing at all.
+        """
+        g = o.regions.get('gesture')
+        if g not in ('hold-fired', 'handoff-pending', 'timed-out',
+                     'double-tap', 'long-hold-fired'):
+            self._noop_since = None
+            return
+        since = o.region_since.get('gesture')
+        if intents or self._noop_since == since:
+            return
+        self._noop_since = since
+        why = ('no session: the hold has nothing to suspend and legacy would '
+               'not have spent it either' if not o.session_present
+               else 'nothing left to decide (already done, or cooled down)')
+        self.log.write({'kind': 'decision', 'event': 'gesture-no-op',
+                        'gesture': g, 'binding': o.binding('hold'),
+                        'session': bool(o.session_present), 'why': why,
+                        'regions': dict(o.regions)})
+        say(f'gesture {g}: nothing to do ({why})')
 
     # -- R5: edge-to-decision latency ------------------------------------
     def intent_context(self):

@@ -735,6 +735,19 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         legacy-only row still fires for the same row read as SHADOW-ONLY. Read
         those the way the catch-up note above says: post-flip a SHADOW-ONLY row
         on a pre-declared entry means couchd's version did not fire.
+      * NOT LIVE, AWAITING THE OWNER'S RULING: "the PS hold as a universal
+        return-to-Kodi". pad-home-watcher.hold_ready() requires
+        /tmp/game-session for suspend_to_kodi, so with nothing running the old
+        stack does not spend the hold at all. couchd briefly emitted the whole
+        handoff regardless - idempotent on a Kodi screen, but from the DESKTOP
+        it would have raised Kodi where the old stack never did, which is a
+        behaviour change nobody declared. Gated back to legacy's rule on the
+        evening of 5 Aug; the no-session hold now records a
+        `decision`/`gesture-no-op` instead of acting. It is an attractive
+        console feature - the PS button ALWAYS gets the room back - and it is
+        the owner's call to make deliberately, not something that arrives as a
+        side effect of a flip. Until he rules, expect neither stack to act on
+        it: a hold-with-no-session is not a divergence in either direction.
       * BP PRE-STEP STILL NOT DIFFED (replay finding 5, carried forward). The
         R7(g) entry below fires on a LEGACY-ONLY `launch`, but `launch` is a
         CONTEXT_VERB: it is held as context and never compared in EITHER
