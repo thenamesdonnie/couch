@@ -1125,10 +1125,17 @@ def test_acting_health_counts_acted_skipped_and_failed_per_verb():
         assert ah['per_verb']['route_pad']['failed'] == 1
         assert ah['effects']['freeze']['confirmed'] == 1
         assert ah['effects']['route_pad']['missed'] == 1
-        # neither declined intent is a divergence row
-        assert not [r for r in rep['rows']
-                    if r['verb'] in ('close_steam_menu', 'route_pad')], rep['rows']
-        assert len(rep['acting_declined']) == 2
+        # the genuine DECLINE (precondition gone) is health, never a row; the
+        # FAILURE is a row - a failed action is bad news, not a footnote
+        assert not [r for r in rep['rows'] if r['verb'] == 'close_steam_menu']
+        failed_rows = [r for r in rep['rows'] if r['verb'] == 'route_pad']
+        assert len(failed_rows) == 1, rep['rows']
+        assert 'ACT-FAILED' in failed_rows[0]['flags'], failed_rows
+        assert len(rep['acting_declined']) == 1, rep['acting_declined']
+        # 1 action failure + 1 missed effect both reach the verdict
+        assert rep['gating_breakdown']['act_failed'] == 1
+        assert rep['gating_breakdown']['effects_missed'] == 1
+        assert rep['gating_count'] == 2, rep['gating_count']
         txt = sd.render(rep)
         assert 'ACTING HEALTH' in txt
         assert 'acted 1, skipped 1, failed 1' in txt
@@ -1188,6 +1195,221 @@ def test_a_corpus_with_no_daemon_records_reads_as_owning_nothing():
         assert rep['ownership']['reversed'] is False
         assert len(rep['ownership']['windows']) == 1
         assert rep['ownership']['windows'][0]['owned'] == []
+
+
+# ------------------------------------------------ the gate must not lie green
+# The 5 Aug adversarial review: five ways the differ could say VALID / gating 0
+# over an evening that was actually broken. Each test below is one of them.
+def test_a_dead_actuator_arm_gates_instead_of_reading_green():
+    """Defect 1: couchd owns gestures, every acted intent FAILED and every
+    effect verdict is 'missed' - the old differ said gating 0, VALID, exit 0."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(0.0, 'freeze', '730', pids=[100],
+                           resolver='game-pids'),
+                   yielded(20.0, 'route_pad', 'kodi', reason='handoff')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100], ok=False,
+                         action={'ok': False,
+                                 'error': 'ptrace: permission denied'}),
+                   acted(20.1, 'route_pad', 'kodi',
+                         reason='gesture:hold-release', ok=False,
+                         action={'ok': False, 'error': 'kodi rpc dead'}),
+                   {'kind': 'effect', 't': T0 + 2.0, 'verdict': 'missed',
+                    'verb': 'freeze', 'subject': '730', 'latency_s': 5.0,
+                    'reason': 'gesture:ps-hold'},
+                   {'kind': 'effect', 't': T0 + 25.0, 'verdict': 'missed',
+                    'verb': 'route_pad', 'subject': 'kodi', 'latency_s': 5.0,
+                    'reason': 'gesture:hold-release'}])
+        gb = rep['gating_breakdown']
+        assert gb['act_failed'] == 2 and gb['effects_missed'] == 2, gb
+        assert rep['gating_count'] == 4, rep['gating_count']
+        # the evening is still judgeable - VALID with bad news, exit 1 via gating
+        assert rep['validity']['verdict'] == 'VALID', rep['validity']
+        flagged = [r for r in rep['rows'] if 'ACT-FAILED' in r['flags']]
+        assert len(flagged) == 2, rep['rows']
+        txt = sd.render(rep)
+        assert 'GATING: 2 action failure(s) + 2 missed effect(s)' in txt
+
+
+def test_an_unverified_effect_stays_health_not_gating():
+    """'unverified' means the observer could not say - R5 already polices the
+    observer, so it must not gate as if it were a miss."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(0.0, 'freeze', '730', pids=[100],
+                           resolver='game-pids')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100]),
+                   {'kind': 'effect', 't': T0 + 2.0, 'verdict': 'unverified',
+                    'verb': 'freeze', 'subject': '730', 'latency_s': 5.0,
+                    'reason': 'gesture:ps-hold'}])
+        assert rep['gating_count'] == 0, rep['gating_count']
+        assert rep['validity']['verdict'] == 'VALID'
+
+
+def test_a_shadow_only_miss_gates_when_couchd_owns_it():
+    """Defect 2: one-sided rows never carry SET-MISMATCH/ORDER, so post-flip
+    'couchd owns it and did NOT do it' was structurally unable to gate."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(5.0, 'route_pad', 'kodi', reason='handoff',
+                           via='kodi-jsonrpc')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100])])
+        row = sections(rep)['SHADOW-ONLY'][0]
+        assert 'OWNER-MISSED' in row['flags'], row
+        assert rep['gating_breakdown']['rows'] == 1, rep['gating_breakdown']
+        assert rep['gating_count'] == 1, rep['gating_count']
+        assert 'OWNER-MISSED' in sd.render(rep)
+
+
+def test_a_missed_set_flag_no_longer_hides_behind_the_flag_verb_t5():
+    """Defect 2b: the 'flag verbs are absent from couchd's stream' T5 predates
+    ActingExecutor growing set_flag/clear_flag. When couchd speaks the verb in
+    this very corpus, a missed one is a real divergence, not a vocabulary gap."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(0.0, 'freeze', '730', pids=[100],
+                           resolver='game-pids'),
+                   yielded(0.1, 'set_flag', 'suspended', value='730',
+                           reason='ps-hold')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   acted(0.1, 'freeze', '730', pids=[100]),
+                   acted(200.0, 'set_flag', 'suspended', value='730',
+                         reason='gesture:ps-hold')])
+        row = [r for r in rep['rows'] if r['verb'] == 'set_flag'
+               and r['section'] == 'SHADOW-ONLY'][0]
+        assert row['label'] != 'T5', row
+        assert 'OWNER-MISSED' in row['flags'], row
+        assert rep['gating_count'] >= 1, rep['gating_count']
+
+
+def test_a_second_start_closes_a_crashed_run():
+    """Defect 3: a watchdog kill / power loss writes no stop record, so the
+    next start used to be swallowed and two runs read as one - with the dead
+    gap inside it, so legacy acting alone there looked like divergences."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'show', 'kodi'),
+                   legacy(1000.0, 'show', 'kodi'),        # while couchd was DEAD
+                   legacy(3610.0, 'show', 'kodi')],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa'),
+                   couchd(10.1, 'show', 'kodi'),
+                   couchd(50.0, 'iconify', 'steam-bigpicture'),  # last breath
+                   daemon_rec(3600.0, 'start', 'aaaaaaaaaaaa'),  # crash restart
+                   couchd(3610.1, 'show', 'kodi'),
+                   daemon_rec(3700.0, 'stop')],
+                  heartbeat(0, 60) + heartbeat(3600, 3700))
+        assert len(rep['runs']) == 2, rep['runs']
+        # the crashed run ends at couchd's own last record, not at the restart
+        assert round(rep['runs'][0]['end'] - T0, 1) == 50.0, rep['runs']
+        assert any('CRASHED' in n for n in rep['notes']), rep['notes']
+        # the legacy show at t=1000 fell in the dead gap: couchd was not running
+        assert rep['matched_total'] == 2, rep['matched_total']
+        assert not sections(rep)['LEGACY-ONLY'], sections(rep)['LEGACY-ONLY']
+        assert any('outside couchd' in n for n in rep['notes'])
+
+
+def test_a_crash_restart_does_not_mislabel_the_second_runs_model():
+    """Defect 3b: the swallowed second start also swallowed its model_version,
+    so the new model's rows inherited the old fingerprint and went stale."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'route_pad', 'kodi'),
+                   legacy(3610.0, 'route_pad', 'kodi')],
+                  [daemon_rec(0.0, 'start', 'oldoldoldold'),
+                   couchd(10.5, 'route_pad', 'game'),
+                   daemon_rec(3600.0, 'start', 'newnewnewnew'),  # crash restart
+                   couchd(3610.5, 'route_pad', 'game')])
+        assert [r['model'] for r in rep['runs']] == \
+            ['oldoldoldold', 'newnewnewnew'], rep['runs']
+        assert [r['stale'] for r in rep['runs']] == [True, False], rep['runs']
+        stale = {round(r['t'] - T0, 1): r['stale'] for r in rep['rows']}
+        assert stale[10.5] is True and stale[3610.5] is False, stale
+
+
+def test_a_cooldown_repeat_with_a_different_pid_set_gates():
+    """Defect 4: legacy refroze {100,101,102} where the matched decision froze
+    {100,101}. The old association absorbed it silently - a half-frozen game
+    read green. A repeat that grows or shrinks the set is not a repeat."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(0.0, 'freeze', '730', pids=[100, 101],
+                          resolver='game-pids'),
+                   legacy(1.0, 'freeze', '730', pids=[100, 101],
+                          resolver='game-pids'),           # true repeat: absorbed
+                   legacy(2.0, 'freeze', '730', pids=[100, 101, 102],
+                          resolver='game-pids')],          # grew the set: gates
+                  [couchd(0.1, 'freeze', '730', pids=[100, 101],
+                          reason='gesture:ps-hold')])
+        assert rep['matched_total'] == 1
+        assert len(rep['cooldown_associated']) == 1, rep['cooldown_associated']
+        rows = sections(rep)['LEGACY-ONLY']
+        assert len(rows) == 1, rows
+        assert 'REPEAT-SET-MISMATCH' in rows[0]['flags'], rows
+        assert '102' in rows[0]['note'], rows
+        assert rep['gating_count'] == 1, rep['gating_count']
+
+
+def test_midnight_rollover_seeds_runs_and_ownership_from_yesterday():
+    """Defect 5: the shadow log rotates nightly, so a daemon started yesterday
+    leaves today's file with no start and no ownership records. The differ used
+    to read 'owns nothing' and fall back to whole-span-model-None."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write(tmp, 'couchd-20260804.jsonl',
+              [daemon_rec(-50000.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+               owns_changed(-49000.0, ['gestures'])])      # still open at midnight
+        cp = write(tmp, 'couchd-20260805.jsonl',
+                   [acted(0.1, 'freeze', '730', pids=[100])])
+        lp = write(tmp, 'legacy.jsonl',
+                   [yielded(0.0, 'freeze', '730', pids=[100],
+                            resolver='game-pids')])
+        rep = sd.build(lp, cp, None)
+        assert rep['ownership']['reversed'] is True, rep['ownership']
+        assert rep['ownership']['owned'] == ['gestures']
+        assert rep['scope']['model_rule'] == 'model_version', rep['scope']
+        assert rep['scope']['model'] == 'aaaaaaaaaaaa'
+        assert not any(r['stale'] for r in rep['rows'])
+        assert any('rollover' in n.lower() for n in rep['notes']), rep['notes']
+        assert rep['matched_total'] == 1
+
+
+def test_rollover_after_a_clean_stop_reads_owns_nothing_and_says_why():
+    with tempfile.TemporaryDirectory() as tmp:
+        write(tmp, 'couchd-20260804.jsonl',
+              [daemon_rec(-50000.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+               daemon_rec(-40000.0, 'stop')])              # yesterday ended clean
+        cp = write(tmp, 'couchd-20260805.jsonl',
+                   [couchd(0.1, 'show', 'kodi')])
+        lp = write(tmp, 'legacy.jsonl', [legacy(0.0, 'show', 'kodi')])
+        rep = sd.build(lp, cp, None)
+        assert rep['ownership']['reversed'] is False
+        assert any('STOPPED' in n for n in rep['notes']), rep['notes']
+
+
+def test_rollover_with_no_previous_day_file_is_loud():
+    with tempfile.TemporaryDirectory() as tmp:
+        cp = write(tmp, 'couchd-20260805.jsonl',
+                   [couchd(0.1, 'show', 'kodi')])
+        lp = write(tmp, 'legacy.jsonl', [legacy(0.0, 'show', 'kodi')])
+        rep = sd.build(lp, cp, None)
+        assert any('NO RUN/OWNERSHIP ANCHORS' in n for n in rep['notes']), \
+            rep['notes']
+
+
+def test_since_rejects_an_implausible_numeric_epoch():
+    """Defect 6: --since 90000 used to return None silently and the whole file
+    was analysed as if no --since had been given."""
+    day = '20260805'
+    assert sd.parse_since('1785878000', day) == 1785878000.0
+    assert sd.parse_since(None, day) is None
+    for bad in ('90000', '0', '12'):
+        try:
+            sd.parse_since(bad, day)
+        except SystemExit:
+            continue
+        raise AssertionError('accepted %r' % bad)
 
 
 if __name__ == '__main__':

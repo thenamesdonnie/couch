@@ -31,12 +31,28 @@ later restart marks the whole thing stale and the verdict covers nothing.
 
 Triage labels (C10): T1 harness, T2 benign, T3 bug-in-old, T4 bug-in-couchd (the only
 gating bucket), T5 pre-declared, T6 same decision wrong latency.
+
+WHAT GATES (extended 5 Aug 2026 after the adversarial review): the verdict is
+gating_count > 0 or INVALID, and gating_count is the sum of four channels -
+  * hard rows: SET-MISMATCH / ORDER as always, plus OWNER-MISSED (a non-T5
+    SHADOW-ONLY row: couchd owns the responsibility and did not act where the
+    yielded legacy line would have) and REPEAT-SET-MISMATCH (a cooldown repeat
+    whose pid set differs from the decision it claims to repeat);
+  * agreement disagreements (R4), as always;
+  * couchd action FAILURES (action.ok false) inside current-model runs; and
+  * MISSED effect verdicts (C17) inside current-model runs.
+The last two count from ACTING HEALTH's totals, not from rows, so a failure
+absorbed as a cooldown repeat or launch artifact still reaches the verdict.
+ANY failure or missed effect gates: couchd is the acting stack for what it
+owns, so there is no benign count of a dead actuator. 'unverified' effects and
+deliberate declines (skipped/refused/model-only) stay health, not gating.
 """
 import argparse
 import json
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ---- tunables (edit here; every number is ours to recalibrate, per /build) ----
 TOLERANCE = {                       # seconds, per verb, +/- around the legacy event
@@ -146,7 +162,15 @@ SECTION_SHORT = {'COUCHD-ONLY': 'COUCHD-O', 'LEGACY-ONLY': 'LEGACY-O',
                  'SHADOW-ONLY': 'SHADOW-O'}
 SECTION_MEANING = {
     'ACTED-ONLY': ' (couchd ACTED, the yielded legacy shadow predicted nothing)',
-    'SHADOW-ONLY': ' (legacy would have; couchd, which owns it, did NOT)'}
+    'SHADOW-ONLY': ' (legacy would have; couchd, which owns it, did NOT - '
+                   'gating unless pre-declared T5)'}
+# The row flags that gate (T4 candidates). ACT-FAILED is deliberately NOT in
+# this set: an action failure gates through ACTING HEALTH's totals instead, so
+# a failure absorbed as a cooldown repeat or launch artifact still reaches the
+# verdict - rows only carry the ACT-FAILED flag so the failure is visible where
+# it happened, and counting it here too would double it.
+GATING_FLAGS = frozenset({'SET-MISMATCH', 'ORDER', 'OWNER-MISSED',
+                          'REPEAT-SET-MISMATCH'})
 
 
 # ---- loading -----------------------------------------------------------------
@@ -493,9 +517,26 @@ def associate_repeats(pairs, leftovers, side):
                 break
         if hit is None:
             still.append(it)
-        else:
-            hit['repeats'].append(it)
-            assoc.append((it, hit, side))
+            continue
+        # A repeat is only benign when it re-states the SAME decision. Compare
+        # the pid set against the OTHER stack's half of the pair (the whole
+        # point of this differ): a repeat that grew or shrank the set is the
+        # half-frozen-game hazard - the repeating stack decided the original
+        # action was incomplete - so it stays a one-sided row and gates.
+        if it['verb'] in PID_SET_VERBS:
+            other = hit['couchd' if side == 'legacy' else 'legacy']
+            mine, theirs = pid_set(it), pid_set(other)
+            if mine is not None and theirs is not None and mine != theirs:
+                it['repeat_mismatch'] = (
+                    'cooldown repeat of the decision at %s carries a DIFFERENT '
+                    'pid set: only-here=%s only-there=%s (a repeat that grows '
+                    'or shrinks the set is a divergence, not a repeat)'
+                    % (fmt_t(other['t']), sorted(mine - theirs) or '-',
+                       sorted(theirs - mine) or '-'))
+                still.append(it)
+                continue
+        hit['repeats'].append(it)
+        assoc.append((it, hit, side))
     return still, assoc
 
 
@@ -769,6 +810,18 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
                 canon(it['args'].get('appid')) == 'bigpicture':
             return 'T5', 'R7(b) pre-declared: legacy records appid literal ' \
                          '"bigpicture" (retriage as T3 - real legacy bug)'
+    # spawn_guard, pre-declared 5 Aug 2026 WITH the wire-in (C10): couchd's
+    # acted handoffs spawn the real steam-input-guard because legacy's own
+    # spawn is IMPLICIT in handoff_to_kodi/game-launch - a Popen, never an
+    # intent line - so this verb is one-sided BY CONSTRUCTION in both
+    # directions and must not read as an extra decision. The handoff it
+    # travels with (route_pad/show) is still compared as always; only the
+    # spawn itself is whitelisted.
+    if (ci and ci.get('verb') == 'spawn_guard') or \
+            (li and li.get('verb') == 'spawn_guard'):
+        return 'T5', 'pre-declared with the 5 Aug guard wire-in: legacy ' \
+                     'spawns steam-input-guard implicitly (no intent line), ' \
+                     'couchd names it - one-sided by construction'
     # R7(f): Steam in DESKTOP ui mode swallows the guide press a tap-resume
     # sends and opens its overlay over the game. Legacy's guard learned to
     # detect that from the routing log and close it; couchd models neither the
@@ -786,8 +839,16 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         return 'T5', 'R7(e) pre-declared: legacy adopts the real appid for a ' \
                      'game launched inside Big Picture; couchd model ' \
                      'catch-up pending'
-    if section == 'LEGACY-ONLY' and li['verb'] in ('set_flag', 'clear_flag'):
-        return 'T5', 'R5 whitelist: flag verbs are absent from couchd\'s stream'
+    # This entry predates ActingExecutor growing set_flag/clear_flag: the
+    # blanket "flag verbs are absent" claim is stale, so it now fires only when
+    # the verb really IS absent from couchd's stream in this corpus. couchd
+    # emitting the verb elsewhere and missing THIS one is a real divergence -
+    # post-flip a genuinely missed set_flag(suspended) must not file as benign.
+    if section == 'LEGACY-ONLY' and li['verb'] in ('set_flag', 'clear_flag') \
+            and all(c['verb'] != li['verb'] for c in couchd_i):
+        return 'T5', 'R5 whitelist: flag verbs absent from couchd\'s stream in ' \
+                     'THIS corpus (vocabulary gap; couchd\'s executor speaks ' \
+                     'them now, so absence is itself worth a look)'
     # R5 whitelist, written before evening one: "single arbiter replaces guard
     # supersede". The guard's window bookkeeping and its kill-the-previous-guard
     # handshake are a protocol between two competing enforcers; couchd IS the
@@ -856,7 +917,7 @@ def world_series(obs, snaps):
     return sorted(out, key=lambda x: x[0])
 
 
-def daemon_runs(crecs, fallback):
+def daemon_runs(crecs, fallback, notes=None):
     """([(start, end)], [model_version]) - the windows couchd was observing in,
     and which MODEL each one was running.
 
@@ -864,10 +925,19 @@ def daemon_runs(crecs, fallback):
     When they exist, a run whose start record is missing (the log rotated at midnight
     mid-run) is anchored to couchd's own first record - NOT to the legacy stream,
     which is cumulative across days and once stretched run 1 back three hours.
+
+    A start record arriving while a run is already OPEN means the previous
+    process died without writing its stop (watchdog kill, power loss - the
+    05:19 hard freeze left exactly this shape). The open run is closed at
+    couchd's own last record before the new start: the true death time is
+    unknowable, so the remaining gap up to the restart belongs to NO run
+    (legacy acting alone there is R6, not a divergence), and the new run keeps
+    its OWN model_version instead of inheriting the crashed one.
     """
-    marks = sorted((float(r['t']), r.get('event'), r.get('model_version'))
-                   for r in crecs if r.get('kind') == 'daemon'
-                   and isinstance(r.get('t'), (int, float)))
+    marks = sorted(((float(r['t']), r.get('event'), r.get('model_version'))
+                    for r in crecs if r.get('kind') == 'daemon'
+                    and isinstance(r.get('t'), (int, float))),
+                   key=lambda m: m[0])
     if not marks:
         return [tuple(fallback)], [None]
     cts = [float(r['t']) for r in crecs if isinstance(r.get('t'), (int, float))]
@@ -875,8 +945,33 @@ def daemon_runs(crecs, fallback):
     runs, models, start, model = [], [], None, None
     for t, ev, mv in marks:
         if ev == 'start':
-            if start is None:
-                start, model = t, mv
+            if start is not None:       # no stop was ever written: a crash
+                # Close at the last record before the stream went SILENT, not
+                # simply the last record before the restart: the new process
+                # writes priming obs lines just before its own start record,
+                # and the 05:19 power loss must not read as a run that lived
+                # until the 08:07 reboot burst. First silence longer than the
+                # heartbeat limit is the death; none means a fast restart, and
+                # the error is bounded by the restart latency.
+                seg = sorted(c for c in cts if start <= c < t)
+                end = start
+                for i, c in enumerate(seg):
+                    end = c
+                    nxt = seg[i + 1] if i + 1 < len(seg) else t
+                    if nxt - c > HEARTBEAT_LIMIT_S:
+                        break
+                runs.append((start, end))
+                models.append(model)
+                if notes is not None:
+                    notes.append(
+                        'daemon start @%s arrived while the run from %s was '
+                        'still open: that run CRASHED (no stop record - '
+                        'watchdog kill or power loss). Its true end is '
+                        'unknowable; closed at couchd\'s last record before '
+                        'the stream went silent (%s), and the gap from there '
+                        'to the restart belongs to no run'
+                        % (fmt_t(t), fmt_t(start), fmt_t(end)))
+            start, model = t, mv
         elif ev == 'stop':
             runs.append((start if start is not None else first, t))
             models.append(model)
@@ -891,6 +986,68 @@ def daemon_runs(crecs, fallback):
 
 def in_runs(t, runs, slack=0.0):
     return any(a - slack <= t <= b + slack for a, b in runs)
+
+
+def rollover_seed(shadow_path, notes):
+    """Midnight rollover: seed run/ownership state from YESTERDAY's file.
+
+    The shadow log rotates nightly, so a daemon that started yesterday and ran
+    across midnight leaves today's corpus with no start record and no ownership
+    records at all. Read cold, that used to say "owns nothing" (contradicting
+    the per-record acted markers) and fall back to whole-span-model-None runs
+    with no staleness protection. The shadow dir is date-stamped
+    couchd-YYYYMMDD.jsonl, so when TODAY's file carries no daemon records we
+    look back exactly one day and replay its daemon records to the tail:
+      * yesterday ended with an OPEN run  -> return its model + owns, and the
+        caller plants a synthetic carried-over start at couchd's first record;
+      * yesterday ended with a clean stop -> couchd is simply not running
+        today; "owns nothing" is then ANCHORED, and the note says so;
+      * no usable yesterday               -> say LOUDLY that runs/ownership are
+        unanchored rather than letting owns-nothing read like a fact.
+    Returns {'model','owns','since','path'} or None.
+    """
+    m = re.search(r'^(.*couchd-)(\d{8})(\.jsonl)$', shadow_path or '')
+    if not m:
+        return None
+    try:
+        prev_day = (datetime.strptime(m.group(2), '%Y%m%d')
+                    - timedelta(days=1)).strftime('%Y%m%d')
+    except ValueError:
+        return None
+    prev_path = m.group(1) + prev_day + m.group(3)
+    unanchored = ('NO RUN/OWNERSHIP ANCHORS: this corpus has no daemon '
+                  'records and the previous day\'s file (%s) offers none '
+                  'either - runs fall back to the whole span with no '
+                  'staleness protection and ownership reads as owning '
+                  'NOTHING. Treat direction and staleness as UNANCHORED, '
+                  'not as facts.' % prev_path)
+    if not os.path.exists(prev_path):
+        notes.append(unanchored)
+        return None
+    precs, _ = load_jsonl(prev_path, [], 'previous-day')
+    owned, since, model, saw = frozenset(), None, None, False
+    for r in sorted([x for x in precs if x.get('kind') == 'daemon'
+                     and isinstance(x.get('t'), (int, float))],
+                    key=lambda x: float(x['t'])):
+        saw, ev = True, r.get('event')
+        if ev == 'start':
+            since, model = float(r['t']), r.get('model_version')
+            owned = frozenset(r.get('owns') or ())
+        elif ev == 'owns-changed':
+            owned = frozenset(r.get('now') or ())
+        elif ev == 'stop':
+            since, model, owned = None, None, frozenset()
+    if not saw:
+        notes.append(unanchored)
+        return None
+    if since is None:
+        notes.append('previous day\'s file (%s) ends with the daemon STOPPED '
+                     'and today has no daemon records: couchd was not running '
+                     'today. "Owns nothing" is anchored, not a silent default.'
+                     % prev_path)
+        return None
+    return {'model': model, 'owns': sorted(owned), 'since': since,
+            'path': prev_path}
 
 
 def observer_health(obs, blinds, snaps, runs, notes):
@@ -1011,6 +1168,28 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     if snapshots_path and os.path.exists(snapshots_path):
         snaps += [r for r in load_jsonl(snapshots_path, [], 'snapshots')[0]
                   if r.get('kind') in (None, 'snapshot') and 't' in r]
+    # Midnight rollover (see rollover_seed): a corpus with records but no
+    # daemon records at all may be the tail of a run that STARTED yesterday.
+    cts0 = [float(r['t']) for r in crecs if isinstance(r.get('t'), (int, float))]
+    if cts0 and not any(r.get('kind') == 'daemon' for r in crecs):
+        seed = rollover_seed(shadow_path, notes)
+        if seed:
+            # Anchored a hair BEFORE couchd's own first record - not at
+            # yesterday's true start (the legacy file is cumulative and must
+            # not drag the run back past today's data), and strictly before
+            # the first record so the carried run and ownership window cover
+            # it even in a corpus with a single couchd record.
+            crecs.insert(0, {'kind': 'daemon', 'event': 'start',
+                             't': min(cts0) - 0.001,
+                             'model_version': seed['model'],
+                             'owns': seed['owns'],
+                             'carried_from': seed['path']})
+            notes.append('midnight rollover: no daemon records in this corpus, '
+                         'so run and ownership state were SEEDED from the '
+                         'previous day\'s file (%s): run open since %s, model '
+                         '%s, owns %s' % (seed['path'], fmt_t(seed['since']),
+                                          seed['model'] or '(pre-fingerprint)',
+                                          ', '.join(seed['owns']) or 'nothing'))
 
     legacy_all = [i for i in (as_intent(r, 'legacy') for r in lrecs) if i]
     couchd_all = [i for i in (as_intent(r, 'couchd') for r in crecs) if i]
@@ -1025,7 +1204,7 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     ats = [float(r['t']) for r in lrecs + crecs + snaps
            if isinstance(r.get('t'), (int, float))]
     span = (min(ats), max(ats)) if ats else (0.0, 0.0)
-    runs, run_models = daemon_runs(crecs, span)
+    runs, run_models = daemon_runs(crecs, span, notes)
     starts = [float(r['t']) for r in crecs if r.get('kind') == 'daemon'
               and r.get('event') == 'start' and isinstance(r.get('t'), (int, float))]
     if since:
@@ -1160,6 +1339,15 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     c_only, c_seq = launch_sequence_split(c_only, launches, 'couchd')
     for p in pairs:
         compare_pair(p)
+        # A matched pair whose couchd half FAILED is not a clean agreement:
+        # both stacks decided the same thing, but the acting one did not land
+        # it. The flag makes the failure visible on the row; the COUNT gates
+        # from ACTING HEALTH's totals (see GATING_FLAGS) so it is never doubled.
+        if p['couchd'].get('acted') is not None and \
+                acting_outcome(p['couchd']['raw'])[0] == 'failed':
+            p['flags'].append('ACT-FAILED')
+            p['notes'].append('couchd action FAILED: %s'
+                              % acting_outcome(p['couchd']['raw'])[1])
     asserts = assertions(couchd_i, legacy_i, release_edges(obs, trans), pairs)
     for a in asserts:                       # an ordering violation gates even in-window
         if a['ok'] is False and a['intent'] is not None:
@@ -1176,17 +1364,38 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     # stream to disagree with - it belongs in ACTING HEALTH, per verb, not in a
     # divergence column that would read as "couchd did something legacy did
     # not". An ordering violation still outranks that and keeps its row.
+    # ...but a FAILURE is not a decline: couchd tried and the action did not
+    # land, which is the loudest news an acting evening has. Failed intents
+    # stay as rows (flagged ACT-FAILED) instead of vanishing into the footnote.
     declined = [it for it in c_only
-                if it['acted'] is False and id(it) not in viol]
+                if it['acted'] is False and id(it) not in viol
+                and acting_outcome(it['raw'])[0] != 'failed']
     dropped = {id(it) for it in declined}       # by identity: two records can
     c_only = [it for it in c_only if id(it) not in dropped]   # be equal by value
-    rows = [mkrow('COUCHD-ONLY', None, it, None,
-                  ['ORDER'] if id(it) in viol else [],
-                  ['%s: %s' % (viol[id(it)]['name'], viol[id(it)]['detail'])]
-                  if id(it) in viol else [], couchd_i, legacy_i, it['direction'])
+
+    def one_sided(it):
+        """(flags, notes) for a one-sided row: ORDER / ACT-FAILED /
+        REPEAT-SET-MISMATCH, each with its own explanation."""
+        f, n = [], []
+        # ORDER only on couchd's side, as before: a legacy-side ordering
+        # violation is the OLD stack's bug (T3 material), not couchd gating.
+        if id(it) in viol and it['side'] == 'couchd':
+            f.append('ORDER')
+            n.append('%s: %s' % (viol[id(it)]['name'], viol[id(it)]['detail']))
+        if it.get('repeat_mismatch'):
+            f.append('REPEAT-SET-MISMATCH')
+            n.append(it['repeat_mismatch'])
+        if it['side'] == 'couchd' and it.get('acted') is not None and \
+                acting_outcome(it['raw'])[0] == 'failed':
+            f.append('ACT-FAILED')
+            n.append('couchd action FAILED: %s' % acting_outcome(it['raw'])[1])
+        return f, n
+
+    rows = [mkrow('COUCHD-ONLY', None, it, None, *one_sided(it),
+                  couchd_i, legacy_i, it['direction'])
             for it in c_only]
-    rows += [mkrow('LEGACY-ONLY', it, None, None, [], [], couchd_i, legacy_i,
-                   it['direction'])
+    rows += [mkrow('LEGACY-ONLY', it, None, None, *one_sided(it),
+                   couchd_i, legacy_i, it['direction'])
              for it in l_only]
     rows += [mkrow('BOTH-BUT-DIFFERENT', p['legacy'], p['couchd'], p['offset'],
                    p['flags'], p['notes'], couchd_i, legacy_i, p['direction'])
@@ -1206,6 +1415,17 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
         if absent:                      # vocabulary gap, not a decision divergence
             r['note'] = '; '.join(x for x in (r['note'], 'verb never appears in the '
                                   'other stream at all (structural)') if x)
+        # A non-T5 SHADOW-ONLY row is couchd, the OWNER, not doing something
+        # the yielded legacy line says it would have done. One-sided rows never
+        # carry SET-MISMATCH/ORDER, so without its own flag this class was
+        # structurally unable to gate - the exact inverse of what a flip gate
+        # exists to catch.
+        if r['section'] == 'SHADOW-ONLY' and not r['stale'] and \
+                r['label'] != 'T5':
+            r['flags'] = sorted(set(r['flags']) | {'OWNER-MISSED'})
+            r['note'] = '; '.join(x for x in (
+                r['note'], 'couchd owns this responsibility and did NOT act '
+                'where legacy would have - gating') if x)
     cooled = [{'t': it['t'], 'verb': it['verb'], 'subject': it['subject'], 'side': side,
                'args': arg_str(it),
                'offset': it['t'] - p['couchd' if p['direction'] == ACTING
@@ -1272,7 +1492,7 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
     on_rows = {round(r['t'], 6) for r in rows if 'ORDER' in r['flags']}
     absorbed = len([a for a in viol.values()
                     if round(a['intent']['t'], 6) not in on_rows])
-    hard = [r for r in rows if ('SET-MISMATCH' in r['flags'] or 'ORDER' in r['flags'])
+    hard = [r for r in rows if set(r['flags']) & GATING_FLAGS
             and not r['stale']]
     gating = [r for r in hard if r['label'] != 'T5']   # pre-declared = not gating
     # What the verdict is a verdict OVER. A gate computed across zero
@@ -1296,6 +1516,21 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
                        'window under review (%s..%s) - a gate computed over an '
                        'empty stretch is not a pass'
                        % (fmt_t(scope['from']), fmt_t(scope['to'])))
+    # C17 GATES (post-flip): couchd is the acting stack for whatever it owns,
+    # so a FAILED action or a MISSED effect is a user-visible miss the legacy
+    # stack would not have made - ANY of either gates; there is no benign count
+    # of a dead actuator. Both are counted over current-model runs only, from
+    # ACTING HEALTH's totals rather than the row filter, so a failure absorbed
+    # as a cooldown repeat or launch artifact still reaches the verdict.
+    # 'unverified' stays health: the observer could not say, and R5 already
+    # polices the observer. Deliberate declines (skipped/refused/model-only)
+    # stay health too - they changed nothing in the world.
+    gating_breakdown = {
+        'rows': len(gating),
+        'agreement': len([d for d in disagreements if d['label'] != 'T5']),
+        'act_failed': acting['totals']['failed'],
+        'effects_missed': sum(e.get('missed', 0)
+                              for e in acting['effects'].values())}
     return {'inputs': {'legacy': legacy_path, 'couchd': shadow_path,
                        'snapshots': snapshots_path if snaps else None},
             'notes': notes, 'rows': rows, 'cooldown_associated': cooled,
@@ -1319,8 +1554,8 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
                            for a in asserts],
             'agreement': {'total': len(agree), 'disagreements': disagreements},
             'observer_health': health,
-            'gating_count': len(gating) + len([d for d in disagreements
-                                               if d['label'] != 'T5']),
+            'gating_count': sum(gating_breakdown.values()),
+            'gating_breakdown': gating_breakdown,
             'whitelisted_hard': len(hard) - len(gating),
             'validity': {'verdict': 'INVALID' if reasons else 'VALID',
                          'reasons': reasons}}
@@ -1397,11 +1632,16 @@ def render(rep):
                           (r['end'] - r['start']) / 60.0, r['intents'], r['rows'],
                           'STALE-MODEL (pre %s)' % fmt_t(rep['model_t'])
                           if r['stale'] else 'current model'))
+    gb = rep.get('gating_breakdown') or {}
     out += ['', '== SUMMARY ==',
-            '  matched %d (%d clean, %d differing); gating (SET-MISMATCH/ORDER/'
-            'agreement, per R4/R5): %d, +%d pre-declared T5 not gating'
+            '  matched %d (%d clean, %d differing); gating %d = %d hard row(s) '
+            '(SET-MISMATCH/ORDER/OWNER-MISSED/REPEAT-SET-MISMATCH, per R4/R5) '
+            '+ %d agreement + %d action failure(s) + %d missed effect(s) '
+            '(C17), +%d pre-declared T5 not gating'
             % (rep['matched_total'], rep['matched_clean'],
                rep['matched_total'] - rep['matched_clean'], rep['gating_count'],
+               gb.get('rows', 0), gb.get('agreement', 0),
+               gb.get('act_failed', 0), gb.get('effects_missed', 0),
                rep['whitelisted_hard'])]
     # The reversed columns only appear on an evening that actually had a flip
     # in it, so a shadow evening's summary reads exactly as it always did.
@@ -1421,10 +1661,16 @@ def render(rep):
     ah = rep['acting_health']
     if ah['records'] or ah['effect_records']:
         t = ah['totals']
-        out.append('  ACTING HEALTH (C17, couchd\'s own actions - health, not '
-                   'divergence): acted %d, skipped %d, failed %d, refused %d, '
+        out.append('  ACTING HEALTH (C17, couchd\'s own actions; failures and '
+                   'missed effects GATE, the rest is health): '
+                   'acted %d, skipped %d, failed %d, refused %d, '
                    'model-only %d' % (t['acted'], t['skipped'], t['failed'],
                                       t['refused'], t['model-only']))
+        if gb.get('act_failed') or gb.get('effects_missed'):
+            out.append('    ^^ GATING: %d action failure(s) + %d missed '
+                       'effect(s) count against the verdict - a dead actuator '
+                       'must not read green'
+                       % (gb.get('act_failed', 0), gb.get('effects_missed', 0)))
         out.append('    %-16s %7s %7s %7s %7s %7s   %s'
                    % ('verb', 'acted', 'skipped', 'failed', 'refused', 'mdl-only',
                       'effects (confirmed/missed/unverified)'))
@@ -1519,9 +1765,18 @@ def parse_since(text, day, flag='--since'):
     if not text:
         return None
     try:
-        return float(text) if float(text) > 100000 else None
+        v = float(text)
     except ValueError:
         pass
+    else:
+        if v > 100000:
+            return v
+        # Silently returning None here once made `--since 90000` analyse the
+        # whole file as if no --since had been given. Refuse to guess.
+        raise SystemExit('%s: %r is numeric but far too small to be an epoch, '
+                         'and it is not HH:MM[:SS] either - refusing to guess '
+                         'rather than silently analysing everything'
+                         % (flag, text))
     for fmt in ('%Y%m%d %H:%M:%S', '%Y%m%d %H:%M'):
         try:
             return datetime.strptime('%s %s' % (day, text), fmt).timestamp()
