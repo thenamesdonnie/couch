@@ -123,6 +123,55 @@ async def kodi_video_watch(tv, state):
             await asyncio.sleep(10)
 
 
+def kodi_holds_a_pad_js():
+    """Does kodi.bin have a real DualSense js node open? Kodi can miss the
+    udev remove on a BT disconnect and keep DELETED fds; it then never
+    re-opens the reconnected pad and the controller is dead in the UI
+    (seen live 5 Aug 2026 ~14:05)."""
+    import subprocess
+    try:
+        pids = subprocess.run(['pgrep', '-x', 'kodi.bin'], capture_output=True,
+                              text=True, timeout=5).stdout.split()
+    except Exception:
+        return None                      # can't tell - do nothing
+    real = set()
+    for p in glob.glob('/sys/class/input/js*/device/name'):
+        try:
+            name = Path(p).read_text().strip().lower()
+        except OSError:
+            continue
+        if 'dualsense' in name and 'virtual' not in name and 'sunshine' not in name:
+            real.add('/dev/input/' + p.split('/')[4])
+    if not real:
+        return None                      # no pad to hold - nothing to repair
+    for pid in pids:
+        try:
+            for fd in Path(f'/proc/{pid}/fd').iterdir():
+                try:
+                    if str(fd.resolve()) in real:
+                        return True
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return False
+
+
+async def kodi_pad_repair():
+    """Toggle peripheral.joystick over the 9090 socket to force Kodi to
+    re-enumerate. Same repair as the manual fix that worked on 5 Aug."""
+    import json
+    for enabled in (False, True):
+        _reader, writer = await asyncio.open_connection('localhost', 9090)
+        writer.write(json.dumps({
+            'jsonrpc': '2.0', 'id': 1, 'method': 'Addons.SetAddonEnabled',
+            'params': {'addonid': 'peripheral.joystick',
+                       'enabled': enabled}}).encode())
+        await writer.drain()
+        writer.close()
+        await asyncio.sleep(2)
+
+
 async def pad_and_flag_watch(tv, state):
     prev = pad_present()
     while True:
@@ -146,6 +195,19 @@ async def pad_and_flag_watch(tv, state):
                     say(f"wake failed: {e}")
             else:
                 say("pad reconnect within cooldown - ignoring")
+            # Kodi sometimes misses the reconnect (stale deleted fds).
+            # Give its own hotplug a moment, then verify and repair.
+            await asyncio.sleep(4)
+            if kodi_holds_a_pad_js() is False:
+                say("kodi did not pick up the pad - toggling "
+                    "peripheral.joystick to force a rescan")
+                try:
+                    await kodi_pad_repair()
+                    say("kodi pad repair done"
+                        if kodi_holds_a_pad_js() else
+                        "kodi pad repair ran but the pad is still not held")
+                except Exception as e:
+                    say(f"kodi pad repair failed: {e}")
         prev = now
 
 
