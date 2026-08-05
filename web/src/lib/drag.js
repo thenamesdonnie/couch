@@ -6,6 +6,22 @@
 // Dismissal hands off to the component's out:slideDown transition: the drag
 // records how far the sheet already travelled in node.dataset.dragY and calls
 // onClose, and slideDown (anim.js) picks the ride up from there - no jump.
+// touch-action must be PRE-set correctly (iOS ignores changes mid-gesture):
+// keep it matched to whether the element can actually scroll right now, so an
+// underfilled list never grants the browser a vertical pan that chains to the
+// page behind the sheet. Re-evaluated on resize and content changes.
+export function panYIfScrollable(node) {
+  const apply = () => {
+    node.style.touchAction = node.scrollHeight > node.clientHeight + 1 ? 'pan-y' : 'none';
+  };
+  apply();
+  const ro = new ResizeObserver(apply);
+  ro.observe(node);
+  const mo = new MutationObserver(apply);
+  mo.observe(node, { childList: true, subtree: true });
+  return { destroy() { ro.disconnect(); mo.disconnect(); } };
+}
+
 export function dragDismiss(node, { onClose }) {
   let startX = 0;
   let startY = 0;
@@ -13,18 +29,24 @@ export function dragDismiss(node, { onClose }) {
   let mode = null; // null = undecided, 'drag' = ours, 'ignore' = native scroll
   let scroller = null;
 
-  // The nearest scrollable between the touch and the sheet root (or the root
-  // itself, for sheets that scroll whole). null = nothing scrollable here.
-  function findScroller(el) {
+  // The nearest scrollable (in the given axis) between the touch and the
+  // sheet root, or the root itself. null = nothing here scrolls that way.
+  function findScroller(el, horizontal = false) {
     while (el && el !== node) {
-      if (el.scrollHeight > el.clientHeight + 1) {
-        const oy = getComputedStyle(el).overflowY;
-        if (oy === 'auto' || oy === 'scroll') return el;
+      const room = horizontal
+        ? el.scrollWidth > el.clientWidth + 1
+        : el.scrollHeight > el.clientHeight + 1;
+      if (room) {
+        const o = getComputedStyle(el)[horizontal ? 'overflowX' : 'overflowY'];
+        if (o === 'auto' || o === 'scroll') return el;
       }
       el = el.parentElement;
     }
-    return node.scrollHeight > node.clientHeight + 1 ? node : null;
+    if (!horizontal && node.scrollHeight > node.clientHeight + 1) return node;
+    return null;
   }
+
+  let startTarget = null;
 
   function onStart(e) {
     if (e.touches.length !== 1) return;
@@ -32,6 +54,7 @@ export function dragDismiss(node, { onClose }) {
     startY = e.touches[0].clientY;
     dy = 0;
     mode = null;
+    startTarget = e.target;
     scroller = findScroller(e.target);
   }
 
@@ -41,9 +64,19 @@ export function dragDismiss(node, { onClose }) {
     const moveY = t.clientY - startY;
     if (mode === null) {
       if (Math.abs(moveX) < 8 && Math.abs(moveY) < 8) return; // not yet a gesture
-      mode = (moveY > Math.abs(moveX) && (!scroller || scroller.scrollTop <= 0))
-        ? 'drag' : 'ignore';
+      if (moveY > Math.abs(moveX) && (!scroller || scroller.scrollTop <= 0)) {
+        mode = 'drag';
+      } else if (Math.abs(moveX) > Math.abs(moveY)) {
+        // horizontal: hands off only if something here scrolls horizontally
+        // (season pills row); otherwise consume so nothing behind moves.
+        mode = findScroller(startTarget, true) ? 'ignore' : 'block';
+      } else {
+        // vertical with no dismissal claim: native only if a scroller exists,
+        // else consume it - an underfilled episode list must not pan the page.
+        mode = scroller ? 'ignore' : 'block';
+      }
     }
+    if (mode === 'block') { e.preventDefault(); return; }
     if (mode !== 'drag') return;
     dy = Math.max(0, t.clientY - startY);
     e.preventDefault(); // ours now - no scroll, no rubber-band

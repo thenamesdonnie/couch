@@ -1,6 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
-  import { dragDismiss } from './drag.js';
+  import { dragDismiss, panYIfScrollable } from './drag.js';
   import { portal } from './portal.js';
   import { api, fmtTime } from './state.svelte.js';
   import { cache, loadContinue, loadLibrary, loadUpcoming, ui } from './store.svelte.js';
@@ -93,9 +93,10 @@
   let upgradeBusy = $state(false);
 
   // 'all' upgrades what's downloaded and searches; 'future' flips the profile
-  // only, so new episodes arrive in 4K and the back catalogue stays put.
+  // only, so new episodes arrive in 4K; 'off' puts the title back on 1080p
+  // (already-downloaded 4K files stay).
   async function upgrade4k(mode) {
-    if (upgradeBusy || !arrInfo?.tmdbId || upgraded4k.has(detail.id)) return;
+    if (upgradeBusy || !arrInfo?.tmdbId) return;
     upgradeBusy = true;
     try {
       await api('/api/discover/upgrade4k', {
@@ -103,7 +104,10 @@
         tmdbId: arrInfo.tmdbId,
         mode,
       });
-      upgraded4k = new Map([...upgraded4k, [detail.id, mode]]);
+      const next = new Map(upgraded4k);
+      if (mode === 'off') next.delete(detail.id); else next.set(detail.id, mode);
+      upgraded4k = next;
+      arrInfo = { ...arrInfo, uhd: mode !== 'off' };
     } finally {
       upgradeBusy = false;
     }
@@ -362,11 +366,21 @@
               {/if}
             </div>
           {:else if arrInfo?.uhd}
-            <div class="dactions"><span class="uhdchip">4K</span></div>
+            <div class="dactions">
+              <span class="uhdchip">4K</span>
+              {#if upgraded4k.get(detail.id) === 'all'}
+                <span class="dim small">searching for 4K</span>
+              {:else}
+                <button class="fourk" disabled={upgradeBusy} onclick={() => upgrade4k('all')}>
+                  {detail.type === 'Series' ? 'Upgrade existing episodes' : 'Search for 4K'}
+                </button>
+              {/if}
+              <button class="fourk" disabled={upgradeBusy} onclick={() => upgrade4k('off')}>Turn off 4K</button>
+            </div>
           {/if}
         </div>
       </div>
-      {#if detail.overview}<p class="overview small dim">{detail.overview}</p>{/if}
+      {#if detail.overview}<p class="overview small dim" use:panYIfScrollable>{detail.overview}</p>{/if}
       {#if detail.type === 'Series'}
         {#if !episodes}
           <p class="dim small">Loading episodes...</p>
@@ -382,7 +396,7 @@
           {:else if seasons.length === 1}
             <h3>{seasons[0][0] === 0 ? 'Specials' : `Season ${seasons[0][0]}`}</h3>
           {/if}
-          <div class="list eplist">
+          <div class="list eplist" use:panYIfScrollable>
             {#each (seasons.find(([sn]) => sn === season)?.[1] ?? seasons[0]?.[1] ?? []) as e (e.id)}
               <button class="epi" class:seen={e.played} onclick={() => cast(e)} disabled={casting}>
                 <span class="grow">
@@ -682,7 +696,7 @@
     border: 1px solid var(--line);
   }
   .dtitle { font-size: 19px; font-weight: 700; line-height: 1.15; margin-bottom: 4px; }
-  .dactions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .dactions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
   .fourk {
     font-size: 12px;
     padding: 8px 12px;

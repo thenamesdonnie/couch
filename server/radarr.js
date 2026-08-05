@@ -63,9 +63,26 @@ export async function uhdProfileId() {
   return uhdId;
 }
 
+let hdId = null;
+async function hdProfileId() {
+  if (hdId) return hdId;
+  const profiles = await rfetch('/qualityprofile');
+  hdId = profiles.find((p) => p.name === 'HD-1080p')?.id || null;
+  if (!hdId) throw new Error('radarr HD-1080p profile missing');
+  return hdId;
+}
+
 async function movieByTmdb(tmdbId) {
   const [m] = await rfetch(`/movie?tmdbId=${tmdbId}`);
   return m || null;
+}
+
+// Take a film off the UHD profile again (profile only; existing files stay).
+export async function revertToHd(tmdbId) {
+  const m = await movieByTmdb(tmdbId);
+  if (!m) throw new Error('film not in radarr');
+  m.qualityProfileId = await hdProfileId();
+  await rfetch(`/movie/${m.id}`, { method: 'PUT', body: m });
 }
 
 // Is the film in Radarr, and already on the UHD profile?

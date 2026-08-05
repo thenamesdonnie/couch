@@ -750,7 +750,9 @@ app.post('/api/discover/upgrade4k', wrap(async (req) => {
   const { mediaType, tmdbId, mode } = req.body ?? {};
   if (!['movie', 'tv'].includes(mediaType) || !tmdbId) throw new Error('mediaType and tmdbId required');
   const arr = mediaType === 'tv' ? sonarr : radarr;
-  if (mode === 'future') {
+  if (mode === 'off') {
+    await arr.revertToHd(Number(tmdbId));
+  } else if (mode === 'future') {
     const ok = await arr.setUhdIfPresent(Number(tmdbId));
     if (!ok) throw new Error('not in the library yet');
   } else {

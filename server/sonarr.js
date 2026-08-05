@@ -39,9 +39,27 @@ export async function uhdProfileId() {
   return uhdId;
 }
 
+let hdId = null;
+async function hdProfileId() {
+  if (hdId) return hdId;
+  const profiles = await sfetch('/qualityprofile');
+  hdId = profiles.find((p) => p.name === 'HD-1080p')?.id || null;
+  if (!hdId) throw new Error('sonarr HD-1080p profile missing');
+  return hdId;
+}
+
 async function seriesByTmdb(tmdbId) {
   const all = await sfetch('/series');
   return all.find((s) => s.tmdbId === tmdbId) || null;
+}
+
+// Take a show off the UHD profile again (profile only; monitoring untouched).
+// Already-downloaded 4K files stay - Sonarr never deletes on a profile change.
+export async function revertToHd(tmdbId) {
+  const s = await seriesByTmdb(tmdbId);
+  if (!s) throw new Error('show not in sonarr');
+  s.qualityProfileId = await hdProfileId();
+  await sfetch(`/series/${s.id}`, { method: 'PUT', body: s });
 }
 
 // Is the show in Sonarr, and already on the UHD profile?

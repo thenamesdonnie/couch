@@ -133,13 +133,17 @@
   }
 
   // mode 'all' upgrades what's already there and searches; 'future' flips the
-  // profile only, so new episodes come in 4K and the back catalogue is left be.
+  // profile only, so new episodes come in 4K; 'off' reverts to 1080p
+  // (already-downloaded 4K files stay).
   async function upgrade4k(item, mode) {
-    if (upgradeBusy || upgraded4k.has(item.tmdbId)) return;
+    if (upgradeBusy) return;
     upgradeBusy = true;
     try {
       await api('/api/discover/upgrade4k', { mediaType: item.mediaType, tmdbId: item.tmdbId, mode });
-      upgraded4k = new Map([...upgraded4k, [item.tmdbId, mode]]);
+      const next = new Map(upgraded4k);
+      if (mode === 'off') next.delete(item.tmdbId); else next.set(item.tmdbId, mode);
+      upgraded4k = next;
+      if (detail && detail.tmdbId === item.tmdbId) detail = { ...detail, uhd: mode !== 'off' };
     } finally {
       upgradeBusy = false;
     }
@@ -306,10 +310,20 @@
               Request {detail.mediaType === 'tv' ? 'series' : 'film'}
             </button>
           {/if}
-          {#if detail.inArr && !detail.uhd && !requested.has(detail.tmdbId)}
-            {#if upgraded4k.has(detail.tmdbId)}
-              <span class="statusline">{upgraded4k.get(detail.tmdbId) === 'future' ? '4K on for new episodes' : '4K upgrade started'}</span>
-            {:else if detail.mediaType === 'tv'}
+          {#if detail.inArr && detail.uhd && !requested.has(detail.tmdbId)}
+            <div class="uprow center">
+              <span class="uhdchip">4K</span>
+              {#if upgraded4k.get(detail.tmdbId) === 'all'}
+                <span class="dim small">searching for 4K</span>
+              {:else}
+                <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'all')}>
+                  {detail.mediaType === 'tv' ? 'Upgrade existing' : 'Search for 4K'}
+                </button>
+              {/if}
+              <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'off')}>Turn off 4K</button>
+            </div>
+          {:else if detail.inArr && !detail.uhd && !requested.has(detail.tmdbId)}
+            {#if detail.mediaType === 'tv'}
               <div class="uprow">
                 <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'future')}>4K new episodes</button>
                 <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'all')}>Upgrade all to 4K</button>
@@ -635,6 +649,15 @@
   }
   .qseg button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }
   .uprow { display: flex; gap: 8px; }
+  .uprow.center { align-items: center; }
+  .uhdchip {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-tint);
+    border-radius: 6px;
+    padding: 3px 8px;
+  }
   .up4k {
     flex: 1;
     padding: 11px;
