@@ -305,6 +305,11 @@
       <p class="small dim cdline">{couchd.reason}</p>
     {:else}
       <h2>couchd</h2>
+      <p class="small cdline" class:warn={couchd.ownsWarnings?.length || couchd.actionFailures}
+         class:dim={!couchd.owns?.length}>
+        {couchd.owns?.length ? `acting: ${couchd.owns.join(', ')}` : 'shadow (acts on nothing)'}
+        {couchd.actionFailures ? ` · ${couchd.actionFailures} action failure(s)` : ''}
+      </p>
       <p class="small mono dim cdline">{regionLine}</p>
       <p class="small cdline" class:warn={sickObservers.length} class:dim={!sickObservers.length}>
         {sickObservers.length ? `observers: ${sickObservers.join(', ')}` : 'observers: all ok'}

@@ -160,6 +160,13 @@ export function couchdStatus() {
     ok: true,
     age,
     mode: s.mode ?? null,
+    // Which responsibilities couchd is EXECUTING right now (owns.conf, read
+    // by both stacks every tick). Empty = shadow mode: it decides and logs,
+    // the old scripts act. The card shows this so the room can see, from the
+    // sofa, which stack is driving before anyone starts debugging.
+    owns: s.owns ?? [],
+    ownsWarnings: s.owns_warnings ?? [],
+    actionFailures: s.action_failures ?? 0,
     attention: !!s.attention,
     uptime: s.uptime_s ?? null,
     regions: s.regions ?? {},

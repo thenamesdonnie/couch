@@ -17,6 +17,8 @@ import importlib.util
 import os
 import time
 
+import pytest
+
 HOME = os.path.expanduser('~')
 _spec = importlib.util.spec_from_loader(
     'steam_input_guard', importlib.machinery.SourceFileLoader(
@@ -26,6 +28,16 @@ _spec.loader.exec_module(guard)
 
 guide_consumed_since = guard.guide_consumed_since
 desktop_overlay_open = guard.desktop_overlay_open
+
+
+@pytest.fixture(autouse=True)
+def hermetic_latch(tmp_path, monkeypatch):
+    """guide_consumed_since latches the handled stamp in a real file so two
+    overlapping guard WINDOWS cannot answer the same press twice (the menu
+    reopen dance, commit f2ac188). That file is live console state: these
+    tests give every case its own, so the suite neither reads a stamp a real
+    guard left behind nor leaves a fixture stamp for one to find."""
+    monkeypatch.setattr(guard, 'GUIDE_LATCH', str(tmp_path / 'guide-handled'))
 
 
 def ts(text):

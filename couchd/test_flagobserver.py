@@ -42,6 +42,11 @@ class FakeWorld:
     def attention(self, reason):
         pass
 
+    def was_self_written(self, name, content):
+        # The real World labels flags couchd itself wrote; in shadow (and in
+        # this fixture) nothing is ever self-written.
+        return False
+
 
 def run_observer(tmp_path, monkeypatch):
     """Construct FlagObserver (which calls read_all) against tmp_path,

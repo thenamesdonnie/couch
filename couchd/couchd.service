@@ -6,6 +6,12 @@
 #
 # Rollback, always safe, never an error:  systemctl --user stop couchd
 #
+# If couchd has been given responsibilities (~/couch/couchd/owns.conf is not
+# empty), the clean order is: empty owns.conf FIRST, then stop. Stopping first
+# is safe too - the legacy scripts treat ownership as a lease on couchd's
+# status.json heartbeat and take everything back within 30s - but emptying the
+# file first hands over instantly, with no window where neither stack acts.
+#
 # No other unit may ever gain Requires=/After=couchd in stage 1 (R6): a down
 # shadow costs nothing, and nothing may come to depend on it.
 [Unit]

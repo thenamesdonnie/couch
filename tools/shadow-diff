@@ -418,7 +418,27 @@ def bp_hold_context(t, couchd_i, legacy_i):
 
 
 def triage(section, li, ci, flags, couchd_i, legacy_i):
-    """Pre-fill the T column where a divergence matches the written-first whitelist."""
+    """Pre-fill the T column where a divergence matches the written-first whitelist.
+
+    T5 note, written 5 Aug 2026 BEFORE the first flip (pre-declared per C10, so
+    it cannot be mistaken for a T4 later):
+
+      * TOGGLE CADENCE. couchd's toggle verbs (close_steam_menu, tv_toggle,
+        show steam-menu) now carry cooldowns that outlast their own C17
+        deadlines - 8s, 20s and 6s - because the underlying mechanism is a
+        switch: a second guide press inside the first one's window REOPENS the
+        menu it closed (the 02:53:48.9 + 02:53:53.2 dance commit f2ac188's
+        latch exists to stop). The legacy guard re-checks once a second and can
+        therefore emit two close_steam_menu lines where couchd emits one.
+        A legacy-only REPEAT of a toggle inside couchd's cooldown is T5 (same
+        decision, deliberately emitted once), NOT a missed decision. The first
+        of the pair must still match, or it is a real T4.
+      * YIELDED LEGACY LINES. Post-flip, the legacy scripts write their
+        would-do with "yielded": true in args (shadow reversal), and the
+        watcher emits a `yield` verb for gestures it no longer performs. This
+        differ does not yet read either field - teaching it to is the first
+        job of flip day, before the first flipped evening is triaged.
+    """
     # R7(g) FIRST, ahead of R7(b): these rows have subject "bigpicture" too, but
     # they are a deliberate pre-step, not the appid-literal bug R7(b) describes.
     # Legacy puts Steam into Big Picture before every game so the pad talks to a

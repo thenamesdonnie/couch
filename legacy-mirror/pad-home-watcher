@@ -1,0 +1,1375 @@
+#!/usr/bin/env python3
+"""Hold the PS button in a game and land back on the Kodi home screen,
+with the game left frozen in the background, ready to resume.
+
+Kodi's own pad input is off while a game runs (game-launch turns it off), so
+this reads the DualSense directly from its evdev node and watches one thing:
+the PS button (BTN_MODE) held for about a second while a game session is
+active AND its processes are actually running. On that hold it SIGSTOPs the
+game (a frozen game costs nothing), hands the pad back to Kodi, and puts Kodi
+on screen. The game's tile on the home row shows it paused; picking it again
+resumes it (game-launch handles the thaw). Quitting for real is the power
+menu's job, which calls game-launch quit.
+
+A quick tap stays with Steam (the overlay). Outside a game session, or while
+the game is already frozen, this does nothing at all, so Kodi's tap-for-home
+and hold-for-power-menu keep working.
+
+TWO quick taps open the on-TV switcher instead: the Kodi dialog that
+script.couch.switcher draws, listing the running game, Kodi and the desktop,
+navigable with the stick. Because that dialog is Kodi's, a double-tap with a
+game actually running does the whole hold suspend first (freeze, pad to Kodi,
+guard) and only then asks for the dialog. A tap that already did something on
+its own - the resume of a paused game - is never half of a double: the game
+has the pad back by then and a Kodi dialog over it would be dead.
+
+Reading /dev/input needs the udev rule in
+/etc/udev/rules.d/71-dualsense-uaccess.rules; until that exists this logs a
+hint and waits rather than dying.
+"""
+import json
+import os
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+
+EVENT_FORMAT = 'llHHi'  # struct input_event on x86_64
+EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
+EV_KEY = 0x01
+BTN_MODE = 0x13c  # the PS button
+HOLD_SECONDS = 0.9
+
+# The tap / double-tap / hold arithmetic has ONE home: ~/couch/couchd/gesture.py,
+# the module couchd's shadow model and the stage-2 input process both run, so
+# all three stacks decide the same gesture from the same numbers. This script
+# is a standalone file in ~/.local/bin, so the path has to be explicit -
+# APPENDED, never prepended, so nothing in that directory can shadow a stdlib
+# module here. The hold path deliberately keeps its own monotonic arithmetic
+# untouched (couchd measures kernel timestamps; changing the timebase of a
+# live gesture is not what this feature is for), and the fallback below keeps
+# the console alive if ~/couch ever moves.
+sys.path.append('/home/ds2000/couch/couchd')
+try:
+    from gesture import (DOUBLE_TAP_S, SETTLE_S, is_double_tap,
+                         paused_tap_decision, settle_swallows)
+except ImportError:  # pragma: no cover - the source of truth is gesture.py
+    DOUBLE_TAP_S = 0.35
+    SETTLE_S = 1.2
+
+    def is_double_tap(gap, second_duration, window=DOUBLE_TAP_S,
+                      hold=HOLD_SECONDS):
+        return (gap is not None and gap < window
+                and second_duration is not None and second_duration < hold)
+
+    def settle_swallows(now, settle_until):
+        return settle_until is not None and now < settle_until
+
+    def paused_tap_decision(deferred, gap, second_duration, double_tap_bound,
+                            window=DOUBLE_TAP_S, hold=HOLD_SECONDS):
+        if deferred and is_double_tap(gap, second_duration, window, hold):
+            return 'double_tap'
+        return 'defer' if double_tap_bound else 'resume'
+
+# The BINDINGS come from the same directory, and from the file Kodi's own
+# settings page writes (Add-ons > Program add-ons > Couch Switcher >
+# Configure). Same rule as gesture.py: one reader, two stacks, so couchd's
+# would-do log still describes this script after a rebind. Same fallback rule
+# too - if ~/couch ever moves, the console keeps the behaviour it shipped with
+# rather than losing the PS button.
+try:
+    import gestureconf
+except ImportError:  # pragma: no cover - the source of truth is gestureconf.py
+    gestureconf = None
+
+# WHO OWNS WHAT, right now. ~/couch/couchd/owns.conf is the one file both
+# stacks read (couchd every tick, this script at every decision). While it is
+# empty - the state it ships in - nothing below changes: this script does
+# everything it has always done. Naming a responsibility there means couchd is
+# doing it now, and our job flips to being the SHADOW for it: we still write
+# the would-do line to /tmp/legacy-intents.jsonl (that is what the morning
+# differ compares against couchd's stream after a flip) and perform no action.
+#
+# Every failure mode here answers "couchd owns nothing", which leaves this
+# script acting - the console keeps working if ~/couch ever moves.
+_owns_import_error = None
+try:
+    import owns as couchd_owns
+except Exception as _e:  # pragma: no cover - the source of truth is owns.py
+    # ANY failure, not just ImportError. A syntax error in owns.py must never
+    # crash-loop this service (Restart=always) and take the PS button - the
+    # room's only way out of a game - down with it. No module means no
+    # yielding, which means this script keeps doing everything.
+    couchd_owns = None
+    _owns_import_error = _e
+
+_owns_said = [None]
+_heartbeat_said = [None]
+
+
+def yielded(responsibility):
+    """True when couchd owns `responsibility` AND is alive to act on it.
+
+    Ownership is a LEASE (owns.py's couchd_alive): the file grants it, couchd's
+    status.json heartbeat keeps it. `systemctl --user stop couchd` therefore
+    hands everything back within 30s without anyone editing a config file in
+    the dark, which is the charter's one-command rollback honoured literally."""
+    if couchd_owns is None:
+        if _owns_said[0] is None:
+            _owns_said[0] = []
+            say(f'owns.py unavailable ({_owns_import_error}); '
+                f'acting on everything')
+        return False
+    try:
+        cur = couchd_owns.load()
+    except Exception as e:
+        say(f'owns.conf unreadable ({e}); acting on everything')
+        return False
+    if cur.sorted != _owns_said[0]:
+        _owns_said[0] = cur.sorted
+        say(f'couchd {couchd_owns.describe(cur)}')
+        for w in cur.warnings:
+            say(f'owns.conf: {w}')
+    if responsibility not in cur.names:
+        return False
+    alive = couchd_owns.couchd_alive()
+    if alive != _heartbeat_said[0]:
+        _heartbeat_said[0] = alive
+        if alive:
+            say('couchd heartbeat ok; yielding ' + ', '.join(cur.sorted))
+        else:
+            age = couchd_owns.heartbeat_age()
+            say('couchd owns %s but its heartbeat is STALE (%s) - acting on '
+                'everything again' % (', '.join(cur.sorted),
+                                      'never' if age is None else f'{age:.0f}s'))
+    return alive
+
+DEFAULT_BINDINGS = {'tap': 'none', 'double_tap': 'switcher',
+                    'hold': 'suspend_to_kodi', 'hold_release': 'none',
+                    'long_hold': 'none'}
+
+
+class _FallbackConf:
+    """What gestureconf returns, minus the file, for the missing-module case."""
+    bindings = DEFAULT_BINDINGS
+    hold_seconds = HOLD_SECONDS
+    double_tap_seconds = DOUBLE_TAP_S
+    long_hold_seconds = 3.0
+    warnings = ()
+
+    def action_for(self, gesture):
+        return self.bindings.get(gesture, 'none')
+
+
+_FALLBACK = _FallbackConf()
+_said_warnings = [None]
+
+
+def conf():
+    """The current bindings. Cheap enough for the select loop: gestureconf
+    stats the settings file and re-parses only when it changed, so a rebind
+    lands on the next iteration with no restart and no watcher of its own."""
+    if gestureconf is None:
+        return _FALLBACK
+    try:
+        c = gestureconf.load()
+    except Exception as e:  # the module promises not to, but this is the
+        say(f'bindings unreadable ({e}); using defaults')  # console's input
+        return _FALLBACK
+    if c.warnings and c.warnings != _said_warnings[0]:
+        _said_warnings[0] = c.warnings
+        for w in c.warnings:
+            say(f'bindings: {w}')
+    return c
+SESSION = '/tmp/game-session'
+SUSPENDED = '/tmp/game-suspended'
+LOG = '/tmp/pad-home.log'
+INTENTS = '/tmp/legacy-intents.jsonl'  # machine-readable decisions (couchd R3)
+
+# Only the button device; the same pad also exposes motion sensors and a
+# touchpad, which never carry BTN_MODE.
+WANTED = 'DualSense Wireless Controller'
+UNWANTED = re.compile(r'Motion|Touchpad', re.I)
+
+
+def say(msg):
+    now = time.time()
+    with open(LOG, 'a') as f:
+        f.write(f"{time.strftime('%H:%M:%S', time.localtime(now))}"
+                f".{int(now % 1 * 1000):03d} {msg}\n")
+
+
+def intent(verb, subject=None, **args):
+    """One JSON line per decision, beside the human line: the couchd
+    shadow-diff reads these instead of guessing intent from effects. Purely
+    additive - a failure here must never reach the caller."""
+    try:
+        with open(INTENTS, 'a') as f:
+            f.write(json.dumps({'t': time.time(), 'src': 'watcher',
+                                'verb': verb, 'subject': subject,
+                                'args': args}, default=str) + '\n')
+    except OSError:
+        pass
+
+
+def _suspended_appid():
+    """Whatever the paused-game flag names, as an intent subject."""
+    try:
+        return open(SUSPENDED).read().strip() or None
+    except OSError:
+        return None
+
+
+def _session_parts():
+    """/tmp/game-session split, or [] if there is no session."""
+    try:
+        return open(SESSION).read().split()
+    except OSError:
+        return []
+
+
+def _session_appid(parts):
+    """appid (or mode) out of an already-read /tmp/game-session split."""
+    if parts and len(parts) > 2 and parts[2]:
+        return parts[2]
+    if parts and len(parts) > 1:
+        return parts[1]
+    return None
+
+
+def find_pads():
+    nodes = []
+    try:
+        blocks = open('/proc/bus/input/devices').read().split('\n\n')
+    except OSError:
+        return nodes
+    for b in blocks:
+        m = re.search(r'N: Name="([^"]*)"', b)
+        if not m or WANTED not in m.group(1) or UNWANTED.search(m.group(1)):
+            continue
+        h = re.search(r'H: Handlers=.*?(event\d+)', b)
+        if h:
+            nodes.append('/dev/input/' + h.group(1))
+    return nodes
+
+
+def game_pids():
+    # One source of truth: reaper's process tree + shadPS4 (see game-pids).
+    try:
+        return [int(p) for p in subprocess.run(
+            ['/home/ds2000/.local/bin/game-pids'],
+            capture_output=True, text=True).stdout.split()]
+    except ValueError:
+        return []
+
+
+_settle_until = [None]   # monotonic deadline; see gesture.SETTLE_S
+
+
+def arm_settle(what):
+    """Open a settle window after a heavy transition.
+
+    Everything that takes the screen and the pad arms one, so the burst of
+    presses that produced it cannot immediately produce its opposite. Monotonic
+    rather than kernel time on purpose: watch()'s own press arithmetic is
+    monotonic (see the gesture.py import note), and a deadline in one timebase
+    compared against presses in another is worse than either."""
+    _settle_until[0] = time.monotonic() + SETTLE_S
+    say(f'settling {SETTLE_S:.1f}s after {what}')
+
+
+def resume_game():
+    # PS4-style: a tap on the home screen jumps back into the paused game.
+    #
+    # NOT A BINDING, deliberately. This is the recovery path: the only way
+    # back into a game this script suspended. A settings page that let it be
+    # bound away would let someone strand a frozen game with no route back to
+    # it from the couch - the same class of mistake the suspend_to_kodi safety
+    # rail exists to prevent, in the opposite direction. So it stays state
+    # logic, ABOVE the binding dispatch: a tap with /tmp/game-suspended
+    # present resumes, and only a tap that finds nothing paused is handed to
+    # whatever `tap` is bound to.
+    #
+    # ONE amendment (5 Aug 2026, Donnie's call, overriding the earlier ruling
+    # that this always fires instantly): while a game is paused AND the
+    # double-tap is bound, the tap that would resume waits out the double-tap
+    # window first, because a double-tap on a paused game should open the
+    # switcher - that is precisely when it is most useful, since you are
+    # already sitting on Kodi wondering what else is running. The deferral
+    # lives in watch(), is that narrow, and disappears the moment the
+    # double-tap is unbound: everywhere else a tap is still instant.
+    # The resume is state logic rather than a binding, but it is still part of
+    # the gesture vocabulary: when couchd owns gestures it owns this too, and
+    # this script only records what it would have done. The settle window is
+    # still armed - yielding removes our EFFECTS, never our own arithmetic, so
+    # the press stream this script sees stays exactly the one it saw before.
+    if yielded('gestures'):
+        say('PS tap: resume -> couchd owns gestures')
+        intent('launch', _suspended_appid(), mode='resume', gesture='tap',
+               via='game-launch resume', yielded=True, owner='couchd')
+        arm_settle('resume')
+        return
+    say('PS tap: resume paused game')
+    intent('launch', _suspended_appid(), mode='resume', gesture='tap',
+           via='game-launch resume')
+    subprocess.Popen(['/home/ds2000/.local/bin/game-launch', 'resume'],
+                     start_new_session=True)
+    arm_settle('resume')
+
+
+PAUSE_SNAP = '/home/ds2000/.local/bin/pause-snap'
+# Set when the freeze-frame is safely on disk. The iconify that follows a
+# suspend frees the window's compositing pixmap, which is exactly what
+# pause-snap reads, so the two must not race.
+_SNAP_DONE = threading.Event()
+SNAP_WAIT_S = 4.0
+
+
+def snapshot(appid, gesture_name='hold', reason='ps-hold'):
+    """Keep the game's last rendered frame as its artwork while it is paused,
+    so the phone's switcher and the Kodi home row show where the player left
+    off. Purely cosmetic, so it runs OFF the select loop: a blocked watcher is
+    a pad that stops responding, and no screenshot is worth that.
+
+    Safe to run after the SIGSTOP: xfwm4 compositing keeps every mapped
+    window's pixmap, so a frozen window covered by Kodi still captures its
+    real last frame (verified 4 Aug 2026; see pause-snap)."""
+    intent('snapshot', appid, via='pause-snap', gesture=gesture_name,
+           reason=reason)
+    _SNAP_DONE.clear()
+    background(_snapshot, appid, reason)
+
+
+def _snapshot(appid, reason):
+    try:
+        env = dict(os.environ, PAUSE_SNAP_SRC='watcher')
+        subprocess.run([PAUSE_SNAP, str(appid), reason], timeout=3,
+                       capture_output=True, env=env)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'pause-snap: no frame for {appid} ({e})')
+    finally:
+        _SNAP_DONE.set()
+
+
+def clear_snapshots(appid=None):
+    """A freeze-frame outlives its pause by nothing. No appid clears the lot,
+    which is what the stale-flag and orphan repairs want."""
+    try:
+        subprocess.run([PAUSE_SNAP, '--clear'] + ([str(appid)] if appid else []),
+                       timeout=3, capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def running_pids(pids):
+    """Only processes that are actually executing; 'T' means already frozen."""
+    out = []
+    for pid in pids:
+        try:
+            stat = open(f'/proc/{pid}/stat').read()
+            state = stat.rsplit(') ', 1)[1].split()[0]
+        except (OSError, IndexError):
+            continue
+        if state != 'T':
+            out.append(pid)
+    return out
+
+
+def jrpc(method, params):
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method,
+                       'params': params}).encode()
+    req = urllib.request.Request(
+        'http://localhost:8090/jsonrpc', data=body,
+        headers={'content-type': 'application/json'})
+    import base64
+    req.add_header('Authorization', 'Basic ' + base64.b64encode(b'kodi:$KODI_PASSWORD').decode())
+    return json.loads(urllib.request.urlopen(req, timeout=5).read())
+
+
+def set_joystick(value):
+    jrpc('Settings.SetSettingValue',
+         {'setting': 'input.enablejoystick', 'value': value})
+
+
+def get_joystick():
+    try:
+        return jrpc('Settings.GetSettingValue',
+                    {'setting': 'input.enablejoystick'})['result']['value']
+    except (OSError, KeyError, ValueError):
+        return None  # Kodi down or mid-restart
+
+
+def pad_to_kodi(reason='handoff', dry=False):
+    # `dry` is the yield: the caller's responsibility belongs to couchd, so the
+    # decision is still recorded and the JSON-RPC call is not made.
+    if dry:
+        say(f'pad -> kodi (yielded: {reason})')
+        intent('route_pad', 'kodi', reason=reason, via='kodi-jsonrpc',
+               yielded=True, owner='couchd')
+        return
+    try:
+        set_joystick(True)
+        say('pad -> kodi')
+        intent('route_pad', 'kodi', reason=reason, via='kodi-jsonrpc')
+    except OSError as e:
+        say(f'kodi rpc failed: {e}')
+        intent('route_pad', 'kodi', reason=reason, via='kodi-jsonrpc',
+               failed=str(e))
+
+
+def focus_kodi(reason='handoff', dry=False):
+    if dry:
+        say(f'kodi focus (yielded: {reason})')
+        intent('show', 'kodi', reason=reason, via='xlib-restack',
+               yielded=True, owner='couchd')
+        return
+    try:
+        from Xlib import display, X
+        d = display.Display()
+        root = d.screen().root
+
+        def find(w):
+            try:
+                for c in w.query_tree().children:
+                    if (c.get_wm_name() or '') == 'Kodi':
+                        return c
+                    r = find(c)
+                    if r:
+                        return r
+            except Exception:
+                pass
+            return None
+        w = find(root)
+        if w:
+            w.configure(stack_mode=X.Above)
+            try:
+                d.set_input_focus(w, X.RevertToParent, X.CurrentTime)
+            except Exception:
+                pass
+            d.sync()
+            say('kodi focused')
+            intent('show', 'kodi', reason=reason, via='xlib-restack')
+    except Exception as e:
+        say(f'focus failed: {e}')
+
+
+XINPUT = '/home/ds2000/couch/server/xinput.py'
+
+
+def iconify_frozen_game(appid, reason='release-pointer-grab'):
+    """Unmap the frozen game's window, once Kodi already has the screen.
+
+    A SIGSTOPped game cannot answer the X server, so any pointer grab it held
+    at the instant it froze stays held: its cursor sprite sits on top of Kodi
+    and the phone's XTEST clicks are swallowed by the frozen client. X drops a
+    grab when the grab window stops being viewable, so unmapping the window is
+    what actually frees the pointer - raising Kodi over it does not. The resume
+    maps it back (game-launch: _NET_ACTIVE_WINDOW, which xfwm4 deiconifies on).
+
+    Runs OFF the select loop and waits for the freeze-frame first: pause-snap
+    reads the window's compositing pixmap, which iconifying frees. Cosmetic
+    either way - a stuck cursor is ugly, a suspend that failed is not
+    acceptable, so nothing here may reach the caller."""
+    background(_iconify_frozen_game, appid, reason)
+
+
+def _iconify_frozen_game(appid, reason):
+    _SNAP_DONE.wait(SNAP_WAIT_S)
+    try:
+        pids = [str(p) for p in game_pids()]
+        if not pids:
+            return
+        wid = subprocess.run(['python3', XINPUT, 'gamewin'] + pids,
+                             capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+        if not wid.startswith('0x'):
+            say(f'iconify: no window for {appid} (harmless)')
+            return
+        subprocess.run(['python3', XINPUT, 'iconify', wid], timeout=5,
+                       capture_output=True)
+        say(f'iconified frozen {appid} ({wid})')
+        intent('iconify', appid, via='wm-change-state', reason=reason,
+               window=wid)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'iconify failed for {appid} ({e}); pointer grab may persist')
+
+
+def map_game_window(appid, reason='restore-after-thaw'):
+    """The exact undo of iconify_frozen_game (xfwm4 deiconifies on a pager
+    _NET_ACTIVE_WINDOW), for the repairs that thaw a game themselves.
+
+    Without it a repair-thawed game would be left running in the taskbar,
+    invisible: audible, eating the pad, and with no window on screen to explain
+    itself. On a window that was never iconified this is just a raise."""
+    background(_map_game_window, appid, reason)
+
+
+def _map_game_window(appid, reason):
+    try:
+        pids = [str(p) for p in game_pids()]
+        if not pids:
+            return
+        wid = subprocess.run(['python3', XINPUT, 'gamewin', '--any-state'] + pids,
+                             capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+        if not wid.startswith('0x'):
+            return
+        subprocess.run(['python3', XINPUT, 'activate', wid], timeout=5,
+                       capture_output=True)
+        say(f'mapped {appid} back ({wid})')
+        intent('show', appid, via='activate', reason=reason, window=wid)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'map back failed for {appid} ({e})')
+
+
+GAME_APPID = '/home/ds2000/.local/bin/game-appid'
+
+
+def resolve_appid():
+    """Ask Steam what the running game actually is, or None.
+
+    Only ever called when our own session line cannot say (a game started from
+    inside Big Picture), so the cost lands on that path alone."""
+    try:
+        r = subprocess.run([GAME_APPID], capture_output=True, text=True,
+                           timeout=5)
+        out = r.stdout.strip()
+        return out if out.isdigit() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+GUARD_PIDFILE = '/tmp/steam-input-guard.pid'
+
+
+def supersede_guard(reason='superseded-by-freeze'):
+    """Close any enforcement window still open, before we freeze anything.
+
+    A guard opened by a resume spends its seconds asserting game-mode
+    invariants, one of which is "a game that should be running must be thawed".
+    A PS hold inside that window raced its own repair and lost: 18 processes
+    frozen at 02:13:33 on 4 Aug 2026, SIGCONTed by the resume's guard at
+    02:13:34.865, leaving Kodi on screen with the game playing behind it. The
+    guard now re-reads the flag and closes on a suspend, which fixes it at the
+    source; this closes the window from our side too, so neither stack has to
+    win a race in order to be correct.
+
+    Same mechanism as the guard's own supersede(): SIGTERM the pid on file and
+    leave the pidfile alone - the dying guard's SIGTERM handler removes it, and
+    only if it still owns it, which is what makes a double-fire harmless."""
+    if yielded('guard'):
+        # couchd runs the enforcement windows now, and the pid on file is
+        # COUCHD'S (it write-throughs the same pidfile so this file keeps
+        # meaning what it always meant). SIGTERMing it would kill the daemon
+        # that is holding the console together - so this yields hard.
+        try:
+            old = int(open(GUARD_PIDFILE).read())
+        except (OSError, ValueError):
+            return
+        intent('kill', 'steam-input-guard', pids=[old],
+               resolver='guard-pidfile', signal='SIGTERM', reason=reason,
+               yielded=True, owner='couchd')
+        say(f'supersede guard {old} -> couchd owns guard')
+        return
+    try:
+        old = int(open(GUARD_PIDFILE).read())
+        os.kill(old, 0)                     # alive?
+        os.kill(old, signal.SIGTERM)
+    except (OSError, ValueError):
+        return
+    say(f'superseded steam-input-guard {old}')
+    intent('kill', 'steam-input-guard', pids=[old], resolver='guard-pidfile',
+           signal='SIGTERM', reason=reason)
+
+
+def freeze_game(gesture_name='hold', reason='ps-hold'):
+    """Fires at the hold threshold, while the button is still down: freeze
+    the game right away for a responsive feel, but do NOT give Kodi the pad
+    yet — if its joystick input comes back mid-press, Kodi sees a phantom
+    held button (it can miss the release while re-opening the device) and
+    fires its own PS-hold action, popping the power menu. Returns True if
+    the handoff to Kodi should happen on release.
+
+    The double-tap switcher borrows this whole path (the defaults are the
+    hold's, so the hold's behaviour and its log lines are untouched); it just
+    calls the handoff itself rather than waiting for a release."""
+    label = LABELS.get(gesture_name, 'PS double-tap')
+    parts = []
+    try:
+        parts = open(SESSION).read().split()
+    except OSError:
+        pass
+    mode = parts[1] if len(parts) > 1 else '?'
+    appid = parts[2] if len(parts) > 2 and parts[2] else mode
+
+    pids = running_pids(game_pids())
+    if pids and not str(appid).isdigit():
+        # A game started from INSIDE Big Picture leaves the session's appid
+        # field empty, so the line above falls back to the MODE and this freeze
+        # would stamp /tmp/game-suspended with the literal "bigpicture". That
+        # keys pause-snap's freeze-frames and the tile art to a name no library
+        # entry has, and makes the game's own Kodi tile read as "a different
+        # game was picked" - which on 5 Aug 2026 closed and relaunched it,
+        # losing the operator's progress. game-launch adopts the real appid
+        # while the session runs; this is the second net, for a hold that lands
+        # before its poll came round. A failure leaves today's value untouched.
+        real = resolve_appid()
+        if real:
+            say(f'resolved appid {real} for a nameless "{mode}" session')
+            intent('set_flag', 'session', value=real, resolver='game-appid',
+                   reason='bigpicture-appid-adoption', was=appid)
+            appid = real
+    if pids:
+        # Before the STOPs, not after: a guard window left open by a recent
+        # resume would otherwise SIGCONT this freeze a second later.
+        supersede_guard()
+        say(f'{label}, freezing {len(pids)} process(es) of {appid}')
+        intent('freeze', appid, pids=sorted(pids), resolver='game-pids',
+               gesture=gesture_name, reason=reason, mode=mode)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except OSError:
+                pass
+        with open(SUSPENDED, 'w') as f:
+            f.write(appid)
+        intent('set_flag', 'suspended', value=appid, reason=reason)
+        snapshot(appid, gesture_name, reason)
+    elif mode == 'bigpicture':
+        # Nothing to freeze: Big Picture itself just stays open behind Kodi.
+        say(f'{label}, leaving big picture and back to kodi')
+    else:
+        return False  # no live game, not big picture: nothing meaningful
+    return True
+
+
+def handoff_to_kodi(reason='release'):
+    """Runs on button release (or a safety timeout): only now does Kodi get
+    the pad and the screen."""
+    pad_to_kodi(reason)
+    focus_kodi(reason)
+    # Kodi is on screen now, so the frozen game's window can go: a suspended
+    # game keeps whatever pointer grab it froze holding, which puts its cursor
+    # over Kodi and eats the phone's clicks. Only when something is actually
+    # paused, and only after the freeze-frame is captured (see
+    # iconify_frozen_game).
+    paused = _suspended_appid()
+    if paused:
+        iconify_frozen_game(paused)
+    # Steam saw the same PS press we did and may have opened its Big Picture
+    # menu, which silently keeps the controller routed to Steam's UI while
+    # Kodi is on screen. The guard closes it and re-raises Kodi.
+    subprocess.Popen(['/home/ds2000/.local/bin/steam-input-guard', 'kodi'],
+                     start_new_session=True)
+
+
+def show_desktop_off():
+    """Undo xfwm4's show-desktop if it is on.
+
+    The switcher dialog draws inside Kodi, so a Kodi hidden behind an empty
+    desktop would leave the room looking at nothing while the stick moved an
+    invisible list. Coming BACK from the desktop is half the point of the
+    gesture. Reuses the couch server's X helper rather than keeping a second
+    copy of the client-message plumbing here."""
+    try:
+        subprocess.run(['python3', '/home/ds2000/couch/server/xinput.py',
+                        'showdesktop', 'off'],
+                       capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'show-desktop clear failed: {e}')
+
+
+def show_switcher():
+    """Ask Kodi to run the switcher addon; it draws the dialog and talks to
+    the couch server itself, so nothing here waits for an answer."""
+    try:
+        jrpc('Addons.ExecuteAddon', {'addonid': 'script.couch.switcher'})
+        say('switcher addon launched')
+    except (OSError, ValueError) as e:
+        say(f'switcher addon failed: {e}')
+
+
+# =========================================================================
+# the bound actions
+# =========================================================================
+# gesture -> (log label, gesture tag, reason tag). The two the console
+# shipped with keep their exact old spellings: /tmp/pad-home.log is read by
+# eye, and couchd's differ keys off 'ps-hold' and 'ps-double-tap'.
+GESTURE_META = {
+    'tap': ('PS tap', 'tap', 'ps-tap'),
+    'double_tap': ('PS double-tap', 'double-tap', 'ps-double-tap'),
+    'hold': ('PS held', 'hold', 'ps-hold'),
+    'hold_release': ('PS hold release', 'hold-release', 'ps-hold-release'),
+    'long_hold': ('PS long hold', 'long-hold', 'ps-long-hold'),
+}
+LABELS = {tag: label for label, tag, _ in GESTURE_META.values()}
+
+VPAD = '/home/ds2000/.local/bin/vpad'
+GAME_LAUNCH = '/home/ds2000/.local/bin/game-launch'
+TV = '/home/ds2000/.local/bin/tv'
+COUCH_API = 'http://localhost:8790'
+
+
+def background(fn, *args):
+    """Anything that has to wait on Steam, the TV or the couch server runs off
+    the select loop: a blocked watcher is a pad that stops responding, which
+    is exactly what this whole script exists to prevent."""
+    import threading
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def act_suspend(gname, reason, defer_handoff):
+    """`suspend_to_kodi` - freeze the game and land on Kodi. The console's
+    original hold, unchanged.
+
+    Returns True when the caller must arm the deferred handoff (the hold's
+    contract: the pad may not move while the button is still down). Any other
+    gesture bound to this hands off at once, exactly as the double-tap
+    switcher already did.
+    """
+    if not os.path.exists(SESSION):
+        return False
+    if not freeze_game(gname, reason):
+        return False
+    arm_settle('suspend')
+    if defer_handoff:
+        return True
+    handoff_to_kodi(gname)
+    return False
+
+
+def act_switcher(gname, reason):
+    """The on-TV switcher: the Kodi dialog script.couch.switcher draws.
+
+    Kodi owns the dialog, so it has to own the pad and the screen first —
+    with a game actually running that is the whole hold suspend, in the same
+    order a hold does it, and couchd's model emits the same sequence
+    (gesture:ps-double-tap, then show_switcher)."""
+    say(f'{LABELS.get(gname, gname)}: switcher')
+    show_desktop_off()
+    if os.path.exists(SESSION) and freeze_game(gname, reason):
+        handoff_to_kodi(gname)
+    else:
+        focus_kodi(gname)
+    intent('show_switcher', 'tv', gesture=gname, reason=reason,
+           via='kodi-addon:script.couch.switcher')
+    show_switcher()
+    arm_settle('switcher')
+
+
+def _steam_menu():
+    """Steam's own menu, opened with the guide press steam-input-guard uses to
+    CLOSE it - the button is a toggle, so it is the identical mechanism. The
+    virtual pad is only started if there isn't one already, and is always
+    handed back; a leaked vpad is a phantom player 2 forever (audit failure
+    10)."""
+    started = False
+    try:
+        if not os.path.exists('/tmp/vpad.fifo'):
+            subprocess.run([VPAD, 'up'], check=False, capture_output=True)
+            started = True
+            time.sleep(1.5)     # Steam needs a beat to enumerate it
+        subprocess.run([VPAD, 'press', 'guide'], check=False,
+                       capture_output=True)
+        time.sleep(1.0)         # ...and a beat to act on the press
+    except OSError as e:
+        say(f'steam menu failed: {e}')
+    finally:
+        if started:
+            subprocess.run([VPAD, 'quit'], check=False, capture_output=True)
+
+
+def act_steam_menu(gname, reason):
+    say(f'{LABELS.get(gname, gname)}: steam menu')
+    intent('show', 'steam-menu', gesture=gname, reason=reason, via='vpad-guide')
+    background(_steam_menu)
+
+
+def act_power_menu(gname, reason):
+    """Kodi's shutdown menu - the same window its own keymap puts on a held
+    home button, asked for over JSON-RPC so this works while Kodi's joystick
+    input is off."""
+    say(f'{LABELS.get(gname, gname)}: kodi power menu')
+    intent('show', 'power-menu', gesture=gname, reason=reason,
+           via='kodi-jsonrpc:GUI.ActivateWindow shutdownmenu')
+    try:
+        jrpc('GUI.ActivateWindow', {'window': 'shutdownmenu'})
+    except (OSError, ValueError) as e:
+        say(f'power menu failed: {e}')
+
+
+def act_quit_game(gname, reason):
+    """game-launch quit: ask politely, give the game time to save, and only
+    then kill. Exactly what the power menu's own quit does."""
+    if not os.path.exists(SESSION):
+        say(f'{LABELS.get(gname, gname)}: nothing to quit')
+        return
+    say(f'{LABELS.get(gname, gname)}: quit game')
+    intent('quit', _session_appid(_session_parts()),
+           pids=sorted(running_pids(game_pids())), resolver='game-pids',
+           gesture=gname, reason=reason, via='game-launch quit')
+    subprocess.Popen([GAME_LAUNCH, 'quit'], start_new_session=True)
+
+
+def act_tv_toggle(gname, reason):
+    """The `tv` command, detached: waking the set is a 6-8s network dial and
+    the loop must not sit through it."""
+    say(f'{LABELS.get(gname, gname)}: tv toggle')
+    intent('tv_toggle', 'tv', gesture=gname, reason=reason, via='tv toggle')
+    try:
+        subprocess.Popen([TV, 'toggle'], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        say(f'tv toggle failed: {e}')
+
+
+def _activate(win_id):
+    body = json.dumps({'id': win_id}).encode()
+    req = urllib.request.Request(COUCH_API + '/api/windows/activate', data=body,
+                                 headers={'content-type': 'application/json'})
+    try:
+        urllib.request.urlopen(req, timeout=25).read()
+    except (OSError, ValueError) as e:
+        say(f'activate {win_id} failed: {e}')
+
+
+def act_desktop(gname, reason):
+    """The couch server's own desktop route, not a bare xfwm4 show-desktop:
+    it suspends a running game on the way out, the same as the phone's
+    switcher does, so the state stays consistent (server/screen.js)."""
+    say(f'{LABELS.get(gname, gname)}: show desktop')
+    intent('show', 'desktop', gesture=gname, reason=reason,
+           via='couch-api:/api/windows/activate')
+    background(_activate, 'desktop')
+
+
+ACTIONS = {
+    'switcher': act_switcher,
+    'steam_menu': act_steam_menu,
+    'power_menu': act_power_menu,
+    'quit_game': act_quit_game,
+    'tv_toggle': act_tv_toggle,
+    'desktop': act_desktop,
+}
+
+
+def yield_gesture(gname, reason, action):
+    """The would-do line for a gesture couchd now owns.
+
+    A suspend is worth spelling out - the pid set is the diffable part, and
+    reading it is free (game-pids + /proc, no side effects) - so the differ can
+    still check couchd froze what this script would have frozen. Everything
+    else is named by its action; recomputing each bound action's full effect
+    list without running it would be reimplementing couchd in this file, which
+    is the thing the cutover exists to stop doing."""
+    args = {'gesture': gname, 'action': action, 'reason': reason,
+            'yielded': True, 'owner': 'couchd'}
+    if action == 'suspend_to_kodi' and os.path.exists(SESSION):
+        parts = _session_parts()
+        intent('freeze', _session_appid(parts),
+               pids=sorted(running_pids(game_pids())), resolver='game-pids',
+               **args)
+    else:
+        intent('yield', gname, **args)
+    say(f'{LABELS.get(gname, gname)}: {action} -> couchd owns gestures')
+
+
+def act(gesture, c, defer_handoff=False):
+    """Run whatever `gesture` is bound to. The whole dispatch is here, and
+    couchd's action_intents() mirrors it verb for verb off the same config -
+    so the shadow diff still compares like with like after a rebind.
+
+    Returns True only for the hold's deferred suspend (see act_suspend)."""
+    action = c.action_for(gesture)
+    if action == 'none':
+        return False
+    _, gname, reason = GESTURE_META.get(
+        gesture, (gesture, gesture, f'ps-{gesture}'))
+    if yielded('gestures'):
+        # couchd runs the gesture vocabulary now. Nothing here fires, and no
+        # deferred handoff is armed either: returning False keeps the release
+        # path from calling handoff_to_kodi, so this script performs no part
+        # of a gesture it does not own.
+        yield_gesture(gname, reason, action)
+        return False
+    try:
+        if action == 'suspend_to_kodi':
+            return act_suspend(gname, reason, defer_handoff)
+        fn = ACTIONS.get(action)
+        if fn is None:
+            say(f'{gname}: unknown action {action!r}, ignoring')
+            return False
+        fn(gname, reason)
+    except Exception as e:
+        # A bound action that throws must never take the watcher down with it:
+        # the PS button is the room's only way out of a game.
+        say(f'{gname}: action {action} failed: {e}')
+    return False
+
+
+def hold_ready(action):
+    """Whether the hold threshold fires at all.
+
+    `suspend_to_kodi` keeps the console's original gate: no /tmp/game-session
+    means the threshold is NOT spent, so a session appearing mid-press still
+    suspends. `none` never fires, which is precisely what leaves the press
+    available to the long-hold tier (gestureconf only allows a long hold with
+    the hold unbound)."""
+    if action == 'none':
+        return False
+    if action == 'suspend_to_kodi':
+        return os.path.exists(SESSION)
+    return True
+
+
+def screen_classes():
+    """(topmost window class, focused window class), in one X round trip.
+
+    Topmost is the guard's rule (steam-input-guard.top_window): mapped, not
+    InputOnly, at least 600x400, last in the bottom-to-top child order. Focus is
+    read the guard's way too, walking up from the focus window until something
+    owns a class. Together they answer the question a repair actually needs:
+    is the room looking at the game, or at something else?"""
+    try:
+        from Xlib import display
+        d = display.Display()
+        root = d.screen().root
+
+        def cls_of(w, depth=0):
+            try:
+                cl = (w.get_wm_class() or ('', ''))[0]
+                if cl or depth >= 3:
+                    return cl
+                for ch in w.query_tree().children:
+                    r = cls_of(ch, depth + 1)
+                    if r:
+                        return r
+            except Exception:
+                pass
+            return ''
+
+        topcls = ''
+        for c in root.query_tree().children:  # bottom -> top
+            try:
+                a = c.get_attributes()
+                if a.map_state != 2 or a.win_class == 2:
+                    continue
+                g = c.get_geometry()
+                if g.width < 600 or g.height < 400:
+                    continue
+                cl = cls_of(c)
+                if cl:
+                    topcls = cl
+            except Exception:
+                continue
+        focuscls = ''
+        try:
+            f = d.get_input_focus().focus
+            for _ in range(5):
+                if not hasattr(f, 'get_wm_class'):
+                    break
+                try:
+                    cl = (f.get_wm_class() or ('', ''))[0]
+                except Exception:
+                    cl = ''
+                if cl:
+                    focuscls = cl
+                    break
+                f = f.query_tree().parent
+        except Exception:
+            pass
+        d.close()
+        return topcls, focuscls
+    except Exception:
+        return '', ''
+
+
+def top_is_frozen_game():
+    """Is the visible window a steam_app while the game is suspended?"""
+    return screen_classes()[0].startswith('steam_app')
+
+
+_last_reconcile = [0.0]
+
+
+def reconcile():
+    """The standing safety net: every ~10s, repair drift that arises OUTSIDE
+    the transition guards - Kodi crash-restarts reloading a stale joystick
+    setting, a dead launcher orphaning the session, a lost thaw, a stale
+    paused flag, a frozen game left visible. Everything here is idempotent
+    and converges toward the state the flags describe."""
+    now = time.monotonic()
+    if now - _last_reconcile[0] < 10:
+        return
+    _last_reconcile[0] = now
+    try:
+        # Yielding reverses the roles for this responsibility: the repairs are
+        # still COMPUTED and written to the intent stream (that stream is the
+        # shadow the differ needs once couchd is the one repairing), but every
+        # effect below is skipped. Read fresh on every pass, so a rollback to
+        # an empty owns.conf has this script repairing again within 10s.
+        _reconcile(dry=yielded('reconcile'))
+    except Exception as e:
+        say(f'reconcile error: {e}')
+
+
+def _reconcile(dry=False):
+    # `dry` = couchd owns the reconcile responsibility. Two helpers keep the
+    # yield honest and reviewable: EVERY side effect below goes through do(),
+    # and EVERY intent line carries Y so the differ can tell a would-do from a
+    # did. The repair logic itself, including the local bookkeeping that
+    # follows each repair, is untouched - a shadow that skipped its own state
+    # updates would report a different second repair than the real thing did.
+    def do(fn, *a, **kw):
+        return None if dry else fn(*a, **kw)
+
+    Y = {'yielded': True, 'owner': 'couchd'} if dry else {}
+    session = None
+    try:
+        session = open(SESSION).read().split()
+    except OSError:
+        pass
+    suspended = os.path.exists(SUSPENDED)
+    states = {}
+    for pid in game_pids():
+        try:
+            stat = open(f'/proc/{pid}/stat').read()
+            states[pid] = stat.rsplit(') ', 1)[1].split()[0]
+        except (OSError, IndexError):
+            pass
+
+    # A session whose launcher died with no game left is an orphan: nothing
+    # will ever return the pad to Kodi, so reclaim it here.
+    if session:
+        try:
+            launcher_alive = os.path.exists(f'/proc/{int(session[0])}')
+        except (ValueError, IndexError):
+            launcher_alive = False
+        if not launcher_alive and not states:
+            say('reconcile: orphaned session (launcher gone, no game) - reclaiming')
+            for p in (SESSION, SUSPENDED):
+                try:
+                    if dry:
+                        if not os.path.exists(p):
+                            continue   # nothing to record removing
+                    else:
+                        os.remove(p)
+                    intent('clear_flag',
+                           'suspended' if p == SUSPENDED else 'session',
+                           reason='orphaned-session', repair='reconcile',
+                           launcher_alive=False, pids=[], **Y)
+                except OSError:
+                    pass
+            do(clear_snapshots)
+            session, suspended = None, False
+            pad_to_kodi('reconcile:orphaned-session', dry=dry)
+            focus_kodi('reconcile:orphaned-session', dry=dry)
+
+    # A paused flag with nothing actually frozen is stale (game was killed
+    # externally); it would make the next PS tap misfire.
+    if suspended and not states:
+        say('reconcile: stale suspended flag, removing')
+        try:
+            if not dry:
+                os.remove(SUSPENDED)
+            intent('clear_flag', 'suspended', reason='stale-suspended-flag',
+                   repair='reconcile', pids=[], resolver='game-pids', **Y)
+        except OSError:
+            pass
+        do(clear_snapshots)
+        suspended = False
+
+    # A paused flag with the game still RUNNING had no repair at all until
+    # tonight, which is why the 4 Aug 2026 race stuck: a resume's guard window
+    # was still open when a PS hold froze the game, and the guard's stale-read
+    # thaw-repair SIGCONTed the fresh freeze a second later - Kodi on screen,
+    # game audible behind it, flag set, nothing converging. Both sides of that
+    # race are fixed now (the guard re-reads the flag and closes on a suspend;
+    # freeze_game supersedes any open guard first), but the STATE deserves a
+    # repair regardless of how it was reached. What is on screen says which way
+    # to converge: the flag is only wrong if the player can actually see and
+    # drive the game.
+    if suspended and states and any(s != 'T' for s in states.values()):
+        topcls, focuscls = screen_classes()
+        if topcls.startswith('steam_app') and focuscls.startswith('steam_app'):
+            say('reconcile: suspended flag but the game is on screen and '
+                'focused - clearing the flag')
+            try:
+                if not dry:
+                    os.remove(SUSPENDED)
+                intent('clear_flag', 'suspended', repair='reconcile',
+                       reason='reconcile:stale-suspended-while-playing',
+                       pids=sorted(states), resolver='game-pids',
+                       topcls=topcls, focuscls=focuscls, **Y)
+            except OSError:
+                pass
+            do(clear_snapshots)
+            suspended = False
+        else:
+            say(f'reconcile: suspended flag but {len(states)} process(es) '
+                f'running behind {topcls or "?"} - re-freezing')
+            appid = _suspended_appid() or _session_appid(session)
+            intent('freeze', appid, pids=sorted(states), resolver='game-pids',
+                   signal='SIGSTOP', repair='reconcile',
+                   reason='reconcile:refreeze-lost-suspend',
+                   topcls=topcls or '?', **Y)
+            for pid in states:
+                try:
+                    do(os.kill, int(pid), signal.SIGSTOP)
+                except OSError:
+                    pass
+            # A game that ran on behind Kodi has a live pointer grab again.
+            do(iconify_frozen_game, appid, 'reconcile:refreeze-lost-suspend')
+            states = {p: 'T' for p in states}
+
+    # A game that should be running but is entirely frozen lost its thaw.
+    if not suspended and states and all(s == 'T' for s in states.values()):
+        say('reconcile: game frozen with no suspended flag - thawing')
+        appid = _session_appid(session)
+        intent('thaw', appid, pids=sorted(states),
+               resolver='game-pids', reason='frozen-without-suspended-flag',
+               repair='reconcile', **Y)
+        for pid in states:
+            try:
+                do(os.kill, int(pid), signal.SIGCONT)
+            except OSError:
+                pass
+        # ...and it may have been iconified by the suspend that lost its flag,
+        # so map it back: a thawed game left invisible is audible, holds the
+        # pad, and shows the room nothing that explains either.
+        do(map_game_window, appid, 'reconcile:thawed-without-flag')
+
+    # Kodi's joystick setting must match who owns the pad. Kodi crash-restarts
+    # reload whatever guisettings last saved, which can be the wrong side.
+    want = not (session and not suspended)
+    got = get_joystick()
+    if got is not None and got is not want:
+        say(f'reconcile: joystick {got} but should be {want} - fixing')
+        intent('route_pad', 'kodi' if want else 'game',
+               reason='joystick-setting-drift', repair='reconcile',
+               was=got, via='kodi-jsonrpc', **Y)
+        try:
+            do(set_joystick, want)
+        except OSError:
+            pass
+
+    # A frozen game must never be what the room is looking at.
+    if suspended and top_is_frozen_game():
+        say('reconcile: frozen game visible - raising kodi')
+        focus_kodi('reconcile:frozen-game-visible', dry=dry)
+
+
+def watch(paths):
+    fds = {}
+    for p in paths:
+        fds[os.open(p, os.O_RDONLY | os.O_NONBLOCK)] = p
+    say(f'watching {", ".join(paths)}')
+    pressed_at = None
+    fired = False           # the hold threshold has been spent this press
+    long_fired = False      # ...and the long-hold one
+    pending_handoff = None  # set when frozen mid-hold, done on release
+    last_tap_at = None      # monotonic release of a tap that did nothing on
+    #                         its own: the only kind that can pair into a
+    #                         double-tap (see gesture.py)
+    pending_resume = None   # monotonic deadline for a deferred tap-resume: set
+    #                         only while a game is paused AND the double-tap is
+    #                         bound, so a double-tap there opens the switcher
+    swallowed = False       # this press landed inside a settle window and is
+    #                         spent: it must fire nothing on release either
+    settling_said = False   # the settling log line is once per burst, not per
+    #                         press - a spam burst is loud enough already
+    c = conf()              # the bindings in force; never changed mid-press
+    try:
+        while True:
+            if pressed_at is None and not pending_handoff:
+                # Re-read on change only (a stat unless Kodi rewrote the
+                # file), and never while a gesture is in flight: swapping the
+                # rules under a press that has already half-happened is how a
+                # hold ends up handing the pad nowhere.
+                c = conf()
+            hold_s = c.hold_seconds
+            r, _, _ = select.select(list(fds), [], [], 0.2)
+            for fd in r:
+                try:
+                    data = os.read(fd, EVENT_SIZE * 64)
+                except OSError:
+                    if pending_handoff:
+                        handoff_to_kodi('pad-gone-mid-hold')
+                    return  # pad went away; rescan
+                for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+                    _, _, etype, code, value = struct.unpack_from(EVENT_FORMAT, data, off)
+                    if etype == EV_KEY and code == BTN_MODE:
+                        if value == 1:
+                            if settle_swallows(time.monotonic(),
+                                               _settle_until[0]):
+                                # The tail of a burst that already got what it
+                                # asked for. Swallowed WHOLE: it fires nothing
+                                # now, nothing on release (pressed_at stays
+                                # None, so no hold threshold can be reached
+                                # either), and it seeds no tap sequence - or
+                                # the last two presses of a burst would compose
+                                # a fresh double-tap exactly as the window
+                                # expired, which is the bug arriving late.
+                                if not settling_said:
+                                    say('gesture ignored (settling)')
+                                    settling_said = True
+                                swallowed = True
+                                pressed_at = None
+                                last_tap_at = None
+                                pending_resume = None
+                                fired = False
+                                long_fired = False
+                                continue
+                            settling_said = False
+                            swallowed = False
+                            pressed_at = time.monotonic()
+                            fired = False
+                            long_fired = False
+                        elif value == 0:
+                            if swallowed:
+                                swallowed = False
+                                continue
+                            # A short tap while a game is paused jumps back into
+                            # it (PS4-style home <-> game toggle), whatever the
+                            # tap is bound to - see resume_game. Hold still
+                            # suspends (freeze fires mid-hold below; Kodi only
+                            # gets the pad here, on release, so it never sees
+                            # any part of the held button).
+                            released_at = time.monotonic()
+                            was_tap = (not fired and not long_fired
+                                       and pressed_at is not None
+                                       and released_at - pressed_at < hold_s)
+                            if pending_handoff:
+                                handoff_to_kodi('hold-release')
+                                pending_handoff = None
+                                last_tap_at = None
+                                pending_resume = None
+                                act('hold_release', c)
+                            elif fired or long_fired:
+                                # A bound hold (or long hold) already ran and
+                                # had no deferred half; its release is still
+                                # its own gesture. 'none' by default, so this
+                                # is the old do-nothing branch until bound.
+                                last_tap_at = None
+                                pending_resume = None
+                                act('hold_release', c)
+                            elif was_tap and os.path.exists(SUSPENDED):
+                                # A tap on a paused game resumes it - unless
+                                # the double-tap is bound, in which case this
+                                # tap cannot yet know it is the whole gesture:
+                                # a double-tap on a paused game opens the
+                                # switcher (see resume_game). So it waits out
+                                # the double-tap window, and ONLY here.
+                                what = paused_tap_decision(
+                                    pending_resume is not None,
+                                    None if last_tap_at is None
+                                    else pressed_at - last_tap_at,
+                                    released_at - pressed_at,
+                                    c.action_for('double_tap') != 'none',
+                                    c.double_tap_seconds, hold_s)
+                                if what == 'double_tap':
+                                    pending_resume = None   # the switcher wins
+                                    last_tap_at = None
+                                    act('double_tap', c)
+                                elif what == 'defer':
+                                    pending_resume = (released_at
+                                                      + c.double_tap_seconds)
+                                    last_tap_at = released_at
+                                else:
+                                    resume_game()
+                                    last_tap_at = None
+                            elif was_tap:
+                                # A tap that did nothing: either the opening
+                                # half of a double-tap, or the closing one.
+                                # The gap is measured release -> next press.
+                                if (c.action_for('double_tap') != 'none'
+                                        and is_double_tap(
+                                            None if last_tap_at is None
+                                            else pressed_at - last_tap_at,
+                                            released_at - pressed_at,
+                                            c.double_tap_seconds, hold_s)):
+                                    last_tap_at = None  # the window is spent
+                                    act('double_tap', c)
+                                else:
+                                    last_tap_at = released_at
+                                    # ...and whatever a plain tap is bound to.
+                                    # gestureconf only allows this with the
+                                    # double-tap unbound, so a real double can
+                                    # never fire it on its way through.
+                                    act('tap', c)
+                            else:
+                                last_tap_at = None  # a hold is never half a double
+                            pressed_at = None
+            if (pressed_at is not None and not fired
+                    and time.monotonic() - pressed_at >= hold_s
+                    and hold_ready(c.action_for('hold'))):
+                fired = True
+                last_tap_at = None  # a hold cancels any half-formed double
+                pending_resume = None   # ...and any deferred resume with it
+                if act('hold', c, defer_handoff=True):
+                    pending_handoff = time.monotonic()
+            # The third tier, reachable only with `hold` bound to nothing
+            # (gestureconf.suppress): otherwise the hold above fired first and
+            # the press is spent. 'none' by default, so this never runs today.
+            if (pressed_at is not None and not long_fired
+                    and c.action_for('long_hold') != 'none'
+                    and time.monotonic() - pressed_at >= c.long_hold_seconds):
+                long_fired = True
+                last_tap_at = None
+                pending_resume = None
+                act('long_hold', c)
+            # No second tap came inside the double-tap window, so the first one
+            # meant what a tap on a paused game has always meant. The flag is
+            # re-read: a reconcile (or the phone) may have resumed in between.
+            if (pending_resume is not None
+                    and time.monotonic() >= pending_resume):
+                pending_resume = None
+                last_tap_at = None
+                if os.path.exists(SUSPENDED):
+                    resume_game()
+            # Safety: if the release never arrives (pad died mid-hold), hand
+            # over anyway after a few seconds rather than stranding the pad.
+            if pending_handoff and time.monotonic() - pending_handoff > 4:
+                handoff_to_kodi('hold-release-timeout')
+                pending_handoff = None
+            # Standing drift repair, but never mid-press: reconciling while
+            # the button is down could hand Kodi a phantom held button.
+            if pressed_at is None and not pending_handoff:
+                reconcile()
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def main():
+    complained = False
+    while True:
+        pads = find_pads()
+        if not pads:
+            reconcile()  # drift repair runs with or without a pad connected
+            time.sleep(5)
+            continue
+        try:
+            watch(pads)  # returns when the pad disconnects
+        except PermissionError:
+            # Usually a race with udev applying the seat ACL to a fresh node;
+            # retry quickly rather than leaving the PS button dead for long.
+            if not complained:
+                say('no permission on /dev/input - needs the dualsense udev rule')
+                complained = True
+            time.sleep(5)
+        except Exception as e:
+            say(f'watch error: {e}')
+            time.sleep(5)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,545 @@
+#!/usr/bin/env python3
+"""Enforce console-screen invariants for a few seconds after a transition.
+
+Every real PS press reaches two listeners: our pad-home-watcher (evdev) and
+Steam (hidraw). Steam toggles its Big Picture menu on presses we meant as
+suspend/resume gestures, so its menu state drifts out of sync with what's on
+screen: the controller ends up routed to Steam's invisible UI, or Steam's
+black launch backdrop surfaces with the menu sidebar. Worse, Steam's
+reactions land up to a few seconds late, so a one-shot check races and loses.
+
+This runs a short enforcement loop instead. Once a second it:
+  - closes Steam's menu if it is open while Steam isn't the focused window
+    (detected from Steam's own controller_ui.txt routing log), using a guide
+    press from the virtual Xbox pad, which Steam sees but the watcher
+    (DualSense-only) and Kodi (guide=noop) ignore;
+  - re-asserts the wanted window on top: Kodi in "kodi" mode, the game (via
+    game-launch focus) in "game" mode.
+
+Usage: steam-input-guard <kodi|game> [seconds=6]
+"""
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+
+# WHO OWNS WHAT (~/couch/couchd/owns.conf, the one file both stacks read).
+# Empty - the state it ships in - means this guard runs exactly as it always
+# has. With `guard` named there, couchd runs the enforcement window instead and
+# this process becomes its shadow: it records the window it WOULD have opened
+# and exits without touching the pidfile, the vpad or the screen. Anything that
+# goes wrong answers "couchd owns nothing", which leaves this guard enforcing.
+sys.path.append('/home/ds2000/couch/couchd')
+try:
+    import owns as couchd_owns
+except Exception:  # pragma: no cover - the source of truth is owns.py
+    # ANY failure, not just ImportError: a broken owns.py must leave this guard
+    # enforcing, never stop it from starting.
+    couchd_owns = None
+
+
+def yielded(responsibility='guard'):
+    """couchd owns it AND its heartbeat is fresh - owns.owns() checks both, so
+    a stopped couchd hands the enforcement window straight back."""
+    if couchd_owns is None:
+        return False
+    try:
+        return couchd_owns.owns(responsibility)
+    except Exception:
+        return False
+
+
+os.environ.setdefault('DISPLAY', ':0')
+os.environ.setdefault('XAUTHORITY', os.path.expanduser('~/.Xauthority'))
+
+STEAM_LOG = os.path.expanduser(
+    '~/.steam/debian-installation/logs/controller_ui.txt')
+LOG = '/tmp/steam-input-guard.log'
+INTENTS = '/tmp/legacy-intents.jsonl'  # machine-readable decisions (couchd R3)
+VPAD = '/home/ds2000/.local/bin/vpad'
+GAME_LAUNCH = '/home/ds2000/.local/bin/game-launch'
+SESSION = '/tmp/game-session'
+
+
+def say(msg):
+    now = time.time()
+    with open(LOG, 'a') as f:
+        f.write(f"{time.strftime('%H:%M:%S', time.localtime(now))}"
+                f".{int(now % 1 * 1000):03d} {msg}\n")
+
+
+def intent(verb, subject=None, **args):
+    """One JSON line per decision, as it fires - the summary say() below is
+    end-of-window and too late for the couchd shadow-diff. Purely additive; a
+    failure here must never reach the caller."""
+    try:
+        with open(INTENTS, 'a') as f:
+            f.write(json.dumps({'t': time.time(), 'src': 'guard',
+                                'verb': verb, 'subject': subject,
+                                'args': args}, default=str) + '\n')
+    except OSError:
+        pass
+
+
+SUSPENDED = '/tmp/game-suspended'
+
+
+def suspended_now():
+    """The paused-game flag, read FRESH at the moment of the decision.
+
+    A single enforcement pass can take seconds - invariant 1 sleeps 1.5s to let
+    Steam enumerate the vpad and another 1.0s after the guide press, invariant 2
+    shells out to `game-launch focus` - so a flag read at the top of a pass is
+    not evidence about the world at the bottom of it.
+
+    That stale read is exactly what broke on 4 Aug 2026: a resume opened a
+    6-second game-mode window at 02:13:25, the player held PS at 02:13:33 and
+    the watcher froze 18 processes, and at 02:13:34.865 this guard's invariant 4
+    SIGCONTed the whole freeze because the pass had read "not suspended" a
+    second earlier. The room got Kodi with the game still playing behind it and
+    a suspended flag nothing would clear."""
+    return os.path.exists(SUSPENDED)
+
+
+def session_appid():
+    """appid (or mode) of the running session, as an intent subject."""
+    try:
+        parts = open(SESSION).read().split()
+    except OSError:
+        return None
+    if len(parts) > 2 and parts[2]:
+        return parts[2]
+    return parts[1] if len(parts) > 1 else None
+
+
+def read_log():
+    """Steam's controller routing log, whole. Re-opened BY PATH every pass, so
+    a rotation (or a Steam restart truncating it) is picked up on the next one
+    rather than leaving us reading a deleted inode forever - the same reason
+    route() has always re-opened rather than held a handle."""
+    try:
+        with open(STEAM_LOG, encoding='utf-8', errors='replace') as f:
+            return f.read()
+    except OSError:
+        return ''
+
+
+def route(text=None):
+    last = ''
+    for l in (read_log() if text is None else text).splitlines():
+        if 'OnFocusWindowChanged' in l:
+            last = l.strip()
+    return last
+
+
+# The cross-WINDOW dedup latch (see guide_consumed_since). A module constant,
+# not a literal buried in the function, so a test can point it somewhere
+# harmless: it is real console state, and a unit test that reads and writes the
+# LIVE one both corrupts the next enforcement window and fails whenever a
+# fixture stamp is left sitting in it.
+GUIDE_LATCH = '/tmp/steam-input-guard.guide-handled'
+
+# Steam stamps every line "[YYYY-MM-DD HH:MM:SS]", local time, whole seconds.
+STEAM_TS = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]')
+GUIDE_SENT = 'Guide button sent to JS'          # Steam SWALLOWED the press
+GUIDE_SKIPPED = 'Guide button skipped due to length'   # a HOLD; Steam ignored it
+
+# How far BEFORE its own start a guard window looks for the press that caused
+# it. A guard is always spawned at the END of the transition it guards - a
+# resume thaws, maps the window, checks the power menu, sleeps a second and
+# asserts focus before it gets here - so the press is already seconds in the
+# past by the time this process exists. Measuring from our own start would
+# therefore never see it. Five seconds covers the resume path with room and
+# cannot catch a stranger's press: this window only exists because of that
+# gesture.
+GUIDE_LOOKBACK_S = 5.0
+
+
+def _line_ts(line):
+    m = STEAM_TS.match(line)
+    if not m:
+        return None
+    try:
+        return time.mktime(time.strptime(m.group(1), '%Y-%m-%d %H:%M:%S'))
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def guide_consumed_since(since, text=None):
+    """Did Steam swallow a guide press at or after `since` (wall clock)?
+
+    This is the DESKTOP-mode tell. Steam's routing config in desktop mode
+    (SSGL ui_mode 7) is Desktop/413080 and never ClientUI, so invariant 1's
+    original arm - "ClientUI routed while steamwebhelper is not focused" -
+    cannot fire and never has. What Steam does log is the press itself:
+
+      [02:34:36] Guide button sent to JS          <- a TAP: consumed, overlay
+      [02:34:36] Guide button skipped due to length <- a HOLD: ignored, nothing
+
+    which is exactly why every tap-resume left the Steam overlay on top of the
+    game while every hold looked clean.
+
+    Steam's stamps are whole seconds, so the comparison floors `since`: the
+    press that opened the window and the window's own start are the same second
+    far more often than not, and missing our own press would defeat the point.
+    A press from an earlier second is somebody else's and is left alone.
+    """
+    floor = math.floor(since)
+    newest = None
+    for line in (read_log() if text is None else text).splitlines():
+        if GUIDE_SENT not in line:
+            continue          # GUIDE_SKIPPED is a hold: it opened nothing
+        ts = _line_ts(line)
+        if ts is not None and ts >= floor and (newest is None or ts > newest):
+            newest = ts
+    if newest is None:
+        return False
+    # Cross-WINDOW dedup: overlapping guard windows (a tap-resume spawns one
+    # while the tap's own window may still be live) each matched this same
+    # line once, and two guide toggles = close then REOPEN (seen live
+    # 02:53:48.9 + 02:53:53.2, a 5s menu dance). The per-window guide_fired
+    # latch cannot see across processes, so the NEWEST handled line's own
+    # timestamp is latched in /tmp: one consumed tap is answered by exactly
+    # one window, ever. A newer sent-to-JS line (a genuinely reopened menu)
+    # carries a newer stamp and gets its own single answer.
+    latch = GUIDE_LATCH
+    stamp = str(newest)
+    try:
+        if open(latch).read().strip() == stamp:
+            return False            # another window already answered it
+    except OSError:
+        pass
+    try:
+        with open(latch, 'w') as f:
+            f.write(stamp)
+    except OSError:
+        pass
+    return True
+
+
+def desktop_overlay_open(now, arm2_at, already_fired, session_active,
+                         focused_cls, guide_consumed):
+    """Arm (b) of invariant 1, as one predicate so it can be tested.
+
+    ONE SHOT per guard window (`already_fired`), and that is a SAFETY property,
+    not tidiness: the guide button is a TOGGLE. A second press would REOPEN the
+    menu we just closed - and our own synthetic press is itself logged as
+    "Guide button sent to JS", so a repeating arm would flip the overlay on and
+    off for the rest of the window. Every caller must latch on a True.
+
+    `arm2_at` holds the arm off for the first stretch of the window: Steam's
+    overlay appears ~0.3-1s after the press, and a check that runs before the
+    log line exists would waste the one shot on nothing.
+    """
+    return bool(not already_fired
+                and now >= arm2_at
+                and session_active
+                and guide_consumed
+                and 'steamwebhelper' not in (focused_cls or ''))
+
+
+def game_states():
+    """pid -> process state for game processes."""
+    r = subprocess.run(['/home/ds2000/.local/bin/game-pids'],
+                       capture_output=True, text=True)
+    states = {}
+    for pid in r.stdout.split():
+        try:
+            stat = open(f'/proc/{pid}/stat').read()
+            states[pid] = stat.rsplit(') ', 1)[1].split()[0]
+        except (OSError, IndexError):
+            pass
+    return states
+
+
+class Screen:
+    def __init__(self):
+        from Xlib import display
+        self.X = __import__('Xlib.X', fromlist=['X'])
+        self.d = display.Display()
+        self.root = self.d.screen().root
+        self.NET_NAME = self.d.intern_atom('_NET_WM_NAME')
+
+    def _client_name(self, w, depth=0):
+        try:
+            p = w.get_full_property(self.NET_NAME, 0)
+            nm = p.value.decode() if p else ''
+            nm = nm or (w.get_wm_name() or '')
+            cls = (w.get_wm_class() or ('', ''))[0]
+            if nm or cls:
+                return nm or cls
+            if depth < 3:
+                for c in w.query_tree().children:
+                    r = self._client_name(c, depth + 1)
+                    if r:
+                        return r
+        except Exception:
+            pass
+        return ''
+
+    def _client_class(self, w, depth=0):
+        try:
+            cls = (w.get_wm_class() or ('', ''))[0]
+            if cls:
+                return cls
+            if depth < 3:
+                for c in w.query_tree().children:
+                    r = self._client_class(c, depth + 1)
+                    if r:
+                        return r
+        except Exception:
+            pass
+        return ''
+
+    def top_window(self):
+        """(name, class) of the topmost big visible window."""
+        top, topcls = '', ''
+        try:
+            for c in self.root.query_tree().children:  # bottom -> top
+                a = c.get_attributes()
+                if a.map_state != 2 or a.win_class == 2:  # unmapped/InputOnly
+                    continue
+                g = c.get_geometry()
+                if g.width < 600 or g.height < 400:
+                    continue
+                nm = self._client_name(c)
+                if nm:
+                    top, topcls = nm, self._client_class(c)
+        except Exception:
+            pass
+        return top, topcls
+
+    def focused_class(self):
+        try:
+            f = self.d.get_input_focus().focus
+            for _ in range(5):
+                if not hasattr(f, 'get_wm_class'):
+                    break
+                try:
+                    cls = (f.get_wm_class() or ('', ''))[0]
+                except Exception:
+                    cls = ''
+                if cls:
+                    return cls
+                f = f.query_tree().parent
+        except Exception:
+            pass
+        return ''
+
+    def focus_kodi(self):
+        try:
+            def find(w):
+                try:
+                    for c in w.query_tree().children:
+                        if (c.get_wm_name() or '') == 'Kodi':
+                            return c
+                        r = find(c)
+                        if r:
+                            return r
+                except Exception:
+                    pass
+                return None
+            w = find(self.root)
+            if w:
+                w.configure(stack_mode=self.X.Above)
+                self.d.set_input_focus(w, self.X.RevertToParent,
+                                       self.X.CurrentTime)
+                self.d.sync()
+        except Exception as e:
+            say(f'kodi focus failed: {e}')
+
+
+PIDFILE = '/tmp/steam-input-guard.pid'
+_cleanup = {'vpad': False, 'mode': None}
+
+
+def _on_term(_sig, _frame):
+    """A superseding guard SIGTERMs us; leave nothing behind - a leaked vpad
+    would sit there as a phantom player-2 controller forever."""
+    intent('window_close', _cleanup['mode'], reason='superseded')
+    if _cleanup['vpad']:
+        subprocess.run([VPAD, 'quit'], check=False, capture_output=True)
+    try:
+        if int(open(PIDFILE).read()) == os.getpid():
+            os.remove(PIDFILE)
+    except (OSError, ValueError):
+        pass
+    os._exit(0)
+
+
+def supersede():
+    """A newer transition's guard replaces any still-running one, so a stale
+    kodi-guard can't fight the game-guard that follows a quick resume."""
+    try:
+        old = int(open(PIDFILE).read())
+        if old != os.getpid():
+            os.kill(old, 15)
+            intent('kill', 'steam-input-guard', pids=[old],
+                   resolver='guard-pidfile', signal='SIGTERM',
+                   reason='superseded-by-newer-guard')
+    except (OSError, ValueError):
+        pass
+    with open(PIDFILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+
+def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else 'game'
+    seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 6
+    _cleanup['mode'] = mode
+    if yielded():
+        # couchd owns the enforcement window. Record the window we would have
+        # opened - that line is the shadow the differ compares couchd's
+        # guard:* intents against - and get out BEFORE supersede(), which
+        # would otherwise SIGTERM couchd (it write-throughs this same pidfile)
+        # and claim the pidfile from it.
+        say(f'{mode}: yielded to couchd (owns guard)')
+        intent('window_open', mode, seconds=seconds, target=mode,
+               yielded=True, owner='couchd')
+        intent('window_close', mode, fixes=[], fix_count=0, target=mode,
+               reason='yielded-to-couchd', yielded=True, owner='couchd')
+        return
+    import signal as _signal
+    _signal.signal(_signal.SIGTERM, _on_term)
+    supersede()
+    scr = Screen()
+    vpad_started = False
+    fixes = []
+    end = time.monotonic() + seconds
+    intent('window_open', mode, seconds=seconds, deadline=time.time() + seconds,
+           target=mode)
+    closed_early = False
+    started_at = time.time()          # wall clock: Steam's log stamps are too
+    guide_since = started_at - GUIDE_LOOKBACK_S
+    # Arm (b) of invariant 1 waits out the first beat of the window - Steam's
+    # overlay shows up ~0.3-1s after the press - and then gets exactly one
+    # shot at it. See desktop_overlay_open.
+    arm2_at = time.monotonic() + 1.2
+    guide_fired = False
+    while time.monotonic() < end:
+        # A flip that lands mid-window ends the window too: one arbiter at a
+        # time, always (C27), and a stat per second is what buys that.
+        if yielded():
+            say(f'{mode}: couchd took the guard mid-window, closing')
+            fixes.append('yielded-to-couchd')
+            intent('window_close', mode, fixes=fixes, fix_count=len(fixes),
+                   reason='yielded-to-couchd', target=mode, yielded=True,
+                   owner='couchd')
+            closed_early = True
+            break
+        # A suspend that lands mid-window ends the window. Every game-mode
+        # invariant is moot once the game is meant to be frozen: the game must
+        # NOT be raised, must NOT be thawed, and Kodi belongs on top - which is
+        # the kodi-guard's job, not ours. Closing beats spending the remaining
+        # seconds fighting the player's own gesture.
+        if mode == 'game' and suspended_now():
+            say('game: suspended mid-window, closing early')
+            fixes.append('closed-on-suspend')
+            intent('window_close', mode, fixes=fixes, fix_count=len(fixes),
+                   reason='suspended-mid-window', target=mode)
+            closed_early = True
+            break
+        # invariant 1: Steam's menu must not hold the pad invisibly.
+        #
+        # Two arms, because Steam has two UI modes and only one of them was
+        # ever covered:
+        #
+        #  (a) Big Picture / ClientUI - the original. Steam's routing log names
+        #      the focused config, so an overlay shows up as ClientUI routing
+        #      while steamwebhelper does not own the X focus.
+        #  (b) DESKTOP mode (SSGL ui_mode 7), where the config is
+        #      Desktop/413080 and NEVER ClientUI, so (a) cannot fire and never
+        #      has. The tell is that Steam CONSUMED the guide press. This is
+        #      the "resuming with the PS button ALWAYS brings up the Steam
+        #      menu" report of 5 Aug 2026: a tap is swallowed and opens the
+        #      overlay, a hold is "skipped due to length" and opens nothing,
+        #      which is exactly why only the tap path was ever affected.
+        log_text = read_log()
+        focused = scr.focused_class()
+        arm_a = 'ClientUI' in route(log_text) and 'steamwebhelper' not in focused
+        arm_b = desktop_overlay_open(
+            time.monotonic(), arm2_at, guide_fired,
+            os.path.exists(SESSION), focused,
+            guide_consumed_since(guide_since, log_text))
+        if arm_a or arm_b:
+            if arm_b:
+                # LATCH FIRST, before anything can throw: the guide is a
+                # toggle, so a second press reopens what this one closes - and
+                # our own synthetic press lands in the same log as another
+                # "Guide button sent to JS", which would re-arm this forever.
+                guide_fired = True
+            if not os.path.exists('/tmp/vpad.fifo'):
+                subprocess.run([VPAD, 'up'], check=False,
+                               capture_output=True)
+                vpad_started = True
+                _cleanup['vpad'] = True
+                time.sleep(1.5)  # Steam needs a beat to enumerate it
+            subprocess.run([VPAD, 'press', 'guide'], check=False)
+            if arm_b and not arm_a:
+                fixes.append('desktop-overlay-close')
+                say('closing steam desktop overlay (guide consumed after tap)')
+                intent('close_steam_menu', 'steam', mode=mode, via='vpad-guide',
+                       reason='desktop-overlay-after-tap',
+                       invariant=1, vpad_started=vpad_started)
+            else:
+                fixes.append('menu-close')
+                intent('close_steam_menu', 'steam', mode=mode, via='vpad-guide',
+                       reason='ClientUI routed but steam not focused',
+                       invariant=1, vpad_started=vpad_started)
+            time.sleep(1.0)
+        # invariant 2: the wanted window is on top
+        top, topcls = scr.top_window()
+        suspended = os.path.exists('/tmp/game-suspended')
+        if mode == 'kodi':
+            if top != 'Kodi':
+                scr.focus_kodi()
+                fixes.append(f'raise-kodi(over {top or "?"})')
+                intent('show', 'kodi', mode=mode, via='xlib-restack',
+                       reason='wanted window not on top', invariant=2,
+                       top=top or '?', topcls=topcls)
+        else:
+            if top == 'Kodi' and not suspended:
+                subprocess.run([GAME_LAUNCH, 'focus'], check=False)
+                fixes.append('raise-game')
+                intent('show', 'game', mode=mode, via='game-launch focus',
+                       reason='kodi on top mid-game', invariant=2, top=top)
+        # invariant 3: a frozen game must never be the visible window
+        if suspended and topcls.startswith('steam_app'):
+            scr.focus_kodi()
+            fixes.append('kodi-over-frozen-game')
+            intent('show', 'kodi', mode=mode, via='xlib-restack',
+                   reason='frozen game visible', invariant=3, topcls=topcls)
+        # invariant 4: a game that should be running must actually be thawed.
+        # The flag is re-read HERE, not reused from the top of the pass: a
+        # suspend that landed while this pass was working is legitimate, and
+        # thawing it would undo the player's own gesture (see suspended_now).
+        # A skipped thaw is not a decision, so it logs no intent - there is
+        # nothing for couchd to have to agree with.
+        if not suspended_now():
+            states = game_states()
+            if states and all(s == 'T' for s in states.values()):
+                intent('thaw', session_appid(),
+                       pids=sorted(int(p) for p in states),
+                       resolver='game-pids', mode=mode, invariant=4,
+                       reason='all frozen with no suspended flag')
+                for pid in states:
+                    try:
+                        os.kill(int(pid), 18)  # SIGCONT
+                    except OSError:
+                        pass
+                fixes.append('thaw-repair')
+        time.sleep(1.0)
+    if vpad_started:
+        subprocess.run([VPAD, 'quit'], check=False, capture_output=True)
+        _cleanup['vpad'] = False
+    say(f'{mode}: {" ".join(fixes) if fixes else "clean"} | {route()[-60:]}')
+    if not closed_early:  # the early close logged its own window_close
+        intent('window_close', mode, fixes=fixes, fix_count=len(fixes),
+               reason='deadline reached', target=mode)
+
+
+if __name__ == '__main__':
+    main()

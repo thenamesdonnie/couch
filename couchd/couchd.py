@@ -53,6 +53,11 @@ import gesture
 import gestureconf
 from gesture import HANDOFF_TIMEOUT, HOLD_SECONDS  # noqa: F401 (re-exported)
 
+# Who owns what, read fresh from ~/couch/couchd/owns.conf every tick. Empty -
+# the state it ships in - means couchd acts on nothing and the legacy scripts
+# act on everything, which is the console exactly as it was.
+import owns
+
 HOME = os.path.expanduser('~')
 COUCH = os.path.join(HOME, 'couch')
 SHADOW_DIR = os.path.join(COUCH, 'shadow')
@@ -291,6 +296,28 @@ VERBS = ('freeze', 'thaw', 'route_pad', 'show', 'close_steam_menu', 'set_flag',
          'clear_flag', 'dismiss', 'launch', 'quit', 'kill', 'iconify',
          'request_tv_wake', 'show_switcher', 'tv_toggle', 'snapshot')
 PID_VERBS = ('freeze', 'thaw', 'quit', 'kill')
+
+# TOGGLES. These three verbs are not idempotent: the mechanism underneath each
+# is a switch, so a second emission inside the first one's effect window does
+# not repeat the decision, it UNDOES it. That is exactly the Steam menu
+# close-then-reopen dance the guard's cross-window latch exists to prevent
+# (commit f2ac188, seen live 02:53:48.9 + 02:53:53.2).
+#
+# In shadow it costs nothing; once couchd ACTS, the guide press takes ~2.5s to
+# send and seconds more to show up in Steam's routing log, so their cooldowns
+# must outlast their own predicted-effect deadlines or couchd re-decides on
+# world state its own last action has not reached yet. Invariant, asserted in
+# check_invariants and in the tests: for a toggle, cooldown > deadline.
+TOGGLE_VERBS = ('close_steam_menu', 'tv_toggle')
+TOGGLE_SUBJECTS = (('show', 'steam-menu'),)
+GUIDE_TOGGLE_COOLDOWN = 8.0     # close_steam_menu (deadlines 3.0 and 6.0)
+MENU_TOGGLE_COOLDOWN = 6.0      # show steam-menu (deadline 3.0)
+TV_TOGGLE_COOLDOWN = 20.0       # tv_toggle (deadline 15.0)
+
+
+def is_toggle(intent):
+    return (intent.verb in TOGGLE_VERBS
+            or (intent.verb, intent.subject) in TOGGLE_SUBJECTS)
 
 
 @dataclass
@@ -895,10 +922,12 @@ def _handoff_intents(reason):
         Intent('show', 'kodi', {'via': 'xlib-restack'}, reason,
                _pred('top window is Kodi', 2.0),
                requires=('gesture', 'foreground'), cooldown=3.0),
+        # TOGGLE: cooldown outlasts the deadline (see TOGGLE_VERBS) - a
+        # second guide press inside the first one's window REOPENS the menu.
         Intent('close_steam_menu', 'steam',
                {'via': 'vpad-guide', 'window_s': GUARD_WINDOW}, reason,
                _pred('steam menu not routed', 6.0),
-               requires=('gesture',), cooldown=3.0),
+               requires=('gesture',), cooldown=GUIDE_TOGGLE_COOLDOWN),
     ]
 
 
@@ -973,7 +1002,7 @@ def action_intents(o, gesture_name, appid, running, defer_handoff=False):
         # button is a toggle, so opening it is the identical effect.
         return [Intent('show', 'steam-menu', {'via': 'vpad-guide'}, reason,
                        _pred('steam menu routed', 3.0),
-                       requires=('gesture',), cooldown=3.0)]
+                       requires=('gesture',), cooldown=MENU_TOGGLE_COOLDOWN)]
     if action == 'power_menu':
         return [Intent('show', 'power-menu',
                        {'via': 'kodi-jsonrpc:GUI.ActivateWindow shutdownmenu'},
@@ -990,7 +1019,7 @@ def action_intents(o, gesture_name, appid, running, defer_handoff=False):
     if action == 'tv_toggle':
         return [Intent('tv_toggle', 'tv', {'via': 'tv toggle'}, reason,
                        _pred('tv power state flipped', 15.0),
-                       requires=('gesture',), cooldown=3.0)]
+                       requires=('gesture',), cooldown=TV_TOGGLE_COOLDOWN)]
     if action == 'desktop':
         # The couch server's own route, not a bare xfwm4 show-desktop: it
         # suspends a running game on the way out, the same as the phone does.
@@ -1116,7 +1145,8 @@ def reconcile(o):
                                'route': o.steam_route[-60:]},
                               'guard:steam-menu-holds-the-pad',
                               _pred('routing leaves ClientUI', 3.0),
-                              requires=('enforcement', 'foreground'), cooldown=5.0))
+                              requires=('enforcement', 'foreground'),
+                              cooldown=GUIDE_TOGGLE_COOLDOWN))
         if enf == 'kodi' and o.x_known and o.top_name != 'Kodi':
             out.append(Intent('show', 'kodi',
                               {'via': 'xlib-restack', 'invariant': 2,
@@ -1250,6 +1280,15 @@ def check_invariants(o, intents):
     for it in intents:
         if it.verb in PID_VERBS and 'pids' not in it.args:
             bad.append(('pid_verbs_carry_pids', it.key))
+    for it in intents:
+        # A toggle whose cooldown expires before its own predicted effect
+        # deadline can re-decide on a world its last action has not reached -
+        # and for a toggle "again" means "undo" (see TOGGLE_VERBS).
+        if is_toggle(it) and it.predict and \
+                it.cooldown <= float(it.predict.get('deadline_s', 0)):
+            bad.append(('toggle_cooldown_outlasts_deadline',
+                        f'{it.key} cooldown={it.cooldown} '
+                        f'deadline={it.predict.get("deadline_s")}'))
     # convergence: feeding our own decisions back must reach a fixpoint
     recent = dict(o.recent)
     for it in intents:
@@ -1292,9 +1331,14 @@ class Executor:
 
 
 class RecordingExecutor(Executor):
-    def __init__(self, log, on_record=None):
+    # `sayer` is injectable for the same reason ActingExecutor's is: without
+    # it, every unit test that runs an intent through this object sprays
+    # "would ..." lines into the LIVE /tmp/couchd.log, which is the phone's
+    # log and the evening's evidence. The daemon passes nothing and gets say().
+    def __init__(self, log, on_record=None, sayer=say):
         self.log = log
         self.on_record = on_record or (lambda i: None)
+        self.say = sayer
         self.count = 0
 
     def execute(self, intent, obs):
@@ -1309,8 +1353,656 @@ class RecordingExecutor(Executor):
         self.log.write(rec)
         self.count += 1
         self.on_record(intent)
-        say(intent.human())
+        self.say(intent.human())
         return rec
+
+
+# =========================================================================
+# effects: the ACTING executor (flip-ready; owns nothing by default)
+# =========================================================================
+# Everything below this line is dead code while ~/couch/couchd/owns.conf is
+# empty, and dead in the structural sense R1 asks for: ExecutorRouter only
+# CONSTRUCTS an ActingExecutor for responsibilities that are actually owned, so
+# with an empty file no object in this process is able to do anything at all.
+# Passivity stays a property of the object graph, not of a flag someone might
+# forget to check.
+LOCAL_BIN = os.path.join(HOME, '.local', 'bin')
+GAME_LAUNCH = os.path.join(LOCAL_BIN, 'game-launch')
+GAME_PIDS = os.path.join(LOCAL_BIN, 'game-pids')
+PAUSE_SNAP = os.path.join(LOCAL_BIN, 'pause-snap')
+VPAD = os.path.join(LOCAL_BIN, 'vpad')
+TV_BIN = os.path.join(LOCAL_BIN, 'tv')
+XINPUT = os.path.join(COUCH, 'server', 'xinput.py')
+TV_WAKE_REQUEST = '/tmp/tv-wake-request'
+COUCH_API = 'http://localhost:8790'
+SNAP_CLEAR_ON_UNSUSPEND = True
+
+# The guide press that toggles Steam's menu: vpad up (if nobody else has one),
+# press, hand it back. Exactly steam-input-guard's sequence including its two
+# measured beats - Steam needs ~1.5s to enumerate the pad and ~1s to act on the
+# press - which is why this is a detached shell line and not three calls in the
+# supervisor's loop (R6: the loop never blocks on Steam).
+GUIDE_PRESS_SH = (
+    f'if [ ! -e /tmp/vpad.fifo ]; then "{VPAD}" up >/dev/null 2>&1; '
+    f'started=1; sleep 1.5; fi; "{VPAD}" press guide >/dev/null 2>&1; '
+    f'sleep 1; [ -n "${{started:-}}" ] && "{VPAD}" quit >/dev/null 2>&1; true')
+
+# The frozen game's window, unmapped so its stuck pointer grab dies with it
+# (pad-home-watcher.iconify_frozen_game, same two xinput.py calls).
+ICONIFY_SH = (
+    f'pids=$("{GAME_PIDS}" 2>/dev/null | tr "\\n" " "); [ -n "$pids" ] || exit 0; '
+    f'wid=$(timeout 5 python3 "{XINPUT}" gamewin $pids 2>/dev/null); '
+    f'case "$wid" in 0x*) timeout 5 python3 "{XINPUT}" iconify "$wid" ;; esac')
+
+
+class ActionFailed(Exception):
+    """C11: an action that did not happen. Logged loudly, never retried in
+    the same breath - the level-based next pass (or, having yielded nothing,
+    the legacy repair loops) is what converges the world."""
+
+
+class Actuators:
+    """Every side effect couchd is able to have, and nothing else.
+
+    One small object so the acting paths can be unit-tested against a fake:
+    no test ever signals a pid, writes a /tmp flag, talks to Kodi or spawns a
+    process. Each primitive is bounded: signals and flag writes are syscalls,
+    Kodi is a 5s HTTP call, and anything that could take longer than a tick
+    (Steam, the TV, game-launch) is DETACHED - its outcome is judged by C17's
+    predicted effect, not by a return code we would have to block for.
+    """
+
+    def __init__(self, kodi_rpc=None, on_flag_write=None, spawn_scope=True):
+        import itertools
+        self.kodi_rpc = kodi_rpc
+        self.on_flag_write = on_flag_write or (lambda name, content: None)
+        # spawn_scope: run helpers as transient systemd UNITS (see spawn()).
+        # Named for what it used to do; kept so the tests' one call site and
+        # any future rig can turn it off and get a plain detached child.
+        self.spawn_scope = spawn_scope
+        self._seq = itertools.count(1)
+
+    # -- processes --------------------------------------------------------
+    def signal(self, pids, signum):
+        sent, missing = [], []
+        for pid in pids:
+            try:
+                os.kill(int(pid), signum)
+                sent.append(int(pid))
+            except (OSError, ValueError):
+                missing.append(pid)
+        if pids and not sent:
+            raise ActionFailed(f'no pid of {sorted(pids)} could be signalled')
+        return {'sent': sent, 'missing': missing, 'signal': int(signum)}
+
+    # Environment a helper needs that couchd's own unit may not have passed on.
+    PASS_ENV = ('DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'PATH', 'HOME')
+
+    def spawn(self, argv, env=None, shell_line=None):
+        """Detached, and OUT of couchd's sandbox - which needs a transient
+        UNIT, not a scope.
+
+        A `--scope` runs the command in THIS process's context: the sandbox is
+        per-process and per-mount-namespace, so `ProtectSystem=strict`,
+        the seccomp filter and MemoryDenyWriteExecute all follow the child
+        into the scope. The concrete casualty is pause-snap, which writes
+        ~/couch/data/paused and would take EROFS. A transient unit is execed by
+        the USER MANAGER instead, so the child gets the session's own
+        environment, its own lifetime (couchd restarting does not kill it) and
+        its own accounting (couchd's MemoryMax=256M does not apply to Steam).
+
+        The setsid fallback exists only for a box without systemd-run: it is
+        best-effort and DOES inherit the sandbox, so anything it starts may
+        fail to write where the same command succeeds under a unit. C17's
+        effect check is what notices either way.
+        """
+        import subprocess
+        cmd = ['/bin/sh', '-c', shell_line] if shell_line else list(argv)
+        full_env = dict(os.environ, **(env or {}))
+        if self.spawn_scope:
+            unit = f'couchd-act-{os.getpid()}-{next(self._seq)}'
+            run = ['systemd-run', '--user', f'--unit={unit}', '--quiet',
+                   '--collect']
+            for key in self.PASS_ENV:
+                if os.environ.get(key):
+                    run.append(f'--setenv={key}={os.environ[key]}')
+            for key, val in (env or {}).items():
+                run.append(f'--setenv={key}={val}')
+            # `--` matters: without it systemd-run would read a child's own
+            # options (pause-snap --clear) as its own.
+            run.append('--')
+            try:
+                p = subprocess.Popen(run + cmd, start_new_session=True,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, env=full_env)
+                return {'pid': p.pid, 'argv': cmd, 'unit': unit}
+            except OSError:
+                pass                      # no systemd-run: fall through
+        try:
+            p = subprocess.Popen(cmd, start_new_session=True,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, env=full_env)
+        except OSError as e:
+            raise ActionFailed(f'spawn {cmd[0]} failed: {e}') from e
+        # Sandboxed: same process context as couchd, so a write outside
+        # ReadWritePaths will fail. Flagged in the record, not hidden.
+        return {'pid': p.pid, 'argv': cmd, 'unit': None, 'sandboxed': True}
+
+    # -- /tmp flags (write-through; formats copied from the writers) -------
+    def write_flag(self, path, content, name=None):
+        """Atomic rename-write, because that is what the FlagObserver's
+        inotify design (and every other reader on this box) assumes."""
+        try:
+            write_atomic(path, content)
+        except OSError as e:
+            raise ActionFailed(f'write {path} failed: {e}') from e
+        self.on_flag_write(name or os.path.basename(path), content)
+        return {'path': path, 'bytes': len(content)}
+
+    def remove_flag(self, path, name=None):
+        try:
+            os.remove(path)
+            existed = True
+        except FileNotFoundError:
+            existed = False
+        except OSError as e:
+            raise ActionFailed(f'remove {path} failed: {e}') from e
+        self.on_flag_write(name or os.path.basename(path), None)
+        return {'path': path, 'existed': existed}
+
+    def touch(self, path, name=None):
+        try:
+            with open(path, 'a'):
+                os.utime(path, None)
+        except OSError as e:
+            raise ActionFailed(f'touch {path} failed: {e}') from e
+        self.on_flag_write(name or os.path.basename(path), '')
+        return {'path': path}
+
+    # -- Kodi -------------------------------------------------------------
+    def kodi(self, method, params):
+        if self.kodi_rpc is None:
+            raise ActionFailed('no Kodi RPC available')
+        try:
+            res = self.kodi_rpc(method, params)
+        except Exception as e:
+            raise ActionFailed(f'kodi {method} failed: {e}') from e
+        if isinstance(res, dict) and res.get('error'):
+            raise ActionFailed(f'kodi {method}: {res["error"]}')
+        return {'method': method, 'params': params}
+
+    # -- X ----------------------------------------------------------------
+    def raise_kodi(self):
+        """Kodi's window Above + focused - the same three Xlib calls
+        pad-home-watcher.focus_kodi and game-launch's focus_kodi make, on a
+        short-lived display so nothing is left holding the server."""
+        try:
+            from Xlib import X, display
+        except ImportError as e:
+            raise ActionFailed(f'python-Xlib missing: {e}') from e
+        d = None
+        try:
+            d = display.Display()
+
+            def find(w):
+                try:
+                    for c in w.query_tree().children:
+                        if (c.get_wm_name() or '') == 'Kodi':
+                            return c
+                        r = find(c)
+                        if r:
+                            return r
+                except Exception:
+                    pass
+                return None
+            w = find(d.screen().root)
+            if w is None:
+                raise ActionFailed('no Kodi window on this display')
+            w.configure(stack_mode=X.Above)
+            with contextlib.suppress(Exception):
+                d.set_input_focus(w, X.RevertToParent, X.CurrentTime)
+            d.sync()
+            return {'window': hex(w.id)}
+        except ActionFailed:
+            raise
+        except Exception as e:
+            raise ActionFailed(f'raise kodi failed: {e}') from e
+        finally:
+            if d is not None:
+                with contextlib.suppress(Exception):
+                    d.close()
+
+    # -- the couch server -------------------------------------------------
+    def couch_api(self, path, payload):
+        import urllib.request
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(COUCH_API + path, data=body,
+                                     headers={'content-type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                r.read()
+        except Exception as e:
+            raise ActionFailed(f'couch api {path} failed: {e}') from e
+        return {'path': path, 'payload': payload}
+
+
+# -- C17: what each verb's world should look like afterwards ---------------
+# Pure functions of the next Observed, so the deadline check is testable
+# without a world. None means "no honest oracle in stage 1": the prediction is
+# still logged, and the verdict says 'unverified' rather than inventing a pass.
+def _eff_freeze(o, it):
+    return o.pids_known and all(o.pid_states.get(p, 'T') == 'T'
+                                for p in it.args.get('pids', ()))
+
+
+def _eff_thaw(o, it):
+    return o.pids_known and all(o.pid_states.get(p, 'S') != 'T'
+                                for p in it.args.get('pids', ()))
+
+
+def _eff_set_flag(o, it):
+    if not o.flags_known:
+        return False
+    return (o.suspended is not None if it.subject == 'suspended'
+            else o.session is not None)
+
+
+def _eff_clear_flag(o, it):
+    if not o.flags_known:
+        return False
+    return (o.suspended is None if it.subject == 'suspended'
+            else o.session is None)
+
+
+def _eff_route_pad(o, it):
+    if not o.kodi_known or o.joystick is None:
+        return False
+    return o.joystick is (it.subject == 'kodi')
+
+
+def _eff_show(o, it):
+    if it.subject == 'kodi':
+        return o.x_known and o.top_name == 'Kodi'
+    if it.subject == 'power-menu':
+        return o.kodi_known and o.kodi_window == 10106
+    if it.subject in ('game', 'bigpicture') or (it.subject or '').isdigit():
+        return o.x_known and (o.top_class.startswith('steam_app')
+                              or o.big_picture_window)
+    return None
+
+
+def _eff_dismiss(o, it):
+    return o.kodi_known and o.kodi_window is not None and o.kodi_window != 10106
+
+
+def _eff_close_menu(o, it):
+    return o.steam_known and not o.steam_menu_open
+
+
+EFFECT_CHECKS = {
+    'freeze': _eff_freeze, 'thaw': _eff_thaw,
+    'set_flag': _eff_set_flag, 'clear_flag': _eff_clear_flag,
+    'route_pad': _eff_route_pad, 'show': _eff_show,
+    'dismiss': _eff_dismiss, 'close_steam_menu': _eff_close_menu,
+}
+
+
+class ActingExecutor(Executor):
+    """Executes the intents of the responsibilities couchd owns.
+
+    Contract, in order of importance:
+      1. it refuses any intent whose responsibility is not in `owned` (the
+         router already routes by that, so this is the second lock);
+      2. verb -> action is ONE table (ACTIONS), so "what can couchd do" is a
+         list you can read in ten seconds;
+      3. every action logs C17's predicted effect + deadline, and the verdict
+         lands in the same corpus a few seconds later;
+      4. C11: a failed or timed-out action logs loudly and does NOTHING
+         further. No retry storm, no half-finished sequence chased with a
+         second sequence. The next pass re-derives from the world, and the
+         standing escape is the file back to empty - legacy's reconcile
+         converges within one ~10s tick (proven by the 4 Aug audit).
+    """
+
+    ACTIONS = {
+        'freeze': '_a_freeze',
+        'thaw': '_a_thaw',
+        'kill': '_a_kill',
+        'quit': '_a_quit',
+        'launch': '_a_launch',
+        'set_flag': '_a_set_flag',
+        'clear_flag': '_a_clear_flag',
+        'route_pad': '_a_route_pad',
+        'show': '_a_show',
+        'close_steam_menu': '_a_close_steam_menu',
+        'dismiss': '_a_dismiss',
+        'iconify': '_a_iconify',
+        'snapshot': '_a_snapshot',
+        'show_switcher': '_a_show_switcher',
+        'tv_toggle': '_a_tv_toggle',
+        'request_tv_wake': '_a_request_tv_wake',
+    }
+
+    # C11 backoff: an action that keeps failing is a responsibility couchd
+    # should hand back, not a thing to retry every cooldown until the disk
+    # fills. Three consecutive failures of the same (verb, subject) and it
+    # doubles from BACKOFF_BASE up to BACKOFF_MAX; a success, or any ownership
+    # change, clears it. Only the entering/leaving transitions are said out
+    # loud - the skips themselves stay in the JSONL corpus.
+    BACKOFF_AFTER = 3
+    BACKOFF_BASE = 30.0
+    BACKOFF_MAX = 300.0
+
+    def __init__(self, log, actuators, on_record=None, owned=(), sayer=say):
+        self.log = log
+        self.act = actuators
+        self.on_record = on_record or (lambda i: None)
+        self.owned = frozenset(owned)
+        self.say = sayer
+        self.count = 0
+        self.failures = 0
+        self.pending = []          # C17 predictions awaiting their deadline
+        self.fails = {}            # (verb, subject) -> {'n', 'until', 'said'}
+        self.skipped = 0
+
+    # -- the seam ---------------------------------------------------------
+    def execute(self, intent, obs):
+        resp = owns.responsibility_for_reason(intent.reason)
+        rec = {
+            'kind': 'intent', 'acted': True, 'responsibility': resp,
+            't': obs.now, 'mono': obs.mono,
+            'verb': intent.verb, 'subject': intent.subject,
+            'args': intent.args, 'reason': intent.reason,
+            'regions': {k: v for k, v in obs.regions.items()},
+            'predict': intent.predict,
+        }
+        if resp not in self.owned:
+            # Unreachable through the router; kept because "acts only on what
+            # it owns" is the whole safety claim and deserves two locks.
+            rec.update(acted=False, action={'ok': False, 'refused':
+                                            f'{resp} is not owned'})
+            self.log.write(rec)
+            self.say(f'REFUSED {intent.human()} - {resp} is not owned')
+            return rec
+        key = (intent.verb, intent.subject)
+        # Never act twice on a decision whose first action has not been judged
+        # yet: for a toggle that is the close-then-reopen dance, and for
+        # everything else it is a second helper racing the first.
+        if any((p['intent'].verb, p['intent'].subject) == key
+               for p in self.pending):
+            self.skipped += 1
+            rec.update(acted=False,
+                       action={'ok': True, 'skipped': 'previous action of this '
+                               '(verb, subject) is still inside its C17 '
+                               'deadline'})
+            self.log.write(rec)
+            self.on_record(intent)        # the cooldown still applies
+            return rec
+        back = self.fails.get(key)
+        if back and obs.mono < back['until']:
+            self.skipped += 1
+            rec.update(acted=False,
+                       action={'ok': False, 'backoff': True,
+                               'consecutive_failures': back['n'],
+                               'retry_in_s': round(back['until'] - obs.mono, 1)})
+            self.log.write(rec)           # corpus keeps every one of these
+            self.on_record(intent)        # ...the human log does not
+            return rec
+        method = self.ACTIONS.get(intent.verb)
+        try:
+            if method is None:
+                raise ActionFailed(f'no action for verb {intent.verb}')
+            rec['action'] = {'ok': True, **(getattr(self, method)(intent, obs)
+                                            or {})}
+            self.count += 1
+            self.say(f'DID {intent.human()}')
+            self._note_success(key)
+        except ActionFailed as e:
+            self.failures += 1
+            rec['acted'] = False
+            rec['action'] = {'ok': False, 'error': str(e)}
+            # Loud, per C11, and in the phone-readable log: a responsibility
+            # that cannot act is a responsibility to hand back.
+            self.say(f'ACTION FAILED {intent.human()}: {e} '
+                     f'(doing nothing further; roll back with an empty '
+                     f'owns.conf)')
+            self._note_failure(key, obs)
+        except Exception as e:                     # never take the daemon down
+            self.failures += 1
+            rec['acted'] = False
+            rec['action'] = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+            self.say(f'ACTION CRASHED {intent.human()}: {type(e).__name__}: {e}')
+            self._note_failure(key, obs)
+        self.log.write(rec)
+        self.on_record(intent)
+        if rec['acted'] and intent.predict:
+            self.pending.append({
+                'intent': intent,
+                'deadline': obs.mono + float(intent.predict.get('deadline_s', 5)),
+                'started': obs.mono,
+                'check': EFFECT_CHECKS.get(intent.verb),
+            })
+        return rec
+
+    # -- C11 backoff ------------------------------------------------------
+    def _note_failure(self, key, obs):
+        st = self.fails.setdefault(key, {'n': 0, 'until': 0.0, 'said': False})
+        st['n'] += 1
+        if st['n'] >= self.BACKOFF_AFTER:
+            wait = min(self.BACKOFF_BASE * 2 ** (st['n'] - self.BACKOFF_AFTER),
+                       self.BACKOFF_MAX)
+            st['until'] = obs.mono + wait
+            if not st['said']:
+                st['said'] = True
+                self.say(f'{key[0]} {key[1]}: {st["n"]} consecutive failures - '
+                         f'backing off (up to {self.BACKOFF_MAX:.0f}s). '
+                         f'This responsibility wants handing back.')
+            self.log.write({'kind': 'daemon', 'event': 'action-backoff',
+                            'verb': key[0], 'subject': key[1],
+                            'failures': st['n'], 'wait_s': round(wait, 1)})
+
+    def _note_success(self, key):
+        st = self.fails.pop(key, None)
+        if st and st['said']:
+            self.say(f'{key[0]} {key[1]}: acting again after '
+                     f'{st["n"]} failure(s)')
+            self.log.write({'kind': 'daemon', 'event': 'action-backoff-cleared',
+                            'verb': key[0], 'subject': key[1],
+                            'failures': st['n']})
+
+    def forget_failures(self, why='owns-changed'):
+        """Ownership moved: whatever was failing is somebody else's problem or
+        a fresh start, either way the backoff state is stale."""
+        if self.fails:
+            self.log.write({'kind': 'daemon', 'event': 'action-backoff-reset',
+                            'why': why, 'keys': [list(k) for k in self.fails]})
+        self.fails.clear()
+
+    # -- C17: did the world get there? ------------------------------------
+    def check_pending(self, o):
+        """Called once a pass. Confirms or fails every outstanding
+        prediction, then forgets it: a missed effect is evidence, not a queue
+        of work (C11 - couchd does not chase its own actions)."""
+        out, still = [], []
+        for p in self.pending:
+            it = p['intent']
+            got = None
+            if p['check'] is not None:
+                with contextlib.suppress(Exception):
+                    got = p['check'](o, it)
+            if got is True:
+                out.append((p, 'confirmed', o.mono - p['started']))
+            elif o.mono >= p['deadline']:
+                out.append((p, 'unverified' if p['check'] is None else 'missed',
+                            o.mono - p['started']))
+            else:
+                still.append(p)
+        self.pending = still
+        for p, verdict, latency in out:
+            it = p['intent']
+            self.log.write({
+                'kind': 'effect', 'verdict': verdict, 'verb': it.verb,
+                'subject': it.subject, 'reason': it.reason,
+                'expected': (it.predict or {}).get('effect'),
+                'deadline_s': (it.predict or {}).get('deadline_s'),
+                'latency_s': round(latency, 3),
+                'regions': dict(o.regions)})
+            if verdict == 'missed':
+                self.say(f'EFFECT MISSED after {latency:.1f}s: '
+                         f'{(it.predict or {}).get("effect")} '
+                         f'[{it.verb} {it.subject}] - not retrying (C11)')
+        return out
+
+    # -- the actions ------------------------------------------------------
+    def _a_freeze(self, it, o):
+        return self.act.signal(it.args.get('pids', ()), signal.SIGSTOP)
+
+    def _a_thaw(self, it, o):
+        return self.act.signal(it.args.get('pids', ()), signal.SIGCONT)
+
+    def _a_kill(self, it, o):
+        return self.act.signal(it.args.get('pids', ()), signal.SIGTERM)
+
+    def _a_quit(self, it, o):
+        return self.act.spawn([GAME_LAUNCH, 'quit'])
+
+    def _a_launch(self, it, o):
+        """R1 holds even here: couchd STARTS nothing. The one launch it may
+        perform is `resume`, which thaws a game this console already froze -
+        the recovery path the whole gesture vocabulary depends on (a paused
+        game with no way back is precisely what pad-home-watcher refuses to
+        allow anyone to bind away)."""
+        if (it.args or {}).get('mode') != 'resume':
+            raise ActionFailed('stage 1 launches nothing (R1); '
+                               f'refused mode={(it.args or {}).get("mode")!r}')
+        return self.act.spawn([GAME_LAUNCH, 'resume'])
+
+    def _a_set_flag(self, it, o):
+        value = str((it.args or {}).get('value', ''))
+        if it.subject == 'suspended':
+            # EXACTLY pad-home-watcher.freeze_game's write: the appid, no
+            # trailing newline (`with open(SUSPENDED,'w') as f: f.write(appid)`).
+            return self.act.write_flag(SUSPENDED_FLAG, value, 'game-suspended')
+        if it.subject == 'session':
+            # EXACTLY game-launch's `echo "$$ $MODE $APPID" > "$SESSION"`:
+            # three space-separated fields and echo's trailing newline.
+            text = value if value.endswith('\n') else value + '\n'
+            return self.act.write_flag(SESSION_FLAG, text, 'game-session')
+        raise ActionFailed(f'no flag named {it.subject!r}')
+
+    def _a_clear_flag(self, it, o):
+        if it.subject == 'suspended':
+            res = self.act.remove_flag(SUSPENDED_FLAG, 'game-suspended')
+            if SNAP_CLEAR_ON_UNSUSPEND:
+                # Legacy clears the freeze-frames in the same breath
+                # (clear_snapshots / clear_snaps); a frame that outlives its
+                # pause is a Kodi tile lying about the console's state.
+                with contextlib.suppress(ActionFailed):
+                    self.act.spawn([PAUSE_SNAP, '--clear'])
+            return res
+        if it.subject == 'session':
+            return self.act.remove_flag(SESSION_FLAG, 'game-session')
+        raise ActionFailed(f'no flag named {it.subject!r}')
+
+    def _a_route_pad(self, it, o):
+        return self.act.kodi('Settings.SetSettingValue',
+                             {'setting': 'input.enablejoystick',
+                              'value': it.subject == 'kodi'})
+
+    def _a_show(self, it, o):
+        if it.subject == 'kodi':
+            return self.act.raise_kodi()
+        if it.subject == 'power-menu':
+            return self.act.kodi('GUI.ActivateWindow',
+                                 {'window': 'shutdownmenu'})
+        if it.subject == 'steam-menu':
+            return self.act.spawn(None, shell_line=GUIDE_PRESS_SH)
+        if it.subject == 'desktop':
+            return self.act.couch_api('/api/windows/activate', {'id': 'desktop'})
+        # a game, by appid or by the generic 'game': game-launch's focus_game
+        # is the only thing that knows how to find it (pid, class, fallback).
+        return self.act.spawn([GAME_LAUNCH, 'focus'])
+
+    def _a_close_steam_menu(self, it, o):
+        return self.act.spawn(None, shell_line=GUIDE_PRESS_SH)
+
+    def _a_dismiss(self, it, o):
+        return self.act.kodi('Input.Back', {})
+
+    def _a_iconify(self, it, o):
+        return self.act.spawn(None, shell_line=ICONIFY_SH)
+
+    def _a_snapshot(self, it, o):
+        return self.act.spawn([PAUSE_SNAP, str(it.subject), it.reason],
+                              env={'PAUSE_SNAP_SRC': 'couchd'})
+
+    def _a_show_switcher(self, it, o):
+        return self.act.kodi('Addons.ExecuteAddon',
+                             {'addonid': 'script.couch.switcher'})
+
+    def _a_tv_toggle(self, it, o):
+        return self.act.spawn([TV_BIN, 'toggle'])
+
+    def _a_request_tv_wake(self, it, o):
+        # tv-waker consumes this within half a second and wakes the set only
+        # if it is in standby. The ONLY couchd write outside the two flags.
+        return self.act.touch(TV_WAKE_REQUEST, 'tv-wake-request')
+
+
+class ExecutorRouter(Executor):
+    """Owned -> ActingExecutor, everything else -> RecordingExecutor.
+
+    The acting object is built the first time something is owned and dropped
+    the moment nothing is (R1's structural passivity), so `owns.conf` empty is
+    byte-identical to the daemon that had no acting code at all.
+    """
+
+    def __init__(self, recording, acting_factory, sayer=say, log=None):
+        self.recording = recording
+        self.acting_factory = acting_factory
+        self.acting = None
+        self.owned = frozenset()
+        self.say = sayer
+        self.log = log
+
+    @property
+    def count(self):
+        return self.recording.count + (self.acting.count if self.acting else 0)
+
+    @property
+    def failures(self):
+        return self.acting.failures if self.acting else 0
+
+    def set_owns(self, current):
+        """Apply a fresh parse of owns.conf. Returns True if it changed."""
+        actable = frozenset(current.actable)
+        if actable == self.owned and (self.acting is not None) == bool(actable):
+            return False
+        was = sorted(self.owned)
+        self.owned = actable
+        if not actable:
+            self.acting = None            # the object itself goes away
+        else:
+            if self.acting is None:
+                self.acting = self.acting_factory()
+            self.acting.owned = actable
+            self.acting.forget_failures()
+        self.say(f'ownership changed: {was or ["(nothing)"]} -> '
+                 f'{sorted(actable) or ["(nothing - shadow)"]}')
+        if self.log is not None:
+            self.log.write({'kind': 'daemon', 'event': 'owns-changed',
+                            'was': was, 'now': sorted(actable),
+                            'acting': self.acting is not None})
+        return True
+
+    def execute(self, intent, obs):
+        resp = owns.responsibility_for_reason(intent.reason)
+        if self.acting is not None and resp in self.owned:
+            return self.acting.execute(intent, obs)
+        return self.recording.execute(intent, obs)
+
+    def check_pending(self, o):
+        return self.acting.check_pending(o) if self.acting else []
 
 
 # =========================================================================
@@ -1581,9 +2273,15 @@ class FlagObserver:
         for name, content, mtime in changed:
             self.src.events += 1
             self.src.last_change = time.monotonic()
-            self.w.log.write({'kind': 'obs', 'source': 'flags', 'event': 'flag',
-                              'name': name, 'value': content,
-                              'mtime': round(mtime, 3) if mtime else None})
+            rec = {'kind': 'obs', 'source': 'flags', 'event': 'flag',
+                   'name': name, 'value': content,
+                   'mtime': round(mtime, 3) if mtime else None}
+            if self.w.was_self_written(name, content):
+                # couchd's own write-through, coming back through inotify.
+                # Annotated, never suppressed: the observation is real and the
+                # differ needs it - it just has an author.
+                rec['self_written'] = True
+            self.w.log.write(rec)
         return changed
 
     def session(self):
@@ -2167,6 +2865,8 @@ class X11Observer:
 class World:
     """Shared observer state + the one place attention mode is triggered."""
 
+    SELF_WRITE_MEMORY = 15.0     # how long a self-write stays recognisable
+
     def __init__(self, log):
         self.log = log
         self.sources = {}
@@ -2174,9 +2874,33 @@ class World:
         self.attention_reason = ''
         self.attention_events = 0
         self.wake = asyncio.Event()
+        self.self_writes = {}     # flag name -> (content, mono) we wrote
 
     def src(self, name):
         return self.sources.setdefault(name, Source(name))
+
+    # -- self-written flags (feedback-loop hygiene) ------------------------
+    def note_self_write(self, name, content):
+        """Recorded the instant an actuator writes a /tmp flag, so the flag
+        observer can label the change it is about to see as OURS.
+
+        It is only ever a LABEL: couchd stays level-based, so re-observing its
+        own write is not just harmless but the point - the world now matches
+        what was wanted, and the same reconcile that asked for it stops asking.
+        Without the label, though, the corpus (and the morning triage) could
+        not tell couchd's own writes apart from the legacy stack's."""
+        self.self_writes[name] = (content, time.monotonic())
+
+    def was_self_written(self, name, content):
+        seen = self.self_writes.get(name)
+        if not seen:
+            return False
+        want, when = seen
+        if time.monotonic() - when > self.SELF_WRITE_MEMORY:
+            return False
+        if want is None:
+            return content is None
+        return content is not None and content.strip() == str(want).strip()
 
     def attention(self, reason):
         """An observed change: sample at ATTENTION_PERIOD for a few seconds so
@@ -2200,7 +2924,17 @@ class Couchd:
         self.snapshots = ShadowLog(prefix='snapshots')
         self.world = World(self.log)
         self.machine = Machine(on_transition=self._on_transition)
-        self.executor = RecordingExecutor(self.log, on_record=self._on_intent)
+        # Shadow is the default and the fallback: the recorder is always here,
+        # the acting half is built only while owns.conf names something (R1).
+        self.recorder = RecordingExecutor(self.log, on_record=self._on_intent)
+        self.actuators = Actuators(kodi_rpc=self._kodi_rpc,
+                                   on_flag_write=self.world.note_self_write)
+        self.executor = ExecutorRouter(self.recorder, self._make_acting,
+                                       log=self.log)
+        self.owns = owns.load()
+        self._owns_warned = None
+        self._env_warned = False
+        self._guard_pidfile_ours = False
         self.pad = PadObserver(self.world)
         self.flags = FlagObserver(self.world)
         self.pids = PidObserver(self.world)
@@ -2276,6 +3010,113 @@ class Couchd:
         elif intent.reason in ('gesture:tap-resume', 'transition:session-started'):
             self.enforcement_target = 'game'
             self.enforcement_until = time.monotonic() + GUARD_WINDOW
+
+    # -- ownership (the flip switch) --------------------------------------
+    def _kodi_rpc(self, method, params):
+        """The acting executor's Kodi channel is the observer's own HTTP
+        client: one place holds the credentials, one place holds the timeout."""
+        return self.kodi._http(method, params)
+
+    def _make_acting(self):
+        return ActingExecutor(self.log, self.actuators,
+                              on_record=self._on_intent,
+                              owned=self.executor.owned)
+
+    def refresh_owns(self):
+        """Re-read owns.conf (a stat unless it changed) and apply it.
+
+        Every tick, deliberately: a flip - and much more importantly a
+        ROLLBACK to empty - must take effect within one tick with nothing
+        restarted, on both stacks at once."""
+        cur = owns.load()
+        if cur.warnings and cur.warnings != self._owns_warned:
+            self._owns_warned = cur.warnings
+            for w in cur.warnings:
+                say(f'owns.conf: {w}')
+            self.log.write({'kind': 'daemon', 'event': 'owns-warning',
+                            'warnings': list(cur.warnings),
+                            'file': cur.path})
+        env = os.environ.get('COUCHD_OWNS')
+        if env and not self._env_warned:
+            self._env_warned = True
+            if owns.parse(f'COUCHD_OWNS={env}').names != cur.names:
+                say(f'COUCHD_OWNS={env!r} is set in the environment and does '
+                    f'NOT match {cur.path}; the FILE is the source of truth '
+                    f'(both stacks read it) and the environment is ignored')
+        self.owns = cur
+        if self.executor.set_owns(cur):
+            # Ownership just moved. If the guard came with it, clear any dead
+            # pid sitting in the pidfile before we start writing our own.
+            self.scavenge_guard_pidfile()
+        return cur
+
+    def scavenge_guard_pidfile(self):
+        """A guard pidfile naming a dead process, removed BEFORE couchd starts
+        writing its own pid there.
+
+        The hazard is pid reuse: couchd write-throughs this file, gets
+        SIGKILLed (watchdog, OOM), and the number it left behind is handed to
+        some unrelated process by the kernel - which the next suspend then
+        SIGTERMs, because that is what the pidfile means. Cheap to prevent,
+        impossible to debug after the fact.
+
+        ONLY while couchd owns the guard. In shadow this file belongs to the
+        old stack and couchd does not touch it: a stale one is reported as a
+        leak by owned_resources() and repaired by nobody, which is exactly the
+        passivity contract (M2)."""
+        if 'guard' not in self.executor.owned:
+            return
+        try:
+            raw = open(GUARD_PIDFILE).read().strip()
+            pid = int(raw)
+        except (OSError, ValueError):
+            return
+        if pid == os.getpid():
+            return
+        import psutil
+        if psutil.pid_exists(pid):
+            return
+        with contextlib.suppress(ActionFailed):
+            self.actuators.remove_flag(GUARD_PIDFILE, 'steam-input-guard.pid')
+        say(f'scavenged a stale guard pidfile (pid {pid} is gone) before '
+            f'taking the guard')
+        self.log.write({'kind': 'daemon', 'event': 'guard-pidfile-scavenged',
+                        'stale_pid': pid})
+
+    def sync_guard_pidfile(self, o):
+        """Write-through of /tmp/steam-input-guard.pid while couchd owns the
+        guard responsibility (R5-17 / brief D).
+
+        The file's meaning on this box is "an enforcement window is open, and
+        this pid owns it": pad-home-watcher.supersede_guard() and the guard's
+        own supersede() both read it. When couchd runs the window instead, the
+        file has to keep saying that or a suspend would think no window is
+        open. Format is the writer's byte for byte - `f.write(str(os.getpid()))`,
+        no trailing newline - and the removal keeps the same rule the guard's
+        SIGTERM handler uses: only if it is still OURS.
+
+        (The matching legacy edit makes supersede_guard yield while couchd owns
+        the guard; without it the watcher would SIGTERM this daemon.)"""
+        ours_now = 'guard' in self.executor.owned and \
+            self.enforcement_until > time.monotonic()
+        if ours_now == self._guard_pidfile_ours:
+            return
+        try:
+            if ours_now:
+                self.actuators.write_flag(GUARD_PIDFILE, str(os.getpid()),
+                                          'steam-input-guard.pid')
+                self._guard_pidfile_ours = True
+            else:
+                current = ''
+                with contextlib.suppress(OSError):
+                    current = open(GUARD_PIDFILE).read().strip()
+                if current == str(os.getpid()):
+                    self.actuators.remove_flag(GUARD_PIDFILE,
+                                               'steam-input-guard.pid')
+                self._guard_pidfile_ours = False
+        except ActionFailed as e:
+            say(f'guard pidfile write-through failed: {e}')
+            self._guard_pidfile_ours = False
 
     # -- key bindings -----------------------------------------------------
     def gesture_conf(self):
@@ -2358,11 +3199,17 @@ class Couchd:
 
     # -- one pass ---------------------------------------------------------
     def pass_once(self, loop):
+        # Ownership first: an intent must be routed by the file as it is NOW,
+        # not as it was when the daemon started.
+        self.refresh_owns()
         o = self.observe(loop)
         self.machine.step(o)
         o = replace(o, regions=dict(self.machine.regions),
                     region_since=dict(self.machine.since),
                     games=dict(self.machine.games))
+        # C17: last pass's predictions, judged against this pass's world,
+        # before any new decision is taken on top of them.
+        self.executor.check_pending(o)
         intents = reconcile(o)
         bad = check_invariants(o, intents)
         if bad:
@@ -2373,6 +3220,7 @@ class Couchd:
             say('invariant violation: ' + '; '.join(f'{n}({d})' for n, d in bad))
         for it in intents:
             self.executor.execute(it, o)
+        self.sync_guard_pidfile(o)
         self.passes += 1
         return o, intents
 
@@ -2442,9 +3290,13 @@ class Couchd:
             leaks.append('suspended flag with no frozen processes')
         if o.session_present and o.launcher_alive is False and not o.pid_states:
             leaks.append('session flag with a dead launcher')
+        # What couchd itself is holding right now, so a resource of OURS is
+        # never triaged as somebody else's leak (and so a leak of ours shows up
+        # as one the moment the list and the world disagree).
+        expected = ['guard-pidfile'] if self._guard_pidfile_ours else []
         return {'vpad_fifo': vpad, 'guard_pid': guard_pid,
                 'guard_alive': guard_alive, 'pad_nodes': uinput,
-                'expected_owned': [], 'leaks': leaks}
+                'expected_owned': expected, 'leaks': leaks}
 
     # -- outputs ----------------------------------------------------------
     def write_status(self, o):
@@ -2452,7 +3304,21 @@ class Couchd:
         status = {
             't': time.time(), 'pid': os.getpid(),
             'uptime_s': round(mono - self.started_mono, 1),
-            'mode': 'shadow', 'attention': self.world.attentive,
+            # 'shadow' until owns.conf names something couchd can execute; the
+            # phone's couchd card shows this line and the list beside it.
+            'mode': 'acting' if self.executor.owned else 'shadow',
+            'owns': sorted(self.executor.owned),
+            'owns_declared': self.owns.sorted,
+            'owns_file': self.owns.path,
+            'owns_warnings': list(self.owns.warnings),
+            'acted': (self.executor.acting.count if self.executor.acting else 0),
+            'action_failures': self.executor.failures,
+            'action_skipped': (self.executor.acting.skipped
+                               if self.executor.acting else 0),
+            'action_backoff': (sorted('%s %s' % k for k in
+                                      self.executor.acting.fails)
+                               if self.executor.acting else []),
+            'attention': self.world.attentive,
             'regions': dict(o.regions), 'games': dict(o.games),
             'last_would_do': list(self.last_would_do),
             'observers': {n: s.health(mono) for n, s in self.world.sources.items()},
@@ -2531,10 +3397,15 @@ class Couchd:
         for sig in (signal.SIGTERM, signal.SIGINT):
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, _stop)
-        say(f'couchd up (shadow mode, pid {os.getpid()}); '
-            f'writing {SHADOW_DIR}')
+        self.refresh_owns()
+        mode = 'acting' if self.executor.owned else 'shadow mode'
+        say(f'couchd up ({mode}, pid {os.getpid()}); {owns.describe(self.owns)}'
+            f'; writing {SHADOW_DIR}')
         self.log.write({'kind': 'daemon', 'event': 'start', 'pid': os.getpid(),
-                        'mode': 'shadow', 'steam_logs': STEAM_LOGS})
+                        'mode': 'acting' if self.executor.owned else 'shadow',
+                        'owns': sorted(self.executor.owned),
+                        'owns_file': self.owns.path,
+                        'steam_logs': STEAM_LOGS})
         self._tasks = [asyncio.create_task(self.pad.run(loop)),
                        asyncio.create_task(self.flags.run()),
                        asyncio.create_task(self.kodi.run_notifications())]
@@ -2595,6 +3466,15 @@ class Couchd:
     async def shutdown(self, loop):
         notify('STOPPING=1')
         say('couchd stopping')
+        # C27: release in `finally` on every teardown path. A guard pidfile
+        # left behind by a stopped couchd would make the next suspend think an
+        # enforcement window is open and SIGTERM a pid that no longer exists.
+        if self._guard_pidfile_ours:
+            with contextlib.suppress(Exception):
+                if open(GUARD_PIDFILE).read().strip() == str(os.getpid()):
+                    self.actuators.remove_flag(GUARD_PIDFILE,
+                                               'steam-input-guard.pid')
+            self._guard_pidfile_ours = False
         for t in self._tasks:
             t.cancel()
         for t in self._tasks:

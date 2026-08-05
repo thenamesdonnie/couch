@@ -1,9 +1,10 @@
 # couchd (stage 1: shadow mode)
 
 One daemon that watches everything the four console scripts watch, keeps the
-whole state machine in one place, and **says what it would do**. It does not
-act. There is no acting executor anywhere in this code, so passivity is
-structural, not a flag someone can forget to set.
+whole state machine in one place, and **says what it would do**. Out of the box
+it does not act: `owns.conf` ships empty, so no acting executor is ever
+constructed and passivity stays structural, not a flag someone can forget to
+set.
 
 The old stack (`pad-home-watcher`, `game-launch`, `steam-input-guard`, the
 watcher's `reconcile()`) keeps doing the real work exactly as before. couchd
@@ -119,10 +120,64 @@ rebind lands within a tick - no restart, no reload signal.
 Nothing else. The unit enforces it: `ProtectSystem=strict` with
 `ReadWritePaths=%h/couch/shadow /tmp` and nothing more.
 
+## Ownership: `owns.conf` (the flip switch)
+
+    ~/couch/couchd/owns.conf        COUCHD_OWNS=""      <- shipped empty
+
+One file, read by BOTH stacks at runtime — couchd every tick, the legacy
+scripts at every decision — so a flip and a rollback move them together with
+nothing restarted. Empty means the console behaves exactly as it did before
+couchd existed.
+
+| responsibility | couchd acts on | the script that yields |
+|---|---|---|
+| `gestures` | `gesture:*` intents | `pad-home-watcher` (`act()`, `resume_game()`) |
+| `transitions` | `transition:*` intents | `game-launch` (session start/end handover) |
+| `guard` | `guard:*` intents | `steam-input-guard` (+ the watcher's `supersede_guard`) |
+| `reconcile` | `reconcile:*` intents | `pad-home-watcher`'s `reconcile()` |
+| `input` | *(stage 2's input process)* | — |
+
+A yielded script still writes its would-do line to `/tmp/legacy-intents.jsonl`
+with `"yielded": true` — legacy becomes the *shadow* for that responsibility,
+which is what the morning differ compares against. An unknown name is dropped
+with a loud warning by both parsers (in `owns.py` and in `game-launch`'s
+four-line mirror of the same grammar, kept honest by a parity test).
+
+While couchd owns a responsibility it also **writes through** the /tmp flags
+that responsibility used to write, byte for byte, so every remaining legacy
+reader keeps working: `/tmp/game-suspended` (appid, no trailing newline),
+`/tmp/game-session` (`<pid> <mode> <appid>` + newline),
+`/tmp/steam-input-guard.pid` (bare pid) and `/tmp/tv-wake-request`. Writes are
+atomic renames, and couchd labels its own writes in the log (`self_written`)
+so the corpus can tell them from the old stack's.
+
+Ownership is a **lease, not a note**: the legacy scripts yield only while
+couchd's `status.json` heartbeat is under 30s old (it is rewritten every ~3s).
+So `systemctl --user stop couchd` — the charter's one-command rollback — hands
+every responsibility back on its own, without anyone editing a config file in
+the dark. The clean order is still **empty `owns.conf` first, then stop**:
+both stacks pick that up within a tick, with no half-minute where neither is
+acting.
+
+Charter rules: flips happen in a daytime window, one responsibility at a time,
+each behind its own 5-minute couch acceptance.
+
+Before a flip, restart the script that has to yield — `systemctl --user
+restart pad-home` — or it is still running the code it was started with.
+
 ## Reading status.json
 
     cat ~/couch/shadow/status.json | python3 -m json.tool
 
+* `mode` - `shadow` while nothing is owned, `acting` once something is;
+  `owns` lists what couchd is executing, `owns_declared` what the file asked
+  for (they differ only for `input`, which stage 1 cannot execute),
+  `owns_warnings` carries rejected names, `action_failures` counts actions
+  that failed and were deliberately not retried (C11), `action_skipped`
+  counts decisions held back because the previous action of the same
+  (verb, subject) was still inside its C17 deadline, and `action_backoff`
+  names anything that failed three times running and is now in exponential
+  backoff (30s → 5min, cleared by a success or an ownership change).
 * `regions` - the six state regions. Any of them can read `unknown`, which
   means *that source could not be observed*; couchd suppresses every decision
   that depends on an unknown region rather than guessing.

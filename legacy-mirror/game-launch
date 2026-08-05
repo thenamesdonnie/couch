@@ -1,0 +1,851 @@
+#!/usr/bin/env bash
+# The console's session manager. Launches games over Kodi and manages the
+# handover: Kodi's joystick input goes off so the pad speaks only to the game,
+# and when the game ends the pad comes back to Kodi and Kodi takes the screen.
+#
+# Games can also be SUSPENDED: pad-home-watcher freezes the processes
+# (SIGSTOP) when the PS button is held, and this script thaws them when the
+# same tile is picked again. A suspended game costs nothing to keep around.
+#
+# Usage: game-launch steam <appid>   launch, or resume if that game is paused
+#        game-launch bigpicture      Steam's couch UI (refocuses if already up)
+#        game-launch resume          thaw whatever is paused
+#        game-launch quit            politely close any game and Big Picture,
+#                                    forcing only if ignored (the power menu
+#                                    uses this as its save-and-quit)
+#
+# Called detached from the Kodi helper plugin, so it owns the whole session:
+# nothing here may assume a terminal, and a launch must always restore Kodi's
+# input on the way out, whatever happened in the middle.
+set -u
+
+# Callers vary: the Kodi plugin has the session's display, an SSH shell or the
+# power menu's detached Popen may not. All the window work needs X, so fill in
+# the TV's display when nobody else did.
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+MODE="${1:-}"
+APPID="${2:-}"
+JSON=http://localhost:8090/jsonrpc
+AUTH=kodi:$KODI_PASSWORD
+LOG=/tmp/game-launch.log
+SESSION=/tmp/game-session     # "<launcher pid> <mode> <appid>" while a session runs
+SUSPENDED=/tmp/game-suspended # "<appid>" or "bigpicture" while a game is frozen
+
+say() { echo "$(date +%H:%M:%S.%3N) $*" >> "$LOG"; }
+
+# One JSON line per decision beside the human one, so the couchd shadow-diff
+# reads our intent instead of guessing it back from effects. Args are
+# key=value pairs; "key:=..." passes an already-formed JSON value (arrays,
+# numbers). Purely additive: logging here can never fail a caller.
+INTENTS=/tmp/legacy-intents.jsonl
+_jstr() {
+  local s=${1-}
+  s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/ }; s=${s//$'\t'/ }
+  printf '"%s"' "$s"
+}
+_jnums() {  # whitespace-separated pids -> JSON array of numbers
+  local p out=''
+  for p in ${1-}; do
+    case "$p" in *[!0-9]*) continue ;; esac
+    out="$out${out:+,}$p"
+  done
+  printf '[%s]' "$out"
+}
+_jargv() {
+  local a out=''
+  for a in "$@"; do out="$out${out:+,}$(_jstr "$a")"; done
+  printf '[%s]' "$out"
+}
+intent() {
+  local verb=${1-} subject=${2-} kv k args='' subj=null
+  if [ $# -gt 2 ]; then shift 2; else shift $#; fi
+  for kv in "$@"; do
+    k=${kv%%=*}
+    if [ "${k%:}" != "$k" ]; then
+      args="$args${args:+,}$(_jstr "${k%:}"):${kv#*=}"
+    else
+      args="$args${args:+,}$(_jstr "$k"):$(_jstr "${kv#*=}")"
+    fi
+  done
+  [ -n "$subject" ] && subj=$(_jstr "$subject")
+  printf '{"t": %s, "src": "game-launch", "verb": %s, "subject": %s, "args": {%s}}\n' \
+    "$(date +%s.%3N)" "$(_jstr "$verb")" "$subj" "$args" >> "$INTENTS" 2>/dev/null || true
+}
+
+# WHO OWNS WHAT, right now. ~/couch/couchd/owns.conf is the ONE file both
+# stacks read - couchd every tick, this script at every decision - and while it
+# is empty (the state it ships in) nothing below changes: this script does
+# everything it has always done.
+#
+# The grammar is deliberately tiny so this parser and couchd's owns.py cannot
+# drift: the LAST `COUCHD_OWNS=` line wins; the value is cut at '#', stripped of
+# CR, trimmed, unwrapped of ONE surrounding quote pair, trimmed again, then
+# split on commas or whitespace. A missing or unreadable file answers "owns
+# nothing", which leaves this script acting. owns.py's unquote() is these same
+# five steps, and a parity test runs both over a corpus of hostile files.
+OWNS_CONF="${COUCHD_OWNS_FILE:-/home/ds2000/couch/couchd/owns.conf}"
+COUCHD_STATUS="${COUCHD_STATUS_FILE:-/home/ds2000/couch/shadow/status.json}"
+COUCHD_HEARTBEAT_MAX_AGE=30     # seconds; couchd rewrites status.json every ~3s
+
+# Ownership is a LEASE, not a note. `systemctl --user stop couchd` is the
+# charter's one-command rollback and nobody reaching for it at 11pm is going to
+# edit a config file first, so a stale or absent heartbeat means this script
+# acts whatever the file says. owns.py's couchd_alive() is the same rule.
+couchd_heartbeat_ok() {
+  local m now
+  m="$(stat -c %Y "$COUCHD_STATUS" 2>/dev/null)" || return 1
+  [ -n "$m" ] || return 1
+  now="$(date +%s)"
+  [ "$((now - m))" -lt "$COUCHD_HEARTBEAT_MAX_AGE" ]
+}
+
+couchd_owns() {
+  local want="$1" raw r
+  raw="$(sed -n 's/^[[:space:]]*COUCHD_OWNS[[:space:]]*=[[:space:]]*//p' \
+        "$OWNS_CONF" 2>/dev/null | tail -n1)"
+  raw="${raw%%#*}"                    # 1. trailing comment
+  raw="${raw//$'\r'/}"                # 2. a CRLF file must not own differently
+  read -r raw <<< "$raw" || true      # 3. trim (read eats leading/trailing IFS)
+  # 4. exactly ONE surrounding quote pair - never every quote in the string, or
+  #    COUCHD_OWNS="gestures" "transitions" would own two things here and none
+  #    in owns.py, which is a responsibility with no owner after a flip.
+  case "$raw" in
+    '"'*'"') raw="${raw#\"}"; raw="${raw%\"}" ;;
+    "'"*"'") raw="${raw#\'}"; raw="${raw%\'}" ;;
+  esac
+  read -r raw <<< "$raw" || true      # 5. trim again
+  raw="${raw//,/ }"
+  for r in $raw; do [ "$r" = "$want" ] && return 0; done
+  return 1
+}
+
+# The yield itself, in one place: record the would-do (legacy becomes the
+# SHADOW for a responsibility couchd has taken, which is what the morning
+# differ compares against) and tell the caller not to act.
+#   yield_to_couchd <responsibility> <verb> <subject> [k=v ...] || <do it>
+yield_to_couchd() {
+  local resp="$1" verb="$2" subj="$3"
+  shift 3
+  couchd_owns "$resp" || return 1
+  couchd_heartbeat_ok || {
+    say "$verb $subj: couchd owns $resp but its heartbeat is stale - acting anyway"
+    return 1
+  }
+  intent "$verb" "$subj" "$@" yielded=true owner=couchd
+  say "$verb $subj: yielded to couchd ($resp)"
+  return 0
+}
+
+# Big Picture is the console's UI mode for GAMING, and only for gaming.
+#
+# Steam is started -silent by ~/.config/autostart/steam.desktop, which lands it
+# in DESKTOP mode (uimode 7). That autostart is deliberately left alone: Kodi
+# owns the screen at boot and that rule outranks this one. The cost of desktop
+# mode only appears once a game is running - Steam's controller routing follows
+# its UI mode, and in desktop mode a guide TAP is swallowed into the desktop
+# keyboard/mouse overlay, a window steam-input-guard's invariant 1 was written
+# against ClientUI and cannot recognise. In Big Picture (uimode 4) the routing
+# is ClientUI/769, which the guard already closes properly.
+#
+# So the mode is switched at LAUNCH time, per game, never at boot. Detection
+# first: if Steam is already in Big Picture this does nothing at all, which is
+# what stops it flapping the UI on every tile press.
+#
+# It is also NEVER put back on quit. Whatever mode Steam ends up in is left
+# alone: Kodi is raised over it regardless, nothing on the console reads the
+# mode except this function, and a forced switch during teardown is one more
+# thing to race with a game that is still saving.
+STEAM_UIMODE=/home/ds2000/.local/bin/steam-uimode
+UIMODE_BIG_PICTURE=4          # Steam's own numbering; see steam-uimode.MODES
+BP_CONFIRM_S=6
+ensure_big_picture() {
+  [ -x "$STEAM_UIMODE" ] || return 0
+  local now t=0
+  now="$(timeout 3 "$STEAM_UIMODE" 2>/dev/null)"
+  if [ "$now" = "$UIMODE_BIG_PICTURE" ]; then
+    say "steam already in big picture (uimode $now)"
+    return 0
+  fi
+  say "steam in uimode ${now:-unknown}; opening big picture before the game"
+  intent launch bigpicture reason=ensure-bp-before-game \
+    via=steam-open-bigpicture "was=${now:-unknown}" "mode=$MODE" "appid=$APPID"
+  steam "steam://open/bigpicture" >/dev/null 2>&1 &
+  while [ $t -lt $BP_CONFIRM_S ]; do
+    sleep 1; t=$((t+1))
+    now="$(timeout 3 "$STEAM_UIMODE" 2>/dev/null)"
+    if [ "$now" = "$UIMODE_BIG_PICTURE" ]; then
+      say "big picture confirmed after ${t}s"
+      return 0
+    fi
+  done
+  # A launch is NEVER blocked on this. Worst case is exactly today's behaviour,
+  # with FIX 7's desktop-overlay arm still there as the safety net.
+  say "big picture never confirmed (${t}s, uimode ${now:-unknown}); launching anyway"
+  intent launch bigpicture reason=ensure-bp-timeout "waited=$t" \
+    "got=${now:-unknown}" "mode=$MODE"
+  return 0
+}
+
+# A game started from INSIDE Big Picture is invisible to our own state: this
+# script was invoked as `game-launch bigpicture`, so the session line it wrote
+# has an EMPTY appid field, and every consumer that keys off that field then
+# works on the string "bigpicture" instead of a number. Live, 5 Aug 2026:
+#
+#   02:28:57  === launch bigpicture       session "<pid> bigpicture "
+#   02:30:34  === launch steam 367520     the game's own Kodi tile CLOSED and
+#                                         RELAUNCHED it - "bigpicture" is not
+#                                         "367520", so the tile read a running
+#                                         game as "a different game was picked"
+#
+# The operator lost his progress to that. The same empty field is what lets
+# /tmp/game-suspended hold the literal "bigpicture", which then keys pause-snap
+# and the tile art to a name no library entry has: one missing appid, two faces.
+#
+# So the moment a game appears under a Big Picture session, ask Steam what it
+# actually is (game-appid: its gameprocess ledger, falling back to the reaper's
+# AppId= argv) and rewrite the session line in place. Failure changes nothing.
+GAME_APPID=/home/ds2000/.local/bin/game-appid
+ADOPTED=0
+adopt_appid() {
+  [ "$ADOPTED" = 1 ] && return 0
+  [ -x "$GAME_APPID" ] || return 0
+  game_running || return 0
+  local real
+  real="$(timeout 5 "$GAME_APPID" 2>/dev/null)" || return 0
+  case "$real" in ''|*[!0-9]*) return 0 ;; esac
+  # The launcher pid FIELD is kept, and must be: the EXIT trap only clears the
+  # session flag while `cut -d" " -f1` still equals this shell's $$, so a line
+  # rewritten without it would orphan the flag for the rest of the session.
+  echo "$$ steam $real" > "$SESSION"
+  APPID="$real"
+  ADOPTED=1
+  say "adopted appid $real from big picture"
+  intent set_flag session "value=$$ steam $real" "launcher=$$" \
+    reason=bigpicture-appid-adoption "was=$MODE"
+}
+
+# The appid (or mode) of the session currently on file, for intent subjects.
+session_appid() {
+  local a
+  a="$(cut -d' ' -f3 "$SESSION" 2>/dev/null)"
+  [ -n "$a" ] || a="$(cut -d' ' -f2 "$SESSION" 2>/dev/null)"
+  printf '%s' "$a"
+}
+
+jrpc() {
+  curl -s -m 5 -u "$AUTH" -H 'content-type: application/json' -d "$1" "$JSON" >/dev/null 2>&1
+}
+
+pad_to_game() {
+  jrpc '{"jsonrpc":"2.0","id":1,"method":"Settings.SetSettingValue","params":{"setting":"input.enablejoystick","value":false}}'
+  say "pad -> game"
+  intent route_pad game via=kodi-jsonrpc "mode=$MODE"
+}
+
+pad_to_kodi() {
+  jrpc '{"jsonrpc":"2.0","id":1,"method":"Settings.SetSettingValue","params":{"setting":"input.enablejoystick","value":true}}'
+  say "pad -> kodi"
+  intent route_pad kodi via=kodi-jsonrpc "mode=$MODE"
+}
+
+# Put Kodi back on the screen. Raising the window and giving it input focus is
+# enough on this XFCE session; Kodi is fullscreen so it covers whatever Steam
+# left behind.
+focus_kodi() {
+  intent show kodi via=xlib-restack "mode=$MODE"
+  python3 - <<'EOF' >>/tmp/game-launch.log 2>&1
+from Xlib import display, X
+d = display.Display()
+root = d.screen().root
+def find(w):
+    try:
+        for c in w.query_tree().children:
+            if (c.get_wm_name() or '') == 'Kodi':
+                return c
+            r = find(c)
+            if r: return r
+    except Exception:
+        pass
+    return None
+w = find(root)
+if w:
+    w.configure(stack_mode=X.Above)
+    try:
+        d.set_input_focus(w, X.RevertToParent, X.CurrentTime)
+    except Exception:
+        pass
+    d.sync()
+    print("kodi focused")
+else:
+    print("kodi window not found")
+EOF
+}
+
+# The game's own processes run out of steamapps/common, which is what makes
+# "is a game running" answerable at all — Steam itself never exits.
+game_pids() { /home/ds2000/.local/bin/game-pids; }
+game_running() { game_pids >/dev/null; }
+cont_all() {
+  local p pids
+  pids="$(game_pids)"
+  for p in $pids; do kill -CONT "$p" 2>/dev/null; done
+  if [ -n "$pids" ]; then
+    intent thaw "$(session_appid)" "pids:=$(_jnums "$pids")" \
+      resolver=game-pids signal=SIGCONT "mode=$MODE"
+  fi
+}
+
+# The paused game's last rendered frame, kept as its artwork while it is
+# frozen (the phone's switcher row, the Kodi home row tile). Purely cosmetic:
+# time-boxed, and a failure is a log line and nothing else - a suspend must
+# never wait on, or be broken by, a screenshot. Safe to call after the STOP:
+# xfwm4 compositing keeps the window's pixmap, so a covered, frozen window
+# still captures its real last frame (see pause-snap).
+PAUSE_SNAP=/home/ds2000/.local/bin/pause-snap
+snap_paused() {
+  [ -x "$PAUSE_SNAP" ] || return 0
+  intent snapshot "$1" via=pause-snap "reason=${2:-suspend}" "mode=$MODE"
+  PAUSE_SNAP_SRC=game-launch timeout 2 "$PAUSE_SNAP" "$1" "${2:-suspend}" \
+    >/dev/null 2>&1 || say "pause-snap: no frame for $1 (harmless)"
+}
+# A freeze-frame outlives its pause by nothing. No argument clears the lot,
+# which is what a quit (or a game swapped out from under a stale flag) wants.
+clear_snaps() {
+  [ -x "$PAUSE_SNAP" ] || return 0
+  timeout 2 "$PAUSE_SNAP" --clear ${1:+"$1"} >/dev/null 2>&1 || true
+}
+
+# A SIGSTOPped game cannot answer the X server, so any pointer grab it held at
+# the instant it froze stays held: its cursor sprite sits on top of Kodi and
+# the phone's XTEST clicks are swallowed by the frozen client. X drops a grab
+# when the grab window stops being viewable, so the suspend UNMAPS the game's
+# window and the resume maps it back (_NET_ACTIVE_WINDOW, which xfwm4
+# deiconifies on). Cosmetic in both directions: a failure is a log line, never
+# a failed suspend or a refused resume.
+XINPUT=/home/ds2000/couch/server/xinput.py
+_game_window() {  # [--any-state] -> hex window id, or nothing
+  local pids
+  pids="$(game_pids | tr '\n' ' ')"
+  [ -n "$pids" ] || return 1
+  # shellcheck disable=SC2086  # pids are a deliberate word-split list
+  timeout 5 python3 "$XINPUT" gamewin ${1:+"$1"} $pids 2>/dev/null
+}
+hide_frozen_game() {
+  local wid
+  wid="$(_game_window)" || return 0
+  case "$wid" in 0x*) ;; *) say "iconify: no window for ${1:-game} (harmless)"; return 0 ;; esac
+  timeout 5 python3 "$XINPUT" iconify "$wid" >>"$LOG" 2>&1 \
+    || { say "iconify failed (harmless); pointer grab may persist"; return 0; }
+  say "iconified frozen ${1:-game} ($wid)"
+  intent iconify "${1:-game}" via=wm-change-state reason=release-pointer-grab \
+    "window=$wid" "mode=$MODE"
+}
+show_frozen_game() {
+  local wid
+  wid="$(_game_window --any-state)" || return 0
+  case "$wid" in 0x*) ;; *) return 0 ;; esac
+  timeout 5 python3 "$XINPUT" activate "$wid" >>"$LOG" 2>&1 \
+    || { say "activate failed (harmless), focus_game still to come"; return 0; }
+  say "mapped frozen ${1:-game} back ($wid)"
+  intent show "${1:-game}" via=activate reason=deiconify "window=$wid" "mode=$MODE"
+}
+
+# shadPS4 runs from an AppImage: the runtime process keeps the .AppImage name in
+# its argv, and the real emulator binary runs out of the /tmp/.mount_Shadps* the
+# AppImage mounts. Either match means the emulator is up.
+emu_running() { pgrep -f 'Shadps4-sdl|mount_Shadps' >/dev/null; }
+
+# Big Picture titles its window only in _NET_WM_NAME (the UTF-8 one); the
+# legacy WM_NAME is empty, so this must read the modern property.
+bp_running() {
+  python3 - <<'EOF'
+import sys
+from Xlib import display
+d = display.Display()
+NET = d.intern_atom('_NET_WM_NAME')
+def walk(w):
+    try:
+        for c in w.query_tree().children:
+            try:
+                p = c.get_full_property(NET, 0)
+                nm = p.value.decode() if p else ''
+            except Exception:
+                nm = ''
+            if 'Big Picture' in nm:
+                return True
+            if walk(c): return True
+    except Exception:
+        pass
+    return False
+sys.exit(0 if walk(d.screen().root) else 1)
+EOF
+}
+
+# Put the game's own window on top. Steam's desktop window tends to raise
+# itself during a launch and sit over the game; the game's window is found by
+# its process id (_NET_WM_PID), which no amount of retitling can confuse.
+# When asked for 'bp' it raises Big Picture instead.
+focus_game() {
+  local what="${1:-game}"
+  game_pids | tr '\n' ' ' > /tmp/game-pids
+  intent show "$what" via=xlib-restack "mode=$MODE" \
+    "pids:=$(_jnums "$(cat /tmp/game-pids 2>/dev/null)")" resolver=game-pids
+  WANT="$what" python3 - <<'EOF' >>/tmp/game-launch.log 2>&1
+import os
+from Xlib import display, X, protocol
+want = os.environ.get('WANT', 'game')
+pids = set(int(p) for p in open('/tmp/game-pids').read().split())
+d = display.Display(); root = d.screen().root
+NET_PID = d.intern_atom('_NET_WM_PID')
+NET_NAME = d.intern_atom('_NET_WM_NAME')
+CHANGE_STATE = d.intern_atom('WM_CHANGE_STATE')
+
+def prop_pid(c):
+    try:
+        p = c.get_full_property(NET_PID, 0)
+        return int(p.value[0]) if p else 0
+    except Exception:
+        return 0
+
+def prop_name(c):
+    try:
+        p = c.get_full_property(NET_NAME, 0)
+        return p.value.decode() if p else ''
+    except Exception:
+        return ''
+
+target = None
+fallback = None
+steam_desktop = []
+# Windows that are part of the furniture, never the game.
+NOT_GAMES = {'Kodi', 'xfdesktop', 'xfce4-panel', 'steamwebhelper'}
+def walk(w):
+    global target, fallback
+    try:
+        for c in w.query_tree().children:
+            try:
+                mapped = c.get_attributes().map_state == 2
+            except Exception:
+                mapped = False
+            if mapped:
+                nm = prop_name(c)
+                try:
+                    cls = c.get_wm_class() or ('', '')
+                except Exception:
+                    cls = ('', '')
+                g = c.get_geometry()
+                if want == 'bp' and 'Big Picture' in nm:
+                    target = (c, 1)
+                elif want == 'emu' and ('shadps4' in (cls[0] or '').lower() or 'shadps4' in nm.lower()):
+                    # The emulator opens fullscreen and usually grabs focus on
+                    # its own; this just makes sure it sits above Kodi if not.
+                    if target is None or g.width * g.height > target[1]:
+                        target = (c, g.width * g.height)
+                elif want == 'game' and (prop_pid(c) in pids or cls[0].startswith('steam_app')):
+                    # Proton titles its windows' class steam_app_<appid>, which
+                    # survives even when the process id on the window belongs
+                    # to some wine helper the pgrep never saw.
+                    if target is None or g.width * g.height > target[1]:
+                        target = (c, g.width * g.height)
+                else:
+                    if cls[0] == 'steamwebhelper' and 'Big Picture' not in nm:
+                        # Steam's desktop window raises itself during a launch
+                        # and squats over the game; send it to the taskbar.
+                        # Big Picture is left alone, it stacks itself.
+                        steam_desktop.append(c)
+                    elif (want == 'game' and cls[0] not in NOT_GAMES and cls[0]
+                          and g.width >= 600 and g.height >= 400):
+                        # Last resort for native games with unhelpful window
+                        # pids: the biggest thing that isn't furniture.
+                        if fallback is None or g.width * g.height > fallback[1]:
+                            fallback = (c, g.width * g.height)
+            walk(c)
+    except Exception:
+        pass
+walk(root)
+if target is None:
+    target = fallback
+for w in steam_desktop:
+    ev = protocol.event.ClientMessage(window=w, client_type=CHANGE_STATE, data=(32, [3, 0, 0, 0, 0]))
+    root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+if steam_desktop:
+    print(f"iconified {len(steam_desktop)} steam window(s)")
+    try:  # same intent stream as the shell's intent(); see the top of the file
+        import json, time
+        with open('/tmp/legacy-intents.jsonl', 'a') as f:
+            f.write(json.dumps({'t': time.time(), 'src': 'game-launch',
+                                'verb': 'iconify', 'subject': 'steamwebhelper',
+                                'args': {'count': len(steam_desktop),
+                                         'want': want,
+                                         'reason': 'steam desktop over the game'}
+                                }, default=str) + '\n')
+    except OSError:
+        pass
+if target:
+    w = target[0]
+    try:
+        w.configure(stack_mode=X.Above)
+        d.set_input_focus(w, X.RevertToParent, X.CurrentTime)
+    except Exception as e:
+        print("focus fallback:", e)
+    d.sync()
+    print(f"{want} focused")
+else:
+    print(f"{want} window not found")
+    d.sync()
+    raise SystemExit(1)
+d.sync()
+EOF
+}
+
+# Politely close any game and Big Picture, thawing frozen ones first so they
+# can actually see the request (a stopped process can't save). Games that save
+# on quit get their chance; only a game that ignores the ask gets killed.
+close_games() {
+  local why="${1:-quit}"
+  cont_all
+  sleep 1
+  game_pids | tr '\n' ' ' > /tmp/game-pids
+  intent quit all "pids:=$(_jnums "$(cat /tmp/game-pids 2>/dev/null)")" \
+    resolver=game-pids scope=games+bigpicture+shadps4 via=WM_DELETE_WINDOW \
+    "reason=$why"
+  python3 - <<'EOF' >>/tmp/game-launch.log 2>&1
+from Xlib import display, X, protocol
+pids = set(int(p) for p in open('/tmp/game-pids').read().split())
+d = display.Display(); root = d.screen().root
+NET_PID = d.intern_atom('_NET_WM_PID')
+NET_NAME = d.intern_atom('_NET_WM_NAME')
+WM_PROTOCOLS = d.intern_atom('WM_PROTOCOLS')
+WM_DELETE = d.intern_atom('WM_DELETE_WINDOW')
+targets = []
+def walk(w):
+    try:
+        for c in w.query_tree().children:
+            pid = 0
+            try:
+                p = c.get_full_property(NET_PID, 0)
+                pid = int(p.value[0]) if p else 0
+            except Exception:
+                pass
+            try:
+                p = c.get_full_property(NET_NAME, 0)
+                nm = p.value.decode() if p else ''
+            except Exception:
+                nm = ''
+            if pid in pids or 'Big Picture' in nm:
+                targets.append(c)
+            walk(c)
+    except Exception:
+        pass
+walk(root)
+for w in targets:
+    ev = protocol.event.ClientMessage(window=w, client_type=WM_PROTOCOLS,
+                                      data=(32, [WM_DELETE, X.CurrentTime, 0, 0, 0]))
+    w.send_event(ev)
+d.sync()
+print(f"asked {len(targets)} window(s) to close")
+EOF
+  for _ in $(seq 8); do game_running || break; sleep 1; done
+  if game_running; then
+    say "close ignored, force killing"
+    local doomed; doomed="$(game_pids)"
+    intent kill all "pids:=$(_jnums "$doomed")" resolver=game-pids \
+      signal=SIGKILL reason=close-ignored "why=$why"
+    for p in $doomed; do kill -9 "$p" 2>/dev/null; done
+  fi
+  # shadPS4 has no save-on-quit to protect, but ask nicely (SIGTERM) and give
+  # it a moment to close its memory cards before forcing.
+  if emu_running; then
+    say "closing shadps4"
+    intent quit shadps4 \
+      "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
+      resolver=pgrep signal=SIGTERM scope=shadps4 "reason=$why"
+    pkill -TERM -f 'Shadps4-sdl|mount_Shadps'
+    for _ in $(seq 6); do emu_running || break; sleep 1; done
+    emu_running && { intent kill shadps4 \
+      "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
+      resolver=pgrep signal=SIGKILL reason=term-ignored; \
+      pkill -KILL -f 'Shadps4-sdl|mount_Shadps'; }
+  fi
+  rm -f "$SUSPENDED"
+  clear_snaps
+  intent clear_flag suspended reason=games-closed "why=$why"
+  say "games closed"
+}
+
+# Resuming feels sluggish (~2s) and nobody has measured WHERE that goes: the
+# thaw, the window map, the power-menu curl, the fixed sleep, or focus_game's
+# retries. Pure instrumentation, one log line per phase at ms resolution, no
+# behaviour change and no decision reads it. Delete once the answer is known.
+RESUME_T0=0
+RESUME_LAST=0
+_ms() { date +%s%3N; }
+phase() {
+  local now; now=$(_ms)
+  say "resume phase: $1 +$((now - RESUME_T0))ms (+$((now - RESUME_LAST))ms)"
+  RESUME_LAST=$now
+}
+
+resume_game() {
+  RESUME_T0=$(_ms); RESUME_LAST=$RESUME_T0
+  local was; was="$(cat "$SUSPENDED" 2>/dev/null)"
+  cont_all
+  phase thawed
+  rm -f "$SUSPENDED"
+  clear_snaps "$was"
+  phase flags-cleared
+  intent clear_flag suspended reason=resume "was=$was"
+  # Map the game's window back before anything tries to raise it: the suspend
+  # iconified it to drop its stuck pointer grab, and focus_game only ever looks
+  # at MAPPED windows - it would miss an iconified game and fall through to Big
+  # Picture, or to handing the pad back to Kodi. Done first so xfwm4 has the
+  # whole of the power-menu check and the sleep below to finish the map.
+  show_frozen_game "${was:-game}"
+  phase window-mapped
+  # If the resume tap came from inside the power menu (hold opens it, tap
+  # resumes), dismiss it so it isn't sitting there stale on the next return.
+  if curl -s -m 3 -u "$AUTH" -H 'content-type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"GUI.GetProperties","params":{"properties":["currentwindow"]}}' \
+      "$JSON" 2>/dev/null | grep -q '"id":10106'; then
+    jrpc '{"jsonrpc":"2.0","id":1,"method":"Input.Back"}'
+    say "dismissed stale power menu"
+    intent dismiss power-menu via=kodi-input-back window=10106 reason=resume-tap
+  fi
+  phase menu-checked
+  pad_to_game
+  phase pad-routed
+  sleep 1
+  # Focus the right window: the emulator by its class, a Steam game by pid.
+  # If Steam's Big Picture menu has swallowed the game window (a PS tap
+  # in-game opens it), fall back to focusing Big Picture itself; and if
+  # nothing at all is focusable, the pad must go back to Kodi rather than
+  # being left pointed at an invisible window.
+  if [ "$(cut -d' ' -f2 "$SESSION" 2>/dev/null)" = "shadps4" ]; then
+    focus_game emu
+  elif ! focus_game; then
+    if ! focus_game bp; then
+      say "nothing to focus, pad stays with kodi"
+      pad_to_kodi
+      focus_kodi
+    fi
+  fi
+  # The resume tap also toggled Steam's Big Picture menu; if it's now open
+  # invisibly it will eat the pad instead of the game. Guard closes it.
+  phase focus-asserted
+  setsid /home/ds2000/.local/bin/steam-input-guard game >/dev/null 2>&1 &
+  say "resumed"
+}
+
+# The trigger channel: one line per invocation, whoever called us - a Kodi
+# tile, the phone's screen switcher, the power menu, or an ssh shell.
+intent invoked "$MODE" "argv:=$(_jargv "$@")" "appid=$APPID"
+
+case "$MODE" in
+  quit)
+    say "=== quit (save and close)"
+    if game_running || bp_running || emu_running; then close_games power-menu-quit; else say "nothing to quit"; fi
+    exit 0
+    ;;
+  resume)
+    say "=== resume"
+    touch /tmp/tv-wake-request
+    intent request_tv_wake tv via=tv-wake-request-flag reason=resume
+    resume_game
+    exit 0
+    ;;
+  focus)
+    # Re-assert the right window on top (used by steam-input-guard); touches
+    # no session state.
+    if game_running; then focus_game; else focus_game bp; fi
+    exit 0
+    ;;
+  suspend)
+    # The couch app's screen switcher picked Kodi mid-game: same deal as a
+    # PS-button hold. Freeze the game, hand the pad to Kodi, guard the drift.
+    say "=== suspend (screen switcher)"
+    frozen=0
+    stoplist="$(game_pids)"
+    for p in $stoplist; do kill -STOP "$p" 2>/dev/null && frozen=1; done
+    if [ "$frozen" = 1 ]; then
+      appid="$(cut -d' ' -f3 "$SESSION" 2>/dev/null)"
+      [ -n "$appid" ] || appid="$(cut -d' ' -f2 "$SESSION" 2>/dev/null)"
+      echo "${appid:-game}" > "$SUSPENDED"
+      say "froze game ($(cat "$SUSPENDED"))"
+      intent freeze "${appid:-game}" "pids:=$(_jnums "$stoplist")" \
+        resolver=game-pids signal=SIGSTOP reason=screen-switcher
+      intent set_flag suspended "value=${appid:-game}" reason=screen-switcher
+      # Before Kodi is raised over it. Not because it has to be - a covered
+      # window still captures - but because the game is the only thing this
+      # branch is sure about at this point.
+      snap_paused "${appid:-game}" screen-switcher
+    fi
+    pad_to_kodi
+    focus_kodi
+    # Kodi has the screen now, so the frozen window can go. After snap_paused
+    # above, which reads the compositing pixmap that iconifying frees.
+    [ "$frozen" = 1 ] && hide_frozen_game "${appid:-game}"
+    setsid /home/ds2000/.local/bin/steam-input-guard kodi >/dev/null 2>&1 &
+    exit 0
+    ;;
+  steam)
+    if [ -f "$SUSPENDED" ]; then
+      if [ "$(cat "$SUSPENDED")" = "$APPID" ]; then
+        say "=== resume $APPID from its tile"
+        intent launch "$APPID" mode=resume source=kodi-tile app=steam
+        resume_game
+        exit 0
+      fi
+      # A different game was picked: the paused one gets a proper goodbye
+      # first, and its launcher a moment to notice and bow out.
+      say "closing paused game before launching $APPID"
+      close_games "different-game-picked:$APPID"
+      for _ in $(seq 10); do [ -f "$SESSION" ] || break; sleep 1; done
+    fi
+    ;;
+  bigpicture)
+    if bp_running; then
+      # Already open behind Kodi: thaw anything paused and go back to it.
+      say "=== back to big picture"
+      intent launch bigpicture mode=refocus source=kodi-tile
+      cont_all
+      rm -f "$SUSPENDED"
+      clear_snaps
+      intent clear_flag suspended reason=back-to-big-picture
+      pad_to_game
+      focus_game bp
+      exit 0
+    fi
+    ;;
+  shadps4)
+    # If this game is paused, its tile resumes it instead of booting fresh.
+    if [ -f "$SUSPENDED" ]; then
+      if [ "$(cat "$SUSPENDED")" = "$APPID" ]; then
+        say "=== resume $APPID (shadps4) from its tile"
+        intent launch "$APPID" mode=resume source=kodi-tile app=shadps4
+        resume_game
+        exit 0
+      fi
+      say "closing paused game before launching $APPID"
+      close_games "different-game-picked:$APPID"
+      for _ in $(seq 10); do [ -f "$SESSION" ] || break; sleep 1; done
+    fi
+    ;;
+  *)
+    say "unknown mode: $MODE"
+    exit 1
+    ;;
+esac
+
+say "=== launch $MODE $APPID"
+intent launch "${APPID:-$MODE}" "mode=$MODE" "app=$MODE" source=fresh-launch
+# Launching from the phone with the TV off should light the set up: tv-waker
+# consumes this flag within half a second and wakes only if it's in standby.
+# The flag write is the session-start handover's, so couchd writes it (byte for
+# byte, same path) once it owns transitions.
+yield_to_couchd transitions request_tv_wake tv via=tv-wake-request-flag \
+  "reason=launch $MODE" || {
+  touch /tmp/tv-wake-request
+  intent request_tv_wake tv via=tv-wake-request-flag "reason=launch $MODE"
+}
+# The session flag is how the PS-button watcher knows the pad belongs to a
+# game. Ownership is recorded so an old launcher bowing out can't take a new
+# launcher's flag with it.
+echo "$$ $MODE $APPID" > "$SESSION"
+intent set_flag session "value=$$ $MODE $APPID" "launcher=$$" reason=launch
+# The session flag is OURS either way - this shell's lifetime IS the session,
+# and a launcher that stopped clearing its own flag would orphan every session
+# it ran. Only the pad-and-screen handover is the `transitions` responsibility.
+restore_on_exit() {
+  yield_to_couchd transitions route_pad kodi via=kodi-jsonrpc "mode=$MODE" && {
+    intent show kodi via=xlib-restack "mode=$MODE" yielded=true owner=couchd
+    say "restored (trap): yielded to couchd (transitions)"
+    return 0
+  }
+  pad_to_kodi
+  focus_kodi
+  say "restored (trap)"
+}
+trap '[ "$(cut -d" " -f1 "$SESSION" 2>/dev/null)" = "$$" ] && { rm -f "$SESSION"; intent clear_flag session reason=launcher-exit "launcher=$$"; }; restore_on_exit' EXIT
+
+yield_to_couchd transitions route_pad game via=kodi-jsonrpc "mode=$MODE" \
+  || pad_to_game
+
+case "$MODE" in
+  steam)
+    # Into Big Picture first, so the pad talks to a UI the guard can repair.
+    # Only this arm calls it: `bigpicture` mode below is already opening BP by
+    # definition, and calling it there would open it twice.
+    ensure_big_picture
+    steam "steam://rungameid/$APPID" >/dev/null 2>&1 &
+    # First run of a Proton game builds its prefix and compiles shaders, so
+    # give it a long leash before deciding it never started. Once it shows,
+    # make sure its window is the one on top, then wait it out. A suspended
+    # game still counts as running here, which is the point: the launcher
+    # stays alive holding the session until the game truly ends.
+    t=0
+    while ! game_running; do
+      sleep 2; t=$((t+2))
+      [ $t -ge 180 ] && { say "never appeared (180s)"; break; }
+    done
+    if game_running; then
+      say "running"
+      sleep 4
+      yield_to_couchd transitions show "${APPID:-game}" via=xlib-restack \
+        "mode=$MODE" resolver=game-pids || focus_game
+      while game_running; do sleep 3; done
+      say "ended"
+    fi
+    ;;
+  bigpicture)
+    steam "steam://open/bigpicture" >/dev/null 2>&1 &
+    t=0
+    while ! bp_running; do
+      sleep 2; t=$((t+2))
+      [ $t -ge 60 ] && { say "never appeared (60s)"; break; }
+    done
+    if bp_running; then
+      say "running"
+      # Big Picture is where games get STARTED, so this poll is also where a
+      # nameless session learns its own name (see adopt_appid). Cheap: it stops
+      # trying the moment it succeeds, and does nothing at all until a game is
+      # actually up.
+      while bp_running; do adopt_appid; sleep 3; done
+      say "ended"
+    fi
+    # Leaving Big Picture often means "into a game": if one is up, keep the
+    # pad with it until it ends too. Adopt here as well - a game launched in
+    # the last seconds of Big Picture's life can outlive it before the poll
+    # above ever came round.
+    if game_running; then
+      adopt_appid
+      say "game outlived big picture (appid ${APPID:-unknown})"
+      while game_running; do adopt_appid; sleep 3; done
+      say "game ended"
+    fi
+    ;;
+  shadps4)
+    # APPID carries the eboot.bin path of a dumped game, or is empty to open
+    # the emulator's own controller-driven library (Big Picture).
+    if [ -n "$APPID" ]; then
+      shadps4 "$APPID" >/dev/null 2>&1 &
+    else
+      shadps4 >/dev/null 2>&1 &
+    fi
+    t=0
+    while ! emu_running; do
+      sleep 1; t=$((t+1))
+      [ $t -ge 60 ] && { say "shadps4 never appeared (60s)"; break; }
+    done
+    if emu_running; then
+      say "shadps4 running"
+      sleep 3
+      yield_to_couchd transitions show "${APPID:-shadps4}" via=xlib-restack \
+        "mode=$MODE" || focus_game emu
+      while emu_running; do sleep 3; done
+      say "shadps4 ended"
+    fi
+    ;;
+esac
+# trap restores pad + focus
