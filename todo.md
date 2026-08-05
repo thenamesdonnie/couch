@@ -13,6 +13,15 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
+## 🔴 DISK INCIDENT (5 Aug 15:00, unresolved until Donnie replugs)
+
+disk1 (4TB USB enclosure, ~1.9TB of the library) dropped offline at 14:57
+under the Simpsons season-pack download load. All qB torrents stopped and
+new-torrents-start-stopped enabled as protection - REVERT both after
+recovery. Fix: umount -l /mnt/disk1, replug the enclosure, fsck, remount.
+Full detail + permanent UAS-quirk fix in auto-memory
+`homelab-usb-disk-dropout.md`. Most of Jellyfin is unplayable until then.
+
 ## ▶ Resume here (updated 5 Aug 2026 ~14:45 — FIRST FLIP IS LIVE)
 
 **`gestures` IS FLIPPED AND ACTING** (owns.conf, since 13:01). couchd
