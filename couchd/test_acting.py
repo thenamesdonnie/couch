@@ -281,6 +281,38 @@ def test_every_verb_the_model_can_emit_has_an_action():
     assert set(couchd.VERBS) <= set(ActingExecutor.ACTIONS)
 
 
+def test_acted_handoff_spawns_the_real_guard():
+    """The gestures flip must not orphan the enforcement window: legacy's
+    handoff_to_kodi() spawns steam-input-guard as its LAST act and now
+    yields the whole gesture, while couchd's own guard: intents are unowned
+    and record-only - so with neither side spawning it, a Steam menu opening
+    a beat after the handoff captured the pad with nothing to close it,
+    ever (adversarial review, 5 Aug 2026). The acted handoff therefore
+    spawns the real guard exactly where legacy did."""
+    router, log, act, sayer = rig(owned=('gestures',))
+    o = make_obs(regions={'gesture': 'handoff-pending'}, session=SESSION,
+                 pid_states={101: 'T'}, suspended=APPID)
+    guards = [i for i in reconcile(o) if i.verb == 'spawn_guard']
+    assert len(guards) == 1
+    assert guards[0].subject == 'kodi'
+    assert owns.responsibility_for_reason(guards[0].reason) == 'gestures'
+    router.execute(guards[0], make_obs())
+    assert any(couchd.GUARD_BIN in (s['argv'] or [])
+               for s in act.did('spawn'))
+
+
+def test_shadow_handoff_records_but_never_spawns_the_guard():
+    """Same intent, nothing owned: the guard spawn must be a would-do line,
+    not a process - legacy's own handoff is doing the real spawn there."""
+    router, log, act, sayer = rig()
+    o = make_obs(regions={'gesture': 'handoff-pending'}, session=SESSION,
+                 pid_states={101: 'T'}, suspended=APPID)
+    guards = [i for i in reconcile(o) if i.verb == 'spawn_guard']
+    assert len(guards) == 1
+    router.execute(guards[0], make_obs())
+    assert act.did('spawn') == []
+
+
 # =========================================================================
 # the router: acting vs recording
 # =========================================================================

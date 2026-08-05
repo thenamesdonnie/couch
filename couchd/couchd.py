@@ -69,6 +69,7 @@ SESSION_FLAG = '/tmp/game-session'
 SUSPENDED_FLAG = '/tmp/game-suspended'
 VPAD_FIFO = '/tmp/vpad.fifo'
 GUARD_PIDFILE = '/tmp/steam-input-guard.pid'
+GUARD_BIN = '/home/ds2000/.local/bin/steam-input-guard'
 TMP_DIR = '/tmp'
 WATCHED_TMP = {'game-session', 'game-suspended', 'vpad.fifo',
                'steam-input-guard.pid', 'tv-wake-request'}
@@ -380,7 +381,8 @@ def make_obs(**kw):
 # =========================================================================
 VERBS = ('freeze', 'thaw', 'route_pad', 'show', 'close_steam_menu', 'set_flag',
          'clear_flag', 'dismiss', 'launch', 'quit', 'kill', 'iconify',
-         'request_tv_wake', 'show_switcher', 'tv_toggle', 'snapshot')
+         'request_tv_wake', 'show_switcher', 'tv_toggle', 'snapshot',
+         'spawn_guard')
 PID_VERBS = ('freeze', 'thaw', 'quit', 'kill')
 
 # TOGGLES. These three verbs are not idempotent: the mechanism underneath each
@@ -1249,9 +1251,12 @@ def _handoff_intents(o, appid, reason):
     # steam_menu_holding_pad). Legacy does not press the guide button here
     # either: handoff_to_kodi() spawns steam-input-guard, whose invariant 1
     # checks the routing log first. The menu that Steam opens a beat LATER,
-    # off the same physical press, is caught by the enforcement window this
-    # handoff opens - which is the guard couchd replaced, doing the same job
-    # for the same six seconds.
+    # off the same physical press, is caught by the guard window the
+    # spawn_guard intent below opens - the REAL steam-input-guard, because
+    # couchd's own enforcement model carries `guard:` reasons it does not
+    # own and legacy's watcher yields the whole gesture including its guard
+    # spawn (adversarial review, 5 Aug: with neither side spawning it, a
+    # late Steam menu captured the pad with nothing to close it, ever).
     if steam_menu_holding_pad(o):
         # TOGGLE: cooldown outlasts the deadline (see TOGGLE_VERBS) - a
         # second guide press inside the first one's window REOPENS the menu.
@@ -1266,6 +1271,18 @@ def _handoff_intents(o, appid, reason):
         # ...on the same cadence as the route/show it travels with: one
         # decision, one cooldown (T4-3).
         out.append(_iconify_intent(appid, reason, cooldown=3.0))
+    # The guard window, exactly where legacy's handoff_to_kodi() spawns it
+    # (its last line, unconditionally). While `guard` is not flipped, the
+    # real steam-input-guard is the ONLY enforcement actor there is - see
+    # the comment above - so an acted handoff must open one just as the
+    # yielded watcher would have. The guard reads owns.conf itself: the day
+    # `guard` flips, the spawned process records-and-exits and couchd's own
+    # enforcement intents start acting, with no change here.
+    out.append(Intent('spawn_guard', 'kodi',
+                      {'via': 'steam-input-guard kodi',
+                       'window_s': GUARD_WINDOW}, reason,
+                      _pred('guard window open (pidfile live)', 2.0),
+                      requires=('gesture',), cooldown=3.0))
     return out
 
 
@@ -2187,12 +2204,21 @@ def _eff_show_switcher(o, it):
     return o.kodi_known and o.kodi_window == KODI_SELECT_DIALOG
 
 
+def _eff_spawn_guard(o, it):
+    """A guard window is open: the pidfile names a live guard that is not
+    couchd's own scavengeable leftover. The pidfile lands within ~100ms of
+    the spawn and the flag observer sees it by inotify, so the 2s deadline
+    is generous."""
+    return bool(o.guard_pid) and not o.guard_pid_ours
+
+
 EFFECT_CHECKS = {
     'freeze': _eff_freeze, 'thaw': _eff_thaw,
     'set_flag': _eff_set_flag, 'clear_flag': _eff_clear_flag,
     'route_pad': _eff_route_pad, 'show': _eff_show,
     'dismiss': _eff_dismiss, 'close_steam_menu': _eff_close_menu,
     'show_switcher': _eff_show_switcher,
+    'spawn_guard': _eff_spawn_guard,
 }
 
 # Effects that are only visible through a KODI READ. Kodi is the one observer
@@ -2240,6 +2266,7 @@ class ActingExecutor(Executor):
         'show_switcher': '_a_show_switcher',
         'tv_toggle': '_a_tv_toggle',
         'request_tv_wake': '_a_request_tv_wake',
+        'spawn_guard': '_a_spawn_guard',
     }
 
     # C11 backoff: an action that keeps failing is a responsibility couchd
@@ -2596,6 +2623,15 @@ class ActingExecutor(Executor):
         # tv-waker consumes this within half a second and wakes the set only
         # if it is in standby. The ONLY couchd write outside the two flags.
         return self.act.touch(TV_WAKE_REQUEST, 'tv-wake-request')
+
+    def _a_spawn_guard(self, it, o):
+        # The real steam-input-guard, detached as its own transient unit,
+        # exactly where legacy's handoff_to_kodi() spawned it. The guard
+        # reads owns.conf on startup: while `guard` is unflipped it enforces
+        # (which is the point - couchd's own guard: intents are unowned and
+        # record-only), and the day guard flips it records-and-exits on its
+        # own, so this action never needs to know.
+        return self.act.spawn([GUARD_BIN, str(it.subject)])
 
 
 class ExecutorRouter(Executor):

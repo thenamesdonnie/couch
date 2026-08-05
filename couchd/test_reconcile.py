@@ -367,7 +367,8 @@ def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
     order = [(i.verb, i.subject) for i in got]
     assert order == [('freeze', APPID), ('set_flag', 'suspended'),
                      ('snapshot', APPID), ('route_pad', 'kodi'),
-                     ('show', 'kodi'), ('show_switcher', 'tv')]
+                     ('show', 'kodi'), ('spawn_guard', 'kodi'),
+                     ('show_switcher', 'tv')]
     assert find(got, 'freeze')[0].args['pids'] == [200, 201]
     assert find(got, 'show_switcher')[0].args['suspended_first'] is True
     rig.observe()
@@ -577,7 +578,8 @@ def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
     got = reconcile(o)
     assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
                           ('snapshot', APPID), ('route_pad', 'kodi'),
-                          ('show', 'kodi'), ('show_switcher', 'tv')]
+                          ('show', 'kodi'), ('spawn_guard', 'kodi'),
+                          ('show_switcher', 'tv')]
     # not the hold's deferred handoff: a switcher hands off at once, exactly
     # as the double-tap one always has
     assert find(got, 'show_switcher')[0].reason == 'gesture:ps-hold-switcher'
@@ -615,7 +617,7 @@ def test_a_bound_hold_release_fires_on_top_of_the_handoff():
                  bindings=bind(hold_release='desktop'))
     got = reconcile(o)
     assert verbs(got) == [('route_pad', 'kodi'), ('show', 'kodi'),
-                          ('show', 'desktop')]
+                          ('spawn_guard', 'kodi'), ('show', 'desktop')]
     assert find(got, 'show', 'desktop')[0].reason == 'gesture:ps-hold-release'
 
 
