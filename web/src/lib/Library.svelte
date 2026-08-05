@@ -3,7 +3,7 @@
   import { portal } from './portal.js';
   import { api, fmtTime } from './state.svelte.js';
   import { cache, loadContinue, loadLibrary, ui } from './store.svelte.js';
-  import { fadeimg } from './img.js';
+  import { fadeimg, decodeImages } from './img.js';
   import Discover from './Discover.svelte';
   import YouTube from './YouTube.svelte';
   import Icon from './Icon.svelte';
@@ -110,21 +110,58 @@
     }
   }
 
+  // Episodes + arr standing per item, cached for the app's life. First open
+  // waits for the lot (spinner on the tile, sheet slides up complete, like
+  // Discover); later opens serve the cache instantly and refresh behind it.
+  const detailCache = new Map();
+  let openingId = $state(null);
+
+  async function fetchDetailBits(item) {
+    const [eps, info] = await Promise.all([
+      item.type === 'Series'
+        ? api(`/api/library/show/${item.id}`).then((d) => d.episodes).catch(() => [])
+        : Promise.resolve(null),
+      api(`/api/library/arrinfo?id=${item.id}&type=${item.type}`).catch(() => null),
+    ]);
+    const bits = { episodes: eps, arrInfo: info };
+    detailCache.set(item.id, bits);
+    return bits;
+  }
+
+  function applyBits(item, bits) {
+    if (detail?.id !== item.id) return;
+    episodes = bits.episodes;
+    arrInfo = bits.arrInfo;
+    // Land on the season you are actually up to: the first with an unwatched
+    // episode, otherwise the last. A refresh keeps whatever you switched to.
+    if (bits.episodes?.length && season === null) {
+      const next = bits.episodes.find((e) => !e.played);
+      season = next ? next.season : bits.episodes[bits.episodes.length - 1]?.season ?? null;
+    }
+  }
+
   async function openDetail(item) {
-    detail = item;
-    episodes = null;
-    season = null;
-    arrInfo = null;
-    api(`/api/library/arrinfo?id=${item.id}&type=${item.type}`)
-      .then((d) => { if (detail?.id === item.id) arrInfo = d; })
-      .catch(() => {});
-    if (item.type === 'Series') {
-      const d = await api(`/api/library/show/${item.id}`);
-      episodes = d.episodes;
-      // Land on the season you are actually up to: the first with an
-      // unwatched episode, otherwise the last one.
-      const next = d.episodes.find((e) => !e.played);
-      season = next ? next.season : d.episodes[d.episodes.length - 1]?.season ?? null;
+    const cached = detailCache.get(item.id);
+    if (cached) {
+      detail = item;
+      episodes = null;
+      season = null;
+      arrInfo = null;
+      applyBits(item, cached);
+      fetchDetailBits(item).then((bits) => applyBits(item, bits)).catch(() => {});
+      return;
+    }
+    openingId = item.id;
+    try {
+      const bits = await fetchDetailBits(item);
+      await decodeImages([jfArt(item)]);
+      detail = item;
+      episodes = null;
+      season = null;
+      arrInfo = null;
+      applyBits(item, bits);
+    } finally {
+      openingId = null;
     }
   }
 
@@ -256,12 +293,13 @@
   {:else}
     <div class="grid">
       {#each items as item (item.id)}
-        <button class="tile" onclick={() => openDetail(item)}>
+        <button class="tile" class:opening={openingId === item.id} onclick={() => openDetail(item)}>
           {#if jfArt(item)}
             <img class="tile-img" use:fadeimg src={jfArt(item)} alt="" loading="lazy" />
           {:else}
             <div class="blank"><span>{item.name}</span></div>
           {/if}
+          {#if openingId === item.id}<span class="tilespin"></span>{/if}
           {#if item.type === 'Series' && item.unplayedCount}
             <span class="badge mono">{item.unplayedCount}</span>
           {/if}
@@ -431,6 +469,20 @@
     padding: 2px 7px;
     font-size: 11px;
   }
+  .tile.opening { opacity: 0.55; }
+  .tilespin {
+    position: absolute;
+    top: 40%; left: 50%;
+    width: 24px; height: 24px;
+    margin: -12px 0 0 -12px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
+    border-top-color: var(--accent);
+    animation: tilespin 0.7s linear infinite;
+    z-index: 4;
+    pointer-events: none;
+  }
+  @keyframes tilespin { to { transform: rotate(360deg); } }
 
   .hscroll {
     display: flex;
