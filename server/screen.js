@@ -123,10 +123,26 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
   });
 }
 
-function writeFrame(res, jpeg) {
-  res.write(`--${BOUNDARY}\r\nContent-type: image/jpeg\r\nContent-length: ${jpeg.length}\r\n\r\n`);
-  res.write(jpeg);
-  res.write('\r\n');
+// A viewer that stops reading (iOS backgrounds the tab, the phone walks out of
+// range) keeps its socket open, so unchecked writes queue frames in memory for
+// it forever - tens of megabytes a minute per stalled viewer. Frames are
+// droppable by nature: skip them while the socket is backed up, and cut a
+// viewer that never drains.
+const STALL_MS = 15000;
+
+function writeFrame(v, jpeg) {
+  if (v.blocked) {
+    if (Date.now() - v.blockedAt > STALL_MS) v.evict();
+    return;
+  }
+  v.res.write(`--${BOUNDARY}\r\nContent-type: image/jpeg\r\nContent-length: ${jpeg.length}\r\n\r\n`);
+  v.res.write(jpeg);
+  if (v.res.write('\r\n')) return;
+  v.blocked = true;
+  v.blockedAt = Date.now();
+  clearTimeout(v.stall);
+  v.stall = setTimeout(() => { if (v.blocked) v.evict(); }, STALL_MS);
+  v.res.once('drain', () => { v.blocked = false; clearTimeout(v.stall); });
 }
 
 export async function stream(req, res, src = 'auto') {
@@ -141,6 +157,9 @@ export async function stream(req, res, src = 'auto') {
 
   let closed = false;
   let ff = null;
+  // This viewer's write state; evict is filled in below, before any frame can
+  // reach it.
+  const v = { res, blocked: false, blockedAt: 0, stall: null, evict: () => {} };
 
   const stopFfmpeg = () => {
     if (ff) { ff.kill('SIGKILL'); ff = null; }
@@ -154,6 +173,7 @@ export async function stream(req, res, src = 'auto') {
     if (cleaned) return;
     cleaned = true;
     closed = true;
+    clearTimeout(v.stall);
     stopFfmpeg();
     viewers.delete(evict);
   };
@@ -161,6 +181,7 @@ export async function stream(req, res, src = 'auto') {
     cleanup();
     try { res.destroy(); } catch { /* already gone */ }
   };
+  v.evict = evict;
   viewers.add(evict);
   res.on('close', cleanup);
   res.on('error', cleanup);
@@ -172,11 +193,15 @@ export async function stream(req, res, src = 'auto') {
       // ffmpeg's mpjpeg parts use its own boundary; rewrite is more work than
       // it is worth, so just re-frame each complete jpeg onto ours.
       const size = await grabSize();
+      let ffFailed = false;
       await new Promise((resolve) => {
         if (closed) { resolve(); return; }
         ff = spawn('ffmpeg', ffmpegArgs(size), { env: XENV });
         FF_PROCS.add(ff);
         ff.on('close', () => FF_PROCS.delete(ff));
+        // No ffmpeg on the box (or exec denied): an unhandled 'error' event
+        // would kill the server, and respawning it flat out would spin.
+        ff.on('error', (err) => { ffFailed = true; console.error('ffmpeg:', err.message); resolve(); });
         let buf = Buffer.alloc(0);
         ff.stdout.on('data', (chunk) => {
           buf = Buffer.concat([buf, chunk]);
@@ -185,7 +210,7 @@ export async function stream(req, res, src = 'auto') {
           while ((start = buf.indexOf(Buffer.from([0xff, 0xd8, 0xff]))) !== -1) {
             const end = buf.indexOf(Buffer.from([0xff, 0xd9]), start + 3);
             if (end === -1) { if (start > 0) buf = buf.subarray(start); break; }
-            writeFrame(res, buf.subarray(start, end + 2));
+            writeFrame(v, buf.subarray(start, end + 2));
             buf = buf.subarray(end + 2);
           }
           if (buf.length > 8 * 1024 * 1024) buf = Buffer.alloc(0);
@@ -197,11 +222,12 @@ export async function stream(req, res, src = 'auto') {
         }, 1000);
         ff.on('close', () => clearInterval(watch));
       });
+      if (ffFailed && !closed) await new Promise((r) => setTimeout(r, 2000));
     } else {
       try {
         const jpeg = await kodiGrab();
         if (closed) break;
-        writeFrame(res, jpeg);
+        writeFrame(v, jpeg);
       } catch {
         if (closed) break;
         // Kodi down or mid-restart: brief black frame beats a dead stream.
@@ -273,6 +299,9 @@ function pausedFrame(appid) {
 
 function gameLaunch(mode) {
   const p = spawn(GAME_LAUNCH, [mode], { env: XENV, detached: true, stdio: 'ignore' });
+  // Unhandled 'error' events are fatal to the process; a missing launcher must
+  // only cost this one switch.
+  p.on('error', (err) => console.error(`game-launch ${mode}:`, err.message));
   p.unref();
 }
 

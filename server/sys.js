@@ -36,6 +36,9 @@ export function gameSession() {
 // our stdio, exactly as the Kodi plugin spawns it.
 function launcher(args) {
   const child = spawn(LAUNCHER, args, { detached: true, stdio: 'ignore' });
+  // A missing/unexecutable game-launch raises on the child, which is an
+  // unhandled 'error' event: it would take the whole server down.
+  child.on('error', (err) => console.error(`game-launch ${args[0]} failed:`, err.message));
   child.unref();
 }
 
@@ -50,10 +53,6 @@ export function launchGame(id) {
 export function resumeGame() { launcher(['resume']); }
 export function quitGame() { launcher(['quit']); }
 
-// Mirror of pad-home-watcher's suspend_game: freeze the live game processes,
-// record what was frozen, then the caller hands the pad back to Kodi via
-// JSON-RPC. Console-style suspend, zero CPU while frozen.
-//
 // game-pids, not pgrep -f: a cmdline pattern can match a bystander whose
 // arguments merely mention steamapps (an editor with a game file open, a
 // shell sitting in the directory) and SIGSTOP it, and it also MISSES the
@@ -69,16 +68,29 @@ function gamePids() {
   });
 }
 
+// The FULL console suspend, the same one the PS-hold and the screen switcher
+// use: `game-launch suspend`. Doing the SIGSTOP here instead was a half
+// suspend - it froze the game and set the flag but left Kodi behind the game's
+// window, left the frozen client holding its pointer grab (a SIGSTOPped client
+// never answers X, so its grab swallows the phone's clicks), took no pause
+// frame, and spawned no steam-input-guard.
+//
+// Run to completion (it is synchronous, ~1-2s) rather than detached, so the
+// route's answer reflects a finished suspend. The exit code says nothing about
+// whether anything was frozen - it exits 0 with no game at all - so the answer
+// comes from the pids seen going in, or the flag it left behind.
 export async function suspendGame() {
   const pids = await gamePids();
-  if (!pids.length) return false;
-  const parts = (readIf(SESSION) || '').split(/\s+/);
-  const appid = parts[2] || parts[1] || 'game';
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGSTOP'); } catch { /* already gone */ }
-  }
-  fs.writeFileSync(SUSPENDED, appid);
-  return true;
+  await new Promise((resolve) => {
+    // Generous: a SIGTERM landing mid-suspend (timeout) would leave the game
+    // frozen with the pad still pointed at it, so the timeout is only a
+    // last-resort guard against a launcher that never returns at all.
+    execFile(LAUNCHER, ['suspend'], { timeout: 45000 }, (err) => {
+      if (err) console.error('game-launch suspend:', err.message);
+      resolve();
+    });
+  });
+  return pids.length > 0 || fs.existsSync(SUSPENDED);
 }
 
 // --- DualSense ---

@@ -31,6 +31,23 @@ const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
 const app = express();
 app.use(express.json());
 
+// A body-less POST is a CORS "simple" request: any page anyone opens on the LAN
+// could fire /api/tv/off or /api/games/quit at us and never need to read the
+// reply. A cross-origin POST always carries Origin, so refuse the ones that
+// carry someone else's. Absent Origin (curl, the Kodi addon) still passes -
+// this is CSRF cover, not authentication.
+// Compared on HOST, not the whole origin string: the app is reached both
+// directly (:8790) and through Caddy as couch.home, and a scheme comparison
+// would start refusing the day either goes https.
+app.use((req, res, next) => {
+  const origin = req.method === 'POST' ? req.get('origin') : null;
+  if (!origin) { next(); return; }
+  let host = null;
+  try { host = new URL(origin).host; } catch { /* "null", or junk: not ours */ }
+  if (host && host === req.get('host')) { next(); return; }
+  res.status(403).json({ error: 'cross-origin request refused' });
+});
+
 // Endless silent audio stream for the phone's Media Session. The phone needs a
 // real, PLAYING audio element for iOS to show lock-screen / notification media
 // controls, but a finite faked track makes iOS put a scrubber on it that can't
@@ -101,9 +118,11 @@ async function reassess() {
     // without Kodi stopping the player - it just keeps ticking the clock past
     // the duration with no video (Donnie hit this: "glitched out instead of
     // gracefully backing out"). When the position overruns the duration, stop
-    // it so it backs out cleanly instead of spinning forever.
+    // it so it backs out cleanly instead of spinning forever. Streams only:
+    // a local file with wrong duration metadata overruns too, and stopping
+    // one mid-film would be a film cut short.
     const pl = state.playing;
-    if (pl && pl.duration > 0 && pl.position > pl.duration + 3) {
+    if (pl && pl.isStream && pl.duration > 0 && pl.position > pl.duration + 3) {
       await rpc('Player.Stop', { playerid: pl.playerid }).catch(() => {});
       state.playing = null;
     }
@@ -420,14 +439,11 @@ app.post('/api/games/launch', wrap(async (req) => {
   sys.launchGame(id);
 }));
 
-app.post('/api/games/suspend', wrap(async () => {
-  const froze = await sys.suspendGame();
-  if (froze) {
-    // Hand the pad back to Kodi, as the PS-hold path does.
-    await rpc('Settings.SetSettingValue', { setting: 'input.enablejoystick', value: true }).catch(() => {});
-  }
-  return { suspended: froze };
-}));
+// game-launch suspend does the whole handover itself - freeze, pad back to
+// Kodi, Kodi raised, frozen window unmapped, pause frame, input guard - so
+// there is no joystick RPC to make here any more; making one would only race
+// the launcher's own.
+app.post('/api/games/suspend', wrap(async () => ({ suspended: await sys.suspendGame() })));
 
 app.post('/api/games/resume', wrap(async () => sys.resumeGame()));
 app.post('/api/games/quit', wrap(async () => sys.quitGame()));
@@ -820,7 +836,10 @@ app.post('/api/windows/activate', wrap(async (req) => {
 // which decodes its own image:// urls. The phone never needs Kodi's password.
 app.get('/api/art/kodi', wrap(async (req, res) => {
   const p = String(req.query.p || '');
-  if (!p) throw new Error('p required');
+  // image:// only: Kodi's /image/ endpoint will fetch whatever it is handed,
+  // so an unconstrained p makes this a proxy for arbitrary urls and local
+  // paths, with Kodi's credentials.
+  if (!p.startsWith('image://')) { res.status(404).end(); return; }
   const upstream = await fetch(artUrl(p), { headers: { authorization: kodiAuthHeader() } });
   if (!upstream.ok) { res.status(404).end(); return; }
   res.set('content-type', upstream.headers.get('content-type') || 'image/jpeg');

@@ -13,6 +13,7 @@ import { secret } from './config.js';
 
 const HOME = os.homedir();
 const STEAMAPPS = path.join(HOME, '.steam/debian-installation/steamapps');
+const SESSION = '/tmp/game-session';
 const APPINFO = path.join(HOME, '.steam/debian-installation/appcache/appinfo.vdf');
 const LIBCACHE = path.join(HOME, '.steam/debian-installation/appcache/librarycache');
 
@@ -117,7 +118,20 @@ export async function downloads() {
 
 // --- appinfo.vdf: the exact install-directory name per app ---
 
+// The whole parse is wrapped: appinfo.vdf is Steam's own cache and a truncated
+// or half-rewritten one must read as "unknown installdir", never as a crash or
+// a spin. STR_CAP bounds the string table for the same reason - the count is a
+// uint32 read straight out of the file, so a corrupt one would otherwise loop
+// billions of times with the event loop blocked.
+const STR_CAP = 2_000_000;
+
 function readInstalldir(appid) {
+  try {
+    return parseInstalldir(appid);
+  } catch { return null; }
+}
+
+function parseInstalldir(appid) {
   const data = fs.readFileSync(APPINFO);
   const ver = data[0];
   let strings = null;
@@ -125,10 +139,11 @@ function readInstalldir(appid) {
   if (ver >= 0x29) {
     const soff = Number(data.readBigInt64LE(8));
     let p = soff;
-    const cnt = data.readUInt32LE(p); p += 4;
+    const cnt = Math.min(data.readUInt32LE(p), STR_CAP); p += 4;
     strings = [];
     for (let i = 0; i < cnt; i++) {
       const e = data.indexOf(0, p);
+      if (e === -1) break; // truncated table; what we have is all there is
       strings.push(data.toString('utf8', p, e));
       p = e + 1;
     }
@@ -171,6 +186,20 @@ function readInstalldir(appid) {
 
 // --- trigger a download / resume ---
 
+// game-pids only sees a game Steam has already reaped into its process tree.
+// It is blind to a Big Picture session (game-launch bigpicture writes the
+// session flag and spawns no reaper) and to the first seconds of a launch
+// (flag written, reaper not up yet) - both of which a Steam restart would
+// destroy. The session flag covers exactly those windows, so either one
+// counts as "running".
+function sessionActive() {
+  return fs.existsSync(SESSION);
+}
+
+async function consoleBusy() {
+  return sessionActive() || await gameRunning();
+}
+
 function gameRunning() {
   return new Promise((resolve) => {
     // game-pids, not pgrep -f steamapps/common: the old pattern both missed
@@ -189,7 +218,7 @@ export async function install(appid) {
   appid = Number(appid);
   if (!Number.isInteger(appid) || appid <= 0) throw new Error('bad appid');
   // Never restart Steam out from under a running game.
-  if (await gameRunning()) throw new Error('a game is running, quit it before downloading');
+  if (await consoleBusy()) throw new Error('a game is running, quit it before downloading');
 
   const owned = await ownedGames();
   const game = owned.find((g) => g.appid === appid);
@@ -197,12 +226,17 @@ export async function install(appid) {
 
   const file = path.join(STEAMAPPS, `appmanifest_${appid}.acf`);
   if (fs.existsSync(file)) {
+    // Fully installed with nothing pending: there is nothing to download and
+    // bouncing Steam for it would be pure cost. (Not a bare StateFlags & 4 -
+    // a paused update carries 4 too, and that IS this route's job to resume.)
+    const st = manifestState(appid);
+    if (st && st.state === 'installed') throw new Error('already installed');
     // Partially downloaded or paused: clear the paused bit and mark it wanted.
     let txt = fs.readFileSync(file, 'utf8');
     let flags = parseInt(acf(txt, 'StateFlags'), 10) || 0;
     flags = (flags & ~1024) | 2;
     txt = txt.replace(/("StateFlags"\s+")\d+(")/, `$1${flags}$2`);
-    fs.writeFileSync(file, txt);
+    writeAtomic(file, txt);
   } else {
     const installdir = readInstalldir(appid);
     if (!installdir) throw new Error('could not resolve the install folder');
@@ -216,17 +250,33 @@ export async function install(appid) {
 \t"buildid"\t\t"0"
 }
 `;
-    fs.writeFileSync(file, manifest);
+    writeAtomic(file, manifest);
     fs.mkdirSync(path.join(STEAMAPPS, 'common', installdir), { recursive: true });
   }
 
+  // Re-checked HERE, not just at the top: the owned-games fetch above is a web
+  // request and a game can start during it, which would make the gate stale at
+  // the one instant it matters - the line that kills Steam.
+  if (await consoleBusy()) throw new Error('a game is running, quit it before downloading');
+
   // Bounce Steam so it rescans and starts the download, exactly as the console
   // build does. Detached; Steam autostarts -silent.
+  // -x, not -f: a -f pattern matches any argv merely mentioning the name.
   await new Promise((resolve) => {
-    execFile('bash', ['-c', 'pkill -9 -x steam; pkill -9 -f steamwebhelper; sleep 1'], () => resolve());
+    execFile('bash', ['-c', 'pkill -9 -x steam; pkill -9 -x steamwebhelper; sleep 1'], () => resolve());
   });
-  spawn('setsid', ['steam', '-silent'], { detached: true, stdio: 'ignore' }).unref();
+  const child = spawn('setsid', ['steam', '-silent'], { detached: true, stdio: 'ignore' });
+  child.on('error', (err) => console.error('steam relaunch failed:', err.message));
+  child.unref();
   return { name: game.name };
+}
+
+// A half-written appmanifest is Steam's problem forever after (it reads them
+// on startup); write beside it and rename, which is atomic on the same fs.
+function writeAtomic(file, text) {
+  const tmp = `${file}.couch-tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
 }
 
 // Portrait art: local librarycache if installed, else Steam's CDN.

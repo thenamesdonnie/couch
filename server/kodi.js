@@ -76,6 +76,15 @@ function makeStreamParser(onMessage) {
       if (c === '"') inString = true;
       else if (c === '{') depth++;
       else if (c === '}') {
+        if (depth === 0) {
+          // A stray '}' with nothing open (a dropped chunk, a socket picked up
+          // mid-object) would take depth negative and every later object would
+          // close one brace short: the parser goes silent until the socket
+          // reconnects. Drop it and resync on the next '{' instead.
+          buf = buf.slice(i + 1);
+          i = -1;
+          continue;
+        }
         depth--;
         if (depth === 0) {
           const raw = buf.slice(0, i + 1).trim();

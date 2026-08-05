@@ -74,6 +74,33 @@ intent() {
     "$(date +%s.%3N)" "$(_jstr "$verb")" "$subj" "$args" >> "$INTENTS" 2>/dev/null || true
 }
 
+# ONE AT A TIME. suspend, resume and quit are multi-step sequences over the same
+# state (the game's own processes, both flags, the pad, the screen), and they
+# now have two callers each: the phone's screen switcher and couchd's gestures.
+# Interleaved, a suspend's SIGSTOP can land after a resume's SIGCONT and leave
+# the console frozen with the pad pointed at Kodi. Those three verbs take this
+# lock for the whole of their body; the lock lives on fd 9 and is dropped when
+# the shell exits, which for all three is immediately after.
+#
+# It is NEVER taken by the launch verbs: a launcher lives as long as its game,
+# and a lock held that long would block every suspend of the session.
+#
+# On timeout we say so LOUDLY and go ahead anyway: whatever went wrong, leaving
+# a game frozen with the pad in the wrong place is worse than a race.
+LOCK=/tmp/game-launch.lock
+LOCK_WAIT=10
+session_lock() {
+  command -v flock >/dev/null 2>&1 || return 0
+  # Probed with a plain redirect first: `exec` with a FAILING redirect kills a
+  # non-interactive shell outright, and that must never happen mid-verb.
+  : >>"$LOCK" 2>/dev/null || { say "lock: cannot open $LOCK, proceeding unlocked"; return 0; }
+  exec 9>>"$LOCK"
+  flock -w "$LOCK_WAIT" 9 && return 0
+  say "!!! LOCK TIMEOUT: $LOCK held by another game-launch for ${LOCK_WAIT}s; proceeding anyway"
+  intent lock_timeout "$MODE" "file=$LOCK" "waited=$LOCK_WAIT" "mode=$MODE"
+  return 0
+}
+
 # WHO OWNS WHAT, right now. ~/couch/couchd/owns.conf is the ONE file both
 # stacks read - couchd every tick, this script at every decision - and while it
 # is empty (the state it ships in) nothing below changes: this script does
@@ -634,7 +661,7 @@ resume_game() {
   # The resume tap also toggled Steam's Big Picture menu; if it's now open
   # invisibly it will eat the pad instead of the game. Guard closes it.
   phase focus-asserted
-  setsid /home/ds2000/.local/bin/steam-input-guard game >/dev/null 2>&1 &
+  setsid /home/ds2000/.local/bin/steam-input-guard game >/dev/null 2>&1 9>&- &
   say "resumed"
 }
 
@@ -645,11 +672,13 @@ intent invoked "$MODE" "argv:=$(_jargv "$@")" "appid=$APPID"
 case "$MODE" in
   quit)
     say "=== quit (save and close)"
+    session_lock
     if game_running || bp_running || emu_running; then close_games power-menu-quit; else say "nothing to quit"; fi
     exit 0
     ;;
   resume)
     say "=== resume"
+    session_lock
     touch /tmp/tv-wake-request
     intent request_tv_wake tv via=tv-wake-request-flag reason=resume
     resume_game
@@ -665,6 +694,7 @@ case "$MODE" in
     # The couch app's screen switcher picked Kodi mid-game: same deal as a
     # PS-button hold. Freeze the game, hand the pad to Kodi, guard the drift.
     say "=== suspend (screen switcher)"
+    session_lock
     frozen=0
     stoplist="$(game_pids)"
     for p in $stoplist; do kill -STOP "$p" 2>/dev/null && frozen=1; done
@@ -686,7 +716,10 @@ case "$MODE" in
     # Kodi has the screen now, so the frozen window can go. After snap_paused
     # above, which reads the compositing pixmap that iconifying frees.
     [ "$frozen" = 1 ] && hide_frozen_game "${appid:-game}"
-    setsid /home/ds2000/.local/bin/steam-input-guard kodi >/dev/null 2>&1 &
+    # 9>&- : the guard outlives us by seconds, and an inherited lock fd would
+    # keep the session lock held for all of them. (Closing an unopened fd is a
+    # no-op, so this is safe whether or not the lock was taken.)
+    setsid /home/ds2000/.local/bin/steam-input-guard kodi >/dev/null 2>&1 9>&- &
     exit 0
     ;;
   steam)
