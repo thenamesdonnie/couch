@@ -1,86 +1,88 @@
 {
- "t": 1785898669.3152068,
- "pid": 1740095,
- "uptime_s": 2.7,
+ "t": 1785919222.1315598,
+ "pid": 60359,
+ "uptime_s": 338.0,
  "mode": "shadow",
- "attention": true,
+ "owns": [],
+ "owns_declared": [],
+ "owns_file": "/home/ds2000/couch/couchd/owns.conf",
+ "owns_warnings": [],
+ "model_version": "43171d2e878c",
+ "git": "9f1771b3e665",
+ "acted": 0,
+ "action_failures": 0,
+ "action_skipped": 0,
+ "action_backoff": [],
+ "attention": false,
  "regions": {
-  "input_ownership": "game",
-  "foreground": "game",
-  "session": "starting",
+  "input_ownership": "kodi",
+  "foreground": "kodi",
+  "session": "none",
   "enforcement": "none",
   "gesture": "idle",
-  "pad": "present"
+  "pad": "absent"
  },
- "games": {
-  "367520": "RUNNING"
- },
- "last_would_do": [
-  "would request_tv_wake tv [transition:session-started]",
-  "would show 367520 [transition:session-started]",
-  "would route_pad game [transition:session-started]"
- ],
+ "games": {},
+ "last_would_do": [],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 4,
-   "detail": "1 node(s)",
-   "age_s": 2.6,
+   "events": 0,
+   "detail": "0 node(s)",
+   "age_s": 1.0,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 6,
-   "detail": "3 present",
-   "age_s": 0.2,
+   "events": 5,
+   "detail": "0 present",
+   "age_s": 0.1,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 1,
-   "detail": "18 pid(s)",
-   "age_s": 0.1,
+   "events": 0,
+   "detail": "0 pid(s)",
+   "age_s": 0.0,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 1,
-   "detail": "joystick=False window=10025",
-   "age_s": 2.6,
+   "events": 12,
+   "detail": "joystick=True window=10000",
+   "age_s": 0.1,
    "stale": false
   },
   "steam": {
    "ok": true,
    "events": 1,
-   "detail": "1 app(s) tracked",
-   "age_s": 0.1,
+   "detail": "0 app(s) tracked",
+   "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
    "events": 0,
-   "detail": "quiet",
-   "age_s": 0.1,
+   "detail": "game-launch log absent (nothing launched yet)",
+   "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 0,
-   "detail": "top='Hollow Knight'",
+   "events": 2,
+   "detail": "top='Kodi' ev=2",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 13,
+  "obs": 22,
   "daemon": 1,
-  "transition": 7,
-  "intent": 3,
-  "agreement": 1,
+  "transition": 6,
   "invariant": 1
  },
- "passes": 1,
- "intents": 3,
+ "passes": 210,
+ "intents": 0,
  "invariant_violations": 0,
  "ps_presses": {
   "evdev": 0,
@@ -88,6 +90,11 @@
   "first_event_latency_s": null
  },
  "last_trigger": "",
+ "edges": {
+  "seen": 0,
+  "coalesced": 0,
+  "last_latency_s": null
+ },
  "resource_leaks": [],
  "bindings": {
   "tap": "none",

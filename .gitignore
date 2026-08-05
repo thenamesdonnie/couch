@@ -39,3 +39,4 @@ __pycache__/
 *.swp
 couchd/.venv/
 kodi-addons/**/__pycache__/
+.serena/

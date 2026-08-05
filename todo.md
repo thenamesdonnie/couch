@@ -13,7 +13,37 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
-## ▶ Resume here (updated 5 Aug 2026 ~03:15 — after Evening 1)
+## ▶ Resume here (updated 5 Aug 2026 ~08:45 — overnight mandate DONE)
+
+**THE OVERNIGHT MANDATE IS COMPLETE** (6 commits, 0e1169f..f3ee617):
+task 0 startup hang fixed (fifo blocking open + faulthandler), task 1
+acting executor + COUCHD_OWNS lease + legacy yielding flip-ready and
+adversarially reviewed (7 SEV-2s found and fixed, ships OFF, owns.conf
+empty), task 2 x11 events unswallowed + gesture-edge decisions + 9/10 T5
+catch-ups, task 3 Evening-1 replay (38 divergences closed, matched 93->138,
+found 3 real T4s, ALL FIXED: conditional guide press, verified supersede
+kill, shared repair cooldowns; differ got model-version staleness +
+--window + honest verdicts), task 4 fault rig staged NOT run, task 5
+suites 410+167 green + gitleaks clean + MORNING SUMMARY written.
+**READ: docs/handoff-2026-08-04.md MORNING SUMMARY** (top) - Donnie's
+daytime list and the three rulings. docs/replay-2026-08-05.md has the
+replay analysis.
+
+**THE BOX HARD-FROZE at 05:19** (idle, no logs, lights on / no ssh / no
+video; power-cycled 08:05; first ever; 27h after the RAM swap). RAM
+config is prime suspect - dmidecode check + BIOS stock speed test are
+item 1 on Donnie's sheet. A 16-min graphical-session cycle at 04:41
+remains unexplained (not agents, not updates, not lightdm). Everything
+recovered green at boot; snapshots-20260805.jsonl has a NUL crash hole
+(the differ now counts and skips those).
+
+**NEXT (in order):** Donnie's daytime sheet (morning summary items 1-4),
+then Evening 2 per the compressed gate plan below, then daytime flips one
+responsibility at a time. Legacy scripts are mirrored in legacy-mirror/
+(deploy = cp to ~/.local/bin). The couch server/web now show owns state
+on the Screen-tab card.
+
+## ▶ Previous resume block (5 Aug 2026 ~03:15 — after Evening 1)
 
 **EVENING 1 IS DONE and it worked**: 9 real bugs found with Donnie on the
 couch, 8 fixed live + 1 deliberately stopped (see below), differ v3's
