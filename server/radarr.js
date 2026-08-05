@@ -39,6 +39,65 @@ async function refresh() {
   return byTmdb;
 }
 
+async function rfetch(pathname, { method, body } = {}) {
+  if (!apiKey) apiKey = readKey();
+  const res = await fetch(`${BASE}${pathname}`, {
+    method: method || 'GET',
+    headers: { 'X-Api-Key': apiKey, ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(8000),
+  });
+  if (res.status === 401) { apiKey = null; throw new Error('radarr auth failed'); }
+  if (!res.ok) throw new Error(`radarr ${res.status}`);
+  return res.json();
+}
+
+// The "UHD" profile (4K with 1080p fallback, created 5 Aug 2026), by name so
+// the id is never hardcoded. Cached for the process life.
+let uhdId = null;
+export async function uhdProfileId() {
+  if (uhdId) return uhdId;
+  const profiles = await rfetch('/qualityprofile');
+  uhdId = profiles.find((p) => p.name === 'UHD')?.id || null;
+  if (!uhdId) throw new Error('radarr UHD profile missing');
+  return uhdId;
+}
+
+async function movieByTmdb(tmdbId) {
+  const [m] = await rfetch(`/movie?tmdbId=${tmdbId}`);
+  return m || null;
+}
+
+// Is the film in Radarr, and already on the UHD profile?
+export async function libraryInfo(tmdbId) {
+  const m = await movieByTmdb(tmdbId);
+  if (!m) return null;
+  const uhd = await uhdProfileId().catch(() => null);
+  return { uhd: !!uhd && m.qualityProfileId === uhd };
+}
+
+// Flip an existing film to the UHD profile without searching. Returns false
+// if the film isn't in Radarr yet.
+export async function setUhdIfPresent(tmdbId) {
+  const m = await movieByTmdb(tmdbId);
+  if (!m) return false;
+  m.qualityProfileId = await uhdProfileId();
+  m.monitored = true;
+  await rfetch(`/movie/${m.id}`, { method: 'PUT', body: m });
+  return true;
+}
+
+// Upgrade to 4K: UHD profile, monitored, and a search so the existing file
+// (now below the 4K cutoff) gets replaced when a capped 4K release exists.
+export async function upgradeTo4k(tmdbId) {
+  const m = await movieByTmdb(tmdbId);
+  if (!m) throw new Error('film not in radarr');
+  m.qualityProfileId = await uhdProfileId();
+  m.monitored = true;
+  await rfetch(`/movie/${m.id}`, { method: 'PUT', body: m });
+  await rfetch('/command', { method: 'POST', body: { name: 'MoviesSearch', movieIds: [m.id] } });
+}
+
 // For a movie tmdbId: its release phase and the date it is waiting on, if any.
 export async function releaseInfo(tmdbId) {
   let byTmdb;

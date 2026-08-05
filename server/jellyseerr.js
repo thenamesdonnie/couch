@@ -119,11 +119,14 @@ export async function detail(mediaType, tmdbId) {
   };
 }
 
-export function requestMedia(mediaType, tmdbId, seasons) {
+export function requestMedia(mediaType, tmdbId, seasons, profileId) {
   const body = { mediaType, mediaId: Number(tmdbId) };
   if (mediaType === 'tv') {
     body.seasons = Array.isArray(seasons) && seasons.length ? seasons.map(Number) : 'all';
   }
+  // Quality profile override (the UHD one); Jellyseerr forwards it to the
+  // arr when adding new media, and ignores it for media already there.
+  if (profileId) body.profileId = Number(profileId);
   return js('/request', { method: 'POST', body });
 }
 

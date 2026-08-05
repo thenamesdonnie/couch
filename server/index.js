@@ -19,6 +19,7 @@ import * as jellyfin from './jellyfin.js';
 import * as jellyseerr from './jellyseerr.js';
 import * as screen from './screen.js';
 import * as sonarr from './sonarr.js';
+import * as radarr from './radarr.js';
 import * as steam from './steam.js';
 import * as youtube from './youtube.js';
 import { activeDownloads } from './downloads.js';
@@ -622,11 +623,16 @@ app.get('/api/discover/detail', wrap(async (req) => {
   const { type, tmdbId } = req.query;
   if (!['movie', 'tv'].includes(type) || !tmdbId) throw new Error('type and tmdbId required');
   const detail = await jellyseerr.detail(type, tmdbId);
+  // Whether the title is already in Sonarr/Radarr on the UHD profile, so the
+  // sheet knows to offer (or not offer) the 4K upgrade.
+  const arr = type === 'tv' ? sonarr : radarr;
+  const lib = await arr.libraryInfo(Number(tmdbId)).catch(() => null);
+  detail.inArr = !!lib;
+  detail.uhd = lib?.uhd ?? false;
   // For films, note if a home release hasn't landed yet, so a request is an
   // informed one.
   if (type === 'movie') {
-    const { releaseInfo } = await import('./radarr.js');
-    const rel = await releaseInfo(Number(tmdbId)).catch(() => null);
+    const rel = await radarr.releaseInfo(Number(tmdbId)).catch(() => null);
     if (rel?.phase === 'waiting') {
       detail.releaseNote = rel.date
         ? `Not out for home viewing yet · ${rel.kind} release ${new Date(rel.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
@@ -637,9 +643,33 @@ app.get('/api/discover/detail', wrap(async (req) => {
 }));
 
 app.post('/api/discover/request', wrap(async (req) => {
-  const { mediaType, tmdbId, seasons } = req.body ?? {};
+  const { mediaType, tmdbId, seasons, is4k } = req.body ?? {};
   if (!['movie', 'tv'].includes(mediaType) || !tmdbId) throw new Error('mediaType and tmdbId required');
-  await jellyseerr.requestMedia(mediaType, tmdbId, seasons);
+  let profileId;
+  if (is4k) {
+    // Media already in the arr keeps its record through a Jellyseerr request,
+    // so the profile is flipped there directly; new media gets the profile
+    // passed with the request instead.
+    const arr = mediaType === 'tv' ? sonarr : radarr;
+    const existing = await arr.setUhdIfPresent(Number(tmdbId));
+    if (!existing) profileId = await arr.uhdProfileId();
+  }
+  await jellyseerr.requestMedia(mediaType, tmdbId, seasons, profileId);
+}));
+
+// Upgrade an in-library title to 4K. mode 'all' (default) also searches so
+// existing files get replaced; mode 'future' just flips the profile, so only
+// episodes from here on come in 4K and the back catalogue stays 1080p.
+app.post('/api/discover/upgrade4k', wrap(async (req) => {
+  const { mediaType, tmdbId, mode } = req.body ?? {};
+  if (!['movie', 'tv'].includes(mediaType) || !tmdbId) throw new Error('mediaType and tmdbId required');
+  const arr = mediaType === 'tv' ? sonarr : radarr;
+  if (mode === 'future') {
+    const ok = await arr.setUhdIfPresent(Number(tmdbId));
+    if (!ok) throw new Error('not in the library yet');
+  } else {
+    await arr.upgradeTo4k(Number(tmdbId));
+  }
 }));
 
 app.get('/api/discover/requests', wrap(async () => ({ requests: await jellyseerr.listRequests() })));

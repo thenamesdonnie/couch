@@ -51,6 +51,9 @@
   let detailLoading = $state(false);
   let openingId = $state(null);
   let pickedSeasons = $state(new Set());
+  let want4k = $state(false);
+  let upgraded4k = $state(new Map());
+  let upgradeBusy = $state(false);
 
   // Seasons still up for grabs: not already requested/downloading/available.
   const selectableSeasons = $derived(
@@ -65,6 +68,7 @@
     // The tapped card shows a spinner while this happens.
     openingId = item.mediaType + item.tmdbId;
     detailLoading = true;
+    want4k = false;
     try {
       const d = await api(`/api/discover/detail?type=${item.mediaType}&tmdbId=${item.tmdbId}`);
       const full = { ...item, ...d };
@@ -90,6 +94,7 @@
     try {
       const body = { mediaType: item.mediaType, tmdbId: item.tmdbId };
       if (usePicker) body.seasons = [...pickedSeasons].sort((a, b) => a - b);
+      if (want4k) body.is4k = true;
       await api('/api/discover/request', body);
       requested = new Set([...requested, item.tmdbId]);
       detail = null;
@@ -102,6 +107,19 @@
     const next = new Set(pickedSeasons);
     if (next.has(n)) next.delete(n); else next.add(n);
     pickedSeasons = next;
+  }
+
+  // mode 'all' upgrades what's already there and searches; 'future' flips the
+  // profile only, so new episodes come in 4K and the back catalogue is left be.
+  async function upgrade4k(item, mode) {
+    if (upgradeBusy || upgraded4k.has(item.tmdbId)) return;
+    upgradeBusy = true;
+    try {
+      await api('/api/discover/upgrade4k', { mediaType: item.mediaType, tmdbId: item.tmdbId, mode });
+      upgraded4k = new Map([...upgraded4k, [item.tmdbId, mode]]);
+    } finally {
+      upgradeBusy = false;
+    }
   }
 
   function toggleAllSeasons() {
@@ -193,7 +211,8 @@
             <div class="dmeta dim small">
               {[detail.year, detail.mediaType === 'tv' ? 'Series' : 'Film',
                 detail.runtime ? fmtRuntime(detail.runtime) : null,
-                detail.seasons ? `${detail.seasons} season${detail.seasons > 1 ? 's' : ''}` : null
+                detail.seasons ? `${detail.seasons} season${detail.seasons > 1 ? 's' : ''}` : null,
+                detail.uhd ? '4K' : null
               ].filter(Boolean).join(' · ')}
             </div>
             {#if detail.rating}<div class="drating mono">★ {detail.rating}</div>{/if}
@@ -234,6 +253,15 @@
           </div>
         {/if}
         <div class="daction">
+          {#if !detail.uhd && !requested.has(detail.tmdbId) && (selectableSeasons.length || !statusOf(detail))}
+            <div class="qrow">
+              <span class="small dim">Quality</span>
+              <div class="qseg">
+                <button class:on={!want4k} onclick={() => (want4k = false)}>1080p</button>
+                <button class:on={want4k} onclick={() => (want4k = true)}>4K</button>
+              </div>
+            </div>
+          {/if}
           {#if statusOf(detail) === 'available'}
             <span class="statusline ok">Already on Jellyfin</span>
           {:else if requested.has(detail.tmdbId)}
@@ -254,6 +282,18 @@
             <button class="primary big" disabled={busyId === detail.tmdbId} onclick={() => request(detail)}>
               Request {detail.mediaType === 'tv' ? 'series' : 'film'}
             </button>
+          {/if}
+          {#if detail.inArr && !detail.uhd && !requested.has(detail.tmdbId)}
+            {#if upgraded4k.has(detail.tmdbId)}
+              <span class="statusline">{upgraded4k.get(detail.tmdbId) === 'future' ? '4K on for new episodes' : '4K upgrade started'}</span>
+            {:else if detail.mediaType === 'tv'}
+              <div class="uprow">
+                <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'future')}>4K new episodes</button>
+                <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'all')}>Upgrade all to 4K</button>
+              </div>
+            {:else}
+              <button class="up4k wide" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'all')}>Upgrade to 4K</button>
+            {/if}
           {/if}
         </div>
       </div>
@@ -553,8 +593,36 @@
   .season.done.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); opacity: 1; }
   .tagline { font-style: italic; color: var(--muted); margin: 14px 0 0; font-size: 14px; }
   .overview { margin: 10px 0 0; line-height: 1.5; }
-  .daction { margin-top: 18px; }
+  .daction { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
   .big { width: 100%; padding: 14px; font-size: 15px; }
+  .qrow { display: flex; align-items: center; justify-content: space-between; }
+  .qseg {
+    display: flex;
+    background: var(--raise);
+    border-radius: 10px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .qseg button {
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: none;
+    color: var(--muted);
+  }
+  .qseg button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }
+  .uprow { display: flex; gap: 8px; }
+  .up4k {
+    flex: 1;
+    padding: 11px;
+    font-size: 13px;
+    border-radius: 12px;
+    background: var(--raise);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    justify-content: center;
+  }
+  .up4k.wide { width: 100%; }
   .statusline {
     display: block;
     text-align: center;
