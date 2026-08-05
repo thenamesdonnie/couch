@@ -1,0 +1,1163 @@
+#!/usr/bin/env python3
+"""fault-rig - stage the audit's failure modes so couchd's shadow log can be
+graded on the repairs that never fire on their own (C9 INJECTED coverage).
+
+Guard invariants and reconcile repairs are the two responsibilities an evening
+of ordinary play never exercises: the console has to actually go wrong first.
+The 4 Aug audit staged those states by hand with decoy processes and hand-written
+/tmp flags; this is that technique, scripted, logged, and reversible.
+
+DAYTIME JOB, OPERATOR PRESENT. Nothing here runs without --i-am-present, and
+every injection arms an auto-restore watchdog BEFORE it touches anything, so a
+dropped ssh session, a crashed rig or a forgetful operator all end the same way:
+the fault is undone and the old stack comes back on its own.
+
+  tools/fault-rig list
+  tools/fault-rig status
+  tools/fault-rig inject orphaned-session --i-am-present
+  tools/fault-rig restore --i-am-present          # abort, idempotent
+
+What each injection does, in one sentence: put the console into one of the
+states the old stack has a repair for, keep the old stack's repair loop out of
+the way for a few seconds, and see whether couchd's would-do log says the right
+thing first, within its own predicted deadline (C17).
+
+Evidence lands in three places:
+  ~/couch/shadow/injections-YYYYMMDD.jsonl   the markers (this file's output)
+  ~/couch/shadow/couchd-YYYYMMDD.jsonl       couchd's decisions (the answer)
+  /tmp/legacy-intents.jsonl                  the old stack's decisions
+and `tools/shadow-diff --since HH:MM:SS` correlates them; every marker prints
+the exact command to use.
+
+Read docs/fault-rig-runbook.md before running any of this at the TV.
+"""
+import argparse
+import errno
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from couchenv import kodi_auth, kodi_url          # noqa: E402  (path first)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+COUCH = os.path.dirname(HERE)
+HOME = os.path.expanduser('~')
+
+# Every path is overridable so the self-test can run the whole thing against a
+# tmp dir with no real /tmp writes and no real processes.
+TMP_DIR = os.environ.get('FAULT_RIG_TMP', '/tmp')
+SHADOW_DIR = os.environ.get('FAULT_RIG_SHADOW_DIR', os.path.join(COUCH, 'shadow'))
+BIN_DIR = os.environ.get('FAULT_RIG_BIN', os.path.join(HOME, '.local/bin'))
+
+STATE_NAME = 'fault-rig-state.json'          # the undo journal
+WATCHDOG_UNIT = 'fault-rig-restore'          # transient systemd --user unit
+DECOY_TOKEN = 'fault-rig-decoy'              # in every decoy's argv; sweepable
+DECOY_APPID = '999999'                       # never a real Steam appid
+LEGACY_UNIT = 'pad-home'                     # the watcher = the repair loop
+COUCHD_UNIT = 'couchd'
+STATUS_MAX_AGE_S = 90.0                      # a stale status.json = blind couchd
+MIN_TIMEOUT_S, MAX_TIMEOUT_S = 30, 600
+
+REAPER = 'reaper SteamLaunch'                # couchd's PidObserver identity
+BYSTANDER_PATH = '/home/ds2000/.steam/debian-installation/steamapps/common/Decoy'
+
+
+# =========================================================================
+# the catalogue
+# =========================================================================
+# Each entry says what it proves, what couchd must decide and by when (C17),
+# what the operator will see, and which safety rails apply. `expect` matchers
+# are evaluated against couchd's shadow JSONL after the injection timestamp.
+FAULTS = [
+    {
+        'name': 'joystick-drift',
+        'audit': 'failure 7 (Kodi crash-restart reloads a stale joystick setting)',
+        'proves': "couchd notices Kodi's pad routing no longer matches the "
+                  'session and says route_pad, the way the watcher does every 10s',
+        'legacy_repair': "pad-home-watcher reconcile(): 'joystick <x> but should "
+                         "be <y> - fixing'",
+        'needs_game': False, 'forbids_game': False, 'pause_legacy': True,
+        'watch_s': 12.0,
+        'expect': [{'kind': 'intent', 'reason': 'reconcile:joystick-setting-drift',
+                    'verb': 'route_pad', 'deadline_s': 12.0, 'required': True}],
+        'c17': 'couchd predicts "input.enablejoystick <want>" within 2.0s of '
+               'deciding; Kodi settings reads are limited to one per 10s, but '
+               'Application.OnSettingsChanged forces a fresh read, so a decision '
+               'later than ~12s is a real finding.',
+        'tv': 'nothing visible. The TV keeps showing whatever it was showing.',
+    },
+    {
+        'name': 'orphaned-session',
+        'audit': 'failure 8 (launcher killed with no trap, pad never returns)',
+        'proves': 'couchd reclaims a session whose launcher is gone: clears both '
+                  'flags, puts the pad back on Kodi and raises Kodi',
+        'legacy_repair': "pad-home-watcher reconcile(): 'orphaned session "
+                         "(launcher gone, no game) - reclaiming'",
+        'needs_game': False, 'forbids_game': True, 'pause_legacy': True,
+        # session: none -> starting -> (30s launch grace) -> active -> orphaned.
+        # The grace is real product behaviour, not rig slowness: a session flag
+        # written before the game's processes exist must not be reclaimed.
+        'watch_s': 45.0,
+        'expect': [{'kind': 'intent', 'reason': 'reconcile:orphaned-session',
+                    'verb': 'clear_flag', 'deadline_s': 45.0, 'required': True},
+                   {'kind': 'intent', 'reason': 'reconcile:orphaned-session',
+                    'verb': 'route_pad', 'deadline_s': 45.0, 'required': True},
+                   {'kind': 'invariant', 'name': 'owned_resources',
+                    'leak': 'session flag with a dead launcher',
+                    'deadline_s': 20.0, 'required': False}],
+        'c17': 'the launch grace (30s in "starting") comes first, so expect the '
+               'decision at ~30-35s, never before. Each intent predicts its own '
+               'effect within 2.0s. Also expected and NOT a fault: three '
+               'transition:session-started intents in the first seconds, because '
+               'a session flag really did appear. Triage those T1 (harness '
+               'artifact) - the rig wrote the flag, no launcher ever ran.',
+        'tv': 'nothing visible.',
+    },
+    {
+        'name': 'stale-suspended-flag',
+        'audit': 'failure 9 (game killed externally, paused flag left behind)',
+        'proves': 'couchd removes a paused-game flag that no frozen process '
+                  'backs, so the next PS tap cannot misfire',
+        'legacy_repair': "pad-home-watcher reconcile(): 'stale suspended flag, "
+                         "removing'",
+        'needs_game': False, 'forbids_game': True, 'pause_legacy': True,
+        'watch_s': 12.0,
+        'expect': [{'kind': 'intent', 'reason': 'reconcile:stale-suspended-flag',
+                    'verb': 'clear_flag', 'deadline_s': 8.0, 'required': True},
+                   {'kind': 'invariant', 'name': 'owned_resources',
+                    'leak': 'suspended flag with no frozen processes',
+                    'deadline_s': 12.0, 'required': False}],
+        'c17': 'flags are inotify-driven and open an attention window (0.2s '
+               'sampling for 3s), so the decision should land in about a second; '
+               'the predicted effect is "/tmp/game-suspended gone" within 2.0s.',
+        'tv': 'the phone Games row may briefly show a paused game that does not '
+              'exist. It clears on restore.',
+    },
+    {
+        'name': 'lost-thaw',
+        'audit': 'failure 6 (game frozen with no paused flag) and failures 1-2 '
+                 '(who counts as "the game")',
+        'proves': "couchd spots processes stopped with no flag to explain them "
+                  'and says thaw, with the right pid set',
+        'legacy_repair': "pad-home-watcher reconcile(): 'game frozen with no "
+                         "suspended flag - thawing'",
+        'needs_game': False, 'forbids_game': True, 'pause_legacy': True,
+        'live_mode': True,          # --live freezes the REAL game instead
+        'watch_s': 20.0,
+        'expect': [{'kind': 'intent', 'reason': 'reconcile:frozen-without-suspended-flag',
+                    'verb': 'thaw', 'deadline_s': 20.0, 'required': True}],
+        'c17': 'the pid tree is scanned at most once a second while busy and '
+               'once every 5s while idle, so expect ~5-10s; the predicted effect '
+               'is "game pids back in state S" within 3.0s. The intent must carry '
+               'the frozen pids - a thaw with no pid set fails couchd\'s own '
+               'pid_verbs_carry_pids invariant.',
+        'tv': 'decoy mode: nothing visible. --live mode: the game freezes and '
+              'the sound stops until restore, exactly like a pause.',
+    },
+    {
+        'name': 'frozen-game-visible',
+        'audit': 'failure 5 (frozen game left on top of Kodi)',
+        'proves': 'couchd refuses to let the room look at a frozen game and '
+                  'says show(kodi)',
+        'legacy_repair': "pad-home-watcher reconcile(): 'frozen game visible - "
+                         "raising kodi' (and steam-input-guard invariant 3)",
+        'needs_game': False, 'forbids_game': True, 'pause_legacy': True,
+        'watch_s': 20.0,
+        'expect': [{'kind': 'intent', 'reason': 'reconcile:frozen-game-visible',
+                    'verb': 'show', 'deadline_s': 20.0, 'required': True}],
+        'c17': 'this is the slowest detector of the set: the X11 observer is '
+               'meant to be event-driven but currently leans on the 5s '
+               'anti-entropy tick (todo item 2), so ~5-10s is expected and '
+               'anything past 20s is a finding. Predicted effect: "top window is '
+               'Kodi" within 2.0s.',
+        'tv': 'a plain grey box labelled FAULT-RIG DECOY appears over Kodi. It '
+              'is not a game and it is not Kodi breaking. Restore removes it.',
+    },
+    {
+        'name': 'bystander-process',
+        'audit': 'failures 1-2 (loose cmdline matching counted bystanders as '
+                 'game processes; Proton games were never actually frozen)',
+        'proves': 'the OPPOSITE of a repair: couchd must NOT claim an innocent '
+                  'process whose command line merely mentions steamapps. Its '
+                  'would-freeze set has to stay empty while the process runs',
+        'legacy_repair': 'none - game-pids fixed this by using the process tree. '
+                         'The couch server still text-matches (server/sys.js), '
+                         'which this injection makes visible.',
+        'needs_game': False, 'forbids_game': True, 'pause_legacy': False,
+        'watch_s': 20.0,
+        'expect': [{'kind': 'agreement-excludes', 'deadline_s': 20.0,
+                    'required': True}],
+        'c17': 'no intent should appear at all. The check is couchd\'s own '
+               'agreement record (couchd_would_freeze vs game_pids_tree vs '
+               "Steam's ledger, written every tick): the decoy pid must be in "
+               'none of them.',
+        'tv': 'nothing visible. The phone may briefly claim a game is running - '
+              'that is the old text match in the couch server, and it is part of '
+              'what this proves.',
+    },
+    {
+        'name': 'menu-capture',
+        'audit': 'failure 3 (Steam menu invisibly captures the pad)',
+        'proves': "couchd's guard invariant 1: while a guard window is open and "
+                  "Steam's own menu has the pad, couchd says close_steam_menu",
+        'legacy_repair': 'steam-input-guard invariant 1 (menu-close via vpad '
+                         'guide), spawned after every transition',
+        'needs_game': True, 'forbids_game': False, 'pause_legacy': False,
+        'after_handoff': True,      # waits for the operator's PS hold
+        'watch_s': 12.0,
+        'expect': [{'kind': 'intent', 'reason': 'guard:steam-menu-holds-the-pad',
+                    'verb': 'close_steam_menu', 'deadline_s': 8.0,
+                    'required': True}],
+        'c17': "couchd's guard window is 6s wide and only opens on a transition, "
+               'so the menu has to be opened inside it. The predicted effect is '
+               '"routing leaves ClientUI" within 3.0s. This is the one CO-'
+               'RESPONDER injection: the real guard is not paused (it is spawned '
+               'by the gesture, not by a loop), so both stacks answer and the '
+               'test is agreement, not who got there first.',
+        'tv': "Steam's Big Picture menu flashes over Kodi and closes again "
+              'within a second or two. That closing IS the old stack working.',
+    },
+]
+BY_NAME = {f['name']: f for f in FAULTS}
+
+
+# =========================================================================
+# small helpers
+# =========================================================================
+def now_iso(t):
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t))
+
+
+def hhmmss(t):
+    return time.strftime('%H:%M:%S', time.localtime(t))
+
+
+def _read(path):
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+class Refused(Exception):
+    """A pre-check said no. Never a traceback, always a sentence."""
+
+
+# =========================================================================
+# the journal: every mutation, with its undo, on disk before it happens
+# =========================================================================
+class Journal:
+    """Crash-safe undo list. Written after every step so a rig that dies
+    half-way still leaves `restore` everything it needs."""
+
+    def __init__(self, path):
+        self.path = path
+        self.data = None
+
+    def exists(self):
+        return os.path.exists(self.path)
+
+    def load(self):
+        raw = _read(self.path)
+        if not raw:
+            return None
+        try:
+            self.data = json.loads(raw)
+        except ValueError:
+            self.data = None
+        return self.data
+
+    def start(self, **fields):
+        self.data = dict(fields)
+        self.data.setdefault('undo', [])
+        self.save()
+        return self.data
+
+    def add(self, undo):
+        """Record an undo step BEFORE performing the action it undoes."""
+        self.data['undo'].append(undo)
+        self.save()
+
+    def save(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        tmp = self.path + '.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(self.data, fh, indent=1)
+        os.replace(tmp, self.path)
+
+    def clear(self):
+        self.data = None
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+
+# =========================================================================
+# the rig: everything that touches the world goes through one object
+# =========================================================================
+class Rig:
+    def __init__(self, tmp=None, shadow_dir=None, bin_dir=None, run=None,
+                 now=None, sleep=None, kill=None, alive=None, cmdlines=None,
+                 jrpc=None, spawn=None, out=None, self_path=None):
+        self.tmp = tmp or TMP_DIR
+        self.shadow_dir = shadow_dir or SHADOW_DIR
+        self.bin = bin_dir or BIN_DIR
+        self._run = run or self._real_run
+        self.now = now or time.time
+        self.sleep = sleep or time.sleep
+        self._kill = kill or os.kill
+        self._alive = alive or (lambda pid: os.path.exists('/proc/%d' % pid))
+        self._cmdlines = cmdlines or self._real_cmdlines
+        self._jrpc = jrpc or self._real_jrpc
+        self._spawn = spawn or self._real_spawn
+        self.out = out or (lambda line: print(line))
+        self.self_path = self_path or os.path.abspath(__file__)
+        self.journal = Journal(os.path.join(self.shadow_dir, STATE_NAME))
+
+    # -- real implementations (each one swappable in tests) ---------------
+    @staticmethod
+    def _real_run(cmd, timeout=15):
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+
+    @staticmethod
+    def _real_cmdlines():
+        out = {}
+        for d in os.listdir('/proc'):
+            if not d.isdigit():
+                continue
+            try:
+                with open('/proc/%s/cmdline' % d, 'rb') as fh:
+                    out[int(d)] = fh.read().replace(b'\0', b' ').decode(
+                        'utf-8', 'replace').strip()
+            except OSError:
+                continue
+        return out
+
+    @staticmethod
+    def _real_jrpc(method, params):
+        import base64
+        import urllib.request
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method,
+                           'params': params}).encode()
+        req = urllib.request.Request(kodi_url(), data=body,
+                                     headers={'content-type': 'application/json'})
+        token = base64.b64encode(kodi_auth().encode()).decode()
+        req.add_header('Authorization', 'Basic ' + token)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read()).get('result')
+
+    @staticmethod
+    def _real_spawn(cmd):
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+        return p.pid
+
+    # -- public wrappers over the swappable callables ---------------------
+    def run(self, cmd, timeout=15):
+        return self._run(cmd, timeout=timeout)
+
+    def kill(self, pid, sig):
+        return self._kill(int(pid), sig)
+
+    def alive(self, pid):
+        return self._alive(int(pid))
+
+    def jrpc(self, method, params):
+        return self._jrpc(method, params)
+
+    # -- world reads ------------------------------------------------------
+    def flag_path(self, name):
+        return os.path.join(self.tmp, name)
+
+    def flag(self, name):
+        return _read(self.flag_path(name))
+
+    def game_pids(self):
+        """The live game session, by the same tree identity couchd uses."""
+        r = self._run([os.path.join(self.bin, 'game-pids')])
+        return [int(x) for x in (r.stdout or '').split() if x.isdigit()]
+
+    def guard_pid(self):
+        raw = self.flag('steam-input-guard.pid')
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def guard_alive(self):
+        pid = self.guard_pid()
+        return bool(pid and self._alive(pid))
+
+    def unit_active(self, unit):
+        r = self._run(['systemctl', '--user', 'is-active', unit])
+        return (r.stdout or '').strip() == 'active'
+
+    def couchd_status(self):
+        raw = _read(os.path.join(self.shadow_dir, 'status.json'))
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
+    def joystick(self):
+        r = self._jrpc('Settings.GetSettingValue',
+                       {'setting': 'input.enablejoystick'})
+        return (r or {}).get('value')
+
+    def decoys(self):
+        """Every decoy this rig has ever left behind, journal or no journal."""
+        return sorted(pid for pid, cmd in self._cmdlines().items()
+                      if DECOY_TOKEN in cmd and pid != os.getpid())
+
+    def shadow_log_path(self, t=None):
+        day = time.strftime('%Y%m%d', time.localtime(t or self.now()))
+        return os.path.join(self.shadow_dir, 'couchd-%s.jsonl' % day)
+
+    def injections_path(self, t=None):
+        day = time.strftime('%Y%m%d', time.localtime(t or self.now()))
+        return os.path.join(self.shadow_dir, 'injections-%s.jsonl' % day)
+
+    def shadow_records(self, since_t):
+        """couchd's decisions since a timestamp. Pure file reading."""
+        recs = []
+        path = self.shadow_log_path(since_t)
+        try:
+            with open(path, errors='replace') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(r, dict) and float(r.get('t') or 0) >= since_t:
+                        recs.append(r)
+        except OSError:
+            pass
+        return recs
+
+    # -- world writes (every one is journalled first) ---------------------
+    def write_flag(self, name, content):
+        path = self.flag_path(name)
+        previous = _read(path)
+        self.journal.add({'op': 'flag', 'name': name, 'restore_to': previous,
+                          'we_wrote': content})
+        with open(path, 'w') as fh:
+            fh.write(content)
+        self.out('  staged %s = %r' % (path, content))
+
+    def set_joystick(self, value, previous):
+        self.journal.add({'op': 'joystick', 'restore_to': previous,
+                          'we_wrote': value})
+        self._jrpc('Settings.SetSettingValue',
+                   {'setting': 'input.enablejoystick', 'value': value})
+        self.out('  set Kodi input.enablejoystick = %s (was %s)'
+                 % (value, previous))
+
+    def stop_legacy(self):
+        self.journal.add({'op': 'systemctl', 'action': 'start',
+                          'unit': LEGACY_UNIT})
+        self._run(['systemctl', '--user', 'stop', LEGACY_UNIT])
+        self.out('  paused the old repair loop (%s stopped)' % LEGACY_UNIT)
+
+    def spawn_decoy(self, kind):
+        """A process couchd's pid identity is supposed to see (reaper) or is
+        supposed to ignore (bystander). Both carry DECOY_TOKEN so `restore`
+        can sweep them up even if the journal is gone."""
+        if kind == 'reaper':
+            argv0 = '%s AppId=%s -- %s' % (REAPER, DECOY_APPID, DECOY_TOKEN)
+        elif kind == 'bystander':
+            argv0 = '%s/%s.x86_64' % (BYSTANDER_PATH, DECOY_TOKEN)
+        else:
+            raise Refused('unknown decoy kind %r' % kind)
+        pid = self._spawn(['/bin/bash', '-c',
+                           'exec -a "%s" /bin/sleep 900' % argv0])
+        self.journal.add({'op': 'decoy', 'pid': pid, 'kind': kind})
+        self.out('  decoy %s process pid %d (%s)' % (kind, pid, argv0[:60]))
+        return pid
+
+    def spawn_decoy_window(self):
+        pid = self._spawn([sys.executable, self.self_path, '_decoy-window',
+                           '--token', DECOY_TOKEN, '--seconds', '900'])
+        self.journal.add({'op': 'decoy', 'pid': pid, 'kind': 'window'})
+        self.out('  decoy window pid %d (class steam_app_%s)'
+                 % (pid, DECOY_APPID))
+        return pid
+
+    def freeze(self, pids):
+        self.journal.add({'op': 'thaw', 'pids': list(pids)})
+        for pid in pids:
+            try:
+                self._kill(pid, signal.SIGSTOP)
+            except OSError:
+                pass
+        self.out('  SIGSTOP %d process(es): %s'
+                 % (len(pids), ' '.join(str(p) for p in pids)))
+
+    def vpad(self, *args):
+        self._run([os.path.join(self.bin, 'vpad'), *args])
+
+    # -- the auto-restore watchdog ----------------------------------------
+    def arm_watchdog(self, seconds):
+        """Schedule `restore` independently of this process. Preferred: a
+        transient systemd --user timer, which survives an ssh drop, a killed
+        rig and a logged-out operator. Fallback: a detached child. If NEITHER
+        can be armed, the caller must refuse to inject at all."""
+        # A timer left pending by a crashed run would make systemd-run refuse
+        # the name; clearing it first is safe because preflight has already
+        # established that nothing is staged.
+        self._run(['systemctl', '--user', 'stop', WATCHDOG_UNIT + '.timer',
+                   WATCHDOG_UNIT + '.service'])
+        r = self._run(['systemd-run', '--user', '--collect',
+                       '--unit', WATCHDOG_UNIT,
+                       '--on-active=%ds' % int(seconds),
+                       '--description=fault-rig auto-restore',
+                       self.self_path, 'restore', '--i-am-present', '--auto'])
+        if r.returncode == 0:
+            self.out('  auto-restore armed: systemd timer %s in %ds'
+                     % (WATCHDOG_UNIT, seconds))
+            return {'kind': 'systemd', 'unit': WATCHDOG_UNIT,
+                    'due_t': self.now() + seconds}
+        try:
+            pid = self._spawn([sys.executable, self.self_path, '_watchdog',
+                               '--seconds', str(int(seconds))])
+        except Exception as e:
+            raise Refused('cannot arm the auto-restore watchdog (%s: %s); '
+                          'refusing to inject' % (type(e).__name__, e))
+        self.out('  auto-restore armed: background watchdog pid %d in %ds '
+                 '(systemd-run unavailable)' % (pid, seconds))
+        return {'kind': 'process', 'pid': pid, 'due_t': self.now() + seconds}
+
+    def cancel_watchdog(self, info):
+        if not info:
+            return
+        if info.get('kind') == 'systemd':
+            self._run(['systemctl', '--user', 'stop',
+                       info.get('unit', WATCHDOG_UNIT) + '.timer'])
+            self._run(['systemctl', '--user', 'stop',
+                       info.get('unit', WATCHDOG_UNIT) + '.service'])
+        elif info.get('kind') == 'process' and info.get('pid'):
+            try:
+                self._kill(int(info['pid']), signal.SIGTERM)
+            except OSError:
+                pass
+
+    # -- markers ----------------------------------------------------------
+    def marker(self, rec):
+        rec = dict(rec)
+        rec.setdefault('kind', 'injection')
+        rec.setdefault('t', self.now())
+        rec.setdefault('iso', now_iso(rec['t']))
+        path = self.injections_path(rec['t'])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'a') as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + '\n')
+        return rec
+
+
+# =========================================================================
+# pre-checks
+# =========================================================================
+def preflight(rig, fault, live=False):
+    """Everything that must be true before we are allowed to break anything.
+    Raises Refused with a sentence the operator can act on."""
+    if rig.journal.exists():
+        raise Refused('an injection is already staged. Run '
+                      '`tools/fault-rig restore --i-am-present` first.')
+
+    if not rig.unit_active(COUCHD_UNIT):
+        raise Refused('couchd is not active, so an injection would prove '
+                      'nothing. Start it with `systemctl --user start couchd`.')
+    st = rig.couchd_status()
+    if not st:
+        raise Refused('couchd wrote no status.json; it is running but not '
+                      'observing. Check /tmp/couchd.log.')
+    age = rig.now() - float(st.get('t') or 0)
+    if age > STATUS_MAX_AGE_S:
+        raise Refused('couchd status.json is %.0fs old (limit %.0fs) - it is '
+                      'not observing. Restart it before injecting.'
+                      % (age, STATUS_MAX_AGE_S))
+
+    pids = rig.game_pids()
+    needs = fault['needs_game'] or (live and fault.get('live_mode'))
+    if needs and not pids:
+        raise Refused('this injection needs a live game session and there is '
+                      'none. Start a game first (phone Games tab, or a Kodi '
+                      'tile), then run it again.')
+    if fault['forbids_game'] and pids and not live:
+        raise Refused('a real game session is running (%d processes). This '
+                      'injection stages fake session state and must never '
+                      'clobber a real one. Quit the game first '
+                      '(`game-launch quit`), or use --live if the injection '
+                      'supports it.' % len(pids))
+
+    if rig.guard_alive():
+        raise Refused('steam-input-guard is running right now, so a transition '
+                      'is still landing. Wait about ten seconds and try again.')
+
+    if fault['pause_legacy'] and not rig.unit_active(LEGACY_UNIT):
+        raise Refused('%s is not active, so the rig cannot pause it and put it '
+                      'back afterwards. Start it first: `systemctl --user '
+                      'start %s`.' % (LEGACY_UNIT, LEGACY_UNIT))
+
+    # Faults that stage a flag must not overwrite one that is genuinely there.
+    # (--live works ON the real session, so its flags are supposed to exist.)
+    for name in ('game-session', 'game-suspended'):
+        if fault['forbids_game'] and not live and rig.flag(name) is not None:
+            raise Refused('%s already exists (%r). Clear the console back to a '
+                          'clean state before injecting.'
+                          % (rig.flag_path(name), rig.flag(name)))
+    if rig.decoys():
+        raise Refused('decoy processes from an earlier run are still alive '
+                      '(%s). Run `tools/fault-rig restore --i-am-present`.'
+                      % ' '.join(str(p) for p in rig.decoys()))
+    return {'game_pids': pids, 'status': st}
+
+
+# =========================================================================
+# the injections themselves
+# =========================================================================
+def stage(rig, fault, live=False):
+    """Perform one fault. Returns a dict of facts for the marker (pids etc)."""
+    name = fault['name']
+    facts = {}
+
+    if name == 'joystick-drift':
+        session = rig.flag('game-session')
+        suspended = rig.flag('game-suspended')
+        want = not (session is not None and suspended is None)
+        current = rig.joystick()
+        if current is not want:
+            raise Refused("Kodi's joystick setting is already %s, which is the "
+                          'wrong value on its own - there is nothing to inject. '
+                          'Let the console settle first.' % current)
+        rig.set_joystick(not want, current)
+        facts['want'] = 'kodi' if want else 'game'
+        facts['set_to'] = not want
+
+    elif name == 'orphaned-session':
+        dead = dead_pid(rig)
+        rig.write_flag('game-session', '%d steam %s' % (dead, DECOY_APPID))
+        facts['launcher_pid'] = dead
+
+    elif name == 'stale-suspended-flag':
+        rig.write_flag('game-suspended', DECOY_APPID)
+
+    elif name == 'lost-thaw':
+        if live:
+            pids = rig.game_pids()
+            if rig.flag('game-suspended') is not None:
+                raise Refused('the game is already paused, so a lost thaw '
+                              'cannot be staged. Resume it first (PS tap or the '
+                              'phone), then run this again.')
+            rig.freeze(pids)
+            facts['pids'] = pids
+            facts['mode'] = 'live'
+        else:
+            pid = rig.spawn_decoy('reaper')
+            rig.sleep(1.5)                 # let the tree scan see it running
+            rig.freeze([pid])
+            facts['pids'] = [pid]
+            facts['mode'] = 'decoy'
+
+    elif name == 'frozen-game-visible':
+        # A faithful reproduction needs all three: a frozen process, the paused
+        # flag that explains it, and the game's window on top. With the process
+        # frozen AND the flag present, the stale-flag and lost-thaw repairs are
+        # both correctly silent, so the only repair left is the one under test.
+        pid = rig.spawn_decoy('reaper')
+        rig.sleep(1.5)
+        rig.freeze([pid])
+        rig.write_flag('game-suspended', DECOY_APPID)
+        win = rig.spawn_decoy_window()
+        facts['pids'] = [pid]
+        facts['window_pid'] = win
+
+    elif name == 'bystander-process':
+        pid = rig.spawn_decoy('bystander')
+        facts['pid'] = pid
+        rig.sleep(1.5)
+
+    elif name == 'menu-capture':
+        if fault.get('after_handoff'):
+            rig.out('  waiting for your PS hold (the paused-game flag)...')
+            if not wait_for_flag(rig, 'game-suspended', 60.0):
+                raise Refused('no PS hold seen in 60s, so there was no guard '
+                              'window to inject into. Nothing was changed.')
+            rig.out('  handoff seen; opening the Steam menu now')
+        if not os.path.exists(rig.flag_path('vpad.fifo')):
+            rig.journal.add({'op': 'vpad-quit'})
+            rig.vpad('up')
+            rig.sleep(1.0)
+        rig.vpad('press', 'guide')
+        facts['via'] = 'vpad press guide'
+
+    else:                                             # pragma: no cover
+        raise Refused('no staging code for %r' % name)
+
+    return facts
+
+
+def dead_pid(rig):
+    """A pid that is certainly not a process. Searching downward from the
+    kernel's max keeps us far away from anything real."""
+    for candidate in range(4194300, 4194000, -1):
+        if not rig.alive(candidate):
+            return candidate
+    raise Refused('could not find a free pid number for the fake launcher')
+
+
+def wait_for_flag(rig, name, seconds):
+    deadline = rig.now() + seconds
+    while rig.now() < deadline:
+        if rig.flag(name) is not None:
+            return True
+        rig.sleep(0.5)
+    return False
+
+
+# =========================================================================
+# detection: did couchd say the right thing, in time?
+# =========================================================================
+def match(rec, m, facts):
+    kind = m['kind']
+    if kind == 'intent':
+        return (rec.get('kind') == 'intent'
+                and rec.get('reason') == m['reason']
+                and (not m.get('verb') or rec.get('verb') == m['verb']))
+    if kind == 'invariant':
+        return (rec.get('kind') == 'invariant'
+                and rec.get('name') == m['name']
+                and any(m['leak'] in str(l) for l in (rec.get('leaks') or ())))
+    if kind == 'agreement-excludes':
+        if rec.get('kind') != 'agreement':
+            return False
+        pid = facts.get('pid')
+        return (pid not in (rec.get('couchd_would_freeze') or [])
+                and pid not in (rec.get('game_pids_tree') or []))
+    return False                                       # pragma: no cover
+
+
+def violation(rec, m, facts):
+    """The inverse of a negative matcher: proof couchd got it WRONG."""
+    if m['kind'] != 'agreement-excludes' or rec.get('kind') != 'agreement':
+        return False
+    pid = facts.get('pid')
+    return (pid in (rec.get('couchd_would_freeze') or [])
+            or pid in (rec.get('game_pids_tree') or []))
+
+
+def evaluate(records, t0, fault, facts):
+    """[(label, ok, latency_or_None, detail, required)] - one row per
+    expectation. Only the required rows decide pass or fail; the rest are
+    context (couchd's leak invariant fires on its own schedule)."""
+    rows = []
+    for m in fault['expect']:
+        label = m.get('reason') or m.get('name') or m['kind']
+        if m.get('verb'):
+            label = '%s -> %s' % (label, m['verb'])
+        req = bool(m.get('required'))
+        bad = [r for r in records if violation(r, m, facts)]
+        if bad:
+            rows.append((label, False, round(float(bad[0]['t']) - t0, 2),
+                         'couchd claimed the decoy pid: %s'
+                         % json.dumps(bad[0])[:160], req))
+            continue
+        hit = next((r for r in records if match(r, m, facts)), None)
+        if hit is None:
+            rows.append((label, False, None,
+                         'not seen within %.0fs' % m['deadline_s'], req))
+            continue
+        lat = round(float(hit['t']) - t0, 2)
+        ok = lat <= m['deadline_s']
+        rows.append((label, ok, lat,
+                     'within deadline %.0fs' % m['deadline_s'] if ok else
+                     'LATE: deadline was %.0fs' % m['deadline_s'], req))
+    return rows
+
+
+def passed(rows):
+    """True when every REQUIRED expectation was met."""
+    req = [r for r in rows if r[4]]
+    return bool(req) and all(r[1] for r in req)
+
+
+def watch(rig, t0, fault, facts, seconds):
+    """Poll couchd's shadow log until every expectation is met or the watch
+    window closes. Read-only: it opens one file and parses JSON."""
+    deadline = rig.now() + seconds
+    rows = []
+    while True:
+        rows = evaluate(rig.shadow_records(t0), t0, fault, facts)
+        if rows and all(r[1] for r in rows):
+            break
+        if rig.now() >= deadline:
+            break
+        rig.sleep(1.0)
+    return rows
+
+
+# =========================================================================
+# commands
+# =========================================================================
+def cmd_list(rig, args):
+    for f in FAULTS:
+        needs = []
+        if f['needs_game']:
+            needs.append('LIVE GAME')
+        if f.get('live_mode'):
+            needs.append('--live uses the real game')
+        if f['forbids_game']:
+            needs.append('no game running')
+        if f['pause_legacy']:
+            needs.append('pauses %s' % LEGACY_UNIT)
+        rig.out('')
+        rig.out('%s   (~%.0fs)' % (f['name'], f['watch_s']))
+        rig.out('  audit    : %s' % f['audit'])
+        rig.out('  proves   : %s' % f['proves'])
+        rig.out('  couchd   : %s' % ', '.join(
+            '%s%s' % (m.get('reason') or m.get('name') or m['kind'],
+                      ' within %.0fs' % m['deadline_s'])
+            for m in f['expect']))
+        rig.out('  legacy   : %s' % f['legacy_repair'])
+        rig.out('  needs    : %s' % ('; '.join(needs) or 'nothing special'))
+        rig.out('  on the TV: %s' % f['tv'])
+    rig.out('')
+    rig.out('Run one with:  tools/fault-rig inject <name> --i-am-present')
+    return 0
+
+
+def cmd_status(rig, args):
+    t = rig.now()
+    rig.out('fault-rig status at %s' % now_iso(t))
+    data = rig.journal.load()
+    if data:
+        rig.out('  STAGED: %s (%s) since %s, %d undo step(s)'
+                % (data.get('fault'), data.get('id'),
+                   now_iso(data.get('t', t)), len(data.get('undo') or [])))
+        wd = data.get('watchdog') or {}
+        if wd.get('due_t'):
+            rig.out('  auto-restore in %.0fs (%s)'
+                    % (max(0.0, wd['due_t'] - t), wd.get('kind')))
+        rig.out('  ABORT NOW:  tools/fault-rig restore --i-am-present')
+    else:
+        rig.out('  nothing staged')
+    rig.out('  couchd     : %s' % ('active' if rig.unit_active(COUCHD_UNIT)
+                                   else 'NOT ACTIVE'))
+    st = rig.couchd_status()
+    if st:
+        rig.out('  couchd sees: %s (status %.0fs old)'
+                % (' '.join('%s=%s' % kv for kv in
+                            sorted((st.get('regions') or {}).items())),
+                   t - float(st.get('t') or 0)))
+        if st.get('resource_leaks'):
+            rig.out('  leaks      : %s' % '; '.join(st['resource_leaks']))
+    rig.out('  %-10s : %s' % (LEGACY_UNIT,
+                              'active' if rig.unit_active(LEGACY_UNIT)
+                              else 'STOPPED (paused by the rig? run restore)'))
+    rig.out('  game pids  : %d' % len(rig.game_pids()))
+    for name in ('game-session', 'game-suspended'):
+        rig.out('  %-12s: %s' % (name, rig.flag(name)))
+    decoys = rig.decoys()
+    rig.out('  decoys     : %s' % (' '.join(str(p) for p in decoys) or 'none'))
+    rig.out('  evidence   : %s' % rig.injections_path(t))
+    rig.out('  correlate  : tools/shadow-diff --since %s' % hhmmss(t - 3600))
+    return 0
+
+
+def cmd_inject(rig, args):
+    fault = BY_NAME.get(args.fault)
+    if fault is None:
+        rig.out('no such injection: %s' % args.fault)
+        rig.out('known: %s' % ', '.join(sorted(BY_NAME)))
+        return 2
+    if args.live and not fault.get('live_mode'):
+        raise Refused('%s has no --live mode.' % fault['name'])
+
+    world = preflight(rig, fault, live=args.live)
+    watch_s = args.watch if args.watch is not None else fault['watch_s']
+    timeout = args.timeout if args.timeout is not None else watch_s + 60
+    timeout = int(max(MIN_TIMEOUT_S, min(MAX_TIMEOUT_S, timeout)))
+
+    t0 = rig.now()
+    ident = '%s-%s' % (time.strftime('%Y%m%d-%H%M%S', time.localtime(t0)),
+                       fault['name'])
+    rig.out('injecting %s (%s)' % (fault['name'], ident))
+
+    # The journal and the watchdog come FIRST: from this line on, everything is
+    # undoable and something other than this process will undo it.
+    rig.journal.start(id=ident, fault=fault['name'], t=t0,
+                      mode='live' if args.live else 'default',
+                      timeout_s=timeout, undo=[])
+    try:
+        watchdog = rig.arm_watchdog(timeout)
+    except Exception:
+        # No watchdog, no injection. Nothing has been touched yet, so the
+        # journal is the only thing to clean up.
+        rig.journal.clear()
+        raise
+    rig.journal.data['watchdog'] = watchdog
+    rig.journal.save()
+
+    if fault['pause_legacy']:
+        rig.stop_legacy()
+
+    facts = stage(rig, fault, live=args.live)
+
+    marker = rig.marker({
+        'event': 'inject', 'id': ident, 't': t0, 'fault': fault['name'],
+        'mode': 'live' if args.live else 'default',
+        'audit': fault['audit'], 'proves': fault['proves'],
+        'legacy_paused': bool(fault['pause_legacy']),
+        'legacy_unit': LEGACY_UNIT if fault['pause_legacy'] else None,
+        'timeout_s': timeout, 'watch_s': watch_s, 'facts': facts,
+        'expect': fault['expect'], 'expected_detection': fault['c17'],
+        'world_before': {'game_pids': world['game_pids'],
+                         'regions': (world['status'] or {}).get('regions'),
+                         'session': rig.flag('game-session'),
+                         'suspended': rig.flag('game-suspended')},
+        'shadow_log': rig.shadow_log_path(t0),
+        'diff_hint': 'tools/shadow-diff --since %s' % hhmmss(t0 - 60),
+    })
+    rig.out('  marker  -> %s' % rig.injections_path(t0))
+    rig.out('  expect  : %s' % fault['c17'])
+
+    rows = []
+    if not args.no_watch:
+        rig.out('  watching couchd for up to %.0fs...' % watch_s)
+        rows = watch(rig, t0, fault, facts, watch_s)
+        for label, ok, lat, detail, req in rows:
+            rig.out('  %-4s %-46s %s  (%s)'
+                    % ('OK' if ok else ('MISS' if req else 'info'), label,
+                       ('%.2fs' % lat) if lat is not None else '   -  ', detail))
+        rig.marker({'event': 'detect', 'id': ident, 'fault': fault['name'],
+                    'rows': [{'expect': l, 'ok': ok, 'latency_s': lat,
+                              'detail': d, 'required': req}
+                             for l, ok, lat, d, req in rows],
+                    'ok': passed(rows)})
+        rig.out('  VERDICT: %s' % ('couchd would have repaired it'
+                                   if passed(rows) else
+                                   'couchd did NOT decide in time - triage T4'))
+
+    if args.hold:
+        rig.out('  HOLDING. Auto-restore in %ds, or now with:  '
+                'tools/fault-rig restore --i-am-present' % timeout)
+        return 0
+    restore(rig, by='inject')
+    return 0 if (args.no_watch or passed(rows)) else 1
+
+
+def restore(rig, by='operator'):
+    """Undo everything, in reverse, idempotently. Safe to run at any time,
+    with or without a journal, however many times you like."""
+    data = rig.journal.load()
+    undone, failed = [], []
+
+    # Sweep decoys first and unconditionally: a lost journal must never leave a
+    # stopped process wearing a game's name on this box.
+    for pid in rig.decoys():
+        for sig in (signal.SIGCONT, signal.SIGKILL):
+            try:
+                rig.kill(pid, sig)
+            except OSError as e:
+                if e.errno != errno.ESRCH:
+                    failed.append('kill %d: %s' % (pid, e))
+        undone.append('killed decoy %d' % pid)
+
+    for step in reversed((data or {}).get('undo') or []):
+        op = step.get('op')
+        try:
+            if op == 'flag':
+                path = rig.flag_path(step['name'])
+                current = _read(path)
+                if current == step.get('we_wrote'):
+                    if step.get('restore_to') is None:
+                        os.remove(path)
+                        undone.append('removed %s' % path)
+                    else:
+                        with open(path, 'w') as fh:
+                            fh.write(step['restore_to'])
+                        undone.append('restored %s' % path)
+                else:
+                    undone.append('left %s alone (someone else changed it)'
+                                  % path)
+            elif op == 'joystick':
+                if step.get('restore_to') is not None:
+                    rig.jrpc('Settings.SetSettingValue',
+                              {'setting': 'input.enablejoystick',
+                               'value': bool(step['restore_to'])})
+                    undone.append('joystick back to %s' % step['restore_to'])
+            elif op == 'thaw':
+                for pid in step.get('pids') or []:
+                    try:
+                        rig.kill(int(pid), signal.SIGCONT)
+                    except OSError as e:
+                        if e.errno != errno.ESRCH:
+                            raise
+                undone.append('SIGCONT %d pid(s)' % len(step.get('pids') or []))
+            elif op == 'systemctl':
+                rig.run(['systemctl', '--user', step['action'], step['unit']])
+                undone.append('%s %s' % (step['action'], step['unit']))
+            elif op == 'decoy':
+                pid = int(step['pid'])
+                for sig in (signal.SIGCONT, signal.SIGKILL):
+                    try:
+                        rig.kill(pid, sig)
+                    except OSError as e:
+                        if e.errno != errno.ESRCH:
+                            raise
+                undone.append('killed decoy %d' % pid)
+            elif op == 'vpad-quit':
+                rig.vpad('quit')
+                undone.append('vpad down')
+            else:                                      # pragma: no cover
+                failed.append('unknown undo step %r' % op)
+        except Exception as e:
+            failed.append('%s: %s: %s' % (op, type(e).__name__, e))
+
+    rig.cancel_watchdog((data or {}).get('watchdog'))
+
+    # Belt and braces: whatever the journal said, the old repair loop must be
+    # running when this returns.
+    if not rig.unit_active(LEGACY_UNIT):
+        rig.run(['systemctl', '--user', 'start', LEGACY_UNIT])
+        undone.append('started %s (was down)' % LEGACY_UNIT)
+
+    rig.journal.clear()
+    for line in undone:
+        rig.out('  undo: %s' % line)
+    for line in failed:
+        rig.out('  UNDO FAILED: %s' % line)
+    rig.marker({'event': 'restore', 'by': by,
+                'id': (data or {}).get('id'), 'fault': (data or {}).get('fault'),
+                'undone': undone, 'failed': failed,
+                'legacy_active': rig.unit_active(LEGACY_UNIT)})
+    rig.out('restored%s' % ('' if not failed else ' WITH %d PROBLEM(S) - read '
+                            'the lines above' % len(failed)))
+    return 1 if failed else 0
+
+
+def cmd_restore(rig, args):
+    return restore(rig, by='watchdog' if args.auto else 'operator')
+
+
+# =========================================================================
+# hidden helper subcommands (the rig re-execs itself)
+# =========================================================================
+def cmd_watchdog(rig, args):                           # pragma: no cover
+    time.sleep(args.seconds)
+    return restore(rig, by='watchdog')
+
+
+def cmd_decoy_window(rig, args):                       # pragma: no cover
+    """A plain grey window that WM_CLASSes itself as a Steam game, so the
+    frozen-game-visible repair has something to be provoked by. It never takes
+    focus and never touches another window."""
+    from Xlib import X, display
+    d = display.Display(os.environ.get('DISPLAY', ':0'))
+    screen = d.screen()
+    win = screen.root.create_window(
+        60, 60, 900, 520, 0, screen.root_depth,
+        X.InputOutput, X.CopyFromParent,
+        background_pixel=screen.white_pixel,
+        override_redirect=True, event_mask=X.ExposureMask)
+    win.set_wm_class('steam_app_%s' % DECOY_APPID, 'steam_app_%s' % DECOY_APPID)
+    win.set_wm_name('FAULT-RIG DECOY %s (%s)' % (DECOY_APPID, args.token))
+    win.map()
+    win.configure(stack_mode=X.Above)
+    d.sync()
+    gc = win.create_gc(foreground=screen.black_pixel,
+                       background=screen.white_pixel)
+    deadline = time.time() + args.seconds
+    while time.time() < deadline:
+        while d.pending_events():
+            d.next_event()
+        win.draw_text(gc, 30, 60, b'FAULT-RIG DECOY - not a game, not a crash')
+        win.draw_text(gc, 30, 100, b'tools/fault-rig restore --i-am-present')
+        d.sync()
+        time.sleep(1.0)
+    win.destroy()
+    d.sync()
+    return 0
+
+
+# =========================================================================
+# cli
+# =========================================================================
+def build_parser():
+    ap = argparse.ArgumentParser(
+        prog='fault-rig', description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest='cmd')
+
+    sub.add_parser('list', help='the injections and what each one proves')
+    sub.add_parser('status', help='what is staged, what is paused, what is left')
+
+    p = sub.add_parser('inject', help='stage one fault')
+    p.add_argument('fault', help='name from `fault-rig list`')
+    p.add_argument('--i-am-present', action='store_true')
+    p.add_argument('--live', action='store_true',
+                   help='use the REAL game session (lost-thaw only)')
+    p.add_argument('--hold', action='store_true',
+                   help='leave the fault staged after watching (auto-restore '
+                        'still fires at the timeout)')
+    p.add_argument('--no-watch', action='store_true',
+                   help='stage and return without reading couchd back')
+    p.add_argument('--watch', type=float, help='seconds to watch couchd')
+    p.add_argument('--timeout', type=float,
+                   help='auto-restore deadline in seconds (%d-%d)'
+                        % (MIN_TIMEOUT_S, MAX_TIMEOUT_S))
+
+    p = sub.add_parser('restore', help='undo everything; idempotent')
+    p.add_argument('--i-am-present', action='store_true')
+    p.add_argument('--auto', action='store_true',
+                   help='marks the marker as watchdog-driven')
+
+    p = sub.add_parser('_watchdog')
+    p.add_argument('--seconds', type=float, required=True)
+    p = sub.add_parser('_decoy-window')
+    p.add_argument('--token', default=DECOY_TOKEN)
+    p.add_argument('--seconds', type=float, default=900.0)
+    return ap
+
+
+HANDLERS = {'list': cmd_list, 'status': cmd_status, 'inject': cmd_inject,
+            'restore': cmd_restore, '_watchdog': cmd_watchdog,
+            '_decoy-window': cmd_decoy_window}
+NEEDS_PRESENT = ('inject', 'restore')
+
+
+def main(argv=None, rig=None):
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if not args.cmd:
+        ap.print_help()
+        return 2
+    if args.cmd in NEEDS_PRESENT and not getattr(args, 'i_am_present', False):
+        print('fault-rig refuses to run without --i-am-present.\n'
+              'This rig deliberately breaks the living-room console for a few '
+              'seconds. It is a daytime job with the owner in the room, not '
+              'something to fire off remotely. Add --i-am-present when you are '
+              'actually there.', file=sys.stderr)
+        return 3
+    rig = rig or Rig()
+    try:
+        return HANDLERS[args.cmd](rig, args)
+    except Refused as e:
+        print('refused: %s' % e, file=sys.stderr)
+        return 4
+
+
+if __name__ == '__main__':
+    sys.exit(main())
