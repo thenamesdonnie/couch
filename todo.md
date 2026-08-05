@@ -13,14 +13,18 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
-## 🔴 DISK INCIDENT (5 Aug 15:00, unresolved until Donnie replugs)
+## 🟡 DISK INCIDENT (5 Aug 14:57) - RECOVERED 15:36, watch phase
 
-disk1 (4TB USB enclosure, ~1.9TB of the library) dropped offline at 14:57
-under the Simpsons season-pack download load. All qB torrents stopped and
-new-torrents-start-stopped enabled as protection - REVERT both after
-recovery. Fix: umount -l /mnt/disk1, replug the enclosure, fsck, remount.
-Full detail + permanent UAS-quirk fix in auto-memory
-`homelab-usb-disk-dropout.md`. Most of Jellyfin is unplayable until then.
+disk1 dropped offline under the Simpsons season-pack write load (second
+RTL9210 dropout; first was during zip extraction). Donnie applied the
+UAS quirk + rebooted 15:36: fsck clean, both enclosures now on
+usb-storage, pool complete, qB prefs reverted, all six Simpsons packs
+resumed. **Live experiment:** if it drops again on usb-storage it's
+thermal, not the driver. GOTCHA found: couchd's WantedBy=
+graphical-session.target never fires (lightdm autologin doesn't activate
+the user target) so couchd does NOT autostart on boot - started by hand
+15:41, unit fix belongs to the couchd session. Full detail in
+auto-memory `homelab-usb-disk-dropout.md`.
 
 ## ▶ Resume here (updated 5 Aug 2026 ~15:40 — FIRST FLIP IS LIVE)
 
