@@ -1,14 +1,18 @@
 {
- "t": 1785919222.1315598,
- "pid": 60359,
- "uptime_s": 338.0,
- "mode": "shadow",
- "owns": [],
- "owns_declared": [],
+ "t": 1785941037.4407356,
+ "pid": 589381,
+ "uptime_s": 753.5,
+ "mode": "acting",
+ "owns": [
+  "gestures"
+ ],
+ "owns_declared": [
+  "gestures"
+ ],
  "owns_file": "/home/ds2000/couch/couchd/owns.conf",
  "owns_warnings": [],
- "model_version": "43171d2e878c",
- "git": "9f1771b3e665",
+ "model_version": "ecd01e9fdfa3",
+ "git": "1af728983618",
  "acted": 0,
  "action_failures": 0,
  "action_skipped": 0,
@@ -29,7 +33,7 @@
    "ok": true,
    "events": 0,
    "detail": "0 node(s)",
-   "age_s": 1.0,
+   "age_s": 1.6,
    "stale": false
   },
   "flags": {
@@ -48,7 +52,7 @@
   },
   "kodi": {
    "ok": true,
-   "events": 12,
+   "events": 26,
    "detail": "joystick=True window=10000",
    "age_s": 0.1,
    "stale": false
@@ -63,25 +67,25 @@
   "triggers": {
    "ok": true,
    "events": 0,
-   "detail": "game-launch log absent (nothing launched yet)",
+   "detail": "quiet",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 2,
-   "detail": "top='Kodi' ev=2",
+   "events": 0,
+   "detail": "top='Kodi' ev=0",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 22,
-  "daemon": 1,
+  "obs": 36,
+  "daemon": 2,
   "transition": 6,
   "invariant": 1
  },
- "passes": 210,
+ "passes": 441,
  "intents": 0,
  "invariant_violations": 0,
  "ps_presses": {

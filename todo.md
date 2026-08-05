@@ -13,7 +13,110 @@ Deep context lives in auto-memory: `~/.claude/projects/-home-ds2000-couch/memory
 - Server-only edit → just `systemctl --user restart couch` (no rebuild).
 - Build stamp shows in the theme sheet (`build YYYY-MM-DD HH:MM`) to confirm the phone loaded fresh.
 
-## ▶ Resume here (updated 5 Aug 2026 ~08:45 — overnight mandate DONE)
+## ▶ Resume here (updated 5 Aug 2026 ~14:45 — FIRST FLIP IS LIVE)
+
+**`gestures` IS FLIPPED AND ACTING** (owns.conf, since 13:01). couchd
+executes the PS-button vocabulary; pad-home-watcher yields and shadows it.
+Rollback: empty `couchd/owns.conf` (instant), or `systemctl --user stop
+couchd` (legacy takes it back within 30s via the heartbeat lease).
+**Acceptance is still OPEN**: Donnie's evening pass is the gate.
+
+Afternoon (commits f3ee617..bf34a27):
+- Real-pad mini-test 13:56: 8 acted, 0 failures, switcher confirmed on
+  screen. But it silently DROPPED one double-tap (see below).
+- Synthetic pass in the fake-pad inhibit frame (14:07-14:15, TV never
+  woke) found 3 bugs, all now FIXED in bf34a27:
+  1. **Coalesced double-taps were silently dropped** (gating). Tap-1
+     release + tap-2 press inside one ~50ms pass coalesce, the machine
+     never reached `down-again`, no intent, no failure counter. Hit
+     Donnie's own 48ms double-tap at 13:57:11. Fix: the table asks
+     `gesture.PressTracker`'s decision (computed at the press in kernel
+     time) from every state with a press in flight. Gaps 0/48/60/120ms
+     all fire now; >=350ms correctly does not; multi-tap collapses to one.
+  2. `show_switcher` had NO effect check and Kodi is the rate-limited
+     observer, so an open dialog verdicted "unverified" forever. Added the
+     check (window 12000) + targeted Kodi reads while a prediction is
+     outstanding (0.5s floor).
+  3. A no-session PS hold made couchd act where legacy does nothing. Now
+     gated on `session_present`; "PS hold as universal return-to-Kodi"
+     is a T5 candidate awaiting Donnie's ruling, NOT live.
+  Plus: gestures that decide nothing now log `gesture-no-op` (a silent
+  no-op is indistinguishable from a dropped press - that is how 1 hid).
+- **Differ is post-flip aware**: reconstructs per-responsibility ownership
+  windows, swaps roles when couchd owns (ACTED-ONLY/SHADOW-ONLY), never
+  files yielded data as legacy-only, and prints an ACTING HEALTH block.
+  First post-flip run: 12 acted, **0 gating divergences**, edge-to-decision
+  **p95 97ms** vs the 250ms bound (Evening 1 baseline was 1445ms).
+- `intents-archive.timer` (2 min) copies /tmp/legacy-intents.jsonl into
+  shadow/legacy-intents-YYYYMMDD.jsonl - the last corpus that lived only
+  on /tmp, which the 05:19 reboot ate mid-flip.
+- Legacy bug 3 FIXED: tv-waker + pad-connect-daemon match a real DualSense
+  by device name instead of any js* (Sunshine's virtual mouse held js0, so
+  the TV silently stopped waking on pad connect). **`sudo systemctl
+  restart pad-connect` still owed** to load it there.
+- NEW legacy bug found live: Kodi can miss the BT-disconnect udev event,
+  keep deleted fds, and never re-open the reconnected pad (dead controller
+  in the UI). tv-waker now verifies Kodi holds the real node after each
+  connect and toggles peripheral.joystick to force a rescan. Kodi's raw
+  hotplug worked on all 3 later connects, so it is intermittent.
+- Model fingerprint moved to `ecd01e9fdfa3` at 14:31. Tonight's pre-14:31
+  rows read as stale-model; use `tools/shadow-diff --window` for a
+  whole-evening read.
+
+**NEXT:** (1) Donnie's evening pass = the acceptance for `gestures`;
+(2) morning after: `tools/shadow-diff --window` over the evening;
+(3) then the next flip (`reconcile` argued next), one at a time;
+(4) fault rig (needs him + a live game); (5) three rulings below.
+
+**Suites:** couchd 430, tools 178, gitleaks clean.
+
+### TV upgrade (researched 5 Aug 2026, decision Donnie's)
+
+The current 1080p60 Toshiba with no VRR is what parks stage 3. Any HDMI
+2.1 + VRR set un-parks it. The 4070 + 5700X3D drives 4K60 comfortably
+(DLSS for heavy titles; at 4K everything is GPU-bound so the CPU is never
+the limit), and 4K120 + VRR is the actual upgrade worth paying for.
+
+Shortlist, UK prices checked 5 Aug:
+- **LG C5 42" - the pick for a small room.** Full gaming spec survives at
+  42" (4x HDMI 2.1, 4K144, G-Sync + FreeSync + HDMI VRR, ~9ms lag);
+  panel is 20-30% dimmer in HDR than 55"+ (no Brightness Booster), blacks
+  identical. New floor today £749 (Crampton and Moore / Spatial); Richer
+  Sounds £769 with code RSTV80 buys a **6-year** guarantee; John Lewis
+  ~£729 list with a 10% member discount and **5-year** guarantee is the
+  best route if live. Dipped to £611-656 in June, cycles roughly monthly.
+- **Currys eBay refurb 42" C5 £597**, "excellent", 12-month warranty -
+  cheapest way in, and below every live new price.
+- **LG C5 55" £969 / 65" £1,499** if the room suits it. C6 (2026) is
+  better (165Hz, ~20% brighter) but not £700 better.
+- **Burn-in-proof alternatives:** Samsung QN90F 43" £589 (only non-OLED
+  sub-50" with real HDMI 2.1; no Dolby Vision, hurts the Jellyfin
+  library), TCL C8K 65" ~£1,199 (only 2x HDMI 2.1, no 55" in UK).
+- **No-gaming budget baseline:** TCL C6KS 50" ~£400. Kills stage 3.
+- Skip Samsung generally here: no Dolby Vision or DTS anywhere in range.
+- Sub-50" TVs with real HDMI 2.1 barely exist: TCL/Hisense/Sony UK ranges
+  start at 55" for 120Hz. The gap between "best £400 TV" and "cheapest
+  real gaming TV" is only ~£200.
+
+Burn-in worry is handled: TV off when idle + Kodi screensaver now set to
+black at 5 min (was none at all). OLED is fine for this usage.
+
+**When a TV lands, couchd/homelab work:**
+1. Port the `tv` command + tv-waker from Toshiba to LG webOS network
+   control (the RTX 4070 passes no CEC at all, so network control stays
+   the mechanism; webOS does network + WoL well; Pulse-Eight USB-CEC
+   adapter is the fallback).
+2. Set the input label to "PC" or 4K text fringes (chroma subsampling).
+3. Add TV-standby-on-idle: couchd already knows menu + no playback + pad
+   absent, which is exactly the trigger.
+4. Revisit stage 3 (gamescope) - it only pays off with VRR. Known
+   blocker to check first: NVIDIA's Linux driver has documented
+   HDR+VRR flicker inside gamescope above 1440p120, driver-side and
+   TV-independent.
+5. 10-min panel check inside the return window: full-screen colour
+   slides via Kodi for dead pixels, banding, uniformity.
+
+## ▶ Overnight mandate (5 Aug 2026 ~08:45) — DONE
 
 **THE OVERNIGHT MANDATE IS COMPLETE** (6 commits, 0e1169f..f3ee617):
 task 0 startup hang fixed (fifo blocking open + faulthandler), task 1
@@ -42,6 +145,17 @@ then Evening 2 per the compressed gate plan below, then daytime flips one
 responsibility at a time. Legacy scripts are mirrored in legacy-mirror/
 (deploy = cp to ~/.local/bin). The couch server/web now show owns state
 on the Screen-tab card.
+
+**5 Aug daytime notes:** gestures FLIPPED live ~13:01 (first flip; couch
+acceptance pending Donnie's pad pass). RAM is at stock 2667 (XMP off), so
+the freeze wasn't a boosted profile; if a second freeze happens, BIOS
+"Power Supply Idle Control = Typical Current Idle" + overnight memtest.
+Kodi screensaver set to black @ 5 min (was: none) for OLED safety. TV
+shortlist researched (LG C5 65" ~£1,499 is the pick, agent report in
+session); when a TV lands: port `tv` command + tv-waker to LG webOS
+network control, add TV-standby-on-idle (couchd knows menu+no-playback+
+pad-absent), revisit stage 3 (mind the NVIDIA gamescope HDR+VRR flicker
+issue above 1440p120).
 
 ## ▶ Previous resume block (5 Aug 2026 ~03:15 — after Evening 1)
 

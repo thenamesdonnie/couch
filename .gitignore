@@ -40,3 +40,4 @@ __pycache__/
 couchd/.venv/
 kodi-addons/**/__pycache__/
 .serena/
+shadow/.intents-archive-state.json
