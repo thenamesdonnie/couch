@@ -22,7 +22,7 @@ recovery. Fix: umount -l /mnt/disk1, replug the enclosure, fsck, remount.
 Full detail + permanent UAS-quirk fix in auto-memory
 `homelab-usb-disk-dropout.md`. Most of Jellyfin is unplayable until then.
 
-## ▶ Resume here (updated 5 Aug 2026 ~14:45 — FIRST FLIP IS LIVE)
+## ▶ Resume here (updated 5 Aug 2026 ~15:40 — FIRST FLIP IS LIVE)
 
 **`gestures` IS FLIPPED AND ACTING** (owns.conf, since 13:01). couchd
 executes the PS-button vocabulary; pad-home-watcher yields and shadows it.
@@ -71,6 +71,31 @@ Afternoon (commits f3ee617..bf34a27):
 - Model fingerprint moved to `ecd01e9fdfa3` at 14:31. Tonight's pre-14:31
   rows read as stale-model; use `tools/shadow-diff --window` for a
   whole-evening read.
+
+Late afternoon while Donnie was out (commits 500c6ae, 87c40fa):
+- **Synthetic gesture sweep 15:22-15:25: 12/12 PASS, 0 action failures,
+  TV never woke, frame restored, corpus clean.** `tools/gesture-sweep`
+  (new, committed) drives fake-pad through the whole unexercised list:
+  gap sweep 0/48/60/120/350ms (0/48 coalesce and take the bf34a27 edge
+  from `down`, 60/120 walk `down-again`, 350 stays two singles), all 5
+  switcher effects verdicted **confirmed** (0.8-1.7s vs the 3s deadline),
+  no-session holds log their no-ops, tap-then-hold decides hold, stuck
+  hold reaches release-never-came, 5-tap burst collapses to one switcher,
+  uhid disconnect mid-hold survived acting on nothing. The bf34a27 fixes
+  are end-to-end confirmed through the real acting daemon.
+- Sweep review found a live-console fact worth knowing: **Kodi's own
+  joystick layer opens the tv-poweroff context menu (10106) on every
+  >=1s PS hold** (peripheral.joystick buttonmap + gamepad-poweroff.xml
+  holdtime). Normal console behaviour, but the sweep dismisses 12000/
+  10106 between scenarios and asserts nothing modal is left standing.
+- fake-pad grew a `sleep` command (gap timing in the rig's own stream).
+- **Legacy bug 5 FIXED**: server/sys.js + server/steam.js now identify
+  the game via `game-pids` (Steam's reaper tree) instead of
+  `pgrep -f steamapps/common` - the phone's suspend button can no longer
+  SIGSTOP a bystander, and under Proton it now finds the real game
+  (S:\ cmdlines never matched the old pattern). Errors fail safe.
+  couch restarted on the fix; phone UI verified serving.
+- Suites: 608 passing (couchd 430 + tools 178).
 
 **NEXT:** (1) Donnie's evening pass = the acceptance for `gestures`;
 (2) morning after: `tools/shadow-diff --window` over the evening;

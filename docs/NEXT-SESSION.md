@@ -50,20 +50,16 @@ record is `shadow/couchd-YYYYMMDD.jsonl`.
 
 Ordered by value. Pick up wherever makes sense.
 
-1. **Synthetic gesture sweep against the live acting daemon** (fake-pad
-   inhibit frame). Highest value: this is what caught the double-tap bug.
-   Still unexercised: long-hold, the tap-then-hold boundary, pad
-   disconnect mid-gesture, a full double-tap gap sweep (0/48/60/120/350ms)
-   through the real daemon confirming the `bf34a27` fix end to end, and
-   confirming `show_switcher`'s effect check now verifies instead of
-   reading "unverified".
-2. **Legacy bug 5 — the couch server's bystander hazard.**
-   `server/sys.js:58` and `server/steam.js:176` identify the game with
-   `pgrep -f steamapps/common`, so the phone's suspend button can SIGSTOP
-   an unrelated process whose command line merely mentions steamapps. The
-   game-pids fix never reached the server. Port that logic in (couchd's
-   in-process psutil version is the reference). Independent of the flip.
-   `tools/fault-rig` injection 6 (`bystander-process`) demonstrates it.
+1. ~~Synthetic gesture sweep~~ **DONE 15:25 (commit 500c6ae): 12/12 PASS
+   via the new `tools/gesture-sweep`** - gap sweep, holds, tap-then-hold,
+   stuck hold, burst, disconnect mid-hold; all switcher effects verdicted
+   confirmed; 0 action failures; TV never woke. Re-run it any time couchd
+   is acting on gestures; it preflights everything it assumes.
+2. ~~Legacy bug 5~~ **DONE (commit 87c40fa)**: server/sys.js +
+   server/steam.js now use `game-pids` (reaper tree) instead of
+   `pgrep -f steamapps/common`; errors fail safe; couch restarted.
+   `tools/fault-rig` injection 6 (`bystander-process`) can prove it fixed
+   when the rig next runs (needs Donnie).
 3. **Model catch-up: the settle window** — the one T5 note still not
    modeled. BLOCKED on Donnie's ruling: does a press swallowed during the
    1.2s post-transition settle seed the double-tap window? Do not guess.
