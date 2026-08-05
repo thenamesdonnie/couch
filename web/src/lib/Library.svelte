@@ -388,6 +388,7 @@
                   <span class="ename">{epLabel(e)} · {e.name}</span>
                   {#if e.resumeSecs}<span class="esub dim small">in progress</span>{/if}
                 </span>
+                {#if e.fourK}<span class="epi4k mono">4K</span>{/if}
                 <span class="go" class:seenicon={e.played}><Icon name={e.played ? "check" : "play"} size={14} /></span>
               </button>
             {/each}
@@ -572,6 +573,15 @@
     text-align: left;
   }
   .epi.seen { opacity: 0.55; }
+  .epi4k {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 4px;
+    flex-shrink: 0;
+  }
   .epi img { width: 34px; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; }
   .epi .grow { display: flex; flex-direction: column; min-width: 0; }
   .ename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

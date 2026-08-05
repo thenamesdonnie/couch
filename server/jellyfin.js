@@ -146,7 +146,7 @@ export async function showEpisodes(seriesId) {
   if (!creds) creds = readCreds();
   const data = await jf(`/Shows/${seriesId}/Episodes`, {
     userId: creds.userId,
-    Fields: 'Overview,RunTimeTicks',
+    Fields: 'Overview,RunTimeTicks,Width',
   });
   return data.Items.map(slim);
 }
