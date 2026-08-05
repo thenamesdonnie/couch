@@ -452,6 +452,19 @@ app.get('/api/library/show/:id', wrap(async (req) => ({
 
 app.get('/api/library/continue', wrap(async () => jellyfin.continueWatching()));
 
+// Sonarr/Radarr standing for a library item, so the sheet can offer the 4K
+// upgrade. Keyed by the Jellyfin item id; TMDB id comes from its ProviderIds.
+// Registered before /api/library/:kind so "arrinfo" isn't read as a kind.
+app.get('/api/library/arrinfo', wrap(async (req) => {
+  const { id, type } = req.query;
+  if (!id || !['Movie', 'Series'].includes(type)) throw new Error('id and type required');
+  const tmdbId = await jellyfin.tmdbIdFor(String(id));
+  if (!tmdbId) return { tmdbId: null, inArr: false, uhd: false };
+  const arr = type === 'Series' ? sonarr : radarr;
+  const lib = await arr.libraryInfo(tmdbId).catch(() => null);
+  return { tmdbId, inArr: !!lib, uhd: lib?.uhd ?? false };
+}));
+
 app.get('/api/library/:kind', wrap(async (req) => {
   if (!['movies', 'shows'].includes(req.params.kind)) throw new Error('unrecognised library kind');
   return jellyfin.listLibrary(req.params.kind, {

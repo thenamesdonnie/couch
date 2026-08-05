@@ -89,11 +89,35 @@
   }
 
   let season = $state(null);
+  let arrInfo = $state(null);
+  let upgraded4k = $state(new Map());
+  let upgradeBusy = $state(false);
+
+  // 'all' upgrades what's downloaded and searches; 'future' flips the profile
+  // only, so new episodes arrive in 4K and the back catalogue stays put.
+  async function upgrade4k(mode) {
+    if (upgradeBusy || !arrInfo?.tmdbId || upgraded4k.has(detail.id)) return;
+    upgradeBusy = true;
+    try {
+      await api('/api/discover/upgrade4k', {
+        mediaType: detail.type === 'Series' ? 'tv' : 'movie',
+        tmdbId: arrInfo.tmdbId,
+        mode,
+      });
+      upgraded4k = new Map([...upgraded4k, [detail.id, mode]]);
+    } finally {
+      upgradeBusy = false;
+    }
+  }
 
   async function openDetail(item) {
     detail = item;
     episodes = null;
     season = null;
+    arrInfo = null;
+    api(`/api/library/arrinfo?id=${item.id}&type=${item.type}`)
+      .then((d) => { if (detail?.id === item.id) arrInfo = d; })
+      .catch(() => {});
     if (item.type === 'Series') {
       const d = await api(`/api/library/show/${item.id}`);
       episodes = d.episodes;
@@ -284,6 +308,24 @@
             {/if}
             <button disabled={casting} onclick={() => trailer(detail)}>Trailer</button>
           </div>
+          {#if arrInfo?.inArr && !arrInfo.uhd}
+            <div class="dactions">
+              {#if detail.type === 'Movie'}
+                <button class="fourk" disabled={upgradeBusy || upgraded4k.has(detail.id)} onclick={() => upgrade4k('all')}>
+                  {upgraded4k.has(detail.id) ? '4K upgrade started' : 'Upgrade to 4K'}
+                </button>
+              {:else}
+                <button class="fourk" disabled={upgradeBusy || upgraded4k.has(detail.id)} onclick={() => upgrade4k('future')}>
+                  {upgraded4k.get(detail.id) === 'future' ? '4K on for new episodes' : '4K new episodes'}
+                </button>
+                <button class="fourk" disabled={upgradeBusy || upgraded4k.has(detail.id)} onclick={() => upgrade4k('all')}>
+                  {upgraded4k.get(detail.id) === 'all' ? '4K upgrade started' : 'Upgrade all'}
+                </button>
+              {/if}
+            </div>
+          {:else if arrInfo?.uhd}
+            <div class="dactions"><span class="uhdchip">4K</span></div>
+          {/if}
         </div>
       </div>
       {#if detail.overview}<p class="overview small dim">{detail.overview}</p>{/if}
@@ -561,4 +603,20 @@
   }
   .dtitle { font-size: 19px; font-weight: 700; line-height: 1.15; margin-bottom: 4px; }
   .dactions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .fourk {
+    font-size: 12px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--raise);
+    color: var(--muted);
+    border: 1px solid var(--line);
+  }
+  .uhdchip {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-tint);
+    border-radius: 6px;
+    padding: 3px 8px;
+  }
 </style>

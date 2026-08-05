@@ -161,6 +161,14 @@ export async function continueWatching() {
   };
 }
 
+// The TMDB id Jellyfin knows for an item, to key Sonarr/Radarr lookups.
+export async function tmdbIdFor(itemId) {
+  if (!creds) creds = readCreds();
+  const item = await jf(`/Users/${creds.userId}/Items/${itemId}`);
+  const id = Number(item.ProviderIds?.Tmdb);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
 // Media segments (intro/outro times) for whatever is playing, so skip-intro
 // can jump the exact intro rather than a fixed nudge. Keyed by the Jellyfin
 // item id, which the Kodi player carries in its file url.
