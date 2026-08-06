@@ -26,16 +26,16 @@ the user target) so couchd does NOT autostart on boot - started by hand
 15:41, unit fix belongs to the couchd session. Full detail in
 auto-memory `homelab-usb-disk-dropout.md`.
 
-## ▶ Resume here (updated 7 Aug 2026 ~03:00 — night shift complete)
+## ▶ Resume here (updated 6 Aug 2026 ~21:00 — deploy day + evening build run)
 
-**NIGHT-SHIFT RESULTS (6-7 Aug overnight, commits cbbe281..7d7da3a):**
+**EVENING BUILD RUN (6 Aug ~18:00-21:00, commits cbbe281..9d78c86):**
 - **DEPLOYED + verified tonight:** Play on TV (phone button + full remote:
   /api/tv/* endpoints, foreground-aware input restore; chain proven live -
   Batman Returns via API); Kodi context item "Play on TV (HDR)" (enabled
   after a graceful Kodi restart, TV stayed asleep); whisper-asr on Vulkan
   (3x faster; rollback = ~/.local/bin/whisper-asr-server.cpu-fallback.bak);
   curtain wired into game-launch suspend/resume (sweep 12/12 after).
-- **DEPLOYED ~03:45 (commits 7d7da3a + the R7(d) rescope): the
+- **DEPLOYED ~19:10 (commits 7d7da3a + the R7(d) rescope): the
   resume-ordering protocol is LIVE.** Adversarial review verdict: core
   protocol REFUTED every attack; the one FIX-FIRST item (stale differ
   exemption eating the validation evidence) was rescoped + pinned before
@@ -57,14 +57,14 @@ auto-memory `homelab-usb-disk-dropout.md`.
   deployed switcher addon (it gained ui.animated_dialog) - reconcile the
   test; curtain resume worst-case vs its 8s watchdog unverified live.
 
-**NEW BUILD ITEM (Donnie, 7 Aug ~03:30, OLED burn-in worry): TV idle guard**
+**NEW BUILD ITEM (Donnie, 6 Aug evening, OLED burn-in worry): TV idle guard**
 - the C5 is an OLED and Kodi's home screen is static; build the tv-waker
   counterpart: TV on + no Kodi playback + no game session + no input for
   ~15 min -> `tv off`. Conditions must be conservative (never mid-film,
   never mid-game, respect a manual-on grace period). Natural home: a small
   daemon beside tv-waker or a couch-server poller. Build in daylight.
 
-**SWITCHER VERIFIED BY RIG 7 Aug ~04:30 (fake-pad + screenshots), item 1
+**SWITCHER VERIFIED BY RIG 6 Aug ~19:25 (fake-pad + screenshots), item 1
 of the checklist is DONE:** double-tap opened the animated sheet, rows show
 NAMES ("Switch to" header, labelled rows, Cancel), LEFT-STICK navigation
 moves the highlight (blue accent bar), and CROSS picks the focused row
@@ -75,7 +75,7 @@ hidden). RIG NOTE: fake-pad's DPAD does not reach Kodi (it enumerates with
 hats: 0, unlike the real pad), so rig navigation must use the left stick;
 that is a rig limitation, not a console bug.
 
-**RIG-VERIFIED 7 Aug ~04:30-04:45 (fake-pad + screenshots + live chain),
+**RIG-VERIFIED 6 Aug ~19:30-19:40 (fake-pad + screenshots + live chain),
 nothing left for Donnie except the game-dependent items:**
 - Play on TV, FULL end-to-end from the Kodi context menu: item visible in
   the menu on a real film, id extracted (The Batman), stages walked
@@ -273,7 +273,7 @@ resume thaws BEFORE clearing the suspended flag; in that gap couchd-owning-
 reconcile would RE-FREEZE the game mid-resume, every time. Fix the ordering
 (or model the resume window) first.
 
-**Live state left overnight (all reversible, none committed config):**
+**Live state (all reversible, none committed config):**
 FFCP off (until next Kodi restart), xfwm4 compositing ON, PowerMizer auto,
 BP window minimized, master volume 60%, /tmp guard pidfile+fifo cleaned once
 at 03:41 (new stale ones have accumulated since — deploy item 4).

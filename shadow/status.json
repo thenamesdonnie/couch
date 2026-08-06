@@ -1,7 +1,7 @@
 {
- "t": 1786043205.536754,
+ "t": 1786046315.9802818,
  "pid": 227754,
- "uptime_s": 3353.1,
+ "uptime_s": 6463.5,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -39,7 +39,7 @@
    "ok": true,
    "events": 223,
    "detail": "0 node(s)",
-   "age_s": 2.0,
+   "age_s": 1.9,
    "stale": false
   },
   "flags": {
@@ -58,9 +58,9 @@
   },
   "kodi": {
    "ok": true,
-   "events": 138,
+   "events": 246,
    "detail": "joystick=True window=10100",
-   "age_s": 5.1,
+   "age_s": 0.1,
    "stale": false
   },
   "steam": {
@@ -86,10 +86,10 @@
   }
  },
  "counts": {
-  "obs": 280,
+  "obs": 388,
   "daemon": 2,
   "transition": 83,
-  "agreement": 651,
+  "agreement": 1244,
   "invariant": 1,
   "latency": 47,
   "intent": 12,
@@ -97,7 +97,7 @@
   "decision": 14,
   "observer_blind": 1
  },
- "passes": 2289,
+ "passes": 3527,
  "intents": 12,
  "invariant_violations": 0,
  "ps_presses": {
