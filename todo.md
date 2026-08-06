@@ -26,7 +26,100 @@ the user target) so couchd does NOT autostart on boot - started by hand
 15:41, unit fix belongs to the couchd session. Full detail in
 auto-memory `homelab-usb-disk-dropout.md`.
 
-## ▶ Resume here (updated 5 Aug 2026 ~15:40 — FIRST FLIP IS LIVE)
+## ▶ Resume here (updated 6 Aug 2026 ~04:30 — GESTURES ACCEPTED)
+
+**FIRST FLIP ACCEPTED.** Donnie accepted `gestures` at ~04:15 BST 6 Aug after
+the overnight couch pass (02:30-04:15, Hollow Knight + Big Picture, every
+scripted step run). couchd keeps owning gestures; nothing else is flipped.
+Full evidence: `docs/acceptance-20260806.md`. Differ re-run:
+`tools/shadow-diff --window 02:30-04:10` (VALID, 207 decisions).
+
+**The night in one line:** acted 87, action_failures 0, refused 0, 0
+OWNER-MISSED rows, edge-to-decision p50 83ms / p95 191ms (bound 250), every
+first-live-run item passed (spawn_guard, launch-resume oracle, coalesced
+double-tap under real timing), yesterday's BP flag-fight fix held (pad stayed
+on Kodi, no tug-of-war), BT-drop reconnect produced zero phantom gestures.
+
+**Differ gating 14 — all explained, none a couchd misbehavior:**
+- 10x freeze SET-MISMATCH: legacy's YIELDED would-freezes all record pids=[]
+  (its acting thaws resolve 18 fine) — legacy yield-path recording bug (T3).
+- 2x ORDER on BP holds: "freeze before flag" assertion not aware pids-less
+  BP sessions skip freeze. Assertion gap.
+- 2x missed effects (honest): close_steam_menu (menu not routed, 8.5s) and
+  launch-bigpicture (oracle waits on game pids; BP has none).
+Plus 13 invariant records = stale guard pidfiles (see finding G below), and
+matched-offset p95 ~1s = legacy's lazy shadow writes (not couchd's latency).
+
+**DEPLOY DAY (today, in order).** Steps 1-5 were already agreed; 6-9 are from
+the acceptance night:
+1. Whitelist WM_CLASS couch-curtain in BOTH stacks' foreground classification
+   (model change: differ note, fingerprint moves, couchd restart).
+2. Reload the switcher addon; verify dialog draws + stick navigates during the
+   slide + effect verdicts confirmed.
+3. Live-test curtain standalone; then wire curtain into game-launch
+   suspend/resume.
+4. **steam-input-guard cleanup on exit** (pidfile + vpad.fifo). NOT cosmetic:
+   with a stale vpad.fifo present, every later guard logs vpad_started:false
+   and menu-closing is silently dead for BOTH stacks (proved live: cleanup at
+   03:41 -> next guard's vpad worked). Also dedupe the guard-supersession
+   protocol (see ruling R-a).
+5. **Hide/minimize Big Picture's window once the game window maps** (in
+   game-launch AND its resume path). Root cause of the night's fps saga:
+   BP left mapped fullscreen behind the game = compositor juggles stacked
+   live surfaces = "Steam says 60, feels 20". Minimizing BP fixed it
+   instantly, twice. (couchd transitions model wants the same move later.)
+6. **kodi-tv FFCP decision**: line 24 reapplies ForceFullCompositionPipeline
+   on every Kodi start; it double-composites games under xfwm4. I removed it
+   live at ~03:25 (returns on next Kodi restart). Decide: drop it / make it
+   session-conditional. xfwm4 compositing MUST stay on (two live experiments
+   of turning it off under a fullscreen game broke presentation: black
+   screen / frozen frame with audio). Check Kodi for tearing without FFCP.
+7. Effect-oracle fixes: snapshot + iconify verdicted UNVERIFIED on all 5 live
+   suspends (5-17s timeouts) — they never confirm in the real environment;
+   launch-bigpicture needs a window-based oracle (no game pids); BP-hold
+   ORDER assertion exemption (item above).
+8. Legacy yield-path pid recording bug (the 10 SET-MISMATCH rows).
+9. gesture-sweep 12/12 must pass after ALL of it.
+Also queued: CPU work (60fps cap via DXVK_FRAME_RATE + MangoHud in Steam unit
+env — MangoHud also wanted for real frame-time debugging; CPUWeight slice;
+game-session-keyed governor watcher — governor flip needs sudo, Donnie's
+list). GPU PowerMizer pinning was tested and is NOT needed (red herring).
+Maybe: session-start volume clamp (fresh game streams open at 100%; one blast
+at ~03:30. Master baseline set to 60%).
+
+**NEW RULINGS for Donnie (from the acceptance night):**
+- R-a: guard supersession across stacks. Legacy's switcher-pick resume
+  spawned guard(game) which SIGTERM'd couchd's freshly spawned kodi-guard
+  ("superseded-by-newer-guard") and enforced game-on-top against the suspend
+  the user just asked for (the 03:16-03:20 Kodi<->BP loop). Who arbitrates
+  when stacks disagree, until `guard` flips?
+- R-b: switcher-pick resume routes through Steam BP ("show game via steam")
+  on EVERY session shape — user picks a game, sees Steam's shell first. Keep
+  (with BP hidden after, per deploy item 5) or reroute?
+- R-c: switcher's Big Picture tile pressed while a session sat FROZEN hung
+  Steam BP "loading" forever (blocked on SIGSTOPped game IPC); Donnie's
+  tap-resume unstuck it. Disable/thaw-first?
+- (Standing rulings from 5 Aug remain: settle window, phone suspend/quit
+  yield, differ launch verb, hold-handoff-at-release, ACTED-ONLY gating.)
+
+**HARD GATE for the reconcile flip (do not flip until fixed):**
+`refreeze-lost-suspend` fired in shadow 3x live (03:18, 03:33, 03:42): legacy
+resume thaws BEFORE clearing the suspended flag; in that gap couchd-owning-
+reconcile would RE-FREEZE the game mid-resume, every time. Fix the ordering
+(or model the resume window) first.
+
+**Live state left overnight (all reversible, none committed config):**
+FFCP off (until next Kodi restart), xfwm4 compositing ON, PowerMizer auto,
+BP window minimized, master volume 60%, /tmp guard pidfile+fifo cleaned once
+at 03:41 (new stale ones have accumulated since — deploy item 4).
+Console left on Kodi home, no session, couchd acting on gestures.
+
+**Environment notes that cost time tonight:** /tmp/couchd.log timestamps are
+UTC (BST-1); python-xlib's damage/error decoding is broken on this box (use
+MangoHud tomorrow, not X11 archaeology); tools/game-pids does not exist (the
+real one is on PATH as `game-pids` in ~/.local/bin).
+
+## ▶ Previous resume block (5 Aug 2026 ~15:40 — first flip live, pre-acceptance)
 
 **`gestures` IS FLIPPED AND ACTING** (owns.conf, since 13:01). couchd
 executes the PS-button vocabulary; pad-home-watcher yields and shadows it.
