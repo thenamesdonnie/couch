@@ -69,4 +69,4 @@ IOWeight=20
 MemoryMax=256M
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
