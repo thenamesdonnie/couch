@@ -64,11 +64,19 @@ auto-memory `homelab-usb-disk-dropout.md`.
   never mid-game, respect a manual-on grace period). Natural home: a small
   daemon beside tv-waker or a couch-server poller. Build in daylight.
 
-**DONNIE'S PAD-IN-HAND CHECKLIST (5 min):** (1) double-tap in a game:
-animated switcher must show NAMES and stick-nav + select must work (fix
-deployed: list id 3 was Kodi-reserved; if it misbehaves, ui.animated_dialog
-=false is the instant rollback); with a game paused the sheet should float
-over the freeze-frame. (2) suspend/resume from the PHONE: first live
+**SWITCHER VERIFIED BY RIG 7 Aug ~04:30 (fake-pad + screenshots), item 1
+of the checklist is DONE:** double-tap opened the animated sheet, rows show
+NAMES ("Switch to" header, labelled rows, Cancel), LEFT-STICK navigation
+moves the highlight (blue accent bar), and CROSS picks the focused row
+(Cancel -> "couch.switcher: cancelled"). The id-3 fix is confirmed end to
+end through the real input path. NOT verifiable without a game: the
+freeze-frame backdrop (correctly inert with no session - the control stays
+hidden). RIG NOTE: fake-pad's DPAD does not reach Kodi (it enumerates with
+hats: 0, unlike the real pad), so rig navigation must use the left stick;
+that is a rig limitation, not a console bug.
+
+**DONNIE'S PAD-IN-HAND CHECKLIST (now 3 items):** (1) with a game paused,
+double-tap: the sheet should float over the game's freeze-frame. (2) suspend/resume from the PHONE: first live
 curtain (freeze -> fade -> Kodi and back). (3) any film: context menu
 "Play on TV (HDR)" and the phone's Play in HDR button. (4) TV odds+ends
 still open: soundbar eARC + Kodi passthrough, Deep Colour + Game Optimizer.

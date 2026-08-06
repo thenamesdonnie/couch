@@ -278,3 +278,4 @@
 {"t": 1786039919.303382, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
 {"t": 1786040015.8516333, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
 {"t": 1786040016.2537622, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786040772.4219327, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
