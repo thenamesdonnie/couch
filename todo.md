@@ -35,15 +35,18 @@ auto-memory `homelab-usb-disk-dropout.md`.
   after a graceful Kodi restart, TV stayed asleep); whisper-asr on Vulkan
   (3x faster; rollback = ~/.local/bin/whisper-asr-server.cpu-fallback.bak);
   curtain wired into game-launch suspend/resume (sweep 12/12 after).
-- **STAGED, NOT DEPLOYED - the reconcile-flip gate (commit 7d7da3a):**
-  resume-ordering protocol: flag-first thaws everywhere (incl. the newly
-  found ~17s close_games window + unlocked tile resumes), repairs debounced
-  (watcher 0.6s / guard 1 pass / couchd 2s persistence), differ declares the
-  new order. Fingerprint moves to 58d8b15bee6b on deploy. **ADVERSARIAL
-  REVIEW RUNNING overnight - read its verdict FIRST, then deploy in
-  daylight: mirrors -> couchd restart -> pad-home restart -> sweep 12/12.**
-  After one clean shadow evening (zero refreeze rows near resumes), the
-  reconcile flip is unblocked from this hazard.
+- **DEPLOYED ~03:45 (commits 7d7da3a + the R7(d) rescope): the
+  resume-ordering protocol is LIVE.** Adversarial review verdict: core
+  protocol REFUTED every attack; the one FIX-FIRST item (stale differ
+  exemption eating the validation evidence) was rescoped + pinned before
+  deploy. Deployed tightly (mirrors -> couchd restart -> pad-home restart),
+  fingerprint now 58d8b15bee6b, sweep 12/12, 0 failures. **The reconcile
+  flip now needs only: one clean shadow evening (differ shows zero
+  refreeze rows near resumes - normal couch use provides it), then
+  Donnie's daytime flip decision.** Reviewer's note-grade residuals are in
+  the differ docstring (guard latency ~2s, watcher 0.6s hold-measure edge,
+  close_games crash-at-entry resurrection trade, couchd's lockless acted
+  suspend for the flip design discussion).
 - **Stage 3 kicked off (committed, nothing wired):** tools/gamescope-wrap
   (exit-code laundering via sh shim - gamescope NEVER forwards child status,
   source-verified) + docs/stage3-gamescope-migration.md (18 window-model
@@ -53,6 +56,13 @@ auto-memory `homelab-usb-disk-dropout.md`.
 - **Known dirt:** test_gestureconf settings-page test fails against the
   deployed switcher addon (it gained ui.animated_dialog) - reconcile the
   test; curtain resume worst-case vs its 8s watchdog unverified live.
+
+**NEW BUILD ITEM (Donnie, 7 Aug ~03:30, OLED burn-in worry): TV idle guard**
+- the C5 is an OLED and Kodi's home screen is static; build the tv-waker
+  counterpart: TV on + no Kodi playback + no game session + no input for
+  ~15 min -> `tv off`. Conditions must be conservative (never mid-film,
+  never mid-game, respect a manual-on grace period). Natural home: a small
+  daemon beside tv-waker or a couch-server poller. Build in daylight.
 
 **DONNIE'S PAD-IN-HAND CHECKLIST (5 min):** (1) double-tap in a game:
 animated switcher must show NAMES and stick-nav + select must work (fix

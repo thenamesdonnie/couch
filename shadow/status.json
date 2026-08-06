@@ -1,7 +1,7 @@
 {
- "t": 1786038795.6314082,
- "pid": 2149,
- "uptime_s": 7457.8,
+ "t": 1786040062.093695,
+ "pid": 227754,
+ "uptime_s": 209.6,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -11,9 +11,9 @@
  ],
  "owns_file": "/home/ds2000/couch/couchd/owns.conf",
  "owns_warnings": [],
- "model_version": "6c658480a2da",
- "git": "de0462dba6fe",
- "acted": 36,
+ "model_version": "58d8b15bee6b",
+ "git": "7a891f78a520",
+ "acted": 10,
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
@@ -27,8 +27,7 @@
   "pad": "absent"
  },
  "games": {
-  "367520": "STOPPED",
-  "/home/ds2000/games/ps4/CUSA00900/eboot.bin": "STOPPED"
+  "367520": "STOPPED"
  },
  "last_would_do": [
   "would show_switcher tv [gesture:double-tap-switcher]",
@@ -38,79 +37,78 @@
  "observers": {
   "pad": {
    "ok": true,
-   "events": 1195802,
+   "events": 92,
    "detail": "0 node(s)",
-   "age_s": 0.7,
+   "age_s": 1.0,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 17,
+   "events": 5,
    "detail": "0 present",
    "age_s": 0.1,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 15,
+   "events": 0,
    "detail": "0 pid(s)",
    "age_s": 0.0,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 299,
+   "events": 20,
    "detail": "joystick=True window=10100",
-   "age_s": 0.1,
+   "age_s": 5.1,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 17,
+   "events": 1,
    "detail": "1 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 4,
-   "detail": "quit (save and close)",
+   "events": 0,
+   "detail": "quiet",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 3458,
-   "detail": "top='Kodi' ev=3458",
+   "events": 554,
+   "detail": "top='Kodi' ev=554",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 684,
+  "obs": 125,
   "daemon": 2,
-  "transition": 230,
-  "agreement": 1425,
-  "observer_blind": 4,
+  "transition": 68,
+  "agreement": 49,
   "invariant": 1,
-  "latency": 74,
-  "intent": 49,
-  "effect": 36,
-  "decision": 23
+  "latency": 41,
+  "intent": 10,
+  "effect": 10,
+  "decision": 14
  },
- "passes": 6349,
- "intents": 49,
+ "passes": 634,
+ "intents": 10,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 41,
-  "steam_guide_lines": 15,
-  "first_event_latency_s": 6.38
+  "evdev": 22,
+  "steam_guide_lines": 0,
+  "first_event_latency_s": 7.851
  },
- "last_trigger": "quit (save and close)",
+ "last_trigger": "",
  "edges": {
-  "seen": 84,
-  "coalesced": 10,
-  "last_latency_s": 0.0915
+  "seen": 45,
+  "coalesced": 4,
+  "last_latency_s": 0.1385
  },
  "resource_leaks": [],
  "bindings": {
