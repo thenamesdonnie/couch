@@ -73,7 +73,12 @@ ADDON_PATH = ADDON.getAddonInfo("path")
 DIALOG_XML = "script-couch-switcher.xml"
 DIALOG_SKIN = "Default"
 DIALOG_RES = "1080i"
-LIST_ID = 3                 # the one control id this file and the XML share
+# The one control id this file and the XML share. NOT 2, 3, 4, 12 or 50-59:
+# WindowXML claims those (view/sort buttons and the media container) and
+# swallows their clicks before python's onClick ever runs - the list was id 3
+# once and every select press died as "WindowXML: Internal sort button not
+# implemented" in the log.
+LIST_ID = 9000
 
 # The freeze-frame backdrop. pause-snap drops the paused game's last rendered
 # frame in PAUSED_DIR at suspend time; the XML's bottom-most image control is
@@ -122,8 +127,13 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
 
     def onInit(self):
         # Kodi can re-init a window (a skin reload, a resolution change); the
-        # list is built once so a re-init cannot duplicate the rows.
+        # list is built once so a re-init cannot duplicate the rows. But every
+        # init opens with nothing focused (WINDOW_INIT's default-focus attempt
+        # runs before this callback, against a then-empty list), so focus is
+        # re-asserted on every init, not just the filling one - a bare early
+        # return here would leave a re-inited window deaf to the pad.
         if self._filled:
+            self.setFocusId(LIST_ID)
             return
         self._filled = True
         self._start_frame_watch()

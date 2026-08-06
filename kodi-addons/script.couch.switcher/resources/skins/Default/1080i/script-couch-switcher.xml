@@ -20,12 +20,22 @@
      on the render thread, so the list is focusable and stick-navigable from
      frame one; nothing here gates input.
 
-     Control ids are a contract with default.py: 3 is the list, and it is the
-     ONLY control the python fetches. Ids 50-59 are deliberately avoided -
-     Kodi's CGUIMediaWindow claims those as the "main container" and manages
-     them itself. -->
+     Control ids are a contract with default.py: 9000 is the list, and it is
+     the ONLY control the python fetches. Two id ranges are deliberately
+     avoided because WindowXML (the C++ class behind WindowXMLDialog) claims
+     them for itself: 50-59 are CGUIMediaWindow's "main container", and 2/3/4
+     (plus 12) are the old media-window view/sort buttons - WindowXML::
+     OnMessage eats GUI_MSG_CLICKED from those ids ("Internal sort button not
+     implemented" in the log) and python's onClick never runs. The list was id
+     3 once and select presses vanished into exactly that; do not renumber
+     into either range.
+
+     One log line is expected and harmless per open: "Control 9000 ... has
+     been asked to focus, but it can't". WINDOW_INIT tries the defaultcontrol
+     before python has filled the list, and an empty list refuses focus;
+     onInit's setFocusId lands the real focus a beat later. -->
 <window type="dialog">
-  <defaultcontrol always="true">3</defaultcontrol>
+  <defaultcontrol always="true">9000</defaultcontrol>
   <animation effect="fade" start="0" end="100" time="200" tween="sine" easing="out">WindowOpen</animation>
   <animation effect="fade" start="100" end="0" time="200" tween="sine" easing="in">WindowClose</animation>
 
@@ -104,15 +114,15 @@
 
       <!-- The list. Same rows, same order, same trailing Cancel as the select
            dialog it replaces - default.py builds them, this only draws them. -->
-      <control type="list" id="3">
+      <control type="list" id="9000">
         <left>80</left>
         <top>586</top>
         <width>1760</width>
         <height>440</height>
-        <onleft>3</onleft>
-        <onright>3</onright>
-        <onup>3</onup>
-        <ondown>3</ondown>
+        <onleft>9000</onleft>
+        <onright>9000</onright>
+        <onup>9000</onup>
+        <ondown>9000</ondown>
         <itemgap>8</itemgap>
         <orientation>vertical</orientation>
 

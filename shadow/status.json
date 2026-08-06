@@ -1,7 +1,7 @@
 {
- "t": 1786033264.519525,
+ "t": 1786033663.191898,
  "pid": 2149,
- "uptime_s": 1926.7,
+ "uptime_s": 2325.4,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -17,7 +17,7 @@
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
- "attention": true,
+ "attention": false,
  "regions": {
   "input_ownership": "kodi",
   "foreground": "kodi",
@@ -40,14 +40,14 @@
    "ok": true,
    "events": 1195712,
    "detail": "0 node(s)",
-   "age_s": 0.4,
+   "age_s": 0.1,
    "stale": false
   },
   "flags": {
    "ok": true,
    "events": 17,
    "detail": "0 present",
-   "age_s": 0.0,
+   "age_s": 0.1,
    "stale": false
   },
   "pids": {
@@ -59,9 +59,9 @@
   },
   "kodi": {
    "ok": true,
-   "events": 89,
-   "detail": "joystick=True window=10025",
-   "age_s": 3.1,
+   "events": 107,
+   "detail": "joystick=True window=10000",
+   "age_s": 5.1,
    "stale": false
   },
   "steam": {
@@ -80,17 +80,17 @@
   },
   "x11": {
    "ok": true,
-   "events": 1999,
-   "detail": "top='Kodi' ev=1999",
+   "events": 2048,
+   "detail": "top='Kodi' ev=2048",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 325,
+  "obs": 354,
   "daemon": 2,
-  "transition": 150,
-  "agreement": 363,
+  "transition": 152,
+  "agreement": 436,
   "observer_blind": 3,
   "invariant": 1,
   "latency": 33,
@@ -98,7 +98,7 @@
   "effect": 26,
   "decision": 8
  },
- "passes": 2916,
+ "passes": 3193,
  "intents": 39,
  "invariant_violations": 0,
  "ps_presses": {
