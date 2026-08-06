@@ -1,7 +1,7 @@
 {
- "t": 1786036861.6971507,
+ "t": 1786038795.6314082,
  "pid": 2149,
- "uptime_s": 5523.9,
+ "uptime_s": 7457.8,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -13,7 +13,7 @@
  "owns_warnings": [],
  "model_version": "6c658480a2da",
  "git": "de0462dba6fe",
- "acted": 26,
+ "acted": 36,
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
@@ -38,9 +38,9 @@
  "observers": {
   "pad": {
    "ok": true,
-   "events": 1195712,
+   "events": 1195802,
    "detail": "0 node(s)",
-   "age_s": 1.9,
+   "age_s": 0.7,
    "stale": false
   },
   "flags": {
@@ -59,14 +59,14 @@
   },
   "kodi": {
    "ok": true,
-   "events": 220,
-   "detail": "joystick=True window=10000",
+   "events": 299,
+   "detail": "joystick=True window=10100",
    "age_s": 0.1,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 16,
+   "events": 17,
    "detail": "1 app(s) tracked",
    "age_s": 0.0,
    "stale": false
@@ -80,37 +80,37 @@
   },
   "x11": {
    "ok": true,
-   "events": 2434,
-   "detail": "top='Kodi' ev=2434",
+   "events": 3458,
+   "detail": "top='Kodi' ev=3458",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 493,
+  "obs": 684,
   "daemon": 2,
-  "transition": 164,
-  "agreement": 1047,
-  "observer_blind": 3,
+  "transition": 230,
+  "agreement": 1425,
+  "observer_blind": 4,
   "invariant": 1,
-  "latency": 33,
-  "intent": 39,
-  "effect": 26,
-  "decision": 8
+  "latency": 74,
+  "intent": 49,
+  "effect": 36,
+  "decision": 23
  },
- "passes": 4765,
- "intents": 39,
+ "passes": 6349,
+ "intents": 49,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 19,
-  "steam_guide_lines": 14,
-  "first_event_latency_s": 17.898
+  "evdev": 41,
+  "steam_guide_lines": 15,
+  "first_event_latency_s": 6.38
  },
  "last_trigger": "quit (save and close)",
  "edges": {
-  "seen": 40,
-  "coalesced": 7,
-  "last_latency_s": 0.0848
+  "seen": 84,
+  "coalesced": 10,
+  "last_latency_s": 0.0915
  },
  "resource_leaks": [],
  "bindings": {

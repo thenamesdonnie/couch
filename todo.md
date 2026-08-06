@@ -26,7 +26,44 @@ the user target) so couchd does NOT autostart on boot - started by hand
 15:41, unit fix belongs to the couchd session. Full detail in
 auto-memory `homelab-usb-disk-dropout.md`.
 
-## ▶ Resume here (updated 6 Aug 2026 ~04:30 — GESTURES ACCEPTED)
+## ▶ Resume here (updated 7 Aug 2026 ~03:00 — night shift complete)
+
+**NIGHT-SHIFT RESULTS (6-7 Aug overnight, commits cbbe281..7d7da3a):**
+- **DEPLOYED + verified tonight:** Play on TV (phone button + full remote:
+  /api/tv/* endpoints, foreground-aware input restore; chain proven live -
+  Batman Returns via API); Kodi context item "Play on TV (HDR)" (enabled
+  after a graceful Kodi restart, TV stayed asleep); whisper-asr on Vulkan
+  (3x faster; rollback = ~/.local/bin/whisper-asr-server.cpu-fallback.bak);
+  curtain wired into game-launch suspend/resume (sweep 12/12 after).
+- **STAGED, NOT DEPLOYED - the reconcile-flip gate (commit 7d7da3a):**
+  resume-ordering protocol: flag-first thaws everywhere (incl. the newly
+  found ~17s close_games window + unlocked tile resumes), repairs debounced
+  (watcher 0.6s / guard 1 pass / couchd 2s persistence), differ declares the
+  new order. Fingerprint moves to 58d8b15bee6b on deploy. **ADVERSARIAL
+  REVIEW RUNNING overnight - read its verdict FIRST, then deploy in
+  daylight: mirrors -> couchd restart -> pad-home restart -> sweep 12/12.**
+  After one clean shadow evening (zero refreeze rows near resumes), the
+  reconcile flip is unblocked from this hazard.
+- **Stage 3 kicked off (committed, nothing wired):** tools/gamescope-wrap
+  (exit-code laundering via sh shim - gamescope NEVER forwards child status,
+  source-verified) + docs/stage3-gamescope-migration.md (18 window-model
+  sites mapped, LD_PRELOAD overlay-strip finding, freeze-tree asymmetry
+  ruling needed, guinea pig = shadPS4 Bloodborne). Donnie chose "games into
+  gamescope" as the migration track.
+- **Known dirt:** test_gestureconf settings-page test fails against the
+  deployed switcher addon (it gained ui.animated_dialog) - reconcile the
+  test; curtain resume worst-case vs its 8s watchdog unverified live.
+
+**DONNIE'S PAD-IN-HAND CHECKLIST (5 min):** (1) double-tap in a game:
+animated switcher must show NAMES and stick-nav + select must work (fix
+deployed: list id 3 was Kodi-reserved; if it misbehaves, ui.animated_dialog
+=false is the instant rollback); with a game paused the sheet should float
+over the freeze-frame. (2) suspend/resume from the PHONE: first live
+curtain (freeze -> fade -> Kodi and back). (3) any film: context menu
+"Play on TV (HDR)" and the phone's Play in HDR button. (4) TV odds+ends
+still open: soundbar eARC + Kodi passthrough, Deep Colour + Game Optimizer.
+
+## ▶ Previous resume block (updated 6 Aug 2026 ~04:30 — GESTURES ACCEPTED)
 
 **HARDWARE DAY DONE (6 Aug evening): 5700X3D + RX 9070 XT + LG C5 all in
 and working.** CPU 8c/16t boosting 4.15GHz, Tctl ~59C. GPU on Mesa 25.2
