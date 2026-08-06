@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="context.couch.playontv" name="Couch Play on TV" version="1.0.0" provider-name="ds2000">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="kodi.context.item">
+    <menu id="kodi.core.main">
+      <item library="context.py">
+        <label>Play on TV (HDR)</label>
+        <!-- Playable video items only: a library row (real DBID) or a jellyfin
+             plugin row (jellyfinid property), and it must be a movie or an
+             episode, never a show / season / set container. Mirrors the
+             condition plugin.video.jellyfin uses for its own Transcode item. -->
+        <visible>[!String.IsEmpty(ListItem.DBID) + !String.IsEqual(ListItem.DBID,-1) |
+          !String.IsEmpty(ListItem.Property(jellyfinid))] +
+          [String.IsEqual(ListItem.DBTYPE,movie) | String.IsEqual(ListItem.DBTYPE,episode)]</visible>
+      </item>
+    </menu>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary>Send a movie or episode to the TV's own Jellyfin app</summary>
+    <description>Adds a "Play on TV (HDR)" context item to movies and episodes. It hands the item to the couch server, which wakes the TV, opens its native Jellyfin app and starts playback there, so 4K HDR titles play with real HDR instead of the PC's tonemapped picture. Progress arrives as notifications; nothing blocks the Kodi UI.</description>
+    <platform>all</platform>
+  </extension>
+</addon>
