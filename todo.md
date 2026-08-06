@@ -46,6 +46,28 @@ STILL TO DO on the TV: soundbar into eARC (HDMI 3) + Kodi passthrough,
 Jellyfin from the LG store, reserve the TV's IP, "Turn on via Wi-Fi" if not
 already, Ultra HD Deep Colour + Game Optimizer on the PC's input.
 
+**ADAPTER-ARRIVAL CHECKLIST (DP->HDMI 2.1, both ordered 5 Aug):**
+1. Cable Matters 102101 first (works on stock 6.14): BEFORE fitting, flash
+   its VRR firmware from a Windows machine with DP out = Donnie's main PC.
+2. Fit into any DP on the 9070 XT; the X output will rename again
+   (DisplayPort-N). kodi-tv's TearFree xrandr line auto-picks the first
+   connected output; tv.json needs nothing (TV-side port unchanged).
+3. Expect 4K120 in xrandr; pick mode. Ultra HD Deep Colour must be ON for
+   that TV input or the link caps out.
+4. VRR honesty: X11 only engages VariableRefresh (already in
+   /etc/X11/xorg.conf.d/10-amdgpu.conf) for UNREDIRECTED fullscreen, and the
+   compositor stays on (hard rule), so X-side VRR will mostly not engage.
+   The real VRR/HDR path is gamescope = stage 3
+   (docs/gamescope-spike-20260806.md once the spike lands).
+5. UGREEN 85564 is the better adapter but its VRR needs a kernel patch that
+   was not mainlined as of 5 Aug - re-check patch status before choosing it.
+
+**RX-unlocked prep status (6 Aug evening):** xorg VariableRefresh pre-staged
+by the swap script; House GPU card verified reading amdgpu sysfs; MangoHud
+already installed; whisper-asr running on CPU int8 fallback (Vulkan
+whisper.cpp build+benchmark agent running); gamescope source-build
+feasibility agent running (no noble apt package).
+
 **SWITCHER: root cause FOUND AND FIXED (commit 44a2379), but left OFF pending
 one pad test.** The animated sheet ate every select press because **Kodi
 reserves control ids 2/3/4/12** - `WindowXML::OnMessage` intercepts clicks
