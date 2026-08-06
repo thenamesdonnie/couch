@@ -24,6 +24,7 @@ import * as steam from './steam.js';
 import * as youtube from './youtube.js';
 import { activeDownloads } from './downloads.js';
 import * as ytprogress from './ytprogress.js';
+import { createTvCast } from './tvcast.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
@@ -484,6 +485,59 @@ app.post('/api/pad/connect', wrap(async () => ({ out: await sys.padConnect() }))
 app.post('/api/pad/disconnect', wrap(async () => ({ out: await sys.padDisconnect() })));
 
 // --- tv and lights ---
+
+// --- play on the TV's native Jellyfin app (real 4K HDR; the PC path tonemaps) ---
+
+const tvcast = createTvCast();
+
+// Registered before /api/tv/:cmd so "play"/"stop"/... are never read as raw
+// tv-webos verbs by the catch-all below.
+app.post('/api/tv/play', wrap(async (req, res) => {
+  const id = String(req.body?.itemId || '');
+  if (!/^[0-9a-f]{32}$/.test(id)) throw new Error('itemId required');
+  const r = tvcast.start(id);
+  if (!r.ok) { res.status(r.code).json({ error: r.error }); return; }
+  return tvcast.status();
+}));
+
+// Long-poll: pass the seq from the last answer and this holds until the stage
+// moves on (or ~25s), so the phone paints each stage as it happens.
+app.get('/api/tv/play/status', wrap(async (req, res) => {
+  res.set('cache-control', 'no-store');
+  return tvcast.waitForChange(Number(req.query.seq), 25000);
+}));
+
+// The tracked TV session as a player card: name, clock, paused. active:false
+// once it is not ours (or not playing) any more.
+app.get('/api/tv/session', wrap(async (req, res) => {
+  res.set('cache-control', 'no-store');
+  return tvcast.nowPlaying();
+}));
+
+// The three below only ever drive the playback WE started; with nothing
+// tracked they answer 409, not 502 - it is a state, not a fault.
+const ownedOr409 = (res) => {
+  if (tvcast.ownedPlayback()) return true;
+  res.status(409).json({ error: 'nothing playing on the TV that couch started' });
+  return false;
+};
+
+app.post('/api/tv/stop', wrap(async (req, res) => {
+  if (!ownedOr409(res)) return;
+  return tvcast.stop();
+}));
+
+app.post('/api/tv/playpause', wrap(async (req, res) => {
+  if (!ownedOr409(res)) return;
+  return tvcast.playpause();
+}));
+
+app.post('/api/tv/seek', wrap(async (req, res) => {
+  const seconds = Number(req.body?.seconds);
+  if (!Number.isFinite(seconds)) throw new Error('seconds required');
+  if (!ownedOr409(res)) return;
+  return tvcast.seek(seconds);
+}));
 
 let tvCache = { at: 0, status: null };
 app.get('/api/tv', wrap(async (req) => {

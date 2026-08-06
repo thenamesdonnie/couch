@@ -145,6 +145,16 @@ export function tv(cmd) {
   return cli('tv', [cmd]);
 }
 
+// The TV's native Jellyfin app, launched over SSAP. Deliberately NOT in
+// TV_CMDS: the /api/tv/:cmd route must never become an arbitrary app
+// launcher, and SSAP only answers while the TV is awake anyway - tvcast.js
+// owns the wake-first sequencing.
+export const tvJellyfinApp = () => cli('tv', ['app', 'org.jellyfin.webos']);
+
+// Whether the tv CLI has a TV to talk to at all. Its absence is a normal
+// state on a fresh checkout; callers answer 503 with words, not a stack.
+export const tvConfigured = () => fs.existsSync(path.join(HOME, '.config/tv-remote/tv.json'));
+
 export function lights(cmd, dim) {
   const args = [];
   if (cmd === 'status' || cmd === 'off' || cmd === 'warm' || cmd === 'cool') args.push(cmd);

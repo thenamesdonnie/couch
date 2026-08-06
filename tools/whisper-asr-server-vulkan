@@ -1,0 +1,155 @@
+#!/home/ds2000/venvs/audiosep/bin/python
+"""Local Whisper ASR endpoint for Bazarr's WhisperAI provider - Vulkan edition.
+
+Drop-in replacement for ~/.local/bin/whisper-asr-server (the faster-whisper
+one). After the 4070 -> RX 9070 XT swap, CTranslate2 lost its GPU path and the
+old server fell back to CPU int8 (~2.4x realtime). This variant shells out to
+whisper.cpp built with the Vulkan backend (RADV on the 9070 XT), which runs
+large-v3 at ~6x realtime, roughly 3x faster wall-to-wall, with near-zero CPU.
+
+Same API Bazarr expects (whisper-asr-webservice):
+  POST /asr?task=transcribe|translate&language=xx&output=srt&encode=false
+       multipart file 'audio_file' = raw PCM s16le mono 16kHz  ->  SRT text
+  POST /detect-language?encode=false -> {"detected_language","language_code"}
+
+Design differences from the old server, all deliberate:
+  - Model runs in a whisper-cli subprocess per request, so VRAM (~4GB) and heap
+    are fully released the moment a job ends. No idle reaper, no os._exit hack,
+    no MemoryHigh drama: the Flask process stays ~40MB forever. Cost: ~1s model
+    load per request, noise for Bazarr's batch jobs.
+  - One job at a time (same lock as before) so a game and a transcription
+    don't fight over the GPU any harder than they must.
+  - VAD via whisper.cpp's Silero port, matching the old vad_filter=True +
+    min_silence_duration_ms=500.
+
+TO SWITCH (a reviewed, deliberate step - do not do casually):
+  1. Sanity: ~/src/whisper.cpp/build/bin/whisper-cli must exist and
+     `vulkaninfo --summary` must show the 9070 XT (RADV).
+  2. cp ~/couch/tools/whisper-asr-server-vulkan ~/.local/bin/whisper-asr-server
+     (keep a copy of the old one first: it is the CPU/CUDA fallback story).
+  3. systemctl --user restart whisper-asr
+  4. Watch /tmp/whisper-asr.log through one Bazarr job.
+  Rollback = restore the old file + restart. The systemd unit needs no change
+  (MemoryHigh=6G etc. are now way oversized but harmless).
+
+Log: /tmp/whisper-asr.log (same file/format as before).
+"""
+import os
+import re
+import subprocess
+import tempfile
+import threading
+import time
+import wave
+
+from flask import Flask, request, Response, jsonify
+
+HOME = os.path.expanduser('~')
+WHISPER_CLI = f'{HOME}/src/whisper.cpp/build/bin/whisper-cli'
+MODEL = f'{HOME}/src/whisper.cpp/models/ggml-large-v3.bin'
+VAD_MODEL = f'{HOME}/src/whisper.cpp/models/ggml-silero-v5.1.2.bin'
+MODEL_SIZE = 'large-v3'
+THREADS = 8          # CPU-side helper threads; the heavy math is on the GPU
+BEAM_SIZE = 5
+LOG = '/tmp/whisper-asr.log'
+
+app = Flask(__name__)
+lock = threading.Lock()   # one GPU job at a time
+
+LANG_NAMES = {
+    'en': 'english', 'es': 'spanish', 'fr': 'french', 'de': 'german',
+    'it': 'italian', 'pt': 'portuguese', 'nl': 'dutch', 'ru': 'russian',
+    'ja': 'japanese', 'ko': 'korean', 'zh': 'chinese', 'ar': 'arabic',
+    'hi': 'hindi', 'tr': 'turkish', 'pl': 'polish', 'sv': 'swedish',
+    'da': 'danish', 'no': 'norwegian', 'fi': 'finnish', 'cs': 'czech',
+    'el': 'greek', 'he': 'hebrew', 'hu': 'hungarian', 'th': 'thai',
+    'uk': 'ukrainian', 'vi': 'vietnamese', 'id': 'indonesian',
+}
+
+
+def say(msg):
+    with open(LOG, 'a') as f:
+        f.write(f"{time.strftime('%d %H:%M:%S')} {msg}\n")
+
+
+def pcm_to_wav(raw, path, max_seconds=None):
+    """Bazarr posts raw PCM s16le mono 16kHz; whisper-cli wants a WAV."""
+    if max_seconds is not None:
+        raw = raw[:16000 * 2 * max_seconds]
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(raw)
+    return len(raw) / (16000 * 2)
+
+
+def run_cli(args, timeout):
+    return subprocess.run(
+        ['nice', '-n', '10', WHISPER_CLI, '-m', MODEL, '-t', str(THREADS)]
+        + args,
+        capture_output=True, text=True, timeout=timeout)
+
+
+@app.route('/asr', methods=['POST'])
+def asr():
+    task = request.args.get('task', 'transcribe')
+    language = request.args.get('language') or None
+    raw = request.files['audio_file'].read()
+    with lock:
+        with tempfile.TemporaryDirectory(prefix='whisper-asr-') as td:
+            wav = os.path.join(td, 'in.wav')
+            dur = pcm_to_wav(raw, wav)
+            say(f'/asr task={task} lang={language} audio={dur:.0f}s (vulkan)')
+            t0 = time.time()
+            args = ['-f', wav, '-bs', str(BEAM_SIZE), '-np',
+                    '-osrt', '-of', os.path.join(td, 'out'),
+                    '--vad', '-vm', VAD_MODEL, '-vsd', '500',
+                    '-l', language if language else 'auto']
+            if task == 'translate':
+                args.append('-tr')
+            # Generous timeout: worst case ~0.2x realtime plus model load.
+            p = run_cli(args, timeout=max(600, dur))
+            if p.returncode != 0:
+                say(f'/asr FAILED rc={p.returncode}: {p.stderr[-300:]}')
+                return Response('whisper-cli failed', status=500)
+            with open(os.path.join(td, 'out.srt')) as f:
+                srt = f.read()
+    n = srt.count('-->')
+    say(f'/asr done: {n} segments in {time.time() - t0:.0f}s')
+    return Response(srt, mimetype='text/plain')
+
+
+@app.route('/detect-language', methods=['POST'])
+def detect_language():
+    raw = request.files['audio_file'].read()
+    with lock:
+        with tempfile.TemporaryDirectory(prefix='whisper-asr-') as td:
+            wav = os.path.join(td, 'in.wav')
+            dur = pcm_to_wav(raw, wav, max_seconds=120)  # 2 min is plenty
+            say(f'/detect-language audio={dur:.0f}s (vulkan)')
+            p = run_cli(['-f', wav, '-l', 'auto', '-dl'], timeout=300)
+    m = re.search(r'auto-detected language: (\w+) \(p = ([0-9.]+)\)',
+                  p.stdout + p.stderr)
+    if not m:
+        say(f'/detect-language FAILED rc={p.returncode}')
+        return Response('language detection failed', status=500)
+    code, prob = m.group(1), float(m.group(2))
+    say(f'detected {code} (p={prob:.2f})')
+    return jsonify({'detected_language': LANG_NAMES.get(code, code),
+                    'language_code': code})
+
+
+@app.route('/', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok', 'model': MODEL_SIZE,
+                    'backend': 'whisper.cpp-vulkan', 'loaded': False})
+
+
+if __name__ == '__main__':
+    for path in (WHISPER_CLI, MODEL, VAD_MODEL):
+        if not os.path.exists(path):
+            say(f'FATAL: missing {path}')
+            raise SystemExit(f'missing {path}')
+    say('whisper-asr-server (vulkan) starting on 127.0.0.1:9000')
+    app.run(host='127.0.0.1', port=9000, threaded=True)

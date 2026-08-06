@@ -51,6 +51,80 @@ async function jf(pathname, params = {}, retry = true) {
   return res.json();
 }
 
+// POST twin of jf(): Jellyfin's session commands take their arguments as query
+// params with an empty body and answer 204. Same token, same 401-retry.
+async function jfPost(pathname, params = {}, retry = true) {
+  if (!creds) creds = readCreds();
+  const url = new URL(BASE + pathname);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-Emby-Token': creds.token },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (res.status === 401 && retry) {
+    creds = null;
+    return jfPost(pathname, params, false);
+  }
+  if (!res.ok) throw new Error(`jellyfin ${res.status} on ${pathname}`);
+}
+
+// The sessions Jellyfin has seen recently. The TV's webOS app registers one on
+// each app start - with a FRESH id every time, so callers must always query
+// and always use the full id (a truncated one 404s).
+export function activeSessions() {
+  return jf('/Sessions', { activeWithinSeconds: 120 });
+}
+
+export function playOnSession(sessionId, itemId) {
+  return jfPost(`/Sessions/${encodeURIComponent(sessionId)}/Playing`, {
+    playCommand: 'PlayNow',
+    itemIds: itemId,
+  });
+}
+
+// Playstate commands ride POST /Sessions/{id}/Playing/{command} with an empty
+// body. Whitelisted: this is the phone driving OUR playback, not a general
+// remote for arbitrary sessions.
+const SESSION_COMMANDS = new Set(['Stop', 'Pause', 'Unpause', 'PlayPause']);
+export function sessionCommand(sessionId, command) {
+  if (!SESSION_COMMANDS.has(command)) return Promise.reject(new Error('unrecognised session command'));
+  return jfPost(`/Sessions/${encodeURIComponent(sessionId)}/Playing/${command}`);
+}
+
+// Seek is the same shape with its target as a query param, in ticks.
+export function seekSession(sessionId, seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s < 0) return Promise.reject(new Error('bad seek position'));
+  return jfPost(`/Sessions/${encodeURIComponent(sessionId)}/Playing/Seek`, {
+    seekPositionTicks: Math.round(s * 10_000_000),
+  });
+}
+
+// What a "play this" on an item actually plays: films and episodes play
+// themselves; a series plays its next-up episode. A series with no next-up
+// (all watched, or never started and NextUp is empty) plays as itself -
+// Jellyfin expands a series id to its episodes from the start.
+export async function playableFor(itemId) {
+  if (!creds) creds = readCreds();
+  const item = await jf(`/Users/${creds.userId}/Items/${itemId}`);
+  if (item.Type !== 'Series') {
+    const ep = item.Type === 'Episode' && item.ParentIndexNumber !== undefined
+      ? ` S${String(item.ParentIndexNumber).padStart(2, '0')}E${String(item.IndexNumber).padStart(2, '0')}`
+      : '';
+    return { id: item.Id, name: `${item.SeriesName || item.Name}${ep}` };
+  }
+  const next = await jf('/Shows/NextUp', { userId: creds.userId, seriesId: itemId, Limit: 1 });
+  const ep = next.Items?.[0];
+  if (!ep) return { id: item.Id, name: item.Name };
+  return {
+    id: ep.Id,
+    name: `${item.Name} S${String(ep.ParentIndexNumber).padStart(2, '0')}E${String(ep.IndexNumber).padStart(2, '0')}`,
+  };
+}
+
 export function jfImageRequest(itemId, type, params) {
   if (!creds) creds = readCreds();
   const url = new URL(`${BASE}/Items/${itemId}/Images/${type}`);

@@ -7,6 +7,7 @@
   import { fadeimg, decodeImages } from './img.js';
   import Discover from './Discover.svelte';
   import YouTube from './YouTube.svelte';
+  import TvPlayer from './TvPlayer.svelte';
   import Icon from './Icon.svelte';
 
   let { oncast } = $props();
@@ -170,6 +171,11 @@
 
   let resumeChoice = $state(null);
 
+  // Handing playback to the TV's NATIVE Jellyfin app (real 4K HDR / Dolby
+  // Vision; the PC path tonemaps to SDR). A series plays its next-up episode,
+  // the server resolves that. Set to the item and TvPlayer owns the rest.
+  let tvItem = $state(null);
+
   async function playChoice(fromStart) {
     const item = resumeChoice;
     resumeChoice = null;
@@ -325,6 +331,10 @@
   </div>
 {/if}
 
+{#if tvItem}
+  <TvPlayer item={tvItem} onclose={() => (tvItem = null)} />
+{/if}
+
 {#if detail}
   <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (detail = null)} role="presentation">
     <div use:slideUp out:slideDown use:dragDismiss={{ onClose: () => (detail = null) }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.name}>
@@ -348,6 +358,9 @@
                 <button disabled={casting} onclick={() => cast(detail, true)}>From start</button>
               {/if}
             {/if}
+            <button class="tvhdr" disabled={casting} onclick={() => (tvItem = detail)}>
+              {detail.type === 'Series' ? 'Next up in HDR' : 'Play in HDR'}
+            </button>
             <button disabled={casting} onclick={() => trailer(detail)}>Trailer</button>
           </div>
           {#if arrInfo?.inArr && !arrInfo.uhd}
@@ -704,6 +717,12 @@
     background: var(--raise);
     color: var(--muted);
     border: 1px solid var(--line);
+  }
+  .tvhdr {
+    font-size: 14px;
+    background: var(--accent-tint);
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   }
   .uhdchip {
     font-size: 11px;
