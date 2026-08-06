@@ -417,8 +417,6 @@ EOF
 focus_game() {
   local what="${1:-game}"
   game_pids | tr '\n' ' ' > /tmp/game-pids
-  intent show "$what" via=xlib-restack "mode=$MODE" \
-    "pids:=$(_jnums "$(cat /tmp/game-pids 2>/dev/null)")" resolver=game-pids
   # Big Picture's window left MAPPED fullscreen behind the game is the
   # "Steam says 60fps, feels 20" root cause (6 Aug 2026): the compositor
   # juggles two stacked live fullscreen surfaces and frame pacing dies.
@@ -440,7 +438,11 @@ import os
 from Xlib import display, X, protocol
 want = os.environ.get('WANT', 'game')
 hide_bp = os.environ.get('HIDE_BP') == '1'
-pids = set(int(p) for p in open('/tmp/game-pids').read().split())
+# Test seams, tools/curtain's pattern: unset in normal operation, the tests
+# point them under tmp_path (live /tmp is off limits to tests, hard rule).
+pids_file = os.environ.get('GAME_PIDS_FILE', '/tmp/game-pids')
+intents_file = os.environ.get('LEGACY_INTENTS_FILE', '/tmp/legacy-intents.jsonl')
+pids = set(int(p) for p in open(pids_file).read().split())
 d = display.Display(); root = d.screen().root
 NET_PID = d.intern_atom('_NET_WM_PID')
 NET_NAME = d.intern_atom('_NET_WM_NAME')
@@ -527,7 +529,7 @@ if steam_desktop:
     print(f"iconified {len(steam_desktop)} steam window(s)")
     try:  # same intent stream as the shell's intent(); see the top of the file
         import json, time
-        with open('/tmp/legacy-intents.jsonl', 'a') as f:
+        with open(intents_file, 'a') as f:
             f.write(json.dumps({'t': time.time(), 'src': 'game-launch',
                                 'verb': 'iconify', 'subject': 'steamwebhelper',
                                 'args': {'count': len(steam_desktop),
@@ -546,7 +548,7 @@ if hide_bp and big_picture and target is not None:
     print(f"iconified big picture behind the {want}")
     try:
         import json, time
-        with open('/tmp/legacy-intents.jsonl', 'a') as f:
+        with open(intents_file, 'a') as f:
             f.write(json.dumps({'t': time.time(), 'src': 'game-launch',
                                 'verb': 'iconify', 'subject': 'bigpicture',
                                 'args': {'count': len(big_picture),
@@ -571,6 +573,47 @@ else:
     raise SystemExit(1)
 d.sync()
 EOF
+  local rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  # The show intent is written only now, AFTER the python confirmed it found
+  # and raised the window (exit 0). It used to be pre-announced at the top of
+  # this function, so a "window not found" run still told the intent stream a
+  # show happened - which is exactly how the launch path's silent failure hid
+  # from the differ on the first live run (6 Aug 2026).
+  intent show "$what" via=xlib-restack "mode=$MODE" \
+    "pids:=$(_jnums "$(cat /tmp/game-pids 2>/dev/null)")" resolver=game-pids
+}
+
+# The LAUNCH path's converging focus. A game's window can lag its processes
+# by a lot - Hollow Knight maps ~20-25s after launch, and the single
+# focus_game the launch flow used to fire at ~+14s found nothing (first live
+# run after deploy, 6 Aug 2026): the restack silently failed, Big Picture
+# stayed mapped fullscreen behind the game, and the frame-pacing lag came
+# back. So the launch path retries until focus_game's python actually found
+# and showed the window (its exit status says which - and the BP-hide rides
+# the same successful attempt), bounded so a game whose window never maps
+# cannot hold the launcher here forever, and stopping early if the game dies.
+# ONLY the launch path: the resume path re-maps a window that already exists
+# (show_frozen_game), so there is nothing to wait for, and the guard's
+# `game-launch focus` repair already re-fires once a second on its own.
+FOCUS_RETRY_S=2
+FOCUS_WAIT_MAX_S=40
+focus_game_when_mapped() {
+  local waited=0
+  while :; do
+    if focus_game; then
+      [ "$waited" -gt 0 ] && say "game window found after ${waited}s"
+      return 0
+    fi
+    game_running || { say "focus retries stopped: game gone after ${waited}s"; return 1; }
+    [ "$waited" -ge "$FOCUS_WAIT_MAX_S" ] && break
+    sleep "$FOCUS_RETRY_S"
+    waited=$((waited + FOCUS_RETRY_S))
+  done
+  say "game window never mapped (${waited}s); leaving the stack alone"
+  intent focus_timeout "${APPID:-game}" "waited=$waited" "mode=$MODE" \
+    reason=game-window-never-mapped
+  return 1
 }
 
 # Politely close any game and Big Picture, thawing frozen ones first so they
@@ -872,7 +915,7 @@ case "$MODE" in
       say "running"
       sleep 4
       yield_to_couchd transitions show "${APPID:-game}" via=xlib-restack \
-        "mode=$MODE" resolver=game-pids || focus_game
+        "mode=$MODE" resolver=game-pids || focus_game_when_mapped
       while game_running; do sleep 3; done
       say "ended"
     fi

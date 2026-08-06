@@ -33,6 +33,8 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
+import subprocess
 import sys
 import types
 
@@ -42,6 +44,7 @@ HOME = os.path.expanduser('~')
 MIRROR = os.path.join(HOME, 'couch', 'legacy-mirror')
 WATCHER_SRC = os.path.join(MIRROR, 'pad-home-watcher')
 GUARD_SRC = os.path.join(MIRROR, 'steam-input-guard')
+GAME_LAUNCH_SRC = os.path.join(MIRROR, 'game-launch')
 
 sys.path.insert(0, os.path.join(HOME, 'couch', 'couchd'))
 import owns                                                   # noqa: E402
@@ -417,3 +420,193 @@ def test_reconcile_still_raises_kodi_without_the_curtain(wbox, monkeypatch):
     watcher._reconcile(dry=False)
     assert ('focus_kodi', ('reconcile:frozen-game-visible',),
             {'dry': False}) in calls
+
+
+# =========================================================================
+# 4. game-launch: the focus python's success signal (and the BP-hide gates)
+# =========================================================================
+# The retry loop that consumes this signal is shell (focus_game_when_mapped)
+# and its paths are the live ones, so it is covered by review + bash -n; what
+# IS testable is the contract it terminates on: the embedded python exits 0
+# only when it found and showed the wanted window, 1 when it did not - and
+# the BP-hide fires exactly on the successful attempt. The python runs here
+# against a fake Xlib (built under tmp_path, first on PYTHONPATH) and the
+# GAME_PIDS_FILE / LEGACY_INTENTS_FILE seams, so no X and no live /tmp.
+
+_FAKE_DISPLAY = '''
+import json, os
+
+
+class Prop:
+    def __init__(self, value):
+        self.value = value
+
+
+class Tree:
+    def __init__(self, children):
+        self.children = children
+
+
+class Attrs:
+    def __init__(self, map_state):
+        self.map_state = map_state
+
+
+class Geom:
+    def __init__(self, w, h):
+        self.width, self.height = w, h
+
+
+class Win:
+    def __init__(self, spec):
+        self.spec = spec
+
+    def query_tree(self):
+        return Tree([Win(s) for s in self.spec.get('children', [])])
+
+    def get_attributes(self):
+        return Attrs(2 if self.spec.get('mapped', True) else 0)
+
+    def get_full_property(self, prop, _):
+        if prop == '_NET_WM_PID' and self.spec.get('pid'):
+            return Prop([self.spec['pid']])
+        if prop == '_NET_WM_NAME' and self.spec.get('name'):
+            return Prop(self.spec['name'].encode())
+        return None
+
+    def get_wm_class(self):
+        cls = self.spec.get('cls')
+        return (cls, cls) if cls else None
+
+    def get_geometry(self):
+        return Geom(self.spec.get('w', 1920), self.spec.get('h', 1080))
+
+    def configure(self, **kw):
+        pass
+
+    def send_event(self, ev, **kw):
+        pass
+
+
+class _Screen:
+    def __init__(self, root):
+        self.root = root
+
+
+class Display:
+    def __init__(self):
+        spec = json.load(open(os.environ['FAKE_SCREEN']))
+        self._root = Win({'children': spec})
+
+    def screen(self):
+        return _Screen(self._root)
+
+    def intern_atom(self, name):
+        return name
+
+    def set_input_focus(self, *a, **kw):
+        pass
+
+    def sync(self):
+        pass
+'''
+
+_FAKE_X = '''
+Above = 0
+RevertToParent = 1
+CurrentTime = 0
+SubstructureRedirectMask = 1 << 20
+SubstructureNotifyMask = 1 << 19
+'''
+
+_FAKE_PROTOCOL = '''
+class _ClientMessage:
+    def __init__(self, **kw):
+        self.kw = kw
+
+
+class event:
+    ClientMessage = _ClientMessage
+'''
+
+KODI = {'cls': 'Kodi', 'name': 'Kodi'}
+BP = {'cls': 'steamwebhelper', 'name': 'Steam Big Picture Mode'}
+GAME = {'cls': 'steam_app_367520', 'name': 'Hollow Knight', 'pid': 4321}
+
+
+def _focus_python():
+    text = open(GAME_LAUNCH_SRC).read()
+    m = re.search(r"WANT=\"\$what\" HIDE_BP=\"\$hide_bp\" python3 - "
+                  r"<<'EOF'[^\n]*\n(.*?)\nEOF\n", text, re.S)
+    assert m, 'focus_game heredoc not found in the mirror'
+    return m.group(1)
+
+
+@pytest.fixture
+def fscreen(tmp_path):
+    """Runs focus_game's embedded python over a described fake screen."""
+    pkg = tmp_path / 'Xlib'
+    pkg.mkdir()
+    (pkg / '__init__.py').write_text('from . import display, X, protocol\n')
+    (pkg / 'display.py').write_text(_FAKE_DISPLAY)
+    (pkg / 'X.py').write_text(_FAKE_X)
+    (pkg / 'protocol.py').write_text(_FAKE_PROTOCOL)
+    code = _focus_python()
+
+    def run(windows, want='game', hide_bp='1', game_pids='4321'):
+        (tmp_path / 'screen.json').write_text(json.dumps(windows))
+        (tmp_path / 'game-pids').write_text(game_pids)
+        env = dict(os.environ,
+                   PYTHONPATH=str(tmp_path),
+                   WANT=want, HIDE_BP=hide_bp,
+                   FAKE_SCREEN=str(tmp_path / 'screen.json'),
+                   GAME_PIDS_FILE=str(tmp_path / 'game-pids'),
+                   LEGACY_INTENTS_FILE=str(tmp_path / 'intents.jsonl'))
+        return subprocess.run([sys.executable, '-'], input=code, text=True,
+                              capture_output=True, env=env, cwd=tmp_path,
+                              timeout=30)
+    run.intents = lambda: [
+        json.loads(l)
+        for l in (tmp_path / 'intents.jsonl').read_text().splitlines() if l
+    ] if (tmp_path / 'intents.jsonl').exists() else []
+    return run
+
+
+def test_focus_python_exits_nonzero_while_the_window_is_missing(fscreen):
+    """The retry loop's continue condition, and the launch-path bug itself:
+    processes up, window not mapped yet. Nothing may be iconified either -
+    hiding BP on a failed attempt would blank the screen for the wait."""
+    r = fscreen([KODI, BP])
+    assert r.returncode == 1
+    assert 'game window not found' in r.stdout
+    assert 'iconified' not in r.stdout
+    assert fscreen.intents() == []
+
+
+def test_focus_python_exit_0_is_found_and_shown_and_bp_hidden(fscreen):
+    """The retry loop's stop condition: the window mapped, the restack ran,
+    and the BP-hide rode the same successful attempt."""
+    r = fscreen([KODI, BP, GAME])
+    assert r.returncode == 0
+    assert 'game focused' in r.stdout
+    assert 'iconified big picture behind the game' in r.stdout
+    recs = [i for i in fscreen.intents() if i['subject'] == 'bigpicture']
+    assert len(recs) == 1 and recs[0]['verb'] == 'iconify'
+    assert recs[0]['args']['reason'] == 'bp mapped fullscreen behind the game'
+
+
+def test_focus_python_success_without_the_hide_gate_leaves_bp(fscreen):
+    r = fscreen([KODI, BP, GAME], hide_bp='0')
+    assert r.returncode == 0
+    assert 'game focused' in r.stdout
+    assert 'iconified big picture' not in r.stdout
+    assert fscreen.intents() == []
+
+
+def test_focus_python_finds_proton_windows_by_class_not_just_pid(fscreen):
+    """Pin the pre-existing matcher the retry now leans on: a steam_app_*
+    class counts even when the window's pid belongs to a wine helper."""
+    stranger = dict(GAME, pid=9999)               # pid NOT in game-pids
+    r = fscreen([KODI, stranger])
+    assert r.returncode == 0
+    assert 'game focused' in r.stdout
