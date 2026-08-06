@@ -75,11 +75,24 @@ hidden). RIG NOTE: fake-pad's DPAD does not reach Kodi (it enumerates with
 hats: 0, unlike the real pad), so rig navigation must use the left stick;
 that is a rig limitation, not a console bug.
 
-**DONNIE'S PAD-IN-HAND CHECKLIST (now 3 items):** (1) with a game paused,
-double-tap: the sheet should float over the game's freeze-frame. (2) suspend/resume from the PHONE: first live
-curtain (freeze -> fade -> Kodi and back). (3) any film: context menu
-"Play on TV (HDR)" and the phone's Play in HDR button. (4) TV odds+ends
-still open: soundbar eARC + Kodi passthrough, Deep Colour + Game Optimizer.
+**RIG-VERIFIED 7 Aug ~04:30-04:45 (fake-pad + screenshots + live chain),
+nothing left for Donnie except the game-dependent items:**
+- Play on TV, FULL end-to-end from the Kodi context menu: item visible in
+  the menu on a real film, id extracted (The Batman), stages walked
+  waking -> launching -> connecting -> playing, TV foreground went to
+  org.jellyfin.webos, phone endpoints pause/seek/resume/stop all 200 and
+  reflected in the session (paused true, position 12 -> 600), and the
+  **auto-restore to hdmi1 fired by itself** after the stop. TV then off.
+- whisper-asr on Vulkan: live service transcribed 60s of film dialogue
+  accurately in ~2s.
+- gamescope-wrap rig: all checks pass (fallbacks, refusals, laundering).
+- differ over the post-deploy window: VALID, 0 gating, acted 12, 0 failures,
+  edge-to-decision p50 71ms on the new model.
+
+**DONNIE'S PAD-IN-HAND CHECKLIST (now 2 items, both need a real game):**
+(1) with a game paused, double-tap: the sheet should float over the game's
+freeze-frame. (2) suspend/resume from the PHONE: first live
+curtain (freeze -> fade -> Kodi and back). TV odds+ends still open: soundbar eARC + Kodi passthrough, Deep Colour + Game Optimizer.
 
 ## ▶ Previous resume block (updated 6 Aug 2026 ~04:30 — GESTURES ACCEPTED)
 
