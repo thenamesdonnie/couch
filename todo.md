@@ -28,6 +28,34 @@ auto-memory `homelab-usb-disk-dropout.md`.
 
 ## ▶ Resume here (updated 6 Aug 2026 ~04:30 — GESTURES ACCEPTED)
 
+**HARDWARE DAY DONE (6 Aug evening): 5700X3D + RX 9070 XT + LG C5 all in
+and working.** CPU 8c/16t boosting 4.15GHz, Tctl ~59C. GPU on Mesa 25.2
+radeonsi, VAAPI HEVC decode AND encode present (Sunshine keeps hw encode);
+gpu-swap script ran clean, no NVIDIA left. TV paired (`tv-setup-lg` ->
+~/.config/tv-remote/tv.json backend=webos, 192.168.4.227); `tv`, tv-waker
+and the House tab all flipped to webOS automatically and verified live.
+**pc_input corrected to HDMI_1** (tv.json said HDMI_2; TV reported hdmi1
+active while the PC was on screen - if a wake ever selects the wrong input,
+that field is the one to flip). Display: output is now `HDMI-A-0` (was
+HDMI-0), running **1920x1080@120** - the C5 offers 4K60/1080p120 over
+amdgpu's native HDMI; 4K120 waits on the DP->HDMI 2.1 adapters. Bloodborne
+(shadPS4) ran a smooth 60 with dips to ~40 only during shader compilation.
+Also: both USB media enclosures were unplugged during the swap and are back,
+mounted, pool whole at 5.5T; disk-monitor healthy (it is a 10-min timer).
+STILL TO DO on the TV: soundbar into eARC (HDMI 3) + Kodi passthrough,
+Jellyfin from the LG store, reserve the TV's IP, "Turn on via Wi-Fi" if not
+already, Ultra HD Deep Colour + Game Optimizer on the PC's input.
+
+**SWITCHER IS ROLLED BACK TO THE STOCK DIALOG** (ui.animated_dialog=false in
+~/.kodi/userdata/addon_data/script.couch.switcher/settings.xml): the animated
+sheet drew and animated but ate all controller input (kodi.log: every open
+ended "cancelled", onClick never fired), after the label hotfix + freeze-frame
+backdrop landed. Prime suspect: the backdrop's background thread calling
+setProperty re-inits the dialog, and onInit's `_filled` early-return skips
+setFocusId - focus never comes back. An agent was diagnosing when the session
+ended; its work is in the repo copy only, NOT deployed. Verify before
+re-enabling: rows draw AND a pad press picks one.
+
 **DEPLOY-DAY PROGRESS (~13:30, commits da20a80..cdbe999):** checklist items
 1, 2, 4-8 are LIVE and committed: guard cleanup (+curtain skip + fifo inode
 guard), BP-hide (+launch-path retry after it missed live - HK maps at ~20-25s,
