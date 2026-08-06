@@ -1535,3 +1535,55 @@ if __name__ == '__main__':
                 print('ERR  %s: %r' % (name, e))
     print('%d failure(s)' % fails)
     sys.exit(1 if fails else 0)
+
+
+# ------------------------------------------- resume-transient thaw (hard gate)
+def test_t5_resume_transient_thaw_is_pre_declared():
+    """6 Aug hard-gate declaration: game-launch clears the suspended flag
+    BEFORE its SIGCONTs, so a legacy repairer sampling the sub-second between
+    the two can emit a thaw that duplicates the resume's own. couchd
+    debounces (FLAG_DRIFT_PERSIST_S) and is silent by design - the row is
+    one-sided by construction, in BOTH repairer flavours."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(9.8, 'clear_flag', 'suspended', src='game-launch',
+                          reason='resume', was='730'),
+                   legacy(10.0, 'thaw', '730', src='watcher',
+                          pids=[100, 101], resolver='game-pids',
+                          reason='frozen-without-suspended-flag',
+                          repair='reconcile')],
+                  [couchd(9.7, 'launch', '730', reason='gesture:tap-resume',
+                          mode='resume', via='game-launch resume')])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        r = rows['thawLEGACY-ONLY']
+        assert r['label'] == 'T5' and 'resume-ordering' in r['note'], r
+
+
+def test_t5_guard_invariant_4_thaw_near_a_resume_is_pre_declared():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.0, 'clear_flag', 'suspended', src='game-launch',
+                          reason='back-to-big-picture'),
+                   legacy(10.4, 'thaw', '730', src='guard',
+                          pids=[100], resolver='game-pids', invariant=4,
+                          reason='all frozen with no suspended flag',
+                          mode='game')],
+                  [])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        r = rows['thawLEGACY-ONLY']
+        assert r['label'] == 'T5' and 'resume-ordering' in r['note'], r
+
+
+def test_a_lost_thaw_far_from_any_resume_still_diffs():
+    """Only the transient is declared: the same repair with no resume in
+    sight is a real one-sided decision and must stay on the hand-triage
+    pile - the entry must not eat the genuine lost-thaw net."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(60.0, 'thaw', '730', src='watcher',
+                          pids=[100, 101], resolver='game-pids',
+                          reason='frozen-without-suspended-flag',
+                          repair='reconcile')],
+                  [])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        assert rows['thawLEGACY-ONLY']['label'] == '', rows['thawLEGACY-ONLY']

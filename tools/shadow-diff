@@ -759,6 +759,33 @@ def curtain_involved(it):
     return any(CURTAIN_WM_CLASS in canon(v) for v in vals if v is not None)
 
 
+RESUME_TRANSIENT_S = 5.0    # how far after a resume's start its flag-first
+#                             critical section can plausibly still be settling
+
+
+def resume_context(t, couchd_i, legacy_i):
+    """True when a resume's flag-first critical section sits just beside t.
+
+    The reconcile-flip hard-gate fix (6 Aug 2026): game-launch clears
+    /tmp/game-suspended BEFORE its SIGCONTs, so between the two a repairer
+    can read frozen-without-flag and decide a thaw that merely duplicates
+    the resume's own. The tell is the flag clear itself: game-launch writes
+    `clear_flag suspended` with one of the three thawing-path reasons on
+    EVERY such path, whoever initiated it (tap, tile, phone, couchd's acted
+    gesture - they all route through game-launch). Deliberately NOT the
+    `launch mode=resume` row: launch is a CONTEXT_VERB and never reaches
+    the triage lists this helper is given.
+    """
+    for it in couchd_i + legacy_i:
+        if not (t - RESUME_TRANSIENT_S <= it['t'] <= t + 0.5):
+            continue
+        if it['verb'] == 'clear_flag' and canon(it['subject']) == 'suspended' \
+                and canon(it['args'].get('reason')) in (
+                    'resume', 'back-to-big-picture', 'games-closed'):
+            return True
+    return False
+
+
 def bp_hold_context(t, couchd_i, legacy_i):
     """True when a big-picture hold with no game pids sits just before t (R7(a))."""
     for it in couchd_i + legacy_i:
@@ -848,6 +875,32 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
             yesterday's data is kept honest). From tonight the yielded
             freeze carries the real pid set and MUST match couchd's, so any
             SET-MISMATCH after the fix is a real divergence again.
+      * RESUME-ORDERING DECLARATIONS, written 6 Aug 2026 WITH the hard-gate
+        fix for the reconcile flip (the model fingerprint moves off
+        6c658480a2da when couchd restarts on the debounced model; these are
+        declared against the NEW model so they cannot be mistaken for T4s):
+          - game-launch's thawing paths (resume_game, back-to-big-picture,
+            close_games) now clear /tmp/game-suspended BEFORE their SIGCONTs.
+            `clear_flag suspended` PRECEDING the matching `thaw` is therefore
+            the CORRECT order from today; no assertion ever pinned the old
+            one, and none pins the new one - the freeze-side assertion
+            ("freeze before set_flag") is untouched and stays strict.
+          - couchd's freeze/thaw drift repairs are debounced: the flag/pid
+            disagreement must persist FLAG_DRIFT_PERSIST_S (2.0s) before
+            reconcile:refreeze-lost-suspend / stale-suspended-while-playing /
+            frozen-without-suspended-flag or guard:all-frozen-without-flag
+            fire. The 3x shadow refreeze of the acceptance night (03:18,
+            03:33, 03:42) was this repair firing inside the OLD ordering's
+            transient; post-fix, a refreeze near a resume in EITHER stream
+            is a real divergence again - do not exempt it.
+          - RESUME-TRANSIENT THAW (entry below): legacy's guard (invariant
+            4, one-pass debounce) and watcher (0.6s re-sample) confirm on
+            shorter clocks than couchd's 2.0s, so a converging thaw can
+            still land one-sided inside a resume's sub-second window.
+            Harmless by construction (it duplicates the resume's own
+            SIGCONTs); pre-declared so it reads T5, not a novelty. The same
+            row far from any resume is a REAL one-sided repair and stays
+            gating.
       * BP PRE-STEP STILL NOT DIFFED (replay finding 5, carried forward). The
         R7(g) entry below fires on a LEGACY-ONLY `launch`, but `launch` is a
         CONTEXT_VERB: it is held as context and never compared in EITHER
@@ -875,6 +928,26 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
                          'window on top - neither stack should enforce ' \
                          'against it (near-symmetry expected; a one-sided ' \
                          'row here is a note, not a novelty)'
+    # RESUME-TRANSIENT THAW, pre-declared 6 Aug 2026 with the hard-gate
+    # ordering fix (see the docstring): game-launch clears the suspended flag
+    # BEFORE its SIGCONTs, so a repairer sampling the sub-second between the
+    # two reads frozen-without-flag and may emit a thaw that duplicates the
+    # resume's own. couchd debounces past that window (FLAG_DRIFT_PERSIST_S)
+    # and stays silent by design, so the row is one-sided BY CONSTRUCTION -
+    # and it converges WITH the resume. Keyed on the repair reasons only
+    # (watcher: frozen-without-suspended-flag; guard: invariant 4), and only
+    # with a resume-shaped row shortly before: the same thaw with no resume
+    # in sight is a real one-sided repair and stays gating.
+    if section == 'LEGACY-ONLY' and li['verb'] == 'thaw' and \
+            ('frozen-without-suspended-flag' in canon(li['args'].get('reason'))
+             or 'frozen with no suspended flag' in canon(li['args'].get('reason'))
+             or li['args'].get('invariant') == 4) and \
+            resume_context(li['t'], couchd_i, legacy_i):
+        return 'T5', 'pre-declared with the 6 Aug resume-ordering fix: a ' \
+                     'repair thaw inside a resume\'s flag-first window ' \
+                     'duplicates the resume\'s own SIGCONTs and converges ' \
+                     'with it; couchd debounces (FLAG_DRIFT_PERSIST_S) and ' \
+                     'is silent by design'
     # BP-HIDE, pre-declared 6 Aug 2026 with the deploy-day game-launch fix
     # (the "Steam says 60fps, feels 20" root cause): after the game window
     # maps, legacy game-launch ICONIFIES the Big Picture steamwebhelper

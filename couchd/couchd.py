@@ -323,6 +323,16 @@ class Observed:
     enforcement_target: str = None
     enforcement_until: float = 0.0
     recent: dict = field(default_factory=dict)       # intent key -> mono
+    # First-sighting clocks for the two flag/pid disagreements the drift
+    # repairs act on (Machine._track_drift): mono when the pair started
+    # disagreeing in that direction, None while it does not. The repairs
+    # require the disagreement to OUTLIVE a resume's flag-first critical
+    # section (FLAG_DRIFT_PERSIST_S) before treating it as drift. A
+    # hand-built Observed that sets the disagreeing fields without these
+    # answers "held forever" (drift_persisted's None arm), so the repairs
+    # fire exactly as they did before the debounce existed.
+    suspended_running_since: float = None
+    frozen_noflag_since: float = None
 
     # -- derived conveniences (pure) --------------------------------------
     @property
@@ -386,7 +396,8 @@ def make_obs(**kw):
                  'session': 'none', 'enforcement': 'none',
                  'gesture': 'idle', 'pad': 'present'},
         region_since={r: 0.0 for r in REGIONS},
-        games={}, enforcement_target=None, enforcement_until=0.0, recent={})
+        games={}, enforcement_target=None, enforcement_until=0.0, recent={},
+        suspended_running_since=None, frozen_noflag_since=None)
     regions = dict(base['regions'])
     regions.update(kw.pop('regions', {}))
     base.update(kw)
@@ -418,6 +429,22 @@ TOGGLE_VERBS = ('close_steam_menu', 'tv_toggle')
 TOGGLE_SUBJECTS = (('show', 'steam-menu'),)
 REPAIR_COOLDOWN = 30.0          # Intent's default, named where a repair's two
 #                                 halves have to be given it explicitly (T4-3)
+# How long a flag/pid DISAGREEMENT must persist before the freeze/thaw drift
+# repairs believe it (the reconcile-flip hard gate, 6 Aug 2026). game-launch
+# clears /tmp/game-suspended BEFORE its SIGCONTs on every resume path, so the
+# sub-second between the two reads exactly like a lost thaw - and before that
+# reorder, the sub-second the OLD order left read like a lost suspend, which
+# is what this model decided three times on the acceptance night (would
+# freeze [reconcile:refreeze-lost-suspend], 03:18/03:33/03:42): acted, that
+# is a SIGSTOP mid-resume. Real drift persists for minutes (the 4 Aug race
+# sat stuck until repaired); a resume's critical section is gone in well
+# under a second, and its worst-case straddle - flag data read just before
+# the rm, pid data just after the SIGCONTs - lives inside ONE pass. Two
+# seconds of persistence therefore separates them cleanly, and the repairs
+# still land an order of magnitude inside their 10s legacy cadence. The
+# watcher's THAW_RECHECK_S and the guard's THAW_CONFIRM_S are this same
+# contract on their own cadences.
+FLAG_DRIFT_PERSIST_S = 2.0
 GUIDE_TOGGLE_COOLDOWN = 8.0     # close_steam_menu (deadlines 3.0 and 6.0)
 MENU_TOGGLE_COOLDOWN = 6.0      # show steam-menu (deadline 3.0)
 TV_TOGGLE_COOLDOWN = 20.0       # tv_toggle (deadline 15.0)
@@ -1047,6 +1074,9 @@ class Machine:
         self.games = {}
         self._game_since = {}
         self._misses = {}
+        # Flag/pid drift clocks (Observed.suspended_running_since /
+        # frozen_noflag_since; see FLAG_DRIFT_PERSIST_S).
+        self.drift_since = {'suspended_running': None, 'frozen_noflag': None}
         self.on_transition = on_transition or (lambda *a: None)
 
     def transit(self, region, to, reason, mono):
@@ -1069,8 +1099,30 @@ class Machine:
                     if nxt != state:
                         self.transit(region, nxt, reason, o.mono)
                     break
+        self._track_drift(o)
         self._step_games(o)
         return self.regions
+
+    def _track_drift(self, o):
+        """First-sighting clocks for the two flag/pid disagreements the drift
+        repairs act on. The conditions mirror reconcile()'s repair guards
+        exactly - a clock that ran on a different predicate would debounce a
+        different repair than the one it gates (FLAG_DRIFT_PERSIST_S)."""
+        held = {
+            # the refreeze / stale-while-playing family
+            'suspended_running': bool(
+                o.suspended_present and o.pids_known and o.running_pids
+                and o.suspended != 'bigpicture'),
+            # the lost-thaw family (guard invariant 4 + the reconcile repair)
+            'frozen_noflag': bool(
+                o.flags_known and o.suspended is None and o.pids_known
+                and o.all_frozen),
+        }
+        for name, is_held in held.items():
+            if not is_held:
+                self.drift_since[name] = None
+            elif self.drift_since[name] is None:
+                self.drift_since[name] = o.mono
 
     # -- dynamic per-app lifecycle map (R4/C26) ---------------------------
     def _step_games(self, o):
@@ -1144,6 +1196,19 @@ def resolve_appid(o):
     if o.suspended and o.suspended != 'bigpicture':
         return o.suspended
     return sess_appid or o.suspended or (o.session or {}).get('mode') or None
+
+
+def drift_persisted(o, since):
+    """Has this flag/pid disagreement outlived a resume's critical section?
+
+    game-launch clears the suspended flag BEFORE its SIGCONTs (6 Aug 2026),
+    so a sub-second disagreement in either direction is a transition in
+    flight, not drift - and the OLD ordering's version of that transient is
+    what this model decided refreeze-lost-suspend on, three times, on the
+    acceptance night. `since` is Machine._track_drift's first sighting; None
+    means no tracking (a hand-built Observed), which reads as "held forever"
+    so the repairs behave exactly as they did before the debounce."""
+    return since is None or (o.mono - since) >= FLAG_DRIFT_PERSIST_S
 
 
 def playing_despite_flag(o):
@@ -1791,7 +1856,12 @@ def reconcile(o):
                               'guard:frozen-game-visible',
                               _pred('top window is Kodi', 2.0),
                               requires=('enforcement', 'foreground'), cooldown=5.0))
-        if not o.suspended_present and o.all_frozen and o.pids_known:
+        # ...and only once the frozen-without-flag world has OUTLIVED a
+        # resume's flag-first critical section (drift_persisted): a thaw
+        # fired into that sub-second merely duplicates the resume's own
+        # SIGCONTs, but it is still a decision the differ has to explain.
+        if not o.suspended_present and o.all_frozen and o.pids_known \
+                and drift_persisted(o, o.frozen_noflag_since):
             out.append(Intent('thaw', appid,
                               {'pids': o.frozen_pids, 'resolver': PID_RESOLVER,
                                'signal': 'SIGCONT', 'invariant': 4},
@@ -1832,7 +1902,13 @@ def reconcile(o):
                               _pred('/tmp/game-suspended gone', 2.0),
                               requires=('session',)))
 
-        if not o.suspended_present and o.all_frozen and o.pids_known:
+        # The lost-thaw net waits out a resume's flag-first critical section
+        # (drift_persisted): frozen-without-flag for under a second IS the
+        # resume, whose own SIGCONTs are milliseconds away. Real lost thaws
+        # persist and are repaired 2s in - an order of magnitude inside this
+        # net's legacy 10s cadence.
+        if not o.suspended_present and o.all_frozen and o.pids_known \
+                and drift_persisted(o, o.frozen_noflag_since):
             out.append(Intent('thaw', appid,
                               {'pids': o.frozen_pids, 'resolver': PID_RESOLVER,
                                'signal': 'SIGCONT'},
@@ -1855,13 +1931,21 @@ def reconcile(o):
         # player can actually see and drive the game.
         # ...but never from UNDER the curtain: flag-set-with-pids-running is
         # exactly what the middle of a curtained suspend (freeze in flight)
-        # or resume (legacy thaws before clearing the flag) looks like, and
-        # WHAT IS ON SCREEN - the tie-breaker this repair runs on - is
-        # unreadable while the overlay covers it. A transition in progress
-        # is not drift; the repair resumes the pass after the curtain drops.
+        # looks like, and WHAT IS ON SCREEN - the tie-breaker this repair
+        # runs on - is unreadable while the overlay covers it. A transition
+        # in progress is not drift; the repair resumes the pass after the
+        # curtain drops. And never before the disagreement has OUTLIVED a
+        # transition's critical section (drift_persisted): the resume paths
+        # now clear the flag before their SIGCONTs, so this pair can only be
+        # observed through a single pass's read straddle - the acceptance
+        # night's 3x shadow refreeze was precisely this repair firing inside
+        # the old ordering's gap, and acted it would have SIGSTOPped the
+        # game mid-resume. Real 4 Aug-style stuck states persist for minutes
+        # and are repaired 2s in.
         if (o.suspended_present and o.pids_known and o.running_pids
                 and o.suspended != 'bigpicture'
-                and not curtain_on_top(o)):
+                and not curtain_on_top(o)
+                and drift_persisted(o, o.suspended_running_since)):
             if playing_despite_flag(o):
                 out.append(Intent('clear_flag', 'suspended',
                                   {'pids': sorted(o.pid_states),
@@ -4584,7 +4668,11 @@ class Couchd:
         self.machine.step(o)
         o = replace(o, regions=dict(self.machine.regions),
                     region_since=dict(self.machine.since),
-                    games=dict(self.machine.games))
+                    games=dict(self.machine.games),
+                    suspended_running_since=self.machine.drift_since[
+                        'suspended_running'],
+                    frozen_noflag_since=self.machine.drift_since[
+                        'frozen_noflag'])
         # C17: last pass's predictions, judged against this pass's world,
         # before any new decision is taken on top of them.
         self.executor.check_pending(o)

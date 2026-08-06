@@ -722,6 +722,16 @@ focus_game_when_mapped() {
 # on quit get their chance; only a game that ignores the ask gets killed.
 close_games() {
   local why="${1:-quit}"
+  # Flag first here too (resume_game explains the rule). This close thaws the
+  # game and then gives it up to ~17 seconds to save, and the WHOLE of that
+  # used to run with the suspended flag still set - the widest
+  # refreeze-lost-suspend window on the console, and a repairer that fired
+  # inside it would have SIGSTOPped a game mid-save. With the flag gone
+  # first, the closing game reads as a normal running session, which no
+  # repair touches.
+  rm -f "$SUSPENDED"
+  clear_snaps
+  intent clear_flag suspended reason=games-closed "why=$why"
   cont_all
   sleep 1
   game_pids | tr '\n' ' ' > /tmp/game-pids
@@ -786,9 +796,6 @@ EOF
       resolver=pgrep signal=SIGKILL reason=term-ignored; \
       pkill -KILL -f 'Shadps4-sdl|mount_Shadps'; }
   fi
-  rm -f "$SUSPENDED"
-  clear_snaps
-  intent clear_flag suspended reason=games-closed "why=$why"
   say "games closed"
 }
 
@@ -821,12 +828,28 @@ resume_game() {
       say "curtain: no fresh freeze-frame for ${was:-game}; honest shuffle instead"
     fi
   fi
+  # FLAG FIRST, THAW SECOND (the reconcile-flip hard gate, 6 Aug 2026).
+  # Every repairer on this console - the watcher's reconcile, the guard's
+  # invariants, couchd's model - reads the pair (suspended flag, pid states)
+  # and converges the world toward what the FLAG says. The old order here
+  # (SIGCONT, then rm) showed them all a sub-second world of "flag set, pids
+  # running", whose one repair is to RE-FREEZE the game: couchd's shadow
+  # decided exactly that three times on the acceptance night (03:18, 03:33,
+  # 03:42), and once couchd owns `reconcile` that would have been a SIGSTOP
+  # mid-resume, every resume. Clearing the flag before the SIGCONTs swaps
+  # that transient for "flag gone, pids still frozen", whose repair (a thaw)
+  # CONVERGES with this resume instead of undoing it - and every repairer now
+  # waits out sub-second disagreements anyway (watcher THAW_RECHECK_S, guard
+  # THAW_CONFIRM_S, couchd FLAG_DRIFT_PERSIST_S). If this shell dies between
+  # the rm and the SIGCONTs, the lost-thaw repair finishes the resume, which
+  # is the direction the player asked to go; the old order's crash left a
+  # running game whose flag said to freeze it again.
+  rm -f "$SUSPENDED"
+  intent clear_flag suspended reason=resume "was=$was"
+  phase flag-cleared
   cont_all
   phase thawed
-  rm -f "$SUSPENDED"
   clear_snaps "$was"
-  phase flags-cleared
-  intent clear_flag suspended reason=resume "was=$was"
   # Map the game's window back before anything tries to raise it: the suspend
   # iconified it to drop its stuck pointer grab, and focus_game only ever looks
   # at MAPPED windows - it would miss an iconified game and fall through to Big
@@ -950,7 +973,10 @@ case "$MODE" in
   steam)
     if [ -f "$SUSPENDED" ]; then
       if [ "$(cat "$SUSPENDED")" = "$APPID" ]; then
+        # The tile-resume is a resume in all but name, and it exits right
+        # after: same lock the `resume` verb takes, same reason.
         say "=== resume $APPID from its tile"
+        session_lock
         intent launch "$APPID" mode=resume source=kodi-tile app=steam
         resume_game
         exit 0
@@ -965,12 +991,18 @@ case "$MODE" in
   bigpicture)
     if bp_running; then
       # Already open behind Kodi: thaw anything paused and go back to it.
+      # A resume in all but name, so it takes the session lock like one - a
+      # suspend interleaving this thaw is exactly the frozen-with-the-pad-
+      # on-Kodi race the lock exists for. This branch exits right after, so
+      # the lock is never held for a launch's lifetime.
       say "=== back to big picture"
+      session_lock
       intent launch bigpicture mode=refocus source=kodi-tile
-      cont_all
+      # Flag first, thaw second - resume_game explains the rule.
       rm -f "$SUSPENDED"
-      clear_snaps
       intent clear_flag suspended reason=back-to-big-picture
+      cont_all
+      clear_snaps
       pad_to_game
       focus_game bp
       exit 0
@@ -981,6 +1013,7 @@ case "$MODE" in
     if [ -f "$SUSPENDED" ]; then
       if [ "$(cat "$SUSPENDED")" = "$APPID" ]; then
         say "=== resume $APPID (shadps4) from its tile"
+        session_lock   # a resume in all but name; exits right after
         intent launch "$APPID" mode=resume source=kodi-tile app=shadps4
         resume_game
         exit 0

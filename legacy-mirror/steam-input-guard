@@ -271,6 +271,33 @@ def curtain_on_top(top, topcls):
     return top == CURTAIN_CLASS or topcls == CURTAIN_CLASS
 
 
+# How long the frozen-without-flag world must PERSIST before invariant 4
+# thaws it (the reconcile-flip hard gate, 6 Aug 2026). game-launch clears
+# /tmp/game-suspended BEFORE its SIGCONTs, so a resume's critical section
+# reads exactly like a lost thaw for a few hundred milliseconds - and this
+# loop passes once a second, so a one-pass sighting can be that transient.
+# One full pass of patience (the flag is re-read next pass, so a suspend that
+# landed meanwhile also cancels it, per suspended_now's 4 Aug lesson) tells
+# the two apart; a real lost thaw is repaired on the second pass, well inside
+# the window. The watcher's THAW_RECHECK_S and couchd's FLAG_DRIFT_PERSIST_S
+# are this same contract on their own cadences.
+THAW_CONFIRM_S = 1.0
+
+
+def lost_thaw_due(suspended, all_frozen, since, now, confirm=THAW_CONFIRM_S):
+    """Invariant 4's debounce, pure so it can be tested.
+
+    (fire, since') - `since` is the monotonic first sighting of the
+    frozen-without-flag world this window is tracking, or None. Any pass
+    where the condition does not hold resets the clock; the thaw fires only
+    once the condition has survived `confirm` seconds of passes."""
+    if suspended or not all_frozen:
+        return False, None
+    if since is None:
+        return False, now
+    return now - since >= confirm, since
+
+
 def game_states():
     """pid -> process state for game processes."""
     r = subprocess.run(['/home/ds2000/.local/bin/game-pids'],
@@ -506,6 +533,7 @@ def main():
     # shot at it. See desktop_overlay_open.
     arm2_at = time.monotonic() + 1.2
     guide_fired = False
+    frozen_noflag_since = None    # invariant 4's debounce clock (lost_thaw_due)
     try:
         while time.monotonic() < end:
             # A flip that lands mid-window ends the window too: one arbiter at a
@@ -608,19 +636,29 @@ def main():
             # thawing it would undo the player's own gesture (see suspended_now).
             # A skipped thaw is not a decision, so it logs no intent - there is
             # nothing for couchd to have to agree with.
-            if not suspended_now():
-                states = game_states()
-                if states and all(s == 'T' for s in states.values()):
-                    intent('thaw', session_appid(),
-                           pids=sorted(int(p) for p in states),
-                           resolver='game-pids', mode=mode, invariant=4,
-                           reason='all frozen with no suspended flag')
-                    for pid in states:
-                        try:
-                            os.kill(int(pid), 18)  # SIGCONT
-                        except OSError:
-                            pass
-                    fixes.append('thaw-repair')
+            # Debounced one pass (lost_thaw_due): a resume clears the flag
+            # BEFORE its SIGCONTs, so a single sighting of frozen-without-flag
+            # can be that resume's own critical section, and a thaw fired into
+            # it merely duplicates the resume's - but the intent line would
+            # tell the differ a repair happened where no drift existed.
+            flag_now = suspended_now()
+            states = {} if flag_now else game_states()
+            fire, frozen_noflag_since = lost_thaw_due(
+                flag_now,
+                bool(states) and all(s == 'T' for s in states.values()),
+                frozen_noflag_since, time.monotonic())
+            if fire:
+                intent('thaw', session_appid(),
+                       pids=sorted(int(p) for p in states),
+                       resolver='game-pids', mode=mode, invariant=4,
+                       reason='all frozen with no suspended flag')
+                for pid in states:
+                    try:
+                        os.kill(int(pid), 18)  # SIGCONT
+                    except OSError:
+                        pass
+                fixes.append('thaw-repair')
+                frozen_noflag_since = None
             time.sleep(1.0)
     finally:
         # ALL exit paths, not just the clean one: the vpad (with its fifo)

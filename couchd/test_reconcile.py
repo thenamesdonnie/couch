@@ -1845,6 +1845,117 @@ def test_bigpicture_tap_resume_predicts_a_window_not_pids():
     assert got2 and got2[0].predict['effect'] == 'game pids back in state S'
 
 
+# =========================================================================
+# the reconcile-flip hard gate: flag/pid drift must PERSIST before repair
+# (FLAG_DRIFT_PERSIST_S, 6 Aug 2026)
+# =========================================================================
+# game-launch clears /tmp/game-suspended BEFORE its SIGCONTs on every resume
+# path, so any flag/pid disagreement that lives for under a second is a
+# transition's critical section, not drift. The acceptance night's 3x shadow
+# `would freeze [reconcile:refreeze-lost-suspend]` (03:18/03:33/03:42) was
+# the model deciding inside the OLD ordering's gap - acted, a SIGSTOP
+# mid-resume. Machine._track_drift stamps first sightings; the repairs
+# require them to be FLAG_DRIFT_PERSIST_S old. A None clock (hand-built
+# Observed, or a daemon plumbing regression) reads "held forever" so every
+# test above this section keeps its old meaning.
+def _drift_world(**kw):
+    """The refreeze shape: flag set, game running, Kodi on screen."""
+    base = dict(session=SESSION, suspended=APPID,
+                pid_states=_running(E1_PIDS[:4]), joystick=True,
+                top_name='Kodi', top_class='Kodi', focused_class='Kodi',
+                regions={'session': 'active', 'foreground': 'kodi'})
+    base.update(kw)
+    return make_obs(**base)
+
+
+def test_refreeze_waits_out_a_resume_transient():
+    """A fresh suspended-running clock is a resume mid-flight, not drift."""
+    o = _drift_world(suspended_running_since=999.5)      # 0.5s ago (mono 1000)
+    got = reconcile(o)
+    assert not find(got, 'freeze'), verbs(got)
+    assert not find(got, 'iconify'), verbs(got)          # the pair stands down
+
+
+def test_refreeze_fires_once_the_drift_has_persisted():
+    o = _drift_world(suspended_running_since=1000.0 - couchd.FLAG_DRIFT_PERSIST_S)
+    fr = find(reconcile(o), 'freeze')
+    assert fr and fr[0].reason == 'reconcile:refreeze-lost-suspend'
+
+
+def test_stale_while_playing_shares_the_refreeze_debounce():
+    """One condition, one clock: the tie-breaker (what is on screen) decides
+    the direction, but neither direction repairs a sub-second disagreement."""
+    o = _drift_world(top_name='ELDEN RING', top_class='steam_app_367520',
+                     focused_class='steam_app_367520',
+                     regions={'session': 'active', 'foreground': 'game'},
+                     suspended_running_since=999.5)
+    assert not find(reconcile(o), 'clear_flag', 'suspended')
+    o = replace(o, suspended_running_since=996.0)
+    got = find(reconcile(o), 'clear_flag', 'suspended')
+    assert got and got[0].reason == 'reconcile:stale-suspended-while-playing'
+
+
+def test_lost_thaw_repair_waits_out_a_resume_transient():
+    """Frozen-without-flag for half a second IS the resume (flag cleared,
+    SIGCONTs milliseconds away); the net stays quiet."""
+    o = make_obs(session=SESSION, suspended=None,
+                 pid_states={200: 'T', 201: 'T'}, joystick=False,
+                 regions={'session': 'active', 'input_ownership': 'game'},
+                 frozen_noflag_since=999.6)
+    got = reconcile(o)
+    assert not find(got, 'thaw'), verbs(got)
+    o = replace(o, frozen_noflag_since=997.0)
+    got = find(reconcile(o), 'thaw')
+    assert got and got[0].args['pids'] == [200, 201]
+
+
+def test_guard_invariant_4_shares_the_lost_thaw_debounce():
+    o = make_obs(session=SESSION, pid_states={5: 'T', 6: 'T'}, joystick=False,
+                 regions={'enforcement': 'game', 'session': 'active',
+                          'input_ownership': 'game'},
+                 frozen_noflag_since=999.6)
+    got = [i for i in reconcile(o) if i.reason.startswith('guard:')]
+    assert not [i for i in got if i.verb == 'thaw'], got
+    o = replace(o, frozen_noflag_since=997.0)
+    got = find(reconcile(o), 'thaw')
+    assert got and got[0].reason == 'guard:all-frozen-without-flag'
+
+
+def test_an_untracked_clock_keeps_the_old_behaviour():
+    """None = no tracking info: hand-built worlds (every test above) and a
+    daemon that forgot the plumbing fail OPEN to the pre-debounce repairs."""
+    o = _drift_world()                                   # since fields None
+    assert find(reconcile(o), 'freeze')
+
+
+def test_machine_tracks_the_flag_drift_clocks():
+    m = Machine()
+    o = make_obs(mono=100.0, session=SESSION, suspended=APPID,
+                 pid_states={200: 'S'})
+    m.step(o)
+    assert m.drift_since['suspended_running'] == 100.0
+    assert m.drift_since['frozen_noflag'] is None
+    m.step(replace(o, mono=105.0))                       # first sighting kept
+    assert m.drift_since['suspended_running'] == 100.0
+    o2 = make_obs(mono=106.0, session=SESSION, suspended=None,
+                  pid_states={200: 'T'})
+    m.step(o2)
+    assert m.drift_since['suspended_running'] is None
+    assert m.drift_since['frozen_noflag'] == 106.0
+    m.step(make_obs(mono=107.0, session=SESSION, pid_states={200: 'S'}))
+    assert m.drift_since['frozen_noflag'] is None
+
+
+def test_a_bigpicture_flag_never_starts_the_refreeze_clock():
+    """A Big Picture suspend has no pids to freeze BY DESIGN (R7(a)): pids
+    running under a 'bigpicture' flag are not the refreeze condition, so the
+    clock must not run on them either."""
+    m = Machine()
+    m.step(make_obs(mono=100.0, session=BP_SESSION, suspended='bigpicture',
+                    pid_states={200: 'S'}))
+    assert m.drift_since['suspended_running'] is None
+
+
 TestConsoleModel = ConsoleModel.TestCase
 TestConsoleModel.settings = settings(
     max_examples=60, stateful_step_count=40, deadline=None,

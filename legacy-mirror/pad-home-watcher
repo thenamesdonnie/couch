@@ -380,6 +380,33 @@ def running_pids(pids):
     return out
 
 
+def _pid_states():
+    """pid -> process state for the game's processes, read fresh from /proc.
+
+    One reader for both the reconcile pass and its confirmation re-sample
+    (see THAW_RECHECK_S), so the two compare like with like."""
+    states = {}
+    for pid in game_pids():
+        try:
+            stat = open(f'/proc/{pid}/stat').read()
+            states[pid] = stat.rsplit(') ', 1)[1].split()[0]
+        except (OSError, IndexError):
+            pass
+    return states
+
+
+# How long a frozen-without-flag world must PERSIST before the lost-thaw
+# repair believes it (the reconcile-flip hard gate, 6 Aug 2026). game-launch
+# now clears /tmp/game-suspended BEFORE its SIGCONTs, so for the few hundred
+# milliseconds of a resume's critical section the world reads exactly like a
+# lost thaw. A real lost thaw is still there THAW_RECHECK_S later; the
+# transient is not. The same re-sample also catches the opposite straddle - a
+# suspend landing mid-pass shows up as the flag REAPPEARING, the 4 Aug guard
+# lesson. The guard's THAW_CONFIRM_S and couchd's FLAG_DRIFT_PERSIST_S are
+# this same contract on their own cadences.
+THAW_RECHECK_S = 0.6
+
+
 def jrpc(method, params):
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method,
                        'params': params}).encode()
@@ -1098,13 +1125,7 @@ def _reconcile(dry=False):
     except OSError:
         pass
     suspended = os.path.exists(SUSPENDED)
-    states = {}
-    for pid in game_pids():
-        try:
-            stat = open(f'/proc/{pid}/stat').read()
-            states[pid] = stat.rsplit(') ', 1)[1].split()[0]
-        except (OSError, IndexError):
-            pass
+    states = _pid_states()
 
     # A session whose launcher died with no game left is an orphan: nothing
     # will ever return the pad to Kodi, so reclaim it here.
@@ -1167,54 +1188,86 @@ def _reconcile(dry=False):
     # to converge: the flag is only wrong if the player can actually see and
     # drive the game.
     if suspended and states and any(s != 'T' for s in states.values()):
-        topcls, focuscls = screen_classes()
-        if topcls.startswith('steam_app') and focuscls.startswith('steam_app'):
-            say('reconcile: suspended flag but the game is on screen and '
-                'focused - clearing the flag')
-            try:
-                if not dry:
-                    os.remove(SUSPENDED)
-                intent('clear_flag', 'suspended', repair='reconcile',
-                       reason='reconcile:stale-suspended-while-playing',
-                       pids=sorted(states), resolver='game-pids',
-                       topcls=topcls, focuscls=focuscls, **Y)
-            except OSError:
-                pass
-            do(clear_snapshots)
+        # Re-read the flag AT THE DECISION, the guard's suspended_now() lesson
+        # in the other direction: this pass's `suspended` was read tens of
+        # milliseconds ago, and a resume that started since has already
+        # cleared the flag (game-launch clears it BEFORE its SIGCONTs,
+        # 6 Aug 2026), so the running pids ARE the resume, not drift.
+        # Repairing on the stale pair is the refreeze-lost-suspend hazard the
+        # reconcile flip is gated on - a SIGSTOP mid-resume, every resume.
+        # With flag-first ordering this re-read is decisive: pids seen running
+        # means the SIGCONTs landed, which means the rm landed before them,
+        # so a flag that is truly mid-resume can never still be on disk here.
+        if not os.path.exists(SUSPENDED):
+            say('reconcile: suspended flag cleared mid-pass (a resume is in '
+                'flight) - not drift, leaving it be')
             suspended = False
         else:
-            say(f'reconcile: suspended flag but {len(states)} process(es) '
-                f'running behind {topcls or "?"} - re-freezing')
-            appid = _suspended_appid() or _session_appid(session)
-            intent('freeze', appid, pids=sorted(states), resolver='game-pids',
-                   signal='SIGSTOP', repair='reconcile',
-                   reason='reconcile:refreeze-lost-suspend',
-                   topcls=topcls or '?', **Y)
-            for pid in states:
+            topcls, focuscls = screen_classes()
+            if topcls.startswith('steam_app') and focuscls.startswith('steam_app'):
+                say('reconcile: suspended flag but the game is on screen and '
+                    'focused - clearing the flag')
                 try:
-                    do(os.kill, int(pid), signal.SIGSTOP)
+                    if not dry:
+                        os.remove(SUSPENDED)
+                    intent('clear_flag', 'suspended', repair='reconcile',
+                           reason='reconcile:stale-suspended-while-playing',
+                           pids=sorted(states), resolver='game-pids',
+                           topcls=topcls, focuscls=focuscls, **Y)
                 except OSError:
                     pass
-            # A game that ran on behind Kodi has a live pointer grab again.
-            do(iconify_frozen_game, appid, 'reconcile:refreeze-lost-suspend')
-            states = {p: 'T' for p in states}
+                do(clear_snapshots)
+                suspended = False
+            else:
+                say(f'reconcile: suspended flag but {len(states)} process(es) '
+                    f'running behind {topcls or "?"} - re-freezing')
+                appid = _suspended_appid() or _session_appid(session)
+                intent('freeze', appid, pids=sorted(states),
+                       resolver='game-pids', signal='SIGSTOP',
+                       repair='reconcile',
+                       reason='reconcile:refreeze-lost-suspend',
+                       topcls=topcls or '?', **Y)
+                for pid in states:
+                    try:
+                        do(os.kill, int(pid), signal.SIGSTOP)
+                    except OSError:
+                        pass
+                # A game that ran on behind Kodi has a live pointer grab again.
+                do(iconify_frozen_game, appid,
+                   'reconcile:refreeze-lost-suspend')
+                states = {p: 'T' for p in states}
 
-    # A game that should be running but is entirely frozen lost its thaw.
+    # A game that should be running but is entirely frozen lost its thaw -
+    # UNLESS the frozen-without-flag world is a resume's own critical section
+    # (flag cleared, SIGCONTs milliseconds away). Confirm the drift OUTLIVES
+    # that window before believing it: re-sample after THAW_RECHECK_S, and
+    # back off if the pids came back on their own OR the flag reappeared (a
+    # suspend landing mid-pass - the 4 Aug guard race, checked here for the
+    # same reason). A real lost thaw sails through 0.6s later, well inside
+    # this net's 10s cadence. The confirm runs in dry mode too: a shadow that
+    # skipped it would report a repair the acting path never fires.
     if not suspended and states and all(s == 'T' for s in states.values()):
-        say('reconcile: game frozen with no suspended flag - thawing')
-        appid = _session_appid(session)
-        intent('thaw', appid, pids=sorted(states),
-               resolver='game-pids', reason='frozen-without-suspended-flag',
-               repair='reconcile', **Y)
-        for pid in states:
-            try:
-                do(os.kill, int(pid), signal.SIGCONT)
-            except OSError:
-                pass
-        # ...and it may have been iconified by the suspend that lost its flag,
-        # so map it back: a thawed game left invisible is audible, holds the
-        # pad, and shows the room nothing that explains either.
-        do(map_game_window, appid, 'reconcile:thawed-without-flag')
+        time.sleep(THAW_RECHECK_S)
+        states = _pid_states()
+        if (os.path.exists(SUSPENDED) or not states
+                or any(s != 'T' for s in states.values())):
+            say(f'reconcile: frozen-without-flag did not persist '
+                f'{THAW_RECHECK_S}s - a transition is in flight, not drift')
+        else:
+            say('reconcile: game frozen with no suspended flag - thawing')
+            appid = _session_appid(session)
+            intent('thaw', appid, pids=sorted(states),
+                   resolver='game-pids', reason='frozen-without-suspended-flag',
+                   repair='reconcile', **Y)
+            for pid in states:
+                try:
+                    do(os.kill, int(pid), signal.SIGCONT)
+                except OSError:
+                    pass
+            # ...and it may have been iconified by the suspend that lost its
+            # flag, so map it back: a thawed game left invisible is audible,
+            # holds the pad, and shows the room nothing that explains either.
+            do(map_game_window, appid, 'reconcile:thawed-without-flag')
 
     # Kodi's joystick setting must match who owns the pad. Kodi crash-restarts
     # reload whatever guisettings last saved, which can be the wrong side.

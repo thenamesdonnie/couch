@@ -877,3 +877,227 @@ def test_quit_drops_a_leftover_curtain(glaunch):
     assert any(c.startswith('curtain clear') for c in glaunch.calls())
     clears = [i for i in glaunch.intents() if i['verb'] == 'curtain_clear']
     assert clears and clears[-1]['args']['reason'] == 'quit'
+
+
+# =========================================================================
+# 6. the reconcile-flip hard gate: flag first, thaw second + debounced repairs
+# =========================================================================
+# Legacy's resume flows used to thaw BEFORE clearing /tmp/game-suspended; in
+# that gap every repairer read "flag set, pids running" and its one repair is
+# to RE-FREEZE the game (couchd's shadow decided exactly that 3x on the
+# acceptance night: 03:18, 03:33, 03:42). The fix is a protocol both stacks
+# share: (i) the flag is cleared before the SIGCONTs on every thawing path,
+# (ii) the repairs treat a sub-second flag/pid disagreement as a transition
+# in flight, not drift (watcher THAW_RECHECK_S re-sample, guard THAW_CONFIRM_S
+# one-pass debounce, couchd FLAG_DRIFT_PERSIST_S - the last is pinned in
+# couchd/test_reconcile.py).
+
+def test_resume_clears_the_flag_before_the_thaw(glaunch):
+    """The ordering itself, behaviourally: by the time the SIGCONTs run the
+    flag is already gone, so no repairer can read thawed-pids-under-a-set-flag
+    off this resume ever again."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    body = ('cont_all() { rec thaw "flag=$([ -f "$SUSPENDED" ]'
+            ' && echo present || echo gone)"; }\n'
+            'resume_game\n')
+    r = glaunch(body, mode='resume')
+    assert r.returncode == 0, r.stderr
+    assert 'thaw flag=gone' in glaunch.calls(), glaunch.calls()
+    # ...and the rest of the flow is intact behind it.
+    _in_order(glaunch.calls(), 'thaw flag=gone', 'show_frozen_game',
+              'pad_to_game', 'focus_game game')
+    clears = [i for i in glaunch.intents() if i['verb'] == 'clear_flag']
+    assert clears and clears[0]['args']['reason'] == 'resume'
+    assert clears[0]['args']['was'] == '367520'
+
+
+def test_back_to_big_picture_clears_the_flag_before_the_thaw(glaunch):
+    """The bigpicture refocus arm thaws too; same protocol, and it now takes
+    the session lock like the resume it is."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    body = ('bp_running() { return 0; }\n'
+            'cont_all() { rec thaw "flag=$([ -f "$SUSPENDED" ]'
+            ' && echo present || echo gone)"; }\n'
+            + _gl_case_body('bigpicture'))
+    r = glaunch(body, mode='bigpicture')
+    assert r.returncode == 0, r.stderr
+    assert 'thaw flag=gone' in glaunch.calls(), glaunch.calls()
+    _in_order(glaunch.calls(), 'thaw flag=gone', 'pad_to_game',
+              'focus_game bp')
+    clears = [i for i in glaunch.intents() if i['verb'] == 'clear_flag']
+    assert clears and clears[0]['args']['reason'] == 'back-to-big-picture'
+    assert 'session_lock' in _gl_case_body('bigpicture')
+
+
+def test_close_games_clears_the_flag_before_the_thaw():
+    """close_games cannot run under the harness (its WM_DELETE python needs a
+    live X and writes /tmp/game-pids), so its ordering is pinned textually:
+    the ONE flag clear sits before the thaw, and the widest old window - the
+    whole thaw-ask-wait-kill teardown under a still-set flag - is gone."""
+    m = re.search(r'\nclose_games\(\) \{\n(.*?)\n\}\n', _gl_text(), re.S)
+    assert m, 'close_games() not found in the mirror'
+    body = m.group(1)
+    assert body.count('rm -f "$SUSPENDED"') == 1
+    assert body.index('rm -f "$SUSPENDED"') < body.index('cont_all')
+    assert body.index('cont_all') < body.index('sleep 1')
+
+
+def test_tile_resumes_take_the_session_lock():
+    """The tile-resume paths are resumes in all but name and exit right
+    after; they now hold the same lock the `resume` verb takes, so a suspend
+    cannot interleave their thaw. The fall-through launch paths must NOT
+    take it (a launcher lives as long as its game)."""
+    for mode in ('steam', 'shadps4'):
+        arm = _gl_case_body(mode)
+        assert 'session_lock' in arm, f'{mode} tile-resume is unlocked'
+        assert arm.index('session_lock') < arm.index('resume_game')
+        # only inside the resume branch, which exits before the launch flow
+        assert arm.index('session_lock') < arm.index('exit 0')
+
+
+def test_the_mirror_still_parses():
+    r = subprocess.run(['bash', '-n', GAME_LAUNCH_SRC],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+# ---- the watcher's side of the protocol ---------------------------------
+def _screen_kodi(monkeypatch):
+    monkeypatch.setattr(watcher, 'screen_classes', lambda: ('Kodi', 'Kodi'))
+    monkeypatch.setattr(watcher, 'curtain_visible', lambda: False)
+
+
+def test_refreeze_backs_off_when_the_flag_clears_mid_pass(wbox, monkeypatch):
+    """The dangerous direction, closed at the decision: this pass read the
+    flag before a resume's rm and the pids after its SIGCONTs. Under
+    flag-first ordering that combination PROVES the flag is already gone, so
+    the fresh re-read must always find it gone and the refreeze must not
+    fire - a SIGSTOP here is the mid-resume freeze the flip is gated on."""
+    calls = []
+    _quiet_repairs(monkeypatch, calls)
+    _screen_kodi(monkeypatch)
+    (wbox.dir / 'game-session').write_text('111 steam 367520\n')
+    flag = wbox.dir / 'game-suspended'
+    flag.write_text('367520')
+    kills = []
+    monkeypatch.setattr(watcher.os, 'kill',
+                        lambda pid, sig: kills.append((pid, sig)))
+
+    def running_and_resume_lands():
+        flag.unlink(missing_ok=True)      # the resume's rm, mid-pass
+        return {101: 'S', 102: 'S'}
+    monkeypatch.setattr(watcher, '_pid_states', running_and_resume_lands)
+    watcher._reconcile(dry=False)
+    assert kills == []
+    assert not [i for i in wbox.intents() if i['verb'] == 'freeze']
+    assert not [c for c in calls if c[0] == 'iconify_frozen_game']
+
+
+def test_refreeze_still_fires_when_the_stale_flag_persists(wbox, monkeypatch):
+    """...and the real 4 Aug-style repair is intact: flag on disk at the
+    decision, game running behind Kodi - re-freeze, iconify, converge."""
+    calls = []
+    _quiet_repairs(monkeypatch, calls)
+    _screen_kodi(monkeypatch)
+    (wbox.dir / 'game-session').write_text('111 steam 367520\n')
+    (wbox.dir / 'game-suspended').write_text('367520')
+    kills = []
+    monkeypatch.setattr(watcher.os, 'kill',
+                        lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(watcher, '_pid_states', lambda: {101: 'S'})
+    watcher._reconcile(dry=False)
+    rec = [i for i in wbox.intents() if i['verb'] == 'freeze']
+    assert rec and rec[0]['args']['reason'] == 'reconcile:refreeze-lost-suspend'
+    assert kills == [(101, watcher.signal.SIGSTOP)]
+    assert [c for c in calls if c[0] == 'iconify_frozen_game']
+
+
+def test_lost_thaw_waits_out_a_resume_transient(wbox, monkeypatch):
+    """Frozen-without-flag re-sampled THAW_RECHECK_S later: if the pids came
+    back on their own it was a resume's critical section, and a thaw fired
+    into it would have told the differ a repair happened where none did."""
+    calls = []
+    _quiet_repairs(monkeypatch, calls)
+    (wbox.dir / 'game-session').write_text('111 steam 367520\n')
+    kills, naps = [], []
+    monkeypatch.setattr(watcher.os, 'kill',
+                        lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(watcher.time, 'sleep', lambda s: naps.append(s))
+    samples = iter([{101: 'T'}, {101: 'S'}])
+    monkeypatch.setattr(watcher, '_pid_states', lambda: next(samples))
+    watcher._reconcile(dry=False)
+    assert watcher.THAW_RECHECK_S in naps
+    assert kills == []
+    assert not [i for i in wbox.intents() if i['verb'] == 'thaw']
+
+
+def test_lost_thaw_still_repairs_when_the_freeze_persists(wbox, monkeypatch):
+    calls = []
+    _quiet_repairs(monkeypatch, calls)
+    (wbox.dir / 'game-session').write_text('111 steam 367520\n')
+    kills = []
+    monkeypatch.setattr(watcher.os, 'kill',
+                        lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(watcher.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(watcher, '_pid_states', lambda: {101: 'T'})
+    watcher._reconcile(dry=False)
+    rec = [i for i in wbox.intents() if i['verb'] == 'thaw']
+    assert rec and rec[0]['args']['reason'] == 'frozen-without-suspended-flag'
+    assert kills == [(101, watcher.signal.SIGCONT)]
+    assert [c for c in calls if c[0] == 'map_game_window']
+
+
+def test_lost_thaw_backs_off_when_a_suspend_lands_mid_pass(wbox, monkeypatch):
+    """The 4 Aug guard lesson, applied to this net: the flag REAPPEARING
+    during the confirm means a fresh suspend, and thawing it would undo the
+    player's own gesture."""
+    calls = []
+    _quiet_repairs(monkeypatch, calls)
+    (wbox.dir / 'game-session').write_text('111 steam 367520\n')
+    kills = []
+    monkeypatch.setattr(watcher.os, 'kill',
+                        lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(watcher.time, 'sleep', lambda s: None)
+    flag = wbox.dir / 'game-suspended'
+    samples = []
+
+    def frozen_then_suspend_lands():
+        if samples:                        # the confirm re-sample
+            flag.write_text('367520')
+        samples.append(1)
+        return {101: 'T'}
+    monkeypatch.setattr(watcher, '_pid_states', frozen_then_suspend_lands)
+    watcher._reconcile(dry=False)
+    assert kills == []
+    assert not [i for i in wbox.intents() if i['verb'] == 'thaw']
+
+
+def test_the_shadow_reconcile_confirms_the_same_way(wbox, monkeypatch):
+    """Dry mode runs the identical confirm: a shadow that skipped it would
+    record a repair the acting path never fires, and the differ would read
+    that as a divergence between the stacks' own halves."""
+    calls = []
+    _quiet_repairs(monkeypatch, calls)
+    wbox.own('reconcile')
+    (wbox.dir / 'game-session').write_text('111 steam 367520\n')
+    monkeypatch.setattr(watcher.time, 'sleep', lambda s: None)
+    samples = iter([{101: 'T'}, {101: 'S'}])
+    monkeypatch.setattr(watcher, '_pid_states', lambda: next(samples))
+    watcher._reconcile(dry=True)
+    assert not [i for i in wbox.intents() if i['verb'] == 'thaw']
+
+
+# ---- the guard's side (invariant 4's one-pass debounce) ------------------
+def test_lost_thaw_due_debounces_one_pass():
+    """lost_thaw_due: nothing fires on a first sighting; the clock survives
+    only while the condition does; the thaw fires once it has held for
+    THAW_CONFIRM_S of passes."""
+    fire, since = guard.lost_thaw_due(False, True, None, 100.0)
+    assert (fire, since) == (False, 100.0)          # first sighting arms
+    fire, since = guard.lost_thaw_due(False, True, since, 100.5)
+    assert (fire, since) == (False, 100.0)          # not yet
+    fire, since = guard.lost_thaw_due(False, True, since, 101.0)
+    assert (fire, since) == (True, 100.0)           # persisted a full pass
+    # the flag reappearing (a suspend) or a thaw landing resets the clock
+    assert guard.lost_thaw_due(True, True, 100.0, 101.5) == (False, None)
+    assert guard.lost_thaw_due(False, False, 100.0, 101.5) == (False, None)
