@@ -429,10 +429,14 @@ def test_effect_missed_is_loud_and_not_retried():
 
 
 def test_unverifiable_verbs_say_unverified_not_confirmed():
+    # tv_toggle: no entry in EFFECT_CHECKS (the set's power state has no
+    # observer), so the honest verdict at the deadline is 'unverified', never
+    # a loud MISSED. snapshot used to be this test's example verb - it has a
+    # real oracle now (_eff_snapshot, the 6 Aug acceptance-night fix).
     router, log, act, sayer = rig(owned=('gestures',))
-    it = Intent('snapshot', APPID, {'via': 'pause-snap'}, 'gesture:ps-hold',
-                {'effect': 'a freeze-frame jpg for the appid', 'deadline_s': 5.0},
-                requires=('gesture',), cooldown=3.0)
+    it = Intent('tv_toggle', 'tv', {'via': 'tv toggle'}, 'gesture:ps-long-hold',
+                {'effect': 'tv power state flipped', 'deadline_s': 5.0},
+                requires=('gesture',), cooldown=20.0)
     router.execute(it, make_obs(mono=1000.0))
     router.check_pending(make_obs(mono=1006.0))
     assert log.of('effect')[0]['verdict'] == 'unverified'
@@ -454,11 +458,150 @@ def test_unverifiable_verbs_say_unverified_not_confirmed():
     ('dismiss', 'power-menu', {}, {'kodi_window': 10106}, False),
     ('close_steam_menu', 'steam', {}, {'steam_route': ''}, True),
     ('close_steam_menu', 'steam', {}, {'steam_route': 'ClientUI/769'}, False),
+    # snapshot: a fresh freeze-frame for the appid (make_obs now=1000.0)
+    ('snapshot', APPID, {'via': 'pause-snap'}, {'snaps': {APPID: 999.0}}, True),
+    ('snapshot', APPID, {'via': 'pause-snap'}, {'snaps': {}}, False),
+    ('snapshot', APPID, {'via': 'pause-snap'},
+     {'snaps': {APPID: 900.0}}, False),          # stale: an uncleaned leftover
+    ('snapshot', APPID, {'via': 'pause-snap'},
+     {'snaps': {'999999': 999.0}}, False),       # someone ELSE'S frame
+    # iconify: the game window left the stacking order (unmapped), which on
+    # this box reads as "top is not a steam_app AND the class is gone from
+    # the mapped game-window list"
+    ('iconify', APPID, {'via': 'wm-change-state'},
+     {'top_name': 'Kodi', 'top_class': 'Kodi', 'game_windows': ()}, True),
+    ('iconify', APPID, {'via': 'wm-change-state'},
+     {'top_name': 'ELDEN RING', 'top_class': f'steam_app_{APPID}',
+      'game_windows': (f'steam_app_{APPID}',)}, False),
+    ('iconify', APPID, {'via': 'wm-change-state'},     # covered, NOT unmapped
+     {'top_name': 'Kodi', 'top_class': 'Kodi',
+      'game_windows': (f'steam_app_{APPID}',)}, False),
+    ('iconify', APPID, {'via': 'wm-change-state'},
+     {'x_known': False, 'top_name': '', 'top_class': ''}, False),
+    # launch resume: pids for a real game, the WINDOW for bigpicture
+    ('launch', APPID, {'mode': 'resume'}, {'pid_states': {101: 'S'}}, True),
+    ('launch', APPID, {'mode': 'resume'}, {'pid_states': {101: 'T'}}, False),
+    ('launch', 'bigpicture', {'mode': 'resume'},
+     {'top_name': 'Steam Big Picture Mode', 'top_class': 'steamwebhelper',
+      'big_picture_window': True}, True),
+    ('launch', 'bigpicture', {'mode': 'resume'},
+     {'top_name': 'Kodi', 'top_class': 'Kodi',
+      'big_picture_window': True}, False),   # BP exists but never surfaced
+    ('launch', 'bigpicture', {'mode': 'resume'},
+     {'pid_states': {101: 'S'}}, False),     # pids alone prove nothing for BP
 ])
 def test_effect_oracles(verb, subject, args, world, ok):
     it = Intent(verb, subject, args, 'gesture:ps-hold',
                 {'effect': 'x', 'deadline_s': 2.0})
     assert couchd.EFFECT_CHECKS[verb](make_obs(**world), it) is ok
+
+
+# =========================================================================
+# the acceptance-night oracle fixes (6 Aug 2026): snapshot, iconify,
+# launch-bigpicture. All three used to run out their deadlines live -
+# snapshot/iconify 'unverified' on 5/5 suspends for want of any check at
+# all, launch-bigpicture 'missed' for waiting on pids BP does not have.
+# =========================================================================
+def test_snapshot_confirms_when_the_capture_lands():
+    router, log, act, sayer = rig(owned=('gestures',))
+    it = Intent('snapshot', APPID, {'via': 'pause-snap'}, 'gesture:ps-hold',
+                {'effect': 'a freeze-frame jpg for the appid', 'deadline_s': 5.0},
+                requires=('gesture', 'session'), cooldown=3.0)
+    router.execute(it, make_obs(now=1000.0, mono=1000.0))
+    # capture not on disk yet: still pending, no verdict
+    assert router.check_pending(make_obs(now=1001.0, mono=1001.0)) == []
+    got = router.check_pending(make_obs(now=1002.0, mono=1002.0,
+                                        snaps={APPID: 1001.4}))
+    assert [v for _, v, _ in got] == ['confirmed']
+    assert log.of('effect')[0]['verdict'] == 'confirmed'
+
+
+def test_snapshot_ignores_a_leftover_capture_from_a_previous_suspend():
+    """The adversarial double fault: suspend A captured at T; the resume at
+    T+10 failed to clear the paused dir; suspend B at T+15 whose pause-snap
+    ALSO failed. A's jpg is 15s old - inside the 30s freshness bound - but it
+    predates B's order, so B's oracle must verdict missed, never confirm."""
+    router, log, act, sayer = rig(owned=('gestures',))
+    it = Intent('snapshot', APPID, {'via': 'pause-snap'}, 'gesture:ps-hold',
+                {'effect': 'a freeze-frame jpg for the appid', 'deadline_s': 5.0},
+                requires=('gesture', 'session'), cooldown=3.0)
+    # suspend B ordered at wall 1015; A's leftover capture is stamped 1000
+    router.execute(it, make_obs(now=1015.0, mono=1015.0))
+    leftover = {APPID: 1000.0}
+    assert router.check_pending(make_obs(now=1016.0, mono=1016.0,
+                                         snaps=leftover)) == []
+    router.check_pending(make_obs(now=1021.0, mono=1021.0, snaps=leftover))
+    assert log.of('effect')[0]['verdict'] == 'missed'
+    assert sayer.any('EFFECT MISSED')
+
+
+def test_snapshot_order_anchor_tolerates_small_clock_skew():
+    """A capture stamped a beat BEFORE the order (clocks read at different
+    instants in the same second) still counts - the epsilon is
+    SNAP_ORDER_SKEW_S - but anything older than that is a leftover."""
+    it = Intent('snapshot', APPID, {'via': 'pause-snap'}, 'gesture:ps-hold',
+                {'effect': 'a freeze-frame jpg for the appid', 'deadline_s': 5.0},
+                requires=('gesture', 'session'), cooldown=3.0)
+    inside = make_obs(now=1001.0, snaps={APPID: 1000.0 - couchd.SNAP_ORDER_SKEW_S})
+    outside = make_obs(now=1001.0,
+                       snaps={APPID: 999.9 - couchd.SNAP_ORDER_SKEW_S})
+    assert couchd.EFFECT_CHECKS['snapshot'](inside, it, 1000.0) is True
+    assert couchd.EFFECT_CHECKS['snapshot'](outside, it, 1000.0) is False
+    # ...and the belt-and-braces freshness bound survives the anchor: a
+    # capture that somehow postdates the order but is ancient by check time
+    # still does not confirm.
+    stale = make_obs(now=1100.0, snaps={APPID: 1001.0})
+    assert couchd.EFFECT_CHECKS['snapshot'](stale, it, 1000.0) is False
+
+
+def test_snapshot_that_never_lands_is_missed_not_unverified():
+    """The oracle exists now, so a suspend whose freeze-frame genuinely did
+    not appear is a LOUD missed - the honest verdict the acceptance corpus
+    could not produce."""
+    router, log, act, sayer = rig(owned=('gestures',))
+    it = Intent('snapshot', APPID, {'via': 'pause-snap'}, 'gesture:ps-hold',
+                {'effect': 'a freeze-frame jpg for the appid', 'deadline_s': 5.0},
+                requires=('gesture', 'session'), cooldown=3.0)
+    router.execute(it, make_obs(now=1000.0, mono=1000.0))
+    router.check_pending(make_obs(now=1006.0, mono=1006.0))
+    assert log.of('effect')[0]['verdict'] == 'missed'
+    assert sayer.any('EFFECT MISSED')
+
+
+def test_iconify_confirms_when_the_window_unmaps():
+    router, log, act, sayer = rig(owned=('gestures',))
+    it = Intent('iconify', APPID,
+                {'via': 'wm-change-state', 'after': 'snapshot'},
+                'gesture:ps-hold-release',
+                {'effect': 'the frozen game window is unmapped',
+                 'deadline_s': 8.0},
+                requires=('gesture', 'session'), cooldown=3.0)
+    router.execute(it, make_obs(mono=1000.0))
+    # Kodi raised over the game but the window still MAPPED: not confirmed -
+    # 'covered' must never be mistaken for 'unmapped'
+    assert router.check_pending(
+        make_obs(mono=1001.0, top_name='Kodi', top_class='Kodi',
+                 game_windows=(f'steam_app_{APPID}',))) == []
+    got = router.check_pending(
+        make_obs(mono=1002.0, top_name='Kodi', top_class='Kodi',
+                 game_windows=()))
+    assert [v for _, v, _ in got] == ['confirmed']
+    assert log.of('effect')[0]['verdict'] == 'confirmed'
+
+
+def test_snap_captures_reads_the_paused_dir(tmp_path):
+    (tmp_path / f'{APPID}__1723900000123.jpg').write_bytes(b'x')
+    (tmp_path / f'{APPID}__1723900000123.tile.jpg').write_bytes(b'x')
+    (tmp_path / f'{APPID}__1723800000000.jpg').write_bytes(b'x')  # older
+    (tmp_path / 'bigpicture__1723900005000.jpg').write_bytes(b'x')
+    (tmp_path / 'notes.txt').write_bytes(b'x')                    # junk
+    (tmp_path / 'no-separator.jpg').write_bytes(b'x')             # junk
+    got = couchd.snap_captures(str(tmp_path))
+    assert got == {APPID: 1723900000.123, 'bigpicture': 1723900005.0}
+
+
+def test_snap_captures_survives_a_missing_dir(tmp_path):
+    assert couchd.snap_captures(str(tmp_path / 'nope')) == {}
 
 
 # =========================================================================

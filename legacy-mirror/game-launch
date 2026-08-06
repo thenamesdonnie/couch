@@ -419,10 +419,27 @@ focus_game() {
   game_pids | tr '\n' ' ' > /tmp/game-pids
   intent show "$what" via=xlib-restack "mode=$MODE" \
     "pids:=$(_jnums "$(cat /tmp/game-pids 2>/dev/null)")" resolver=game-pids
-  WANT="$what" python3 - <<'EOF' >>/tmp/game-launch.log 2>&1
+  # Big Picture's window left MAPPED fullscreen behind the game is the
+  # "Steam says 60fps, feels 20" root cause (6 Aug 2026): the compositor
+  # juggles two stacked live fullscreen surfaces and frame pacing dies.
+  # ensure_big_picture raises BP before every launch and never hides it, and
+  # a steam-routed resume re-surfaces it, so once the game's own window is
+  # the one being shown, BP goes to the taskbar with the same wm-change-state
+  # message the steam-desktop squatter already gets. Never when Big Picture
+  # IS the session (want=bp, mode/session bigpicture - it is the thing being
+  # shown), and never while the game is suspended (nothing is being shown
+  # over BP then, and BP may be all the room has).
+  local hide_bp=0
+  if [ "$what" = "game" ] && [ ! -f "$SUSPENDED" ] \
+      && [ "$MODE" != "bigpicture" ] \
+      && [ "$(cut -d' ' -f2 "$SESSION" 2>/dev/null)" != "bigpicture" ]; then
+    hide_bp=1
+  fi
+  WANT="$what" HIDE_BP="$hide_bp" python3 - <<'EOF' >>/tmp/game-launch.log 2>&1
 import os
 from Xlib import display, X, protocol
 want = os.environ.get('WANT', 'game')
+hide_bp = os.environ.get('HIDE_BP') == '1'
 pids = set(int(p) for p in open('/tmp/game-pids').read().split())
 d = display.Display(); root = d.screen().root
 NET_PID = d.intern_atom('_NET_WM_PID')
@@ -446,6 +463,7 @@ def prop_name(c):
 target = None
 fallback = None
 steam_desktop = []
+big_picture = []
 # Windows that are part of the furniture, never the game.
 NOT_GAMES = {'Kodi', 'xfdesktop', 'xfce4-panel', 'steamwebhelper'}
 def walk(w):
@@ -480,8 +498,16 @@ def walk(w):
                     if cls[0] == 'steamwebhelper' and 'Big Picture' not in nm:
                         # Steam's desktop window raises itself during a launch
                         # and squats over the game; send it to the taskbar.
-                        # Big Picture is left alone, it stacks itself.
                         steam_desktop.append(c)
+                    elif cls[0] == 'steamwebhelper' and hide_bp:
+                        # Big Picture's own window. It used to be left alone
+                        # ("it stacks itself"), but mapped fullscreen BEHIND a
+                        # game it wrecks frame pacing (6 Aug 2026), so once the
+                        # game window is confirmed below it is iconified too.
+                        # want=bp never gets here (Big Picture is the TARGET
+                        # then), and hide_bp is off for bigpicture sessions
+                        # and while the game is suspended.
+                        big_picture.append(c)
                     elif (want == 'game' and cls[0] not in NOT_GAMES and cls[0]
                           and g.width >= 600 and g.height >= 400):
                         # Last resort for native games with unhelpful window
@@ -507,6 +533,26 @@ if steam_desktop:
                                 'args': {'count': len(steam_desktop),
                                          'want': want,
                                          'reason': 'steam desktop over the game'}
+                                }, default=str) + '\n')
+    except OSError:
+        pass
+if hide_bp and big_picture and target is not None:
+    # Only once the game window is actually there to show: with no target the
+    # caller falls back to `focus_game bp`, and iconifying Big Picture first
+    # would hide the very thing that fallback is about to raise.
+    for w in big_picture:
+        ev = protocol.event.ClientMessage(window=w, client_type=CHANGE_STATE, data=(32, [3, 0, 0, 0, 0]))
+        root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+    print(f"iconified big picture behind the {want}")
+    try:
+        import json, time
+        with open('/tmp/legacy-intents.jsonl', 'a') as f:
+            f.write(json.dumps({'t': time.time(), 'src': 'game-launch',
+                                'verb': 'iconify', 'subject': 'bigpicture',
+                                'args': {'count': len(big_picture),
+                                         'want': want,
+                                         'via': 'wm-change-state',
+                                         'reason': 'bp mapped fullscreen behind the game'}
                                 }, default=str) + '\n')
     except OSError:
         pass

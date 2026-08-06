@@ -257,6 +257,15 @@ class Observed:
     focused_class: str = ''
     kodi_window_present: bool = False
     big_picture_window: bool = False
+    # WM_CLASS of every MAPPED steam_app_* window, straight from the X11
+    # scan. What the iconify oracle needs: an iconified window is unmapped,
+    # so it leaves this tuple - a window merely COVERED by Kodi does not.
+    game_windows: tuple = ()
+
+    # Freeze-frames pause-snap has written: appid -> wall-clock capture time
+    # of the newest jpg (the <appid>__<epoch_ms>.jpg filename convention).
+    # What the snapshot oracle reads; {} when the paused dir is empty/absent.
+    snaps: dict = field(default_factory=dict)
 
     # Steam logs
     steam_known: bool = False
@@ -363,6 +372,7 @@ def make_obs(**kw):
         kodi_known=True, joystick=True, kodi_window=10000, kodi_playing=False,
         x_known=True, top_name='Kodi', top_class='Kodi', focused_class='Kodi',
         kodi_window_present=True, big_picture_window=False,
+        game_windows=(), snaps={},
         steam_known=True, steam_route='', steam_route_at=1000.0, ui_mode=7,
         ledger={},
         guide_consumed_at=None, guard_pid=None, guard_pid_ours=False,
@@ -735,6 +745,30 @@ def g_fg_game(o):
     return o.x_known and (o.top_class or '').startswith('steam_app')
 
 
+# The freeze-frame overlay tools/curtain draws over suspend/resume shuffles
+# (WM_CLASS couch-curtain, deploy item 1, 6 Aug 2026). By construction it is
+# an unknown fullscreen window on top of the console - exactly the shape the
+# guards read as drift - so BOTH stacks whitelist the class. couchd
+# classifies it as a transition overlay rather than 'other': foreground
+# 'other' during a suspend is what trips guard:wanted-window-not-on-top, and
+# a repair restacking against a window that re-raises itself is a fight.
+CURTAIN_CLASS = 'couch-curtain'
+
+
+def curtain_on_top(o):
+    """A couch-curtain overlay is the top window: a transition is being
+    HIDDEN, not drifted into. Shared by the foreground classifier and by
+    every repair that would otherwise read the covered screen as drift.
+    Matched on class OR name because the tool sets both to the same string
+    and a window that lost one property mid-teardown must still count."""
+    return bool(o.x_known and CURTAIN_CLASS in ((o.top_class or ''),
+                                                (o.top_name or '')))
+
+
+def g_fg_curtain(o):
+    return curtain_on_top(o)
+
+
 def g_fg_other(o):
     return o.x_known
 
@@ -924,30 +958,47 @@ TRANSITIONS = {
                        ('joystick_false', 'game', 'steam-menu-closed')],
     },
     'foreground': {
+        # 'fg_curtain' sits ABOVE 'fg_other' in every list: the curtain is,
+        # by construction, a window no other guard recognises, and falling
+        # through to 'other' ("something-else-on-top") mid-transition is what
+        # the whitelist exists to prevent. It sits BELOW kodi/bigpicture/game
+        # only for reading order - when the curtain is on top those guards
+        # are false anyway (the top window's class/name is couch-curtain).
         UNKNOWN: [('x_unknown', UNKNOWN, 'x-unreachable'),
                   ('fg_kodi', 'kodi', 'kodi-on-top'),
                   ('fg_bigpicture', 'bigpicture', 'big-picture-on-top'),
                   ('fg_game', 'game', 'game-window-on-top'),
+                  ('fg_curtain', 'curtain', 'transition-curtain-on-top'),
                   ('fg_other', 'other', 'something-else-on-top')],
         'kodi': [('x_unknown', UNKNOWN, 'x-unreachable'),
                  ('fg_bigpicture', 'bigpicture', 'big-picture-on-top'),
                  ('fg_game', 'game', 'game-window-on-top'),
                  ('fg_kodi', 'kodi', 'kodi-on-top'),
+                 ('fg_curtain', 'curtain', 'transition-curtain-on-top'),
                  ('fg_other', 'other', 'something-else-on-top')],
         'game': [('x_unknown', UNKNOWN, 'x-unreachable'),
                  ('fg_kodi', 'kodi', 'kodi-on-top'),
                  ('fg_bigpicture', 'bigpicture', 'big-picture-on-top'),
                  ('fg_game', 'game', 'game-window-on-top'),
+                 ('fg_curtain', 'curtain', 'transition-curtain-on-top'),
                  ('fg_other', 'other', 'something-else-on-top')],
         'bigpicture': [('x_unknown', UNKNOWN, 'x-unreachable'),
                        ('fg_kodi', 'kodi', 'kodi-on-top'),
                        ('fg_game', 'game', 'game-window-on-top'),
                        ('fg_bigpicture', 'bigpicture', 'big-picture-on-top'),
+                       ('fg_curtain', 'curtain', 'transition-curtain-on-top'),
                        ('fg_other', 'other', 'something-else-on-top')],
+        'curtain': [('x_unknown', UNKNOWN, 'x-unreachable'),
+                    ('fg_kodi', 'kodi', 'kodi-on-top'),
+                    ('fg_bigpicture', 'bigpicture', 'big-picture-on-top'),
+                    ('fg_game', 'game', 'game-window-on-top'),
+                    ('fg_curtain', 'curtain', 'transition-curtain-on-top'),
+                    ('fg_other', 'other', 'something-else-on-top')],
         'other': [('x_unknown', UNKNOWN, 'x-unreachable'),
                   ('fg_kodi', 'kodi', 'kodi-on-top'),
                   ('fg_bigpicture', 'bigpicture', 'big-picture-on-top'),
-                  ('fg_game', 'game', 'game-window-on-top')],
+                  ('fg_game', 'game', 'game-window-on-top'),
+                  ('fg_curtain', 'curtain', 'transition-curtain-on-top')],
     },
     'enforcement': {
         UNKNOWN: [('enf_kodi', 'kodi', 'guard-window-kodi'),
@@ -1050,6 +1101,7 @@ class Machine:
                     nxt, reason = 'FROZEN', 'all-processes-stopped'
                 elif (o.x_known and not o.top_class.startswith('steam_app')
                       and not o.big_picture_window
+                      and not curtain_on_top(o)
                       and o.mono - self._game_since.get(appid, o.mono)
                       > MISSING_WINDOW_GRACE and o.suspended is None):
                     nxt, reason = 'MISSING_WINDOW', 'processes-without-a-window'
@@ -1589,11 +1641,18 @@ def reconcile(o):
         out += action_intents(o, 'tap', appid, running)
 
     if g == 'tap-resume':
+        # The bigpicture pseudo-app predicts a WINDOW, not pids: a Big
+        # Picture suspend froze nothing, so 'game pids back in state S' is a
+        # prediction the world can never satisfy and the oracle verdicted an
+        # honest resume MISSED (acceptance night, 03:48). Same verb, same
+        # decision, same deadline - only the observable effect differs.
         out.append(Intent('launch', appid,
                           {'mode': 'resume', 'via': 'game-launch resume',
                            'suspended_flag': o.suspended},
                           'gesture:tap-resume',
-                          _pred('game pids back in state S', 5.0),
+                          _pred('big picture window on top'
+                                if str(appid) == 'bigpicture'
+                                else 'game pids back in state S', 5.0),
                           requires=('gesture', 'session'), cooldown=3.0))
         # R7(c), the other half: the suspend UNMAPPED this window to free its
         # pointer grab, so the resume has to map it back or the player thaws a
@@ -1705,7 +1764,12 @@ def reconcile(o):
                               _pred('the overlay is gone', 6.0),
                               requires=('enforcement', 'foreground'),
                               cooldown=GUIDE_TOGGLE_COOLDOWN))
-        if enf == 'kodi' and o.x_known and o.top_name != 'Kodi':
+        # ...unless the thing on top is the transition curtain: it is COVERING
+        # the shuffle this very guard window belongs to, and restacking Kodi
+        # against a self-raising overlay is a fight nobody wins. Expected
+        # during a transition window, not drift (deploy item 1, 6 Aug 2026).
+        if enf == 'kodi' and o.x_known and o.top_name != 'Kodi' \
+                and not curtain_on_top(o):
             out.append(Intent('show', 'kodi',
                               {'via': 'xlib-restack', 'invariant': 2,
                                'top': o.top_name or '?'},
@@ -1789,8 +1853,15 @@ def reconcile(o):
         # flag set, game audible behind Kodi, nothing converging. WHAT IS ON
         # SCREEN decides which way to converge - the flag is only wrong if the
         # player can actually see and drive the game.
+        # ...but never from UNDER the curtain: flag-set-with-pids-running is
+        # exactly what the middle of a curtained suspend (freeze in flight)
+        # or resume (legacy thaws before clearing the flag) looks like, and
+        # WHAT IS ON SCREEN - the tie-breaker this repair runs on - is
+        # unreadable while the overlay covers it. A transition in progress
+        # is not drift; the repair resumes the pass after the curtain drops.
         if (o.suspended_present and o.pids_known and o.running_pids
-                and o.suspended != 'bigpicture'):
+                and o.suspended != 'bigpicture'
+                and not curtain_on_top(o)):
             if playing_despite_flag(o):
                 out.append(Intent('clear_flag', 'suspended',
                                   {'pids': sorted(o.pid_states),
@@ -2015,6 +2086,37 @@ ICONIFY_SH = (
     f'pids=$("{GAME_PIDS}" 2>/dev/null | tr "\\n" " "); [ -n "$pids" ] || exit 0; '
     f'wid=$(timeout 5 python3 "{XINPUT}" gamewin $pids 2>/dev/null); '
     f'case "$wid" in 0x*) timeout 5 python3 "{XINPUT}" iconify "$wid" ;; esac')
+
+
+def snap_captures(directory):
+    """Observed.snaps: appid -> wall-clock time (s) of the newest freeze-frame
+    in pause-snap's paused dir. Read-only, and cheap by construction: the dir
+    is bounded at two small jpgs per paused game and in practice one game is
+    paused at a time. The capture time comes from the FILENAME
+    (<appid>__<epoch_ms>.jpg - pause-snap mints a fresh name per capture so
+    Kodi's texture cache cannot serve the previous pause), never from mtime,
+    so a copied or touched file cannot lie about when it was captured.
+    `directory` is explicit - the daemon passes PAUSED_DIR, tests pass
+    tmp_path - because a default bound to the live path is how a unit test
+    ends up reading the console's real paused dir."""
+    out = {}
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return out                  # no dir yet = nothing captured
+    for name in names:
+        if not name.endswith('.jpg'):
+            continue
+        stem = name[:-4]
+        if stem.endswith('.tile'):  # the poster crop of the same capture
+            stem = stem[:-5]
+        appid, sep, ms = stem.rpartition('__')
+        if not sep or not appid or not ms.isdigit():
+            continue
+        ts = int(ms) / 1000.0
+        if ts > out.get(appid, 0.0):
+            out[appid] = ts
+    return out
 
 
 class ActionFailed(Exception):
@@ -2298,9 +2400,18 @@ def _eff_launch(o, it):
     the live tree because a resume's intent carries no pid list. Other
     launch subjects return None (no honest oracle -> 'unverified'), which
     beats the old state of affairs where NO launch was ever judged and a
-    systematically failing resume looked healthy (adversarial review)."""
+    systematically failing resume looked healthy (adversarial review).
+
+    EXCEPT the bigpicture pseudo-app, which has no game pids to come back:
+    a pid oracle on it waits 5s at a world that already looks 'wrong' and
+    verdicts an honest resume MISSED ('game pids back in state S', 03:48 on
+    the acceptance night). Big Picture's resume is a WINDOW effect - its
+    shell surfaces over Kodi - so the check is the same top-window shape
+    g_fg_bigpicture classifies from."""
     if it.args.get('mode') != 'resume':
         return None
+    if str(it.subject) == 'bigpicture':
+        return bool(o.x_known and 'Big Picture' in (o.top_name or ''))
     return bool(o.pids_known and o.pid_states and not o.frozen_pids)
 
 
@@ -2367,6 +2478,80 @@ def _eff_spawn_guard(o, it):
     return bool(o.guard_pid) and not o.guard_pid_ours
 
 
+# How recent a freeze-frame has to be to count as THIS suspend's capture.
+# Staleness is nearly impossible by construction - both stacks clear the
+# paused dir on resume (clear_snapshots / pause-snap --clear), and a game
+# cannot be suspended twice without a resume between - so the bound is belt
+# and braces against a clear that failed, sized to dwarf the 5s prediction
+# window plus pause-snap's own capture time.
+SNAP_FRESH_S = 30.0
+# ...and the sharper anchor: the capture must postdate the snapshot ORDER.
+# The relative bound alone falsely confirms a double fault (adversarial
+# review, 6 Aug): suspend A captures at T; a resume at T+10 whose
+# clear_snapshots fails; suspend B at T+15 whose pause-snap also fails -
+# B's oracle would confirm off A's 15s-old jpg. The pending record carries
+# the wall clock of the moment couchd acted (p['t0']), and a capture older
+# than that is somebody else's, however fresh. The epsilon absorbs skew
+# between couchd's clock and the filename stamp pause-snap mints (same
+# host, but the capture pipeline reads its clock a beat after ours).
+SNAP_ORDER_SKEW_S = 2.0
+
+
+def _eff_snapshot(o, it, ordered_at=None):
+    """A freeze-frame jpg for the appid exists, postdates THIS order, and is
+    fresh.
+
+    This was the 5/5-unverified oracle of the acceptance night: the
+    prediction said 'a freeze-frame jpg for the appid' and nothing ever
+    looked - snapshot had no entry in EFFECT_CHECKS, so every live suspend
+    ran out its 5s deadline and verdicted 'unverified' (latencies 5-17s
+    depending on pass cadence) while the jpg sat on disk. The daemon now
+    reads the paused dir each pass (Observed.snaps, filename convention
+    <appid>__<epoch_ms>.jpg); a capture is the effect when its embedded
+    wall-clock time is at or after the order (minus SNAP_ORDER_SKEW_S) and
+    within SNAP_FRESH_S. All three timestamps are wall clock - o.now, the
+    filename's epoch-ms, and ordered_at - so no mono/wall mixing.
+
+    `ordered_at=None` (a caller outside check_pending, e.g. a bare oracle
+    test) degrades to the freshness bound alone."""
+    ts = (o.snaps or {}).get(str(it.subject or ''))
+    if ts is None:
+        return False
+    if ordered_at is not None and ts < ordered_at - SNAP_ORDER_SKEW_S:
+        return False                # a LEFTOVER capture, not this order's
+    return (o.now - ts) <= SNAP_FRESH_S
+
+
+# The C17 checker hands this oracle the pending record's order time as a
+# third argument (see check_pending). An explicit marker, not arity
+# sniffing: a new anchored oracle opts in by setting the same attribute.
+_eff_snapshot.wants_order_time = True
+
+
+def _eff_iconify(o, it):
+    """The frozen game's window has LEFT the screen's stacking order.
+
+    The other 5/5-unverified oracle: no check was registered, so 'the frozen
+    game window is unmapped' timed out ~8s on every live suspend even though
+    the unmap worked every time. What the X11 observer actually sees when
+    iconify succeeds on this box: the window stops being mapped, so it
+    leaves the scan entirely - the top window stops being a steam_app and
+    the game's WM_CLASS drops out of Observed.game_windows (the mapped
+    steam_app list). Both legs matter: Kodi is raised over the game in the
+    same handoff, so 'top is not the game' alone would confirm an iconify
+    that silently failed - the game_windows leg is what tells covered from
+    unmapped. Non-Steam sessions (shadPS4) have no steam_app class to look
+    for, so for them the top-window leg is the whole oracle."""
+    if not o.x_known:
+        return False
+    if (o.top_class or '').startswith('steam_app'):
+        return False                # a game window still owns the screen
+    appid = str(it.subject or '')
+    if appid.isdigit() and f'steam_app_{appid}' in (o.game_windows or ()):
+        return False                # still mapped: covered is not unmapped
+    return True
+
+
 EFFECT_CHECKS = {
     'freeze': _eff_freeze, 'thaw': _eff_thaw,
     'set_flag': _eff_set_flag, 'clear_flag': _eff_clear_flag,
@@ -2375,6 +2560,8 @@ EFFECT_CHECKS = {
     'show_switcher': _eff_show_switcher,
     'spawn_guard': _eff_spawn_guard,
     'launch': _eff_launch,
+    'snapshot': _eff_snapshot,
+    'iconify': _eff_iconify,
 }
 
 # Effects that are only visible through a KODI READ. Kodi is the one observer
@@ -2598,6 +2785,8 @@ class ActingExecutor(Executor):
                 'intent': intent,
                 'deadline': obs.mono + float(intent.predict.get('deadline_s', 5)),
                 'started': obs.mono,
+                't0': obs.now,     # wall clock of the ORDER, for anchored
+                #                    oracles (filename stamps are wall clock)
                 'check': EFFECT_CHECKS.get(intent.verb),
             })
         return rec
@@ -2705,7 +2894,15 @@ class ActingExecutor(Executor):
             got = None
             if p['check'] is not None:
                 with contextlib.suppress(Exception):
-                    got = p['check'](o, it)
+                    if getattr(p['check'], 'wants_order_time', False):
+                        # An anchored oracle: it needs to know WHEN this
+                        # action was ordered, or a leftover artefact from a
+                        # previous order could confirm it (_eff_snapshot's
+                        # double-fault scenario). p['t0'] is the wall clock
+                        # of the execute() that queued this prediction.
+                        got = p['check'](o, it, p.get('t0'))
+                    else:
+                        got = p['check'](o, it)
             # A registered check that only ever answers None has no oracle
             # for THIS subject (e.g. _eff_show for steam-menu/desktop): at
             # the deadline that is 'unverified', not 'missed' - a standing
@@ -4341,6 +4538,8 @@ class Couchd:
             focused_class=(xst.focused_class if xst else ''),
             kodi_window_present=bool(xst and xst.kodi_present),
             big_picture_window=bool(xst and xst.big_picture),
+            game_windows=tuple(xst.game_windows) if xst else (),
+            snaps=snap_captures(PAUSED_DIR),
             steam_known=self.world.src('steam').ok,
             steam_route=self.steam.route, steam_route_at=self.steam.route_at,
             ui_mode=self.steam.ui_mode,

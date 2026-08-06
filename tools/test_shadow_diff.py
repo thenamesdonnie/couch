@@ -369,6 +369,57 @@ def test_pad_kernel_timestamp_beats_log_write_time():
         assert not sections(rep)['BOTH-BUT-DIFFERENT']
 
 
+def test_bp_hold_flag_with_no_real_freeze_is_exempt_from_ordering():
+    """Step 6 of the acceptance night (03:47:20 / 03:48:15): a Big Picture
+    hold has no game pids, so couchd correctly SKIPS the freeze and only sets
+    the flag, while legacy's yielded would-freeze (pids=[]) lands a beat after
+    the flag write. There is no real freeze to order, so freeze-before-flag
+    does not apply."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [yielded(10.2, 'freeze', 'bigpicture', pids=[],
+                           resolver='game-pids', gesture='hold',
+                           action='suspend_to_kodi', reason='ps-hold')],
+                  [daemon_rec(-5.0, 'start', model='m1', owns=['gestures']),
+                   acted(10.0, 'set_flag', 'suspended',
+                         reason='gesture:ps-hold-bigpicture',
+                         value='bigpicture', pids=[])])
+        a = [x for x in rep['assertions'] if 'set_flag' in x['name']]
+        assert [x['ok'] for x in a] == [None], a
+        assert 'exempt' in a[0]['detail'], a
+        assert rep['gating_count'] == 0, rep['gating_breakdown']
+
+
+def test_a_real_game_hold_keeps_freeze_before_flag_strict():
+    """The BP exemption must not leak: a real game session's freeze arriving
+    after the flag write is still an ORDER violation."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.2, 'freeze', '730', pids=[100, 101],
+                          resolver='game-pids')],
+                  [couchd(10.0, 'set_flag', 'suspended', value='730',
+                          reason='gesture:ps-hold', pids=[100, 101])])
+        a = [x for x in rep['assertions'] if 'set_flag' in x['name']]
+        assert [x['ok'] for x in a] == [False], a
+        assert rep['gating_count'] >= 1
+        row = sections(rep)['COUCHD-ONLY'][0]
+        assert 'ORDER' in row['flags'], row
+
+
+def test_bp_worded_hold_with_a_real_freeze_is_not_exempt():
+    """The exemption keys on the ABSENCE of a real freeze, not on the word
+    bigpicture: a nearby freeze carrying pids keeps the assertion strict."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(10.2, 'freeze', '730', pids=[100],
+                          resolver='game-pids')],
+                  [couchd(10.0, 'set_flag', 'suspended', value='bigpicture',
+                          reason='gesture:ps-hold-bigpicture')])
+        a = [x for x in rep['assertions'] if 'set_flag' in x['name']]
+        assert [x['ok'] for x in a] == [False], a
+        assert rep['gating_count'] >= 1
+
+
 # --------------------------------------------------------------- T5 auto-label
 def test_t5_autolabels():
     with tempfile.TemporaryDirectory() as tmp:
@@ -433,6 +484,63 @@ def test_a_normal_raise_is_still_diffable():
         rep = run(tmp, [legacy(0.0, 'show', 'game', src='game-launch',
                                via='xlib-restack')], [])
         r = {x['verb'] + x['section']: x for x in rep['rows']}['showLEGACY-ONLY']
+        assert r['label'] == '', r
+
+
+def test_t5_curtain_overlay_row_is_pre_declared():
+    """6 Aug deploy-day declaration: WM_CLASS couch-curtain is a transition
+    overlay, so an enforcement row naming it reads T5 on EITHER side."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(20.0, 'show', 'kodi', src='guard',
+                          reason='wanted window not on top',
+                          top='couch curtain', topcls='couch-curtain')],
+                  [couchd(5.0, 'show', 'kodi',
+                          reason='guard:wanted-window-not-on-top',
+                          via='xlib-restack', top='couch curtain',
+                          topcls='couch-curtain')])
+        s = sections(rep)
+        for r in s['COUCHD-ONLY'] + s['LEGACY-ONLY']:
+            assert r['label'] == 'T5' and 'curtain' in r['note'], r
+        assert rep['gating_count'] == 0
+
+
+def test_a_non_curtain_wrong_window_row_still_diffs():
+    """Only the curtain is declared: a wanted-window-not-on-top row about any
+    other window stays a real divergence for hand triage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [couchd(5.0, 'show', 'kodi',
+                          reason='guard:wanted-window-not-on-top',
+                          top='Steam Big Picture Mode',
+                          topcls='steamwebhelper')])
+        r = sections(rep)['COUCHD-ONLY'][0]
+        assert r['label'] == '', r
+
+
+def test_t5_bp_hide_iconify_from_game_launch_is_pre_declared():
+    """6 Aug deploy-day declaration: game-launch iconifies the Big Picture
+    steamwebhelper window once the game window maps (the fps root-cause fix).
+    A new legacy-side window op, pre-declared rather than a gating novelty."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(5.0, 'iconify', 'steamwebhelper', src='game-launch',
+                          via='wm-change-state',
+                          reason='hide-bp-after-game-map',
+                          window='0x2c0000a')],
+                  [])
+        r = sections(rep)['LEGACY-ONLY'][0]
+        assert r['label'] == 'T5' and 'BP-hide' in r['note'], r
+        assert rep['gating_count'] == 0
+
+
+def test_an_iconify_not_from_game_launch_is_not_bp_hide():
+    """The BP-hide entry is keyed on src=game-launch; the same subject from
+    another source stays open for hand triage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [legacy(5.0, 'iconify', 'steamwebhelper', src='guard')],
+                  [])
+        r = sections(rep)['LEGACY-ONLY'][0]
         assert r['label'] == '', r
 
 

@@ -1027,7 +1027,11 @@ class ConsoleModel(RuleBasedStateMachine):
     @rule(top=st.sampled_from([('Kodi', 'Kodi'),
                                ('Elden Ring', 'steam_app_367520'),
                                ('Big Picture Mode', 'steamwebhelper'),
-                               ('Thunar', 'Thunar')]))
+                               ('Thunar', 'Thunar'),
+                               # the transition curtain: an overlay that may
+                               # appear over ANY of the worlds above, in any
+                               # ordering Hypothesis can invent
+                               ('couch-curtain', 'couch-curtain')]))
     def set_top_window(self, top):
         self.w['top_name'], self.w['top_class'] = top
         self.w['big_picture_window'] = 'Big Picture' in top[0]
@@ -1722,6 +1726,123 @@ def test_the_timeout_arm_is_gated_the_same_way():
     o = make_obs(regions={'gesture': 'timed-out', 'session': 'none'},
                  session=None)
     assert reconcile(o) == []
+
+
+# =========================================================================
+# the transition curtain (deploy item 1, 6 Aug 2026)
+#
+# tools/curtain draws a freeze-frame overlay (WM_CLASS couch-curtain) over
+# the suspend/resume window shuffle. By construction it is an unknown
+# fullscreen window on top of the console - exactly the shape the guards
+# read as drift - so the classifier and every screen-reading repair must
+# treat it as "a transition being hidden", never as something to fight.
+# =========================================================================
+CURTAIN_TOP = dict(top_name=couchd.CURTAIN_CLASS,
+                   top_class=couchd.CURTAIN_CLASS)
+
+
+def test_curtain_classifies_as_transition_overlay_not_other():
+    rig = Rig().settle()
+    rig.observe(**CURTAIN_TOP)
+    assert rig.machine.regions['foreground'] == 'curtain'
+    assert ('foreground', 'kodi', 'curtain',
+            'transition-curtain-on-top') in rig.transitions
+    # it settles there (no flap to 'other') while the overlay is up...
+    rig.observe(**CURTAIN_TOP)
+    assert rig.machine.regions['foreground'] == 'curtain'
+    # ...and drops back to what the fade reveals
+    rig.observe()
+    assert rig.machine.regions['foreground'] == 'kodi'
+
+
+def test_curtain_is_reachable_from_other_and_vice_versa():
+    rig = Rig().settle()
+    rig.observe(top_name='Thunar', top_class='Thunar')
+    assert rig.machine.regions['foreground'] == 'other'
+    rig.observe(**CURTAIN_TOP)
+    assert rig.machine.regions['foreground'] == 'curtain'
+    rig.observe(top_name='Thunar', top_class='Thunar')
+    assert rig.machine.regions['foreground'] == 'other'
+
+
+def test_guard_tolerates_the_curtain_over_its_kodi_window():
+    """guard:wanted-window-not-on-top must not restack Kodi against the
+    overlay that is covering the very handoff the guard window belongs to
+    (the curtain re-raises itself; that fight has no winner)."""
+    o = make_obs(regions={'enforcement': 'kodi', 'foreground': 'curtain'},
+                 **CURTAIN_TOP)
+    assert not find(reconcile(o), 'show', 'kodi'), verbs(reconcile(o))
+    # ...and the guard is NOT weakened: any other unexpected window still
+    # gets repaired exactly as before.
+    o2 = make_obs(top_name='Steam', top_class='steamwebhelper',
+                  regions={'enforcement': 'kodi', 'foreground': 'other'})
+    got = find(reconcile(o2), 'show', 'kodi')
+    assert got and got[0].reason == 'guard:wanted-window-not-on-top'
+
+
+def test_refreeze_repair_holds_off_under_the_curtain():
+    """Flag set + pids running is what the MIDDLE of a curtained transition
+    looks like (a suspend's freeze in flight; a resume that thaws before it
+    clears the flag - the reconcile-flip hard gate). The repair pair reads
+    WHAT IS ON SCREEN to pick a direction, and the screen is covered: hold
+    off, and re-decide the pass after the curtain drops."""
+    o = make_obs(session=SESSION, suspended=APPID,
+                 pid_states=_running(E1_PIDS[:4]), joystick=True,
+                 focused_class='Kodi',
+                 regions={'session': 'active', 'foreground': 'curtain'},
+                 **CURTAIN_TOP)
+    got = reconcile(o)
+    assert not find(got, 'freeze'), verbs(got)
+    assert not find(got, 'clear_flag', 'suspended'), verbs(got)
+    assert not find(got, 'iconify'), verbs(got)
+    # the same world with the curtain gone still repairs (regression guard)
+    o2 = replace(o, top_name='Kodi', top_class='Kodi')
+    assert find(reconcile(o2), 'freeze')
+
+
+def test_frozen_game_under_the_curtain_is_not_repaired_visible():
+    """A frozen game covered by the curtain is mid-suspend, not 'what the
+    room is looking at': neither the reconcile repair nor guard invariant 3
+    may fire while the overlay is the top window."""
+    o = make_obs(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+                 regions={'session': 'active', 'foreground': 'curtain',
+                          'enforcement': 'kodi'},
+                 **CURTAIN_TOP)
+    assert not find(reconcile(o), 'show', 'kodi'), verbs(reconcile(o))
+
+
+def test_curtain_does_not_mark_the_game_window_missing():
+    """MISSING_WINDOW keys off 'processes but no game window on screen';
+    a curtain covering a freshly resumed game must not read as that."""
+    m = Machine()
+    base = dict(session=SESSION, ledger={APPID: (200,)}, pid_states={200: 'S'},
+                joystick=False)
+    m.step(make_obs(mono=1000.0, top_name='ELDEN RING', top_class=E1_TOPCLS,
+                    **base))
+    assert m.games[APPID] == 'RUNNING'
+    m.step(make_obs(mono=1010.0, **CURTAIN_TOP, **base))
+    assert m.games[APPID] == 'RUNNING', 'curtain is a transition, not a loss'
+    # ...and the grace path still works once the screen is genuinely wrong
+    m.step(make_obs(mono=1020.0, top_name='Thunar', top_class='Thunar',
+                    **base))
+    assert m.games[APPID] == 'MISSING_WINDOW'
+
+
+def test_bigpicture_tap_resume_predicts_a_window_not_pids():
+    """The bigpicture pseudo-app has no game pids to come back, so its
+    resume launch predicts the observable effect - Big Picture's shell on
+    top - instead of 'game pids back in state S' (which verdicted an honest
+    resume MISSED on the acceptance night, 03:48)."""
+    o = make_obs(session=BP_SESSION, suspended='bigpicture',
+                 regions={'session': 'active', 'gesture': 'tap-resume'})
+    got = find(reconcile(o), 'launch')
+    assert got and got[0].subject == 'bigpicture'
+    assert got[0].predict['effect'] == 'big picture window on top'
+    # a real game's resume still predicts pids (unchanged)
+    o2 = make_obs(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+                  regions={'session': 'active', 'gesture': 'tap-resume'})
+    got2 = find(reconcile(o2), 'launch')
+    assert got2 and got2[0].predict['effect'] == 'game pids back in state S'
 
 
 TestConsoleModel = ConsoleModel.TestCase

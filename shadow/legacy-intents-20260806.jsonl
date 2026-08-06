@@ -199,3 +199,7 @@
 {"t": 1785984934.487, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"854356"}}
 {"t": 1785984934.521, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"bigpicture"}}
 {"t": 1785984934.534, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"bigpicture"}}
+{"t": 1786011936.4353921, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786011948.927209, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786011961.4309423, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786011973.9956994, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}

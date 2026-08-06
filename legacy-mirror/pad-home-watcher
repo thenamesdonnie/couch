@@ -871,8 +871,18 @@ def yield_gesture(gname, reason, action):
             'yielded': True, 'owner': 'couchd'}
     if action == 'suspend_to_kodi' and os.path.exists(SESSION):
         parts = _session_parts()
+        # The WHOLE game-pids set, not running_pids(): couchd decides on
+        # kernel timestamps in-process, so by the time this shadow line is
+        # written its SIGSTOPs have usually already landed, and a filter that
+        # drops 'T' states subtracts the owner's own action from our
+        # counterfactual. That is how every yielded would-freeze on the
+        # acceptance night (6 Aug 2026) recorded pids=[] against couchd's 18
+        # - 10 gating SET-MISMATCH rows. At the press these pids WERE
+        # running; the set game-pids names is the set the acting path would
+        # have frozen. (The acting path keeps its filter: it reads BEFORE it
+        # stops anything, where 'T' really does mean already-frozen.)
         intent('freeze', _session_appid(parts),
-               pids=sorted(running_pids(game_pids())), resolver='game-pids',
+               pids=sorted(game_pids()), resolver='game-pids',
                **args)
     else:
         intent('yield', gname, **args)
@@ -927,6 +937,51 @@ def hold_ready(action):
     return True
 
 
+CURTAIN_CLASS = 'couch-curtain'   # tools/curtain's freeze-frame overlay
+
+
+def _foreground_class(cl):
+    """May `cl` be reported as the foreground window's class?
+
+    The couch-curtain overlay (tools/curtain) is TRANSPARENT to
+    classification: a cosmetic freeze-frame stretched over a suspend/resume
+    handover, deliberately on top of everything, and reading it as "the
+    foreground window" would turn every repair that looks at the screen into
+    a fight with a window that re-raises itself. Skipped entirely, as if not
+    mapped - the contract at the top of tools/curtain."""
+    return bool(cl) and cl != CURTAIN_CLASS
+
+
+def curtain_visible():
+    """Is the couch-curtain overlay actually up right now?
+
+    _foreground_class keeps the curtain out of the classifications; this
+    answers the other half of the whitelist: while the curtain is up the room
+    is looking at IT, so the frozen-game-visible repair has nothing visible
+    to repair and must not restack Kodi against an overlay that is covering
+    the handover on purpose (and holds itself on top until it fades or its
+    watchdog kills it). The curtain is override-redirect, so it sits as a
+    direct child of root and one shallow pass finds it."""
+    try:
+        from Xlib import display
+        d = display.Display()
+        root = d.screen().root
+        up = False
+        for c in root.query_tree().children:
+            try:
+                if c.get_attributes().map_state != 2:
+                    continue
+                if (c.get_wm_class() or ('', ''))[0] == CURTAIN_CLASS:
+                    up = True
+                    break
+            except Exception:
+                continue
+        d.close()
+        return up
+    except Exception:
+        return False
+
+
 def screen_classes():
     """(topmost window class, focused window class), in one X round trip.
 
@@ -934,7 +989,8 @@ def screen_classes():
     InputOnly, at least 600x400, last in the bottom-to-top child order. Focus is
     read the guard's way too, walking up from the focus window until something
     owns a class. Together they answer the question a repair actually needs:
-    is the room looking at the game, or at something else?"""
+    is the room looking at the game, or at something else? The couch-curtain
+    overlay is never the answer (see _foreground_class)."""
     try:
         from Xlib import display
         d = display.Display()
@@ -963,7 +1019,7 @@ def screen_classes():
                 if g.width < 600 or g.height < 400:
                     continue
                 cl = cls_of(c)
-                if cl:
+                if _foreground_class(cl):
                     topcls = cl
             except Exception:
                 continue
@@ -977,7 +1033,7 @@ def screen_classes():
                     cl = (f.get_wm_class() or ('', ''))[0]
                 except Exception:
                     cl = ''
-                if cl:
+                if _foreground_class(cl):
                     focuscls = cl
                     break
                 f = f.query_tree().parent
@@ -990,7 +1046,14 @@ def screen_classes():
 
 
 def top_is_frozen_game():
-    """Is the visible window a steam_app while the game is suspended?"""
+    """Is the visible window a steam_app while the game is suspended?
+
+    Never while the couch-curtain is up: the room sees the curtain, not the
+    frozen game (whose window may still sit mapped beneath it mid-handover),
+    so there is nothing visible to repair - and raising Kodi would stack it
+    against an overlay that re-raises itself (see curtain_visible)."""
+    if curtain_visible():
+        return False
     return screen_classes()[0].startswith('steam_app')
 
 

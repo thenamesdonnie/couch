@@ -637,6 +637,26 @@ def assertions(couchd_i, legacy_i, edges, pairs):
                          'detail': 'no freeze within %.0fs of the flag (R7(a) shape?)'
                                    % FLAG_FREEZE_S, 'intent': it})
             continue
+        # BP-HOLD EXEMPTION, declared 6 Aug 2026 off the acceptance-night rows
+        # (03:47:20 / 03:48:15, gesture:ps-hold-bigpicture). A hold on a Big
+        # Picture session has NO game pids: couchd correctly SKIPS the freeze
+        # and only sets the flag, while legacy's yielded would-freeze record
+        # (pids=[]) lands a beat after the flag write. That record is
+        # bookkeeping about a freeze nobody performs - there is no real freeze
+        # to order - so the assertion does not apply. It stays FULLY STRICT
+        # for real game sessions: any nearby freeze carrying a non-empty pid
+        # set is a real freeze, and the exemption steps aside.
+        bp_hold = any('bigpicture' in canon(x) for x in
+                      (it['reason'], it['args'].get('reason'),
+                       it['args'].get('value'))) or \
+            all(canon(f['subject']) == 'bigpicture' for f in near)
+        if bp_hold and not any(pid_set(f) for f in near):
+            rows.append({'name': 'freeze before set_flag(suspended)', 'ok': None,
+                         'detail': 'exempt: big-picture hold on a pids-less '
+                                   'session - couchd sets the flag only, and '
+                                   'the yielded freeze (pids=[]) is not a real '
+                                   'freeze to order', 'intent': None})
+            continue
         first = min(near, key=lambda f: f['t'])
         ok = first['t'] <= it['t']
         rows.append({'name': 'freeze before set_flag(suspended)', 'ok': ok,
@@ -722,6 +742,23 @@ def agreement_label(rec):
 
 
 # ---- pre-declared whitelist (R5 + R7) ---------------------------------------
+CURTAIN_WM_CLASS = 'couch-curtain'      # the 6 Aug transition-overlay window
+
+
+def curtain_involved(it):
+    """True when a row names the couch-curtain transition overlay (6 Aug).
+
+    The curtain is deliberately allowed on top mid-transition, so a guard or
+    reconcile enforcement row that names it (subject, or any window-ish arg:
+    top/topcls/wm_class/window/class) is the pre-declared shape, not a wrong
+    window being tolerated.
+    """
+    vals = [it['subject']] + [it['args'].get(k) for k in
+                              ('top', 'topcls', 'wm_class', 'window', 'class',
+                               'foreground')]
+    return any(CURTAIN_WM_CLASS in canon(v) for v in vals if v is not None)
+
+
 def bp_hold_context(t, couchd_i, legacy_i):
     """True when a big-picture hold with no game pids sits just before t (R7(a))."""
     for it in couchd_i + legacy_i:
@@ -789,6 +826,28 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         the owner's call to make deliberately, not something that arrives as a
         side effect of a flip. Until he rules, expect neither stack to act on
         it: a hold-with-no-session is not a divergence in either direction.
+      * DEPLOY-DAY DECLARATIONS, written 6 Aug 2026 BEFORE the deploy (the
+        model fingerprint moves off d1adeed4083a when couchd restarts with
+        the curtain whitelist; these are declared against the NEW model so
+        they cannot be mistaken for T4s tonight):
+          - CURTAIN OVERLAY (entry below): WM_CLASS "couch-curtain" is now a
+            transition overlay in couchd's foreground region, so a curtain
+            window on top no longer trips guard:wanted-window-not-on-top or
+            reconcile:frozen-game-visible. Legacy gains the SAME whitelist
+            the same day, so near-symmetry is expected - the entry exists so
+            any curtain-window row that does appear reads T5 with a clear
+            note instead of gating as a novelty.
+          - BP-HIDE (entry below): legacy game-launch now iconifies the Big
+            Picture steamwebhelper window after the game window maps (the
+            "Steam says 60fps, feels 20" root cause). A new legacy-side
+            window operation; couchd model catch-up pending.
+          - YIELDED pids=[] RECORDING BUG, FIX DECLARED - deliberately NO
+            whitelist entry. Until today the watcher's yield path recorded
+            pids=[] on every yielded would-freeze (the 10 SET-MISMATCH rows
+            of 20260806 were that bug, and they STAY gating as recorded -
+            yesterday's data is kept honest). From tonight the yielded
+            freeze carries the real pid set and MUST match couchd's, so any
+            SET-MISMATCH after the fix is a real divergence again.
       * BP PRE-STEP STILL NOT DIFFED (replay finding 5, carried forward). The
         R7(g) entry below fires on a LEGACY-ONLY `launch`, but `launch` is a
         CONTEXT_VERB: it is held as context and never compared in EITHER
@@ -805,6 +864,32 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         return 'T5', 'R7(g) pre-declared: legacy switches Steam to Big Picture ' \
                      'before a game launch (uimode 7 -> 4); couchd model ' \
                      'catch-up pending'
+    # CURTAIN OVERLAY, pre-declared 6 Aug 2026 with the deploy-day model
+    # change (see the docstring). Keyed on the curtain being NAMED in the row,
+    # either side: neither stack should enforce against a couch-curtain window
+    # on top, and a row that says one did is the declared shape, not gating.
+    for it in [x for x in (li, ci) if x]:
+        if curtain_involved(it):
+            return 'T5', 'pre-declared with the 6 Aug curtain wire-in: ' \
+                         'couch-curtain is a transition overlay, not a wrong ' \
+                         'window on top - neither stack should enforce ' \
+                         'against it (near-symmetry expected; a one-sided ' \
+                         'row here is a note, not a novelty)'
+    # BP-HIDE, pre-declared 6 Aug 2026 with the deploy-day game-launch fix
+    # (the "Steam says 60fps, feels 20" root cause): after the game window
+    # maps, legacy game-launch ICONIFIES the Big Picture steamwebhelper
+    # window it raised. A new legacy-side window operation; sits BEFORE the
+    # R7(b) bigpicture catch-all and the R7(c) iconify entry so it carries
+    # THIS note, not theirs.
+    if section == 'LEGACY-ONLY' and li['verb'] in ('iconify', 'minimize') and \
+            canon(li['origin']) == 'game-launch' and \
+            (canon(li['subject']) in ('bp', 'bigpicture', 'steamwebhelper') or
+             any('steamwebhelper' in canon(li['args'].get(k))
+                 for k in ('wm_class', 'class', 'window'))):
+        return 'T5', 'pre-declared with the 6 Aug BP-hide fix: game-launch ' \
+                     'iconifies the Big Picture (steamwebhelper) window ' \
+                     'after the game window maps; couchd model catch-up ' \
+                     'pending'
     for it in [x for x in (li, ci) if x]:
         if canon(it['subject']) == 'bigpicture' or \
                 canon(it['args'].get('appid')) == 'bigpicture':
