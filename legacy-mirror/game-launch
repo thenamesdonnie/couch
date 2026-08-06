@@ -29,9 +29,11 @@ MODE="${1:-}"
 APPID="${2:-}"
 JSON=http://localhost:8090/jsonrpc
 AUTH=kodi:$KODI_PASSWORD
-LOG=/tmp/game-launch.log
-SESSION=/tmp/game-session     # "<launcher pid> <mode> <appid>" while a session runs
-SUSPENDED=/tmp/game-suspended # "<appid>" or "bigpicture" while a game is frozen
+# Test seams, tools/curtain's pattern: unset in normal operation, the tests
+# point them under tmp_path (live /tmp is off limits to tests, hard rule).
+LOG="${GAME_LAUNCH_LOG:-/tmp/game-launch.log}"
+SESSION="${GAME_SESSION_FILE:-/tmp/game-session}"     # "<launcher pid> <mode> <appid>" while a session runs
+SUSPENDED="${GAME_SUSPENDED_FILE:-/tmp/game-suspended}" # "<appid>" or "bigpicture" while a game is frozen
 
 say() { echo "$(date +%H:%M:%S.%3N) $*" >> "$LOG"; }
 
@@ -39,7 +41,7 @@ say() { echo "$(date +%H:%M:%S.%3N) $*" >> "$LOG"; }
 # reads our intent instead of guessing it back from effects. Args are
 # key=value pairs; "key:=..." passes an already-formed JSON value (arrays,
 # numbers). Purely additive: logging here can never fail a caller.
-INTENTS=/tmp/legacy-intents.jsonl
+INTENTS="${LEGACY_INTENTS_FILE:-/tmp/legacy-intents.jsonl}"  # same seam name the focus python honours
 _jstr() {
   local s=${1-}
   s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/ }; s=${s//$'\t'/ }
@@ -344,6 +346,102 @@ clear_snaps() {
   timeout 2 "$PAUSE_SNAP" --clear ${1:+"$1"} >/dev/null 2>&1 || true
 }
 
+# The transition CURTAIN (tools/curtain): the game's own freeze-frame held
+# fullscreen over the suspend/resume window shuffle, faded once the right
+# thing has the screen. Wired 6 Aug 2026, after the standalone test passed and
+# both stacks + the guard learned to treat WM_CLASS couch-curtain as
+# transparent (tools/curtain's header makes that whitelist a hard
+# precondition). Same cosmetic contract as pause-snap: time-boxed, any failure
+# is a log line and the shuffle simply runs bare, exactly as it did before
+# today. Never for bigpicture (nothing worth hiding behind its own frame),
+# never without the binary. The tool's double watchdog means a stuck curtain
+# is impossible; the clears on the error paths below are belt and braces so
+# nothing ever sits over a state this script knows is broken.
+CURTAIN="${CURTAIN_BIN:-/home/ds2000/couch/tools/curtain}"
+SNAP_DIR="${PAUSE_SNAP_DIR:-$HOME/couch/data/paused}"   # where pause-snap keeps frames
+CURTAIN_UP=0             # WE raised one this run; error paths must drop it
+CURTAIN_FRESH_SLACK=30   # resume: frame may predate the pause flag by this much
+
+curtain_usable() {  # <subject> - is a curtain even on the table here?
+  [ -x "$CURTAIN" ] || return 1
+  case "${1:-}" in bigpicture) return 1 ;; esac
+  [ "$(cut -d' ' -f2 "$SESSION" 2>/dev/null)" = "bigpicture" ] && return 1
+  return 0
+}
+
+# The wide freeze-frame pause-snap keeps for an appid: <safe>__<stamp>.jpg
+# (never the .tile crop). safe() mirrored from pause-snap: non [A-Za-z0-9._-]
+# becomes _, truncated to 100.
+_snap_frame() {
+  local name f best=
+  name="$(printf '%s' "${1:-game}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)"
+  [ -n "$name" ] || name=game
+  for f in "$SNAP_DIR/${name}__"*.jpg; do
+    case "$f" in *.tile.jpg) continue ;; esac
+    [ -f "$f" ] || continue
+    if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+}
+
+# A frozen game's frame cannot rot on its own (the processes are SIGSTOPped),
+# so "fresh" means "belongs to THIS pause": no older than the suspended flag,
+# give or take the snap landing just beside the flag write. A leftover from
+# some earlier pause is a lie, and an honest quick shuffle beats a wrong
+# frozen frame - the caller skips the curtain entirely when this says no.
+frame_is_this_pause() {
+  local fm sm
+  fm="$(stat -c %Y "$1" 2>/dev/null)" || return 1
+  sm="$(stat -c %Y "$SUSPENDED" 2>/dev/null)" || return 1
+  [ -n "$fm" ] && [ -n "$sm" ] || return 1
+  [ "$((fm + CURTAIN_FRESH_SLACK))" -ge "$sm" ]
+}
+
+curtain_show() {  # <subject> <frame> <reason> - synchronous (~0.25s when it works)
+  local subject="${1:-game}" frame="$2" reason="${3:-transition}"
+  if timeout 3 "$CURTAIN" status >/dev/null 2>&1; then
+    # Somebody's interrupted transition is still up; ours must not stack on it.
+    say "curtain: one already up; clearing it before ours"
+    intent curtain_clear "$subject" wm_class=couch-curtain via=tools-curtain \
+      reason=stale-curtain-before-show "mode=$MODE"
+    timeout 3 "$CURTAIN" clear >/dev/null 2>&1 || true
+  fi
+  if timeout 3 "$CURTAIN" show "$frame" >/dev/null 2>&1; then
+    CURTAIN_UP=1
+    say "curtain up ($frame)"
+    # Written AFTER the exit 0, not before - focus_game's lesson (6 Aug): an
+    # intent for a show that never happened hides the failure from the differ.
+    intent curtain_show "$subject" wm_class=couch-curtain via=tools-curtain \
+      "image=$frame" "reason=$reason" "mode=$MODE"
+    return 0
+  fi
+  say "curtain show failed (harmless); the shuffle runs bare"
+  return 1
+}
+
+curtain_fade() {  # <subject> - dissolve to reveal whatever the shuffle put up
+  [ "$CURTAIN_UP" = 1 ] || return 0
+  CURTAIN_UP=0
+  intent curtain_fade "${1:-transition}" wm_class=couch-curtain \
+    via=tools-curtain "mode=$MODE"
+  timeout 5 "$CURTAIN" fade >/dev/null 2>&1 || true
+  say "curtain faded"
+  return 0
+}
+
+curtain_clear() {  # <reason> - error paths: nothing may sit over a broken state
+  [ -x "$CURTAIN" ] || return 0
+  if [ "$CURTAIN_UP" != 1 ]; then
+    timeout 3 "$CURTAIN" status >/dev/null 2>&1 || return 0
+  fi
+  CURTAIN_UP=0
+  intent curtain_clear "${1:-error}" wm_class=couch-curtain via=tools-curtain \
+    "reason=${1:-error}" "mode=$MODE"
+  timeout 3 "$CURTAIN" clear >/dev/null 2>&1 || true
+  say "curtain cleared (${1:-error})"
+  return 0
+}
+
 # A SIGSTOPped game cannot answer the X server, so any pointer grab it held at
 # the instant it froze stays held: its cursor sprite sits on top of Kodi and
 # the phone's XTEST clicks are swallowed by the frozen client. X drops a grab
@@ -613,6 +711,9 @@ focus_game_when_mapped() {
   say "game window never mapped (${waited}s); leaving the stack alone"
   intent focus_timeout "${APPID:-game}" "waited=$waited" "mode=$MODE" \
     reason=game-window-never-mapped
+  # No launch path shows a curtain today, but one left up by an interrupted
+  # flow must not sit over a window that never came: belt and braces.
+  curtain_clear focus-timeout
   return 1
 }
 
@@ -707,6 +808,19 @@ phase() {
 resume_game() {
   RESUME_T0=$(_ms); RESUME_LAST=$RESUME_T0
   local was; was="$(cat "$SUSPENDED" 2>/dev/null)"
+  # Curtain BEFORE the thaw and the window work, on this pause's OWN frame
+  # only (frame_is_this_pause; a mismatch means skip the curtain entirely).
+  # Must run before the rm/clear_snaps below: the freshness check reads the
+  # flag's mtime, and the show is synchronous, so by the time clear_snaps
+  # deletes the jpg the daemon has already read it into its pixmap.
+  local frame=
+  if curtain_usable "${was:-game}"; then
+    if frame="$(_snap_frame "${was:-game}")" && frame_is_this_pause "$frame"; then
+      curtain_show "${was:-game}" "$frame" resume
+    else
+      say "curtain: no fresh freeze-frame for ${was:-game}; honest shuffle instead"
+    fi
+  fi
   cont_all
   phase thawed
   rm -f "$SUSPENDED"
@@ -738,14 +852,20 @@ resume_game() {
   # in-game opens it), fall back to focusing Big Picture itself; and if
   # nothing at all is focusable, the pad must go back to Kodi rather than
   # being left pointed at an invisible window.
+  # The curtain (if one is up) drops only on a CONFIRMED focus - fade reveals
+  # the thing the pad now speaks to. The one path where nothing is focusable
+  # gets a clear, not a fade: nothing may sit over a state we know is broken.
   if [ "$(cut -d' ' -f2 "$SESSION" 2>/dev/null)" = "shadps4" ]; then
-    focus_game emu
-  elif ! focus_game; then
-    if ! focus_game bp; then
-      say "nothing to focus, pad stays with kodi"
-      pad_to_kodi
-      focus_kodi
-    fi
+    if focus_game emu; then curtain_fade shadps4; else curtain_clear resume-emu-not-focused; fi
+  elif focus_game; then
+    curtain_fade "${was:-game}"
+  elif focus_game bp; then
+    curtain_fade bigpicture
+  else
+    say "nothing to focus, pad stays with kodi"
+    curtain_clear resume-nothing-to-focus
+    pad_to_kodi
+    focus_kodi
   fi
   # The resume tap also toggled Steam's Big Picture menu; if it's now open
   # invisibly it will eat the pad instead of the game. Guard closes it.
@@ -762,6 +882,10 @@ case "$MODE" in
   quit)
     say "=== quit (save and close)"
     session_lock
+    # A curtain still up here is an interrupted transition's, and this quit is
+    # about to change what is true underneath it: drop it before the teardown
+    # (belt and braces - its own watchdog would take it inside seconds anyway).
+    curtain_clear quit
     if game_running || bp_running || emu_running; then close_games power-menu-quit; else say "nothing to quit"; fi
     exit 0
     ;;
@@ -799,12 +923,24 @@ case "$MODE" in
       # window still captures - but because the game is the only thing this
       # branch is sure about at this point.
       snap_paused "${appid:-game}" screen-switcher
+      # Curtain up on that just-captured frame BEFORE the shuffle below (the
+      # Kodi raise, the game iconify): the room keeps seeing the game, the
+      # shuffle happens underneath, and the fade after it reveals Kodi.
+      if curtain_usable "${appid:-game}"; then
+        if frame="$(_snap_frame "${appid:-game}")"; then
+          curtain_show "${appid:-game}" "$frame" suspend
+        else
+          say "curtain: no freeze-frame for ${appid:-game}; shuffle runs bare"
+        fi
+      fi
     fi
     pad_to_kodi
     focus_kodi
     # Kodi has the screen now, so the frozen window can go. After snap_paused
     # above, which reads the compositing pixmap that iconifying frees.
     [ "$frozen" = 1 ] && hide_frozen_game "${appid:-game}"
+    # Kodi is focused and the frozen window is gone: dissolve to reveal it.
+    curtain_fade kodi
     # 9>&- : the guard outlives us by seconds, and an inherited lock fd would
     # keep the session lock held for all of them. (Closing an unopened fd is a
     # no-op, so this is safe whether or not the lock was taken.)

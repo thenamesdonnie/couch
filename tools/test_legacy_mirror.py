@@ -24,6 +24,12 @@ What is pinned, all from the acceptance night (docs/acceptance-20260806.md):
      invariant 2 likewise never restacks Kodi against the curtain - while
      its top_window() keeps REPORTING the curtain, so invariant 3 cannot
      see the frozen game beneath it.
+  4. (6 Aug, the wire-in itself) game-launch curtains its suspend and resume:
+     shown on the just-captured freeze-frame BEFORE the window shuffle,
+     faded only after the right thing is confirmed on screen, cleared (never
+     left up) on the broken paths - and skipped entirely for bigpicture,
+     for a missing binary, and for a freeze-frame that is not this pause's
+     own (an honest bare shuffle beats a wrong frozen frame).
 
 Every path is an injected tmp_path one - never live /tmp (the 5 Aug rule).
 
@@ -610,3 +616,264 @@ def test_focus_python_finds_proton_windows_by_class_not_just_pid(fscreen):
     r = fscreen([KODI, stranger])
     assert r.returncode == 0
     assert 'game focused' in r.stdout
+
+
+# =========================================================================
+# 5. game-launch: the curtain wire-in (suspend/resume transitions)
+# =========================================================================
+# The flows are shell, so the shell is what runs: the script's PRELUDE (every
+# definition before the dispatch case) is sourced into a bash harness, the
+# effectors (pad routing, restacks, snaps, guards) are stubbed to a call log,
+# and the curtain binary is a recording stub - CURTAIN_BIN and the path seams
+# (GAME_LAUNCH_LOG / LEGACY_INTENTS_FILE / GAME_SESSION_FILE /
+# GAME_SUSPENDED_FILE / PAUSE_SNAP_DIR) point everything under tmp_path.
+# The suspend/quit arm bodies are extracted from the case statement and run
+# verbatim; resume_game and focus_game_when_mapped are called as functions.
+
+_GL_STUBS = '''
+rec() { echo "$*" >> "$GL_CALLS"; }
+session_lock() { :; }
+game_pids() { cat "$GL_PIDS_FILE" 2>/dev/null; }
+kill() { rec kill "$*"; }
+pad_to_kodi() { rec pad_to_kodi; }
+pad_to_game() { rec pad_to_game; }
+focus_kodi() { rec focus_kodi; }
+hide_frozen_game() { rec hide_frozen_game; }
+show_frozen_game() { rec show_frozen_game; }
+snap_paused() { rec snap_paused "$@"; }
+clear_snaps() { rec clear_snaps "$@"; }
+cont_all() { rec thaw; }
+close_games() { rec close_games "$@"; }
+bp_running() { return 1; }
+emu_running() { return 1; }
+jrpc() { :; }
+curl() { :; }
+setsid() { rec setsid; }
+sleep() { :; }
+focus_game() {
+  rec focus_game "${1:-game}"
+  case "${1:-game}" in bp) return "${FOCUS_BP_RC:-0}" ;; esac
+  return "${FOCUS_GAME_RC:-0}"
+}
+'''
+
+_GL_CURTAIN_STUB = '''#!/usr/bin/env bash
+echo "curtain $*" >> "$GL_CALLS"
+case "${1:-}" in
+  status) [ -f "$GL_CURTAIN_MARK" ]; exit $? ;;
+  show) exit "${CURTAIN_SHOW_RC:-0}" ;;
+esac
+exit 0
+'''
+
+_GL_DRIVER = '''set -u
+source "$GL_PRELUDE"
+source "$GL_STUBS"
+source "$GL_BODY"
+'''
+
+
+def _gl_text():
+    return open(GAME_LAUNCH_SRC).read()
+
+
+def _gl_prelude():
+    text = _gl_text()
+    idx = text.index('\n# The trigger channel')
+    return text[:idx]
+
+
+def _gl_case_body(mode):
+    m = re.search(r'\n  %s\)\n(.*?)\n    ;;' % re.escape(mode), _gl_text(),
+                  re.S)
+    assert m, f'{mode} arm not found in the mirror'
+    return m.group(1)
+
+
+def _in_order(calls, *prefixes):
+    """Each prefix happened, and their FIRST occurrences are in this order."""
+    pos = []
+    for p in prefixes:
+        hits = [i for i, c in enumerate(calls) if c.startswith(p)]
+        assert hits, f'{p!r} never happened: {calls}'
+        pos.append(hits[0])
+    assert pos == sorted(pos), f'wrong order {list(zip(prefixes, pos))}'
+
+
+@pytest.fixture
+def glaunch(tmp_path):
+    t = tmp_path
+    (t / 'paused').mkdir()
+    calls = t / 'calls.log'
+    curtain = t / 'curtain'
+    curtain.write_text(_GL_CURTAIN_STUB)
+    curtain.chmod(0o755)
+    (t / 'prelude.sh').write_text(_gl_prelude())
+    (t / 'stubs.sh').write_text(_GL_STUBS)
+    (t / 'driver.sh').write_text(_GL_DRIVER)
+
+    def run(body, mode='suspend', appid='', env=None,
+            session='111 steam 367520', pids='4321'):
+        (t / 'body.sh').write_text(body)
+        if session is not None:
+            (t / 'game-session').write_text(session + '\n')
+        if pids is not None:
+            (t / 'game-pids').write_text(pids + '\n')
+        e = dict(os.environ,
+                 GL_PRELUDE=str(t / 'prelude.sh'),
+                 GL_STUBS=str(t / 'stubs.sh'),
+                 GL_BODY=str(t / 'body.sh'),
+                 GL_CALLS=str(calls),
+                 GL_CURTAIN_MARK=str(t / 'curtain-up'),
+                 GL_PIDS_FILE=str(t / 'game-pids'),
+                 GAME_LAUNCH_LOG=str(t / 'game-launch.log'),
+                 LEGACY_INTENTS_FILE=str(t / 'intents.jsonl'),
+                 GAME_SESSION_FILE=str(t / 'game-session'),
+                 GAME_SUSPENDED_FILE=str(t / 'game-suspended'),
+                 CURTAIN_BIN=str(curtain),
+                 PAUSE_SNAP_DIR=str(t / 'paused'))
+        e.update(env or {})
+        return subprocess.run(['bash', str(t / 'driver.sh'), mode, appid],
+                              capture_output=True, text=True, env=e,
+                              timeout=30)
+    run.dir = t
+    run.calls = lambda: (calls.read_text().splitlines()
+                         if calls.exists() else [])
+    run.intents = lambda: [
+        json.loads(l)
+        for l in (t / 'intents.jsonl').read_text().splitlines() if l
+    ] if (t / 'intents.jsonl').exists() else []
+    return run
+
+
+def test_suspend_curtains_before_the_shuffle_and_fades_after_kodi(glaunch):
+    """The wire point itself: show lands between the snap and the window
+    shuffle (pad handoff, Kodi raise, game iconify), the fade only after Kodi
+    is focused and the frozen window is gone - so the room sees game,
+    dissolve, Kodi, and none of the steps in between."""
+    frame = glaunch.dir / 'paused' / '367520__1000.jpg'
+    frame.write_bytes(b'jpg')
+    r = glaunch(_gl_case_body('suspend'), mode='suspend')
+    assert r.returncode == 0, r.stderr
+    _in_order(glaunch.calls(), 'snap_paused', 'curtain show', 'pad_to_kodi',
+              'focus_kodi', 'hide_frozen_game', 'curtain fade')
+    shows = [i for i in glaunch.intents() if i['verb'] == 'curtain_show']
+    assert len(shows) == 1
+    # wm_class is what shadow-diff's curtain_involved() keys T5 on.
+    assert shows[0]['args']['wm_class'] == 'couch-curtain'
+    assert shows[0]['args']['image'] == str(frame)
+    assert any(i['verb'] == 'curtain_fade' for i in glaunch.intents())
+
+
+def test_suspend_without_the_binary_is_exactly_todays_behaviour(glaunch):
+    """No curtain binary = the pre-wire-in suspend, byte for byte: full
+    shuffle, no curtain calls, no curtain intents."""
+    (glaunch.dir / 'paused' / '367520__1000.jpg').write_bytes(b'jpg')
+    r = glaunch(_gl_case_body('suspend'), mode='suspend',
+                env={'CURTAIN_BIN': str(glaunch.dir / 'no-such-curtain')})
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    assert not any(c.startswith('curtain') for c in calls)
+    _in_order(calls, 'snap_paused', 'pad_to_kodi', 'focus_kodi',
+              'hide_frozen_game')
+    assert not any(i['verb'].startswith('curtain') for i in glaunch.intents())
+
+
+def test_a_bigpicture_suspend_never_curtains(glaunch):
+    """The appid-less BP session freezes under the literal 'bigpicture';
+    there is nothing worth hiding behind its own freeze-frame. A frame IS on
+    disk here, so the skip is the rule, not a missing file."""
+    (glaunch.dir / 'paused' / 'bigpicture__1000.jpg').write_bytes(b'jpg')
+    r = glaunch(_gl_case_body('suspend'), mode='suspend',
+                session='111 bigpicture')
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    assert not any(c.startswith('curtain') for c in calls)
+    _in_order(calls, 'pad_to_kodi', 'focus_kodi')
+
+
+def test_resume_shows_before_the_thaw_and_fades_after_focus(glaunch):
+    """The mirror image: curtain up before any thaw/window work (and before
+    clear_snaps deletes the very jpg it shows), fade only once focus_game
+    reported the game window focused."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
+    r = glaunch('resume_game\n', mode='resume')
+    assert r.returncode == 0, r.stderr
+    _in_order(glaunch.calls(), 'curtain show', 'thaw', 'clear_snaps',
+              'show_frozen_game', 'pad_to_game', 'focus_game game',
+              'curtain fade')
+    assert any(i['verb'] == 'curtain_fade' for i in glaunch.intents())
+
+
+def test_a_stale_freeze_frame_resumes_bare(glaunch):
+    """A frame older than the suspended flag belongs to some earlier pause:
+    an honest quick shuffle beats a wrong frozen frame, so the curtain is
+    skipped entirely - the resume itself is untouched."""
+    import time
+    now = time.time()
+    flag = glaunch.dir / 'game-suspended'
+    flag.write_text('367520\n')
+    frame = glaunch.dir / 'paused' / '367520__2000.jpg'
+    frame.write_bytes(b'jpg')
+    os.utime(frame, (now - 400, now - 400))       # well past the 30s slack
+    os.utime(flag, (now, now))
+    r = glaunch('resume_game\n', mode='resume')
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    assert not any(c.startswith('curtain show') for c in calls)
+    _in_order(calls, 'thaw', 'show_frozen_game', 'focus_game game')
+    assert not any(i['verb'] == 'curtain_show' for i in glaunch.intents())
+
+
+def test_resume_with_nothing_focusable_clears_not_fades(glaunch):
+    """Failure honesty: when neither the game nor Big Picture takes focus the
+    pad falls back to Kodi and the curtain is CLEARED - a fade would dissolve
+    prettily over a state the script just called broken."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
+    r = glaunch('resume_game\n', mode='resume',
+                env={'FOCUS_GAME_RC': '1', 'FOCUS_BP_RC': '1'})
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    _in_order(calls, 'curtain show', 'focus_game game', 'focus_game bp',
+              'curtain clear', 'pad_to_kodi', 'focus_kodi')
+    assert not any(c.startswith('curtain fade') for c in calls)
+    clears = [i for i in glaunch.intents() if i['verb'] == 'curtain_clear']
+    assert clears and clears[-1]['args']['reason'] == 'resume-nothing-to-focus'
+
+
+def test_focus_timeout_clears_the_curtain(glaunch):
+    """The launch path's converging focus gives up: nothing may sit over the
+    window that never came."""
+    r = glaunch('CURTAIN_UP=1\nFOCUS_WAIT_MAX_S=0\nfocus_game_when_mapped\n'
+                'exit 0\n', mode='steam', appid='367520',
+                env={'FOCUS_GAME_RC': '1'})
+    assert r.returncode == 0, r.stderr
+    assert any(c.startswith('curtain clear') for c in glaunch.calls())
+    verbs = [i['verb'] for i in glaunch.intents()]
+    assert verbs.index('focus_timeout') < verbs.index('curtain_clear')
+    clears = [i for i in glaunch.intents() if i['verb'] == 'curtain_clear']
+    assert clears[-1]['args']['reason'] == 'focus-timeout'
+
+
+def test_a_curtain_already_up_is_cleared_before_ours(glaunch):
+    """Two curtains must never stack: an interrupted transition's overlay is
+    cleared first, then ours goes up."""
+    (glaunch.dir / 'curtain-up').write_text('')   # the stub's status says up
+    (glaunch.dir / 'paused' / '367520__1000.jpg').write_bytes(b'jpg')
+    r = glaunch(_gl_case_body('suspend'), mode='suspend')
+    assert r.returncode == 0, r.stderr
+    _in_order(glaunch.calls(), 'curtain status', 'curtain clear',
+              'curtain show')
+
+
+def test_quit_drops_a_leftover_curtain(glaunch):
+    """A quit mid-transition changes what is true under the overlay; the
+    teardown starts by dropping it."""
+    (glaunch.dir / 'curtain-up').write_text('')
+    r = glaunch(_gl_case_body('quit'), mode='quit', pids=None)
+    assert r.returncode == 0, r.stderr
+    assert any(c.startswith('curtain clear') for c in glaunch.calls())
+    clears = [i for i in glaunch.intents() if i['verb'] == 'curtain_clear']
+    assert clears and clears[-1]['args']['reason'] == 'quit'
