@@ -46,15 +46,24 @@ STILL TO DO on the TV: soundbar into eARC (HDMI 3) + Kodi passthrough,
 Jellyfin from the LG store, reserve the TV's IP, "Turn on via Wi-Fi" if not
 already, Ultra HD Deep Colour + Game Optimizer on the PC's input.
 
-**SWITCHER IS ROLLED BACK TO THE STOCK DIALOG** (ui.animated_dialog=false in
-~/.kodi/userdata/addon_data/script.couch.switcher/settings.xml): the animated
-sheet drew and animated but ate all controller input (kodi.log: every open
-ended "cancelled", onClick never fired), after the label hotfix + freeze-frame
-backdrop landed. Prime suspect: the backdrop's background thread calling
-setProperty re-inits the dialog, and onInit's `_filled` early-return skips
-setFocusId - focus never comes back. An agent was diagnosing when the session
-ended; its work is in the repo copy only, NOT deployed. Verify before
-re-enabling: rows draw AND a pad press picks one.
+**SWITCHER: root cause FOUND AND FIXED (commit 44a2379), but left OFF pending
+one pad test.** The animated sheet ate every select press because **Kodi
+reserves control ids 2/3/4/12** - `WindowXML::OnMessage` intercepts clicks
+from them for its internal sort/view buttons ("WindowXML: Internal sort
+button not implemented" in kodi.log at the exact moment of each press) and
+returns before Python's onClick. The list was id 3. Renumbered to 9000
+(the XML dodged 50-59 but nobody knew about 2/3/4/12); the `_filled` re-init
+path now re-asserts focus too. **Deployed and verified live** while Donnie
+was out: onClick fires ("couch.switcher: activating ..."). NOT verified:
+row-to-row navigation - RPC-injected Input.Down landed inconsistently (two
+test picks activated the wrong rows), which may be an artifact of injecting
+input rather than a real bug, since the pad path is different. So
+`ui.animated_dialog` is still **false** (stock dialog in use, works).
+TO FINISH: flip that setting to true, double-tap with the pad, confirm the
+stick moves the highlight and a press picks that row. Then the freeze-frame
+backdrop can be judged too. Expect one cosmetic "Control 9000 ... asked to
+focus, but it can't" line per open (WINDOW_INIT racing Python's addItems);
+it is not a failure.
 
 **DEPLOY-DAY PROGRESS (~13:30, commits da20a80..cdbe999):** checklist items
 1, 2, 4-8 are LIVE and committed: guard cleanup (+curtain skip + fifo inode
