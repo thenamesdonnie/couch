@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Launch a game inside nested gamescope, without ever lying about how the
+game ended.
+
+    gamescope-wrap [options] -- <game command...>
+
+This is stage 3's wrap point (charter: "gamescope IS the adoption - never
+fork it, wrap it"). It fronts the spike's source build (~/src/gamescope,
+docs/gamescope-spike-20260806.md), runs the game nested-on-X11 with this
+box's defaults (1920x1080 output at 120Hz, SDL backend), and is built so
+that having it in a launch path is ALWAYS safe: if gamescope is missing,
+broken, or explicitly disabled, the game execs bare with a loud log line
+and nothing else changes.
+
+WHY THE EXIT-CODE LAUNDERING EXISTS (the load-bearing part). gamescope
+never forwards the game's exit status - at ANY version, not just the
+segfaulting one. Verified against the 3.16.25 source on 6 Aug 2026:
+steamcompmgr.cpp:8311 discards WaitForChild()'s status and just calls
+ShutdownGamescope(), and gamescopereaper returns 0/1 on its own account
+(Apps/gamescopereaper.cpp). Verified empirically the same day: a child
+exiting 7 under nested gamescope produced gamescope rc 0. On top of that,
+3.16.25 reproducibly SEGFAULTS in teardown (rc 139) when a client window
+was mapped - after the game already exited cleanly. So gamescope's own rc
+is noise: 0 does not mean the game succeeded and 139 does not mean it
+crashed. Pinning 3.16.19 would only remove the segfault, not produce the
+game's code - which is why the pin is NOT this tool's answer.
+
+The answer is a shim: the primary child gamescope runs is a tiny `sh` that
+(a) drops a "the game actually started" marker, (b) runs the game, and
+(c) writes the game's real exit status to a private status file before
+exiting with it. After gamescope dies - cleanly, by segfault, whatever -
+the wrapper reads the status file and reports THAT. The rules:
+
+  status file present            -> its value is our exit code, always.
+                                    gamescope's rc is logged if it differs
+                                    (that line is the laundered segfault).
+  no marker, gamescope rc != 0   -> gamescope never got as far as the game
+                                    (bad flag, no Vulkan...). The game is
+                                    provably unstarted, so it is safe to
+                                    fall back: exec it bare, loudly.
+  marker but no status           -> the game RAN but the code was lost.
+                                    Never relaunch (a second copy of a
+                                    game that half-ran is worse than an
+                                    honest unknown): report gamescope's rc,
+                                    or 1 if that was 0, and say so.
+
+Env passthrough is by construction: the wrapper never filters the
+environment, it only PREPENDS the build dir to PATH (gamescope execs
+`gamescopereaper` from PATH - without it, instant "Failed to start
+process") and sets the two shim variables. Steam games keep their whole
+launch environment.
+
+Options (defaults are this box's):
+  --output WxH      gamescope output size (-W/-H), default 1920x1080
+  --rate N          nested refresh rate (-r), default 120
+  --game WxH        game render size (-w/-h), default = --output
+  --backend NAME    gamescope backend, default sdl (the nested-on-X11 one)
+  --gs-arg ARG      extra raw gamescope argument, repeatable
+  --no-gamescope    skip gamescope entirely: exec the game bare (loudly)
+  --dry-run         print the final command and exit 0
+
+NEVERs inherited from the stage-3 recipe (docs/couchd-stage3-design.md):
+no -e/--steam, no -g grab (SIGSTOP + grab = wedge), no setcap on the
+binary. This tool adds none of them and --gs-arg callers must not either.
+
+Test seams (unset in normal operation; tests never write live paths):
+  GSWRAP_GAMESCOPE_DIR  where gamescope + gamescopereaper live
+                        (default ~/src/gamescope/build/src)
+  GSWRAP_STATUS_DIR     where the marker/status files go (default /tmp)
+  GSWRAP_LOG            log file (default /tmp/gamescope-wrap.log)
+  GSWRAP_DISABLE=1      env spelling of --no-gamescope, so a whole Steam
+                        category can be un-gamescoped without editing
+                        every launch option
+"""
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser('~')
+DEFAULT_GS_DIR = os.path.join(HOME, 'src/gamescope/build/src')
+GS_DIR = os.environ.get('GSWRAP_GAMESCOPE_DIR') or DEFAULT_GS_DIR
+STATUS_DIR = os.environ.get('GSWRAP_STATUS_DIR') or '/tmp'
+LOG = os.environ.get('GSWRAP_LOG') or '/tmp/gamescope-wrap.log'
+
+DEFAULT_OUTPUT = (1920, 1080)
+DEFAULT_RATE = 120
+DEFAULT_BACKEND = 'sdl'
+
+# The shim running inside gamescope. $1.. is the game command; the two
+# GSWRAP_* variables come from our own environment, which gamescope passes
+# through to its children (it only edits LD_PRELOAD/SDL_VIDEODRIVER and
+# adds ENABLE_GAMESCOPE_WSI - verified in steamcompmgr.cpp spawn preamble).
+# The marker is dropped BEFORE the game runs so "did the game ever start"
+# is answerable even when everything after it went wrong.
+SHIM = (': > "$GSWRAP_MARK"; "$@"; rc=$?; '
+        'printf %s "$rc" > "$GSWRAP_STATUS"; exit "$rc"')
+
+
+def say(msg):
+    """House style (game-launch/pause-snap): timestamped line to the log
+    file AND stderr - stderr because a game launcher's stderr usually ends
+    up in some journal already, the file because /tmp is where every other
+    console tool's log lives when it does not."""
+    line = f'{time.strftime("%H:%M:%S")} gamescope-wrap: {msg}'
+    print(line, file=sys.stderr, flush=True)
+    try:
+        with open(LOG, 'a') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+
+
+class Usage(Exception):
+    pass
+
+
+# =========================================================================
+# pure logic (everything pytest covers without running anything)
+# =========================================================================
+def parse_size(name, raw):
+    parts = (raw or '').lower().split('x')
+    if len(parts) != 2:
+        raise Usage(f'{name} wants WxH, got {raw!r}')
+    try:
+        w, h = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise Usage(f'{name} wants integers, got {raw!r}')
+    if not (16 <= w <= 16384 and 16 <= h <= 16384):
+        raise Usage(f'{name} {w}x{h} is not a plausible size')
+    return w, h
+
+
+def parse_args(argv):
+    """argv (without argv[0]) -> options dict. Hand-rolled, curtain's
+    pattern: the grammar is small and a malformed line must produce our
+    message, not argparse's. Everything after `--` is the game's, verbatim
+    - a game command may contain flags that look exactly like ours."""
+    opts = {'output': DEFAULT_OUTPUT, 'rate': DEFAULT_RATE, 'game': None,
+            'backend': DEFAULT_BACKEND, 'gs_args': [], 'dry_run': False,
+            'no_gamescope': False, 'command': []}
+    if not argv or argv[0] in ('-h', '--help'):
+        raise Usage(None)
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == '--':
+            opts['command'] = list(argv[i + 1:])
+            break
+        if a in ('--output', '--game', '--rate', '--backend', '--gs-arg'):
+            if i + 1 >= len(argv):
+                raise Usage(f'{a} wants a value')
+            v = argv[i + 1]
+            i += 2
+        elif a.startswith('--') and '=' in a:
+            a, v = a.split('=', 1)
+            i += 1
+        else:
+            v = None
+            i += 1
+        if a == '--output':
+            opts['output'] = parse_size(a, v)
+        elif a == '--game':
+            opts['game'] = parse_size(a, v)
+        elif a == '--rate':
+            try:
+                opts['rate'] = int(v)
+            except (TypeError, ValueError):
+                raise Usage(f'--rate wants an integer, got {v!r}')
+            if not 1 <= opts['rate'] <= 1000:
+                raise Usage(f'--rate {opts["rate"]} is not a refresh rate')
+        elif a == '--backend':
+            if not v:
+                raise Usage('--backend wants a value')
+            opts['backend'] = v
+        elif a == '--gs-arg':
+            if v is None:
+                raise Usage('--gs-arg wants a value')
+            opts['gs_args'].append(v)
+        elif a == '--dry-run' and v is None:
+            opts['dry_run'] = True
+        elif a == '--no-gamescope' and v is None:
+            opts['no_gamescope'] = True
+        else:
+            raise Usage(f'unknown option {a!r} (game command goes after --)')
+    if not opts['command']:
+        raise Usage('no game command (usage: gamescope-wrap [options] -- cmd)')
+    if opts['game'] is None:
+        opts['game'] = opts['output']
+    return opts
+
+
+def forbidden_gs_args(gs_args):
+    """The recipe's NEVERs, enforced rather than remembered. Returns the
+    offending flag or None. -e/--steam breaks nested Steam integration,
+    -g/--grab plus our SIGSTOP freeze leaves a keyboard grab held by a
+    stopped client - the whole console wedges."""
+    banned = {'-e', '--steam', '-g', '--grab', '--force-grab-cursor'}
+    for a in gs_args:
+        if a in banned:
+            return a
+    return None
+
+
+def build_argv(opts, gamescope_path):
+    """The final command: gamescope's flags, then `--`, then the shim, then
+    the game. sh is the shim host because it is always present and adds one
+    tiny process to the tree (which game-pids happily includes: it walks
+    descendants, it never matches on names)."""
+    ow, oh = opts['output']
+    gw, gh = opts['game']
+    argv = [gamescope_path,
+            '-W', str(ow), '-H', str(oh),
+            '-w', str(gw), '-h', str(gh),
+            '-r', str(opts['rate']),
+            '--backend', opts['backend']]
+    argv += opts['gs_args']
+    argv += ['--', 'sh', '-c', SHIM, 'gswrap-shim'] + opts['command']
+    return argv
+
+
+def resolve_exit(gs_rc, mark_exists, status_text):
+    """(exit code, action, human reason) from what gamescope left behind.
+    action is 'report' or 'fallback' - 'fallback' means the game provably
+    never started and the caller may exec it bare."""
+    if status_text is not None:
+        try:
+            rc = int(status_text.strip())
+        except ValueError:
+            return (1, 'report',
+                    f'status file is garbage ({status_text!r}); reporting 1')
+        if not 0 <= rc <= 255:
+            return (1, 'report', f'status {rc} out of range; reporting 1')
+        if rc == gs_rc:
+            return (rc, 'report', f'game exited {rc}')
+        return (rc, 'report',
+                f'game exited {rc}; gamescope exited {gs_rc} (laundered)')
+    if not mark_exists:
+        return (gs_rc if gs_rc else 1, 'fallback',
+                f'gamescope exited {gs_rc} before the game ever started')
+    return (gs_rc if gs_rc else 1, 'report',
+            f'game ran but its exit status was lost; gamescope exited '
+            f'{gs_rc} (reporting {gs_rc if gs_rc else 1}, never relaunching '
+            f'a game that already ran)')
+
+
+def find_gamescope(gs_dir):
+    """(gamescope path, reason-it-is-unusable). Both binaries must exist:
+    gamescope execs gamescopereaper from PATH and dies instantly without
+    it, so a build dir missing either is a build dir missing both."""
+    gs = os.path.join(gs_dir, 'gamescope')
+    reaper = os.path.join(gs_dir, 'gamescopereaper')
+    for path in (gs, reaper):
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            return None, f'{path} is not an executable'
+    return gs, None
+
+
+# =========================================================================
+# running it
+# =========================================================================
+def exec_bare(command, why):
+    """The fallback: the game exactly as if the wrapper were not there.
+    exec, not spawn - the exit code, signals, and process tree are the
+    game's by construction, nothing left to launder."""
+    say(f'NO GAMESCOPE - running the game bare: {why}')
+    say(f'bare exec: {shlex.join(command)}')
+    try:
+        os.execvp(command[0], command)
+    except OSError as e:
+        say(f'cannot exec {command[0]}: {e}')
+        return 127
+    return 127          # unreachable; keeps the type checker honest
+
+
+def run_wrapped(opts, gamescope_path):
+    """Run gamescope, forward TERM/INT to it, then launder the exit."""
+    tag = f'{os.getpid()}.{int(time.time() * 1000)}'
+    mark = os.path.join(STATUS_DIR, f'gswrap.{tag}.mark')
+    status = os.path.join(STATUS_DIR, f'gswrap.{tag}.status')
+    env = dict(os.environ)
+    env['PATH'] = GS_DIR + os.pathsep + env.get('PATH', '')
+    env['GSWRAP_MARK'] = mark
+    env['GSWRAP_STATUS'] = status
+    # Callers vary (Kodi plugin, SSH shell, Steam launch option) - fill in
+    # the TV's display when nobody else did, game-launch's rule.
+    env.setdefault('DISPLAY', ':0')
+    env.setdefault('XAUTHORITY', os.path.join(HOME, '.Xauthority'))
+    argv = build_argv(opts, gamescope_path)
+    say(f'launch: {shlex.join(argv)}')
+
+    try:
+        proc = subprocess.Popen(argv, env=env)
+    except OSError as e:
+        say(f'gamescope would not start ({e})')
+        return exec_bare(opts['command'], f'spawn failed: {e}')
+
+    # A TERM/INT to the wrapper goes to gamescope, which shuts its tree
+    # down (reaper kills the children); the wrapper stays to do the
+    # laundering. The handler never raises - curtain/fake-pad's rule.
+    def forward(signum, _frame):
+        try:
+            proc.send_signal(signum)
+        except OSError:
+            pass
+    old = {s: signal.signal(s, forward) for s in (signal.SIGTERM,
+                                                  signal.SIGINT)}
+    try:
+        gs_rc = proc.wait()
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+
+    mark_exists = os.path.exists(mark)
+    status_text = None
+    try:
+        with open(status) as f:
+            status_text = f.read()
+    except OSError:
+        pass
+    for path in (mark, status):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    code, action, reason = resolve_exit(gs_rc, mark_exists, status_text)
+    if action == 'fallback':
+        return exec_bare(opts['command'], reason)
+    say(reason)
+    return code
+
+
+def main(argv):
+    try:
+        opts = parse_args(argv)
+    except Usage as e:
+        if not e.args or e.args[0] is None:
+            print(__doc__, file=sys.stderr)
+            return 2
+        say(str(e))
+        return 2
+
+    bad = forbidden_gs_args(opts['gs_args'])
+    if bad:
+        say(f'refusing {bad}: it is on the stage-3 NEVER list '
+            f'(docs/couchd-stage3-design.md)')
+        return 2
+
+    disabled = opts['no_gamescope'] or os.environ.get('GSWRAP_DISABLE') == '1'
+    gamescope_path, why = (None, 'disabled by flag/GSWRAP_DISABLE') \
+        if disabled else find_gamescope(GS_DIR)
+
+    if opts['dry_run']:
+        if gamescope_path is None:
+            print(f'# no gamescope ({why}); would exec bare:')
+            print(shlex.join(opts['command']))
+        else:
+            print(shlex.join(build_argv(opts, gamescope_path)))
+        return 0
+
+    if gamescope_path is None:
+        return exec_bare(opts['command'], why)
+    return run_wrapped(opts, gamescope_path)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

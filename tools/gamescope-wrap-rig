@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Prove tools/gamescope-wrap without a real game.
+
+Two modes, mirroring the repo's other rigs (fake-pad, fault-rig): the safe
+one runs everywhere and touches nothing; the real one briefly puts a small
+window on the current display and is for a human at the box.
+
+  gamescope-wrap-rig            stub proof: a fake gamescope (which runs the
+                                child then exits 139, 3.16.25's teardown
+                                segfault) under a temp dir. No X, no real
+                                gamescope, no live paths. Exit 0 = the
+                                wrapper's laundering/fallback contract holds.
+
+  gamescope-wrap-rig --real     the same laundering proof against the REAL
+                                build (~/src/gamescope/build/src) with a
+                                self-exiting child: a 320x240 nested window
+                                appears for ~3s, niced, then everything is
+                                torn down and checked for strays. Run this
+                                one only when the TV being briefly blinked
+                                at is acceptable.
+
+Every check prints PASS/FAIL; any FAIL exits 1.
+"""
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+WRAP = os.path.join(HERE, 'gamescope-wrap')
+REAL_GS_DIR = os.path.expanduser('~/src/gamescope/build/src')
+
+FAKE_GAMESCOPE = '''#!/usr/bin/env python3
+# Fake gamescope, faithful to the two behaviours that matter to the wrapper:
+# it runs the primary child (everything after --) with the environment it
+# was given, and its own exit status is NOISE - by default 139, the 3.16.25
+# teardown segfault, regardless of how the child did.
+import os, subprocess, sys
+if os.environ.get('FAKE_GS_SKIP_CHILD') == '1':
+    sys.exit(int(os.environ.get('FAKE_GS_RC', '1')))   # died before the game
+args = sys.argv[1:]
+cmd = args[args.index('--') + 1:]
+subprocess.run(cmd)
+if os.environ.get('FAKE_GS_EAT_STATUS') == '1':
+    try:
+        os.remove(os.environ['GSWRAP_STATUS'])          # simulate a lost code
+    except OSError:
+        pass
+sys.exit(int(os.environ.get('FAKE_GS_EXIT', '139')))
+'''
+
+FAILS = []
+
+
+def check(name, ok, detail=''):
+    print(f'{"PASS" if ok else "FAIL"}  {name}' + (f'  ({detail})' if detail
+                                                   else ''))
+    if not ok:
+        FAILS.append(name)
+
+
+def run_wrap(args, tmp, gs_dir, extra_env=None):
+    env = dict(os.environ)
+    env['GSWRAP_GAMESCOPE_DIR'] = gs_dir
+    env['GSWRAP_STATUS_DIR'] = tmp
+    env['GSWRAP_LOG'] = os.path.join(tmp, 'wrap.log')
+    env.update(extra_env or {})
+    return subprocess.run([sys.executable, WRAP] + args,
+                          capture_output=True, text=True, env=env,
+                          timeout=60)
+
+
+def stub_proof():
+    with tempfile.TemporaryDirectory(prefix='gswrap-rig.') as tmp:
+        gs_dir = os.path.join(tmp, 'build')
+        os.mkdir(gs_dir)
+        for name in ('gamescope', 'gamescopereaper'):
+            path = os.path.join(gs_dir, name)
+            with open(path, 'w') as f:
+                f.write(FAKE_GAMESCOPE)
+            os.chmod(path, 0o755)
+
+        # 1. clean child under a segfaulting gamescope -> 0, laundered
+        r = run_wrap(['--', 'sh', '-c', 'exit 0'], tmp, gs_dir)
+        check('clean exit laundered (139 -> 0)', r.returncode == 0,
+              f'rc={r.returncode}')
+
+        # 2. failing child -> its real code survives the segfault
+        r = run_wrap(['--', 'sh', '-c', 'exit 7'], tmp, gs_dir)
+        check('real failure preserved (7 through 139)', r.returncode == 7,
+              f'rc={r.returncode}')
+
+        # 3. child killed by signal -> 128+9
+        r = run_wrap(['--', 'sh', '-c', 'kill -9 $$'], tmp, gs_dir)
+        check('signal death preserved (137)', r.returncode == 137,
+              f'rc={r.returncode}')
+
+        # 4. gamescope dies before the game starts -> bare fallback runs it
+        r = run_wrap(['--', 'sh', '-c', 'echo RAN-BARE; exit 5'], tmp, gs_dir,
+                     {'FAKE_GS_SKIP_CHILD': '1', 'FAKE_GS_RC': '1'})
+        check('pre-game gamescope death falls back to bare exec',
+              r.returncode == 5 and 'RAN-BARE' in r.stdout,
+              f'rc={r.returncode}')
+
+        # 5. game ran but the code was lost -> never relaunched, honest noise
+        r = run_wrap(['--', 'sh', '-c', 'echo ONCE; exit 0'], tmp, gs_dir,
+                     {'FAKE_GS_EAT_STATUS': '1'})
+        check('lost status never relaunches',
+              r.returncode == 139 and r.stdout.count('ONCE') == 1,
+              f'rc={r.returncode} runs={r.stdout.count("ONCE")}')
+
+        # 6. no gamescope at all -> bare, loud
+        r = run_wrap(['--', 'sh', '-c', 'exit 3'], tmp,
+                     os.path.join(tmp, 'nowhere'))
+        check('missing build falls back bare', r.returncode == 3
+              and 'NO GAMESCOPE' in r.stderr, f'rc={r.returncode}')
+
+        # 7. GSWRAP_DISABLE
+        r = run_wrap(['--', 'sh', '-c', 'exit 4'], tmp, gs_dir,
+                     {'GSWRAP_DISABLE': '1'})
+        check('GSWRAP_DISABLE=1 goes bare', r.returncode == 4
+              and 'NO GAMESCOPE' in r.stderr, f'rc={r.returncode}')
+
+        # 8. env passthrough into the wrapped game
+        r = run_wrap(['--', 'sh', '-c', 'echo "V=$GSWRAP_RIG_CANARY"'],
+                     tmp, gs_dir, {'GSWRAP_RIG_CANARY': 'alive'})
+        check('environment passes through', 'V=alive' in r.stdout)
+
+        # 9. dry run prints, runs nothing
+        canary = os.path.join(tmp, 'dry-run-ran')
+        r = run_wrap(['--dry-run', '--', 'sh', '-c', f'touch {canary}'],
+                     tmp, gs_dir)
+        check('dry-run prints and does not run', r.returncode == 0
+              and '-W 1920' in r.stdout and not os.path.exists(canary))
+
+        # 10. the NEVER list is enforced
+        r = run_wrap(['--gs-arg', '-g', '--', 'true'], tmp, gs_dir)
+        check('-g is refused', r.returncode == 2)
+
+        # 11. no droppings
+        left = [f for f in os.listdir(tmp)
+                if f.startswith('gswrap.') ]
+        check('no status/mark files left behind', not left, str(left))
+
+
+def real_proof():
+    if not os.path.isfile(os.path.join(REAL_GS_DIR, 'gamescope')):
+        print(f'no real build at {REAL_GS_DIR}; nothing to prove')
+        return
+    with tempfile.TemporaryDirectory(prefix='gswrap-rig.') as tmp:
+        env = dict(os.environ)
+        env['GSWRAP_STATUS_DIR'] = tmp
+        env['GSWRAP_LOG'] = os.path.join(tmp, 'wrap.log')
+        env.setdefault('DISPLAY', ':0')
+        cmd = ['nice', '-n', '19', sys.executable, WRAP,
+               '--output', '320x240', '--rate', '60',
+               '--', 'sh', '-c', 'sleep 3; exit 42']
+        print(f'real run (a small window will appear ~3s): {shlex.join(cmd)}')
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                           timeout=60)
+        check('real gamescope: child 42 survives teardown',
+              r.returncode == 42, f'rc={r.returncode}\n{r.stderr[-400:]}')
+        time.sleep(1)
+        strays = subprocess.run(['pgrep', '-af', 'gamescopereape'],
+                                capture_output=True, text=True)
+        check('no stray reaper', strays.returncode != 0, strays.stdout)
+
+
+def main(argv):
+    if not os.path.exists(WRAP):
+        print('tools/gamescope-wrap not found', file=sys.stderr)
+        return 1
+    if '--real' in argv:
+        real_proof()
+    else:
+        stub_proof()
+    if FAILS:
+        print(f'\n{len(FAILS)} FAILED: {", ".join(FAILS)}')
+        return 1
+    print('\nall checks passed')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
