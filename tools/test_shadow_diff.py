@@ -1587,3 +1587,80 @@ def test_a_lost_thaw_far_from_any_resume_still_diffs():
                   [])
         rows = {r['verb'] + r['section']: r for r in rep['rows']}
         assert rows['thawLEGACY-ONLY']['label'] == '', rows['thawLEGACY-ONLY']
+
+
+def test_a_legacy_refreeze_near_a_resume_is_no_longer_auto_t5():
+    """R7(d) rescoped: the old unconditional T5 would have eaten the exact
+    row the resume-ordering validation evening must catch - a legacy refreeze
+    fighting an in-flight resume. Pre-flip (legacy acting reconcile) the row
+    lands in LEGACY-ONLY for hand triage, UNLABELLED: one-sided legacy rows
+    carry no gating flags by design, so losing the auto-T5 is what keeps it
+    on the triage pile instead of vanishing as pre-declared."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(9.8, 'clear_flag', 'suspended', src='game-launch',
+                          reason='resume', was='730'),
+                   legacy(10.1, 'freeze', '730', src='watcher',
+                          pids=[100, 101], resolver='game-pids',
+                          signal='SIGSTOP', repair='reconcile',
+                          reason='reconcile:refreeze-lost-suspend',
+                          topcls='Kodi'),
+                   # a matched freeze elsewhere keeps the verb in couchd's
+                   # stream, so the row cannot demote to a vocabulary gap
+                   legacy(200.1, 'freeze', '730', pids=[100, 101],
+                          resolver='game-pids', reason='ps-hold')],
+                  [couchd(200.0, 'freeze', '730', reason='gesture:ps-hold',
+                          pids=[100, 101], resolver='game-pids')])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        r = rows['freezeLEGACY-ONLY']
+        assert r['label'] == '', r          # hand triage, not auto-T5
+        assert 'rescoped' not in r.get('note', ''), r
+
+
+def test_a_shadow_refreeze_near_a_resume_gates_once_reconcile_is_owned():
+    """The post-flip reading, where the hazard gates NUMERICALLY: with
+    reconcile owned, a yielded legacy refreeze near a resume that couchd
+    (correctly debounced) did not act arrives as SHADOW-ONLY - and unlabelled
+    it takes OWNER-MISSED and gates. If this row ever appears live it means
+    a refreeze slipped past the decision-time flag re-read: the exact hazard
+    the flip was gated on, and it must never file as pre-declared."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(9.8, 'clear_flag', 'suspended', src='game-launch',
+                          reason='resume', was='730'),
+                   yielded(10.1, 'freeze', '730', pids=[100, 101],
+                           resolver='game-pids', signal='SIGSTOP',
+                           repair='reconcile',
+                           reason='reconcile:refreeze-lost-suspend',
+                           topcls='Kodi'),
+                   yielded(200.2, 'freeze', '730', pids=[100, 101],
+                           resolver='game-pids',
+                           reason='reconcile:refreeze-lost-suspend')],
+                  [daemon_rec(-10.0, 'start', 'aaaaaaaaaaaa',
+                              owns=['gestures', 'reconcile']),
+                   acted(200.0, 'freeze', '730',
+                         reason='reconcile:refreeze-lost-suspend',
+                         responsibility='reconcile',
+                         pids=[100, 101], resolver='game-pids')])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        r = rows['freezeSHADOW-ONLY']
+        assert r['label'] == '', r
+        assert 'OWNER-MISSED' in r['flags'], r
+        assert rep['gating_count'] >= 1
+
+
+def test_a_legacy_refreeze_far_from_any_resume_keeps_the_rescoped_t5():
+    """...while the far-from-resume shape stays exempt on the honest cadence
+    rationale (legacy's 10s net vs couchd's debounce + repair cooldown)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp,
+                  [legacy(60.0, 'freeze', '730', src='watcher',
+                          pids=[100, 101], resolver='game-pids',
+                          signal='SIGSTOP', repair='reconcile',
+                          reason='reconcile:refreeze-lost-suspend',
+                          topcls='Kodi')],
+                  [])
+        rows = {r['verb'] + r['section']: r for r in rep['rows']}
+        r = rows['freezeLEGACY-ONLY']
+        assert r['label'] == 'T5' and 'rescoped' in r['note'], r
+        assert rep['gating_count'] == 0

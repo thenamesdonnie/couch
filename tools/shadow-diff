@@ -901,6 +901,33 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
             SIGCONTs); pre-declared so it reads T5, not a novelty. The same
             row far from any resume is a REAL one-sided repair and stays
             gating.
+          - R7(d) REFREEZE ENTRY RESCOPED (entry below): the old
+            unconditional T5 on legacy-only refreeze rows would have eaten
+            the hazard row this fix's validation evening exists to catch.
+            Near a resume it now GATES; far from one it stays T5 on the
+            honest cadence rationale.
+          - Reviewer notes from the adversarial pass (7d7da3a), for the
+            morning reader - none change a decision, all change what a log
+            line means:
+              . guard invariant-4 repair latency moved ~1s -> ~2s (one-pass
+                debounce); a window that ENDS before the confirm simply
+                escapes to the watcher's ~10s net, so a real lost thaw is
+                still repaired, later.
+              . the watcher's 0.6s confirm sleep sits on the select loop, so
+                a PS press landing inside it can have its duration
+                under-measured by up to 0.6s - rare (the confirm only runs
+                when frozen-without-flag was just sighted) and note-grade,
+                not a dropped press.
+              . close_games crashing AT ENTRY (after the flag clear, before
+                any teardown) leaves a thawed running game with no flag: the
+                repairs converge it to RUNNING within ~10s - i.e. a
+                quit-requested game resurrects. Accepted trade against the
+                old ordering's 17s window in which a repairer could SIGSTOP
+                a game mid-save.
+              . couchd's ACTED suspend path remains lockless (it never took
+                game-launch's session lock - pre-existing, unchanged by this
+                fix); it belongs to the reconcile-flip design discussion,
+                not to this declaration set.
       * BP PRE-STEP STILL NOT DIFFED (replay finding 5, carried forward). The
         R7(g) entry below fires on a LEGACY-ONLY `launch`, but `launch` is a
         CONTEXT_VERB: it is held as context and never compared in EITHER
@@ -1038,12 +1065,30 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
                      'before any normal raise; couchd model catch-up pending'
     # R7(d): the 4 Aug 2026 guard-vs-freeze race. Legacy grew a repair for the
     # state it left behind (flag set, game running) and a pre-emptive close of
-    # any open guard window; couchd's model has neither yet.
+    # any open guard window.
+    #
+    # RESCOPED 6 Aug 2026 with the resume-ordering fix. This entry used to
+    # auto-T5 EVERY legacy-only refreeze on a "couchd model catch-up pending"
+    # rationale that has been false since the 5 Aug catch-up - and left
+    # unconditional it would have eaten the exact hazard row the fix's
+    # validation evening exists to catch: a legacy refreeze slipping past
+    # its decision-time flag re-read NEAR a resume. So: near a resume
+    # (resume_context) a legacy-only refreeze GATES as real - that is a
+    # repairer fighting an in-flight resume, the reconcile-flip hazard
+    # itself. Far from any resume the exemption stands on an HONEST
+    # rationale: both models now emit this repair, but on different clocks
+    # (legacy's 10s net can re-fire inside couchd's 2s-debounce +
+    # REPAIR_COOLDOWN window) - the toggle-cadence shape, same decision,
+    # deliberately different cadence. The first of a pair must still match
+    # or the matched-row machinery flags it as always.
     if section == 'LEGACY-ONLY' and li['verb'] == 'freeze' and \
             canon(li['args'].get('reason')) == 'reconcile:refreeze-lost-suspend':
-        return 'T5', 'R7(d) pre-declared: legacy re-freezes a game whose ' \
-                     'suspend was undone by a stale guard window; couchd ' \
-                     'model catch-up pending'
+        if resume_context(li['t'], couchd_i, legacy_i):
+            return '', ''       # the hazard row itself - gate it, loudly
+        return 'T5', 'R7(d) rescoped 6 Aug: a legacy-only refreeze FAR from ' \
+                     'any resume is cadence skew (legacy 10s net vs couchd ' \
+                     '2s debounce + repair cooldown); one NEAR a resume ' \
+                     'gates as the reconcile-flip hazard'
     if section == 'LEGACY-ONLY' and li['verb'] == 'kill' and \
             canon(li['subject']) == 'steam-input-guard' and \
             canon(li['args'].get('reason')) == 'superseded-by-freeze':
