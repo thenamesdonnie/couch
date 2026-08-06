@@ -857,15 +857,23 @@ def test_focus_timeout_clears_the_curtain(glaunch):
     assert clears[-1]['args']['reason'] == 'focus-timeout'
 
 
-def test_a_curtain_already_up_is_cleared_before_ours(glaunch):
-    """Two curtains must never stack: an interrupted transition's overlay is
-    cleared first, then ours goes up."""
+def test_a_curtain_already_up_is_handed_straight_to_show(glaunch):
+    """Two curtains still never stack, but the stacking rule lives in the
+    tool now: cmd_show (tools/curtain) swaps a LIVE daemon onto the new image
+    atomically, replaces a wedged one, and clears stale state before a fresh
+    spawn - all verified against tools/curtain before the shell's status
+    pre-probe (~45ms every curtained transition, ~300ms in the stale case)
+    was dropped. So with a curtain already up, curtain_show goes straight to
+    `curtain show`: no probe, no shell-side clear."""
     (glaunch.dir / 'curtain-up').write_text('')   # the stub's status says up
     (glaunch.dir / 'paused' / '367520__1000.jpg').write_bytes(b'jpg')
     r = glaunch(_gl_case_body('suspend'), mode='suspend')
     assert r.returncode == 0, r.stderr
-    _in_order(glaunch.calls(), 'curtain status', 'curtain clear',
-              'curtain show')
+    calls = glaunch.calls()
+    assert any(c.startswith('curtain show') for c in calls)
+    assert not any(c.startswith('curtain status') for c in calls)
+    assert not any(c.startswith('curtain clear') for c in calls)
+    assert not any(i['verb'] == 'curtain_clear' for i in glaunch.intents())
 
 
 def test_quit_drops_a_leftover_curtain(glaunch):
@@ -1101,3 +1109,146 @@ def test_lost_thaw_due_debounces_one_pass():
     # the flag reappearing (a suspend) or a thaw landing resets the clock
     assert guard.lost_thaw_due(True, True, 100.0, 101.5) == (False, None)
     assert guard.lost_thaw_due(False, False, 100.0, 101.5) == (False, None)
+
+
+# =========================================================================
+# 7. transition speed-ups, first batch (6-7 Aug): fixed sleeps -> converges
+# =========================================================================
+# The behavioural halves run under the glaunch harness (its sleep stub makes
+# the converge loops instant, so what is pinned is the DECISION sequence:
+# attempt counts, fallbacks, honest timeout intents). The polls that cannot
+# run here (ensure_big_picture probes the live steam-uimode path; close_games
+# needs X) are pinned textually - grain and deadline together, so a grain
+# change that silently moved a total timeout fails loudly.
+
+def _gl_fn(name):
+    m = re.search(r'\n%s\(\) \{.*?\n\}\n' % re.escape(name), _gl_text(), re.S)
+    assert m, f'{name}() not found in the mirror'
+    return m.group(0)
+
+
+def test_resume_has_no_fixed_sleep_left(glaunch):
+    """The headline: the flat `sleep 1` that was ~77% of a measured resume is
+    gone from resume_game; the converge helper owns the wait now."""
+    body = _gl_fn('resume_game')
+    assert not re.search(r'^\s*sleep 1\s*$', body, re.M)
+    assert 'resume_focus_converge' in body
+
+
+def test_resume_converge_lands_on_the_first_mapped_frame(glaunch):
+    """A window that is already mapped (the common case - the budget doc
+    measures the map done in ~50-500ms while pad routing runs) is focused on
+    the FIRST attempt: one focus_game call, no retry tail, fade as before."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
+    r = glaunch('resume_game\n', mode='resume')
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    assert len([c for c in calls if c == 'focus_game game']) == 1
+    _in_order(calls, 'focus_game game', 'curtain fade')
+
+
+def test_resume_converge_is_bounded_then_falls_back_to_bp(glaunch):
+    """A window that never maps: exactly RESUME_FOCUS_TRIES (15 x 0.1s
+    grain = the 1.5s cap, past the old sleep's 1.0s guarantee) attempts on
+    the game, then the same bp -> kodi fallback chain as before, with the
+    curtain CLEARED not faded - none of the failure honesty regressed."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
+    r = glaunch('resume_game\n', mode='resume',
+                env={'FOCUS_GAME_RC': '1', 'FOCUS_BP_RC': '1'})
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    assert len([c for c in calls if c == 'focus_game game']) == 15
+    _in_order(calls, 'focus_game game', 'focus_game bp', 'curtain clear',
+              'pad_to_kodi', 'focus_kodi')
+
+
+def test_resume_flag_first_ordering_survives_the_converge(glaunch):
+    """The reconcile-flip hard gate must not move: flag cleared before the
+    SIGCONTs, curtain shown before either, all with the converge in place."""
+    (glaunch.dir / 'game-suspended').write_text('367520\n')
+    (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
+    body = ('cont_all() { rec thaw "flag=$([ -f "$SUSPENDED" ]'
+            ' && echo present || echo gone)"; }\n'
+            'resume_game\n')
+    r = glaunch(body, mode='resume')
+    assert r.returncode == 0, r.stderr
+    _in_order(glaunch.calls(), 'curtain show', 'thaw flag=gone',
+              'show_frozen_game', 'pad_to_game', 'focus_game game',
+              'curtain fade')
+
+
+def test_launch_focus_cadence_backs_off_and_keeps_the_40s_cap(glaunch):
+    """The adaptive cadence, counted: 20 attempts in the 0.5s stretch
+    (10s / 0.5), 15 in the 2s stretch (30s / 2), plus the final look at the
+    cap = 36 attempts across exactly 40s of budgeted sleep - then the same
+    honest focus_timeout intent, now stamped waited=40."""
+    r = glaunch('focus_game_when_mapped\nexit 0\n', mode='steam',
+                appid='367520', env={'FOCUS_GAME_RC': '1'})
+    assert r.returncode == 0, r.stderr
+    assert len([c for c in glaunch.calls() if c == 'focus_game game']) == 36
+    tos = [i for i in glaunch.intents() if i['verb'] == 'focus_timeout']
+    assert len(tos) == 1
+    assert tos[0]['args']['waited'] == '40'
+    assert tos[0]['args']['reason'] == 'game-window-never-mapped'
+
+
+def test_launch_focus_still_stops_when_the_game_dies(glaunch):
+    """The early-out is untouched: pids gone means stop retrying, no timeout
+    intent, no curtain touch. (pids=None leaves no game-pids file at all -
+    the stub's `cat` then fails exactly like the real helper with no game.)"""
+    r = glaunch('focus_game_when_mapped; echo "rc=$?" >> "$GL_CALLS"\n'
+                'exit 0\n', mode='steam', appid='367520',
+                env={'FOCUS_GAME_RC': '1'}, pids=None)
+    assert r.returncode == 0, r.stderr
+    calls = glaunch.calls()
+    assert len([c for c in calls if c == 'focus_game game']) == 1
+    assert 'rc=1' in calls
+    assert not any(i['verb'] == 'focus_timeout' for i in glaunch.intents())
+
+
+def test_the_launch_arm_lost_its_fixed_sleep_4():
+    """Textual: the steam launch arm goes straight from "running" into the
+    converge (the 4s predated focus_game_when_mapped and was pure padding
+    spent in the BP-behind-game state), and the process poll runs at 0.5s
+    with the same 180s leash (360 half-second beats)."""
+    text = _gl_text()
+    arm = text[text.index('# Into Big Picture first'):]
+    arm = arm[:arm.index(';;')]
+    assert not re.search(r'^\s*sleep 4\s*$', arm, re.M)
+    assert 'sleep 0.5; t=$((t+1))' in arm
+    assert '[ $t -ge 360 ]' in arm and '(180s)' in arm
+
+
+def test_ensure_big_picture_confirms_at_quarter_second_grain():
+    """Textual: 0.25s probes, same 6s total (BP_CONFIRM_S x 4 beats), and the
+    give-up path still reports the full wait and never blocks the launch."""
+    fn = _gl_fn('ensure_big_picture')
+    assert 'sleep 0.25' in fn
+    assert '$((BP_CONFIRM_S * 4))' in fn
+    assert re.search(r'^BP_CONFIRM_S=6$', _gl_text(), re.M)
+    assert 'waited=$BP_CONFIRM_S' in fn
+
+
+def test_teardown_polls_are_quarter_second_same_deadlines():
+    """Textual: the save-on-quit grace keeps its deliberate totals - 8s ask
+    (32 x 0.25), 6s shadPS4 (24 x 0.25), 10s launcher bow-out (40 x 0.25,
+    both arms) - and the post-thaw `sleep 1` grace before the WM_DELETE ask
+    is untouched (it is settle time for the thawed game, not a poll)."""
+    text = _gl_text()
+    fn = _gl_fn('close_games')
+    assert 'for _ in $(seq 32); do game_running || break; sleep 0.25; done' in fn
+    assert 'for _ in $(seq 24); do emu_running || break; sleep 0.25; done' in fn
+    assert re.search(r'^\s*sleep 1\s*$', fn, re.M)      # the thaw grace stays
+    assert text.count(
+        'for _ in $(seq 40); do [ -f "$SESSION" ] || break; sleep 0.25; done') == 2
+    assert not re.search(r'\[ -f "\$SESSION" \] \|\| break; sleep 1;', text)
+
+
+def test_curtain_show_has_no_status_preprobe():
+    """Textual twin of the behavioural test above: curtain_show never shells
+    `status` (curtain_clear legitimately still does)."""
+    fn = _gl_fn('curtain_show')
+    assert '"$CURTAIN" status' not in fn
+    assert '"$CURTAIN" show' in fn

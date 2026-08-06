@@ -267,6 +267,26 @@ export function pressKey(name) {
 
 const GAME_LAUNCH = path.join(os.homedir(), '.local/bin/game-launch');
 const GUARD = path.join(os.homedir(), '.local/bin/steam-input-guard');
+const GUARD_PIDFILE = '/tmp/steam-input-guard.pid';
+
+// The guard stamps its pidfile the moment it starts enforcing (supersede());
+// a pidfile written AFTER `since` means the suspend's guard is registered and
+// safe to supersede. Bounded at the old fixed beat's 700ms so the worst case
+// is exactly what the blind sleep gave; typical convergence is one or two
+// 100ms beats. Exported with injectable knobs so the test can run it against
+// a tmp pidfile at ms grain - never live /tmp.
+export async function awaitGuardClaim(since, {
+  pidfile = GUARD_PIDFILE, capMs = 700, grainMs = 100,
+} = {}) {
+  const end = Date.now() + capMs;
+  for (;;) {
+    try {
+      if ((await fs.promises.stat(pidfile)).mtimeMs >= since) return true;
+    } catch { /* not written yet */ }
+    if (Date.now() >= end) return false; // cap reached - proceed like the old beat
+    await new Promise((r) => setTimeout(r, Math.min(grainMs, end - Date.now())));
+  }
+}
 
 // The desktop is not a window, but it is a destination - the phone has always
 // offered it and the on-TV switcher (script.couch.switcher) needs it in the
@@ -401,11 +421,16 @@ export async function activateWindow(id) {
     // desktop a second later - so a zero-length guard supersedes it through
     // the guard's own SIGTERM handoff rather than a blind kill.
     if (session && !suspended && await anyGameRunning()) {
+      const suspendStarted = Date.now();
       await run(GAME_LAUNCH, ['suspend']);
-      // game-launch backgrounds its guard, so give it a beat to claim the
+      // game-launch backgrounds its guard, so wait for it to claim the
       // pidfile - superseding a guard that has not registered yet would
-      // leave the old one running and fighting for the screen.
-      await new Promise((r) => setTimeout(r, 700));
+      // leave the old one running and fighting for the screen. This was a
+      // blind 700ms beat; the claim typically lands in 100-200ms, so poll
+      // for a pidfile stamped after our suspend instead, same 700ms cap
+      // (the cap is the old worst case: on timeout we proceed exactly as
+      // the fixed sleep always did).
+      await awaitGuardClaim(suspendStarted);
       await run(GUARD, ['kodi', '0']).catch(() => { /* nothing to supersede */ });
     }
     return run('python3', [XINPUT, 'showdesktop']);

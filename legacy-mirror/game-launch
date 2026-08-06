@@ -201,18 +201,21 @@ ensure_big_picture() {
   intent launch bigpicture reason=ensure-bp-before-game \
     via=steam-open-bigpicture "was=${now:-unknown}" "mode=$MODE" "appid=$APPID"
   steam "steam://open/bigpicture" >/dev/null 2>&1 &
-  while [ $t -lt $BP_CONFIRM_S ]; do
-    sleep 1; t=$((t+1))
+  # 0.25s confirm grain (steam-uimode costs ~22ms a probe), same 6s total:
+  # the 1s cadence charged every desktop-mode launch ~0.4s of pure
+  # discretization (measured "confirmed after 1s" was the poll, not Steam).
+  while [ $t -lt $((BP_CONFIRM_S * 4)) ]; do
+    sleep 0.25; t=$((t+1))
     now="$(timeout 3 "$STEAM_UIMODE" 2>/dev/null)"
     if [ "$now" = "$UIMODE_BIG_PICTURE" ]; then
-      say "big picture confirmed after ${t}s"
+      say "big picture confirmed after $((t * 250))ms"
       return 0
     fi
   done
   # A launch is NEVER blocked on this. Worst case is exactly today's behaviour,
   # with FIX 7's desktop-overlay arm still there as the safety net.
-  say "big picture never confirmed (${t}s, uimode ${now:-unknown}); launching anyway"
-  intent launch bigpicture reason=ensure-bp-timeout "waited=$t" \
+  say "big picture never confirmed (${BP_CONFIRM_S}s, uimode ${now:-unknown}); launching anyway"
+  intent launch bigpicture reason=ensure-bp-timeout "waited=$BP_CONFIRM_S" \
     "got=${now:-unknown}" "mode=$MODE"
   return 0
 }
@@ -399,13 +402,12 @@ frame_is_this_pause() {
 
 curtain_show() {  # <subject> <frame> <reason> - synchronous (~0.25s when it works)
   local subject="${1:-game}" frame="$2" reason="${3:-transition}"
-  if timeout 3 "$CURTAIN" status >/dev/null 2>&1; then
-    # Somebody's interrupted transition is still up; ours must not stack on it.
-    say "curtain: one already up; clearing it before ours"
-    intent curtain_clear "$subject" wm_class=couch-curtain via=tools-curtain \
-      reason=stale-curtain-before-show "mode=$MODE"
-    timeout 3 "$CURTAIN" clear >/dev/null 2>&1 || true
-  fi
+  # No status pre-probe: cmd_show (tools/curtain) already handles a live
+  # daemon itself - it atomically swaps the running curtain onto the new
+  # image (bounded 2s confirm), replaces a wedged one, and clears a stale
+  # pid/fifo before spawning fresh. Probing first cost ~45ms on every
+  # curtained transition and ~300ms (clear + respawn) in the stale case,
+  # for identical outcomes.
   if timeout 3 "$CURTAIN" show "$frame" >/dev/null 2>&1; then
     CURTAIN_UP=1
     say "curtain up ($frame)"
@@ -691,25 +693,40 @@ EOF
 # and showed the window (its exit status says which - and the BP-hide rides
 # the same successful attempt), bounded so a game whose window never maps
 # cannot hold the launcher here forever, and stopping early if the game dies.
-# ONLY the launch path: the resume path re-maps a window that already exists
-# (show_frozen_game), so there is nothing to wait for, and the guard's
+# ONLY the launch path: the resume path converges on its own finer grain
+# (resume_focus_converge - the window there already exists), and the guard's
 # `game-launch focus` repair already re-fires once a second on its own.
-FOCUS_RETRY_S=2
+#
+# Adaptive cadence: until that focus lands, Big Picture sits mapped
+# fullscreen behind (or over) the game - the worst visual state the console
+# has - so the first stretch retries at 0.5s (a retry costs ~100ms of helper
+# spawns, affordable) to land the focus+BP-hide the beat the window maps.
+# Past 10s the wait is a long Proton load and the cadence backs off to 2s;
+# the 40s cap and the honest focus_timeout intent are unchanged.
+# Bookkeeping is in DECISECONDS (integer shell arithmetic; 400 = 40s).
+FOCUS_RETRY_EARLY_S=0.5
+FOCUS_RETRY_EARLY_FOR_DS=100   # first 10s at the fine cadence
+FOCUS_RETRY_LATE_S=2
 FOCUS_WAIT_MAX_S=40
 focus_game_when_mapped() {
-  local waited=0
+  local waited_ds=0
   while :; do
     if focus_game; then
-      [ "$waited" -gt 0 ] && say "game window found after ${waited}s"
+      [ "$waited_ds" -gt 0 ] && say "game window found after $((waited_ds / 10)).$((waited_ds % 10))s"
       return 0
     fi
-    game_running || { say "focus retries stopped: game gone after ${waited}s"; return 1; }
-    [ "$waited" -ge "$FOCUS_WAIT_MAX_S" ] && break
-    sleep "$FOCUS_RETRY_S"
-    waited=$((waited + FOCUS_RETRY_S))
+    game_running || { say "focus retries stopped: game gone after $((waited_ds / 10))s"; return 1; }
+    [ "$waited_ds" -ge $((FOCUS_WAIT_MAX_S * 10)) ] && break
+    if [ "$waited_ds" -lt "$FOCUS_RETRY_EARLY_FOR_DS" ]; then
+      sleep "$FOCUS_RETRY_EARLY_S"
+      waited_ds=$((waited_ds + 5))
+    else
+      sleep "$FOCUS_RETRY_LATE_S"
+      waited_ds=$((waited_ds + 20))
+    fi
   done
-  say "game window never mapped (${waited}s); leaving the stack alone"
-  intent focus_timeout "${APPID:-game}" "waited=$waited" "mode=$MODE" \
+  say "game window never mapped ($((waited_ds / 10))s); leaving the stack alone"
+  intent focus_timeout "${APPID:-game}" "waited=$((waited_ds / 10))" "mode=$MODE" \
     reason=game-window-never-mapped
   # No launch path shows a curtain today, but one left up by an interrupted
   # flow must not sit over a window that never came: belt and braces.
@@ -774,7 +791,9 @@ for w in targets:
 d.sync()
 print(f"asked {len(targets)} window(s) to close")
 EOF
-  for _ in $(seq 8); do game_running || break; sleep 1; done
+  # Same 8s save-on-quit grace (deliberate), 0.25s grain: a game that closes
+  # in 200ms used to cost a full second of discretization per stage.
+  for _ in $(seq 32); do game_running || break; sleep 0.25; done
   if game_running; then
     say "close ignored, force killing"
     local doomed; doomed="$(game_pids)"
@@ -790,7 +809,7 @@ EOF
       "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
       resolver=pgrep signal=SIGTERM scope=shadps4 "reason=$why"
     pkill -TERM -f 'Shadps4-sdl|mount_Shadps'
-    for _ in $(seq 6); do emu_running || break; sleep 1; done
+    for _ in $(seq 24); do emu_running || break; sleep 0.25; done  # same 6s grace
     emu_running && { intent kill shadps4 \
       "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
       resolver=pgrep signal=SIGKILL reason=term-ignored; \
@@ -810,6 +829,31 @@ phase() {
   local now; now=$(_ms)
   say "resume phase: $1 +$((now - RESUME_T0))ms (+$((now - RESUME_LAST))ms)"
   RESUME_LAST=$now
+}
+
+# The RESUME path's focus converge, replacing the flat `sleep 1` that was
+# ~77% of a measured resume (docs/transition-latency-budget.md §2: the game's
+# frame is back on screen at ~+0.5s; only the focus assert rode the sleep).
+# Fine grain because the window is already MAPPED-or-mapping here
+# (show_frozen_game just activated it) - this is not the launch path's
+# tens-of-seconds Proton wait, so 100ms beats and a short cap: 15 tries
+# x 0.1s + ~0.1s of helper spawns per try keeps the old guarantee (the one
+# blind attempt at +1.0s) with margin, then the caller's bp/kodi fallbacks
+# take over exactly as before.
+RESUME_FOCUS_GRAIN_S=0.1
+RESUME_FOCUS_TRIES=15
+resume_focus_converge() {  # <want: game|emu>
+  local want="${1:-game}" try=0
+  while ! focus_game "$want"; do
+    try=$((try + 1))
+    [ "$try" -ge "$RESUME_FOCUS_TRIES" ] && {
+      say "resume focus: no $want window after $try tries (~$((try * 200))ms)"
+      return 1
+    }
+    sleep "$RESUME_FOCUS_GRAIN_S"
+  done
+  [ "$try" -gt 0 ] && say "resume focus converged after $try retries"
+  return 0
 }
 
 resume_game() {
@@ -869,18 +913,25 @@ resume_game() {
   phase menu-checked
   pad_to_game
   phase pad-routed
-  sleep 1
   # Focus the right window: the emulator by its class, a Steam game by pid.
   # If Steam's Big Picture menu has swallowed the game window (a PS tap
   # in-game opens it), fall back to focusing Big Picture itself; and if
   # nothing at all is focusable, the pad must go back to Kodi rather than
   # being left pointed at an invisible window.
+  #
+  # No fixed sleep here any more. A flat `sleep 1` used to sit above this so
+  # xfwm4 could finish the deiconify (focus_game only sees MAPPED windows) -
+  # measured at ~77% of the whole resume (budget doc: focus-asserted +1.79s
+  # of which +1.0s was the sleep; the map itself lands in ~50-500ms). The
+  # converge below keeps the sleep's guarantee - it keeps trying past the
+  # point the old single blind attempt at +1.0s gave up - while landing on
+  # the first attempt that finds the window, typically immediately.
   # The curtain (if one is up) drops only on a CONFIRMED focus - fade reveals
   # the thing the pad now speaks to. The one path where nothing is focusable
   # gets a clear, not a fade: nothing may sit over a state we know is broken.
   if [ "$(cut -d' ' -f2 "$SESSION" 2>/dev/null)" = "shadps4" ]; then
-    if focus_game emu; then curtain_fade shadps4; else curtain_clear resume-emu-not-focused; fi
-  elif focus_game; then
+    if resume_focus_converge emu; then curtain_fade shadps4; else curtain_clear resume-emu-not-focused; fi
+  elif resume_focus_converge game; then
     curtain_fade "${was:-game}"
   elif focus_game bp; then
     curtain_fade bigpicture
@@ -985,7 +1036,8 @@ case "$MODE" in
       # first, and its launcher a moment to notice and bow out.
       say "closing paused game before launching $APPID"
       close_games "different-game-picked:$APPID"
-      for _ in $(seq 10); do [ -f "$SESSION" ] || break; sleep 1; done
+      # Same 10s deadline for the old launcher to bow out, 0.25s grain.
+      for _ in $(seq 40); do [ -f "$SESSION" ] || break; sleep 0.25; done
     fi
     ;;
   bigpicture)
@@ -1020,7 +1072,8 @@ case "$MODE" in
       fi
       say "closing paused game before launching $APPID"
       close_games "different-game-picked:$APPID"
-      for _ in $(seq 10); do [ -f "$SESSION" ] || break; sleep 1; done
+      # Same 10s deadline for the old launcher to bow out, 0.25s grain.
+      for _ in $(seq 40); do [ -f "$SESSION" ] || break; sleep 0.25; done
     fi
     ;;
   *)
@@ -1075,14 +1128,20 @@ case "$MODE" in
     # make sure its window is the one on top, then wait it out. A suspended
     # game still counts as running here, which is the point: the launcher
     # stays alive holding the session until the game truly ends.
+    # 0.5s probe (game-pids costs ~39ms, ~8% duty), same 180s leash: the 2s
+    # cadence detected the processes up to 2s after they appeared. Counted in
+    # half-seconds (integer arithmetic): 360 x 0.5s = 180s.
     t=0
     while ! game_running; do
-      sleep 2; t=$((t+2))
-      [ $t -ge 180 ] && { say "never appeared (180s)"; break; }
+      sleep 0.5; t=$((t+1))
+      [ $t -ge 360 ] && { say "never appeared (180s)"; break; }
     done
     if game_running; then
       say "running"
-      sleep 4
+      # Straight into the converge - no fixed sleep 4. That pause predates
+      # focus_game_when_mapped (6 Aug), which already handles a window that
+      # is not there yet; for a fast-mapping game the 4s was pure padding
+      # spent in the BP-behind-game worst state.
       yield_to_couchd transitions show "${APPID:-game}" via=xlib-restack \
         "mode=$MODE" resolver=game-pids || focus_game_when_mapped
       while game_running; do sleep 3; done
