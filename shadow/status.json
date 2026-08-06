@@ -1,7 +1,7 @@
 {
- "t": 1786012124.6211424,
+ "t": 1786015093.34382,
  "pid": 539426,
- "uptime_s": 221.6,
+ "uptime_s": 3190.3,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -13,102 +13,106 @@
  "owns_warnings": [],
  "model_version": "6c658480a2da",
  "git": "e7ecb1f07e53",
- "acted": 10,
+ "acted": 19,
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
- "attention": false,
+ "attention": true,
  "regions": {
-  "input_ownership": "kodi",
+  "input_ownership": "game",
   "foreground": "kodi",
-  "session": "none",
+  "session": "active",
   "enforcement": "none",
   "gesture": "idle",
-  "pad": "absent"
+  "pad": "present"
  },
- "games": {},
+ "games": {
+  "367520": "RUNNING"
+ },
  "last_would_do": [
-  "would show_switcher tv [gesture:double-tap-switcher]",
-  "would show kodi [gesture:double-tap-switcher]",
-  "would show_switcher tv [gesture:double-tap-switcher]"
+  "would route_pad game [reconcile:joystick-setting-drift]",
+  "would show 367520 [reconcile:thawed-without-flag]",
+  "would thaw 367520 (18 pid(s)) [reconcile:frozen-without-suspended-flag]"
  ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 92,
-   "detail": "0 node(s)",
-   "age_s": 1.7,
+   "events": 1897182,
+   "detail": "1 node(s)",
+   "age_s": 1.6,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 5,
-   "detail": "0 present",
+   "events": 14,
+   "detail": "2 present",
    "age_s": 0.0,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 0,
-   "detail": "0 pid(s)",
-   "age_s": 4.9,
+   "events": 1063,
+   "detail": "18 pid(s)",
+   "age_s": 0.7,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 25,
-   "detail": "joystick=True window=10000",
-   "age_s": 5.0,
+   "events": 131,
+   "detail": "joystick=False window=10025",
+   "age_s": 7.0,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 2,
-   "detail": "0 app(s) tracked",
+   "events": 28,
+   "detail": "1 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 0,
-   "detail": "game-launch log absent (nothing launched yet)",
+   "events": 2,
+   "detail": "resume 367520 from its tile",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 414,
-   "detail": "top='Kodi' ev=414",
+   "events": 790,
+   "detail": "top='Kodi' ev=790",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 136,
+  "obs": 2454,
   "daemon": 2,
-  "transition": 66,
-  "invariant": 1,
-  "latency": 42,
-  "agreement": 15,
-  "intent": 10,
-  "effect": 10,
+  "transition": 781,
+  "invariant": 2,
+  "latency": 52,
+  "agreement": 487,
+  "intent": 29,
+  "effect": 19,
   "decision": 15
  },
- "passes": 667,
- "intents": 10,
+ "passes": 9651,
+ "intents": 29,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 22,
-  "steam_guide_lines": 1,
-  "first_event_latency_s": 7.882
+  "evdev": 28,
+  "steam_guide_lines": 5,
+  "first_event_latency_s": 355.729
  },
- "last_trigger": "",
+ "last_trigger": "resume 367520 from its tile",
  "edges": {
-  "seen": 45,
-  "coalesced": 3,
-  "last_latency_s": 0.3066
+  "seen": 57,
+  "coalesced": 5,
+  "last_latency_s": 0.2313
  },
- "resource_leaks": [],
+ "resource_leaks": [
+  "vpad.fifo with no live guard"
+ ],
  "bindings": {
   "tap": "none",
   "double_tap": "switcher",

@@ -28,6 +28,21 @@ auto-memory `homelab-usb-disk-dropout.md`.
 
 ## ▶ Resume here (updated 6 Aug 2026 ~04:30 — GESTURES ACCEPTED)
 
+**DEPLOY-DAY PROGRESS (~13:30, commits da20a80..cdbe999):** checklist items
+1, 2, 4-8 are LIVE and committed: guard cleanup (+curtain skip + fifo inode
+guard), BP-hide (+launch-path retry after it missed live - HK maps at ~20-25s,
+focus_game now converges, show intent honest), yield pids, curtain whitelists
+in all THREE places (watcher, couchd fg region, GUARD - review caught the
+third), oracles (snapshot order-anchored, iconify stacking-based, BP launch
+window-based), differ exemption + pre-declarations, FFCP gone from kodi-tv
+AND live, fingerprint now 6c658480a2da, post-restart sweep 12/12. Animated
+switcher DEPLOYED with label hotfix + freeze-frame backdrop (Donnie's
+"switcher over the game" ask - pending his visual verify). STILL OPEN today:
+switcher visual verify (labels + backdrop), curtain standalone test + wiring
+into game-launch suspend/resume, final sweep, CPU work. Hardware: 5700X3D +
+LG C5 arriving today (tv-setup-lg flow below; C5 needs LG control wired into
+tv-waker eventually - `tv` speaks Toshiba).
+
 **FIRST FLIP ACCEPTED.** Donnie accepted `gestures` at ~04:15 BST 6 Aug after
 the overnight couch pass (02:30-04:15, Hollow Knight + Big Picture, every
 scripted step run). couchd keeps owning gestures; nothing else is flipped.
