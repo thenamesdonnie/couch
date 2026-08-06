@@ -21,12 +21,37 @@
 # range. Configure > Advanced > "Animated switcher dialog" turns the new
 # window off and puts 12000 back without a redeploy.
 import json
+import os
+import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 
 import xbmc
 import xbmcaddon
 import xbmcgui
+
+# Kodi runs this file by path and does not promise the addon dir is on
+# sys.path, so put it there before importing our own module. And because this
+# addon is the room's only route back out of a frozen game, a missing or
+# broken pausedframe.py (a half-copied deploy) costs the backdrop, never the
+# switcher.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import pausedframe  # noqa: E402 - needs the sys.path line above
+except Exception as _e:  # noqa: BLE001
+    xbmc.log("couch.switcher: pausedframe helper unavailable (%s), "
+             "freeze-frame backdrop off" % _e, xbmc.LOGWARNING)
+
+    class pausedframe:  # noqa: N801 - stands in for the module
+        @staticmethod
+        def newest_frame(*_a, **_k):
+            return None
+
+        @staticmethod
+        def session_appid(_rows, fallback=""):
+            return ""
 
 API = "http://localhost:8790"
 LIST_TIMEOUT = 3      # the server answers in ~100ms; anything slower is broken
@@ -49,6 +74,19 @@ DIALOG_XML = "script-couch-switcher.xml"
 DIALOG_SKIN = "Default"
 DIALOG_RES = "1080i"
 LIST_ID = 3                 # the one control id this file and the XML share
+
+# The freeze-frame backdrop. pause-snap drops the paused game's last rendered
+# frame in PAUSED_DIR at suspend time; the XML's bottom-most image control is
+# bound to PROP_FRAME on THIS window and stays hidden while it is empty, so
+# "no frame" is pixel-identical to the dialog before this feature existed.
+# The capture can land a beat AFTER the dialog opens (freeze -> snapshot ->
+# show kodi -> dialog is the flow, and the snapshot usually finishes within a
+# second of the freeze), hence the short background poll rather than a single
+# look at open.
+PAUSED_DIR = os.path.expanduser("~/couch/data/paused")
+PROP_FRAME = "couch.pausedframe"
+FRAME_POLL_S = 0.2          # one directory listing every 200ms...
+FRAME_POLL_FOR_S = 3.0      # ...for at most 3s, then the backdrop stays dim
 
 ACTION_PREVIOUS_MENU = 10   # Esc / pad B, on skins that map it
 ACTION_NAV_BACK = 92        # what Input.Back and the pad's B send
@@ -74,7 +112,13 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
     """
     rows = ()
     choice = -1
+    appid = ""              # the paused session's appid; "" = no live session
     _filled = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set once, ever: tells the frame poll the dialog is done with it.
+        self._frame_stop = threading.Event()
 
     def onInit(self):
         # Kodi can re-init a window (a skin reload, a resolution change); the
@@ -82,6 +126,7 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
         if self._filled:
             return
         self._filled = True
+        self._start_frame_watch()
         try:
             items = []
             for w in self.rows:
@@ -121,6 +166,51 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
             self.choice = -1
             self.close()
 
+    def close(self):
+        # Every exit funnels through here (row picked, backed out, init
+        # failure), so this is the one place the frame poll gets told to stop.
+        self._frame_stop.set()
+        super().close()
+
+    # -- the freeze-frame backdrop -------------------------------------------
+
+    def _start_frame_watch(self):
+        """Put the paused game's freeze-frame behind the sheet.
+
+        The capture can trail the dialog by a beat (pause-snap is still
+        writing while show-kodi and this window race it), so one look at open
+        is not enough: check now, and if the frame is not there yet, watch for
+        it from a small daemon thread - a 200ms wait on an Event, not a spin,
+        and never on the UI thread - for up to 3s, stopping the moment the
+        frame lands or the dialog closes. If nothing ever lands the property
+        stays empty and the dialog looks exactly as it always has.
+        """
+        if not self.appid:
+            return              # no live game session - nothing to show
+        if self._set_frame_if_ready():
+            return
+        threading.Thread(target=self._frame_poll, daemon=True,
+                         name="couch-switcher-frame").start()
+
+    def _frame_poll(self):
+        deadline = time.monotonic() + FRAME_POLL_FOR_S
+        while not self._frame_stop.wait(FRAME_POLL_S):
+            if self._set_frame_if_ready() or time.monotonic() >= deadline:
+                return
+
+    def _set_frame_if_ready(self):
+        try:
+            frame = pausedframe.newest_frame(PAUSED_DIR, self.appid,
+                                             int(time.time() * 1000))
+            if not frame:
+                return False
+            self.setProperty(PROP_FRAME, frame)
+            return True
+        except Exception as e:  # noqa: BLE001 - decoration must never cost the dialog
+            xbmc.log("couch.switcher: freeze-frame lookup failed: %s" % e,
+                     xbmc.LOGWARNING)
+            return True         # do not keep retrying a broken path
+
 
 def animated_dialog():
     """The rollback switch (Configure > Advanced).
@@ -153,10 +243,24 @@ def select_window(rows):
         return xbmcgui.Dialog().select(HEADING, labels)
     try:
         dlg.rows = rows
+        dlg.appid = pausedframe.session_appid(rows, fallback=_suspended_appid())
         dlg.doModal()
         return dlg.choice
     finally:
+        dlg._frame_stop.set()   # doModal can raise; the poll must still die
         del dlg
+
+
+def _suspended_appid():
+    """The control daemon's own record of what it froze - the same file the
+    couch server reads. Only consulted when the rows carry no appid (a shadPS4
+    session whose capture has not landed yet); absent file means no session,
+    which correctly leaves the backdrop off."""
+    try:
+        with open("/tmp/game-suspended", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def get_windows():

@@ -31,8 +31,29 @@
 
   <controls>
 
+    <!-- The paused game's freeze-frame, fullscreen at the very bottom of the
+         stack: the sheet appears to float over the game the room just left.
+         default.py owns the property - set only for a live session with a
+         fresh capture, and possibly a beat after open (the snapshot races the
+         dialog; a short poll fills it in). Empty property = hidden control =
+         the dialog exactly as it was before this existed. background="true"
+         decodes the jpg off the render thread; the fadetime turns the late
+         arrival into a soft fade instead of a pop. -->
+    <control type="image">
+      <left>0</left>
+      <top>0</top>
+      <width>1920</width>
+      <height>1080</height>
+      <aspectratio>scale</aspectratio>
+      <fadetime>240</fadetime>
+      <texture background="true">$INFO[Window.Property(couch.pausedframe)]</texture>
+      <visible>!String.IsEmpty(Window.Property(couch.pausedframe))</visible>
+    </control>
+
     <!-- Scrim. Full-bleed so the room's eye goes to the sheet, not to the
-         paused game's last frame behind it. -->
+         paused game's last frame behind it - and, when the freeze-frame above
+         is showing, the dim layer that keeps the sheet readable over a bright
+         frame. Sits between frame and sheet by stack order. -->
     <control type="image">
       <left>0</left>
       <top>0</top>
@@ -122,6 +143,7 @@
             <aligny>center</aligny>
             <font>Grid_Title</font>
             <textcolor>FF9FB0BF</textcolor>
+            <label>$INFO[ListItem.Label]</label>
           </control>
         </itemlayout>
 
@@ -160,6 +182,7 @@
             <aligny>center</aligny>
             <font>Grid_Title</font>
             <textcolor>FFFFFFFF</textcolor>
+            <label>$INFO[ListItem.Label]</label>
           </control>
         </focusedlayout>
       </control>
