@@ -112,6 +112,18 @@ playback). Proper fix = teach light-watch about TV playbacks (a ~/.local/bin
 edit, needs its own review). Lights cannot get stuck through the normal
 paths (disown/failed-handoff/15-min blind timer all restore).
 
+**TRANSITION SPEEDUPS BATCH 1 DEPLOYED + SWEPT (7 Aug ~00:05, commit
+651d6ac):** resume sleep-1 -> 100ms converge (expect ~0.45s resumes),
+launch BP-hide lands on window-map, BP-confirm/teardown polls at 0.25s
+grain (same totals/graces), screen.js guard beat polls the pidfile,
+curtain probe dropped. Sweep 12/12 after deploy. Evidence docs:
+docs/transition-latency-budget.md + docs/transition-speedups.md.
+NOT touched (by class): [DESIGN] BP-before-game overlap (pad-safety
+ruling), gesture window constants (0.9 hold / 0.35 double-tap / 1.2
+settle), [MODEL] route_pad async hygiene, watcher select-tick (SR4).
+Donnie's first resume/launch tonight is the live proof - the phase logger
+in /tmp/game-launch.log shows the per-leg ms if it doesn't feel faster.
+
 **DONNIE'S PAD-IN-HAND CHECKLIST (now 2 items, both need a real game):**
 (1) with a game paused, double-tap: the sheet should float over the game's
 freeze-frame. (2) suspend/resume from the PHONE: first live
