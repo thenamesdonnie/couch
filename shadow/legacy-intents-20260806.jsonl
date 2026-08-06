@@ -1,0 +1,201 @@
+{"t": 1785980408.290, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1785980408.300, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"steam","app":"steam","source":"fresh-launch"}}
+{"t": 1785980408.309, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch steam"}}
+{"t": 1785980408.317, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"765014 steam 367520","launcher":"765014","reason":"launch"}}
+{"t": 1785980408.336, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785980408.476, "src": "game-launch", "verb": "launch", "subject": "bigpicture", "args": {"reason":"ensure-bp-before-game","via":"steam-open-bigpicture","was":"7","mode":"steam","appid":"367520"}}
+{"t": 1785980422.772, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[765869,765870,765871,765952,765976,765980,765982,765984,765986,765989,765999,766076,766083],"resolver":"game-pids"}}
+{"t": 1785980446.3364205, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785980446.896384, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785980452.8963468, "target": "kodi"}}
+{"t": 1785980450.019, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1785980450.030, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"resume","source":"kodi-tile","app":"steam"}}
+{"t": 1785980450.200, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[765869,765870,765871,765952,765976,765980,765982,765986,765989,765999,766076,766083,766124,766133,766143,766145,766159,766168],"resolver":"game-pids","signal":"SIGCONT","mode":"steam"}}
+{"t": 1785980450.386, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785980451.1672888, "src": "watcher", "verb": "route_pad", "subject": "game", "args": {"reason": "joystick-setting-drift", "repair": "reconcile", "was": true, "via": "kodi-jsonrpc"}}
+{"t": 1785980451.561, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x8000001","mode":"steam"}}
+{"t": 1785980451.598, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785980452.48468, "src": "guard", "verb": "show", "subject": "kodi", "args": {"mode": "kodi", "via": "xlib-restack", "reason": "wanted window not on top", "invariant": 2, "top": "Hollow Knight", "topcls": "steam_app_367520"}}
+{"t": 1785980452.779, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[765869,765870,765871,765952,765976,765980,765982,765986,765989,765999,766076,766083,766124,766133,766143,766145,766159,766168],"resolver":"game-pids"}}
+{"t": 1785980453.5588918, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": ["raise-kodi(over Hollow Knight)"], "fix_count": 1, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785980453.867362, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1785980459.8673224, "target": "game"}}
+{"t": 1785980460.7170691, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "game"}}
+{"t": 1785981056.9033067, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785981073.7848396, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785981079.7847462, "target": "kodi"}}
+{"t": 1785981093.437, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1785981093.449, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"resume","source":"kodi-tile","app":"steam"}}
+{"t": 1785981093.605, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[765869,765870,765871,765952,765976,765980,765982,765986,765989,765999,766076,766083,766124,766133,766143,766145,766159,766168],"resolver":"game-pids","signal":"SIGCONT","mode":"steam"}}
+{"t": 1785981093.785, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785981095.004, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x8000001","mode":"steam"}}
+{"t": 1785981095.041, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785981096.202, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[765869,765870,765871,765952,765976,765980,765982,765986,765989,765999,766076,766083,766124,766133,766143,766145,766159,766168],"resolver":"game-pids"}}
+{"t": 1785981100.5702126, "src": "guard", "verb": "kill", "subject": "steam-input-guard", "args": {"pids": [779559], "resolver": "guard-pidfile", "signal": "SIGTERM", "reason": "superseded-by-newer-guard"}}
+{"t": 1785981100.5702722, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"reason": "superseded"}}
+{"t": 1785981100.641957, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1785981106.6419244, "target": "game"}}
+{"t": 1785981107.8533275, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "game"}}
+{"t": 1785982000.564, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1785982000.710, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[765869,765870,765871,765952,765976,765980,765982,765986,765989,765999,766076,766083,766124,766133,766143,766145,766159,766168],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1785982001.792, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[765869,765870,765871,765952,765976,765980,765982,765986,765989,765999,766076,766083,766124,766133,766143,766145,766159,766168],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1785982003.538, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1785982005.891, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"765014"}}
+{"t": 1785982005.918, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785982005.927, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"steam"}}
+{"t": 1785982011.548, "src": "game-launch", "verb": "invoked", "subject": "bigpicture", "args": {"argv":["bigpicture"],"appid":""}}
+{"t": 1785982011.812, "src": "game-launch", "verb": "launch", "subject": "bigpicture", "args": {"mode":"bigpicture","app":"bigpicture","source":"fresh-launch"}}
+{"t": 1785982011.831, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch bigpicture"}}
+{"t": 1785982011.842, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"799210 bigpicture ","launcher":"799210","reason":"launch"}}
+{"t": 1785982011.865, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"bigpicture"}}
+{"t": 1785982028.998, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"799210 steam 367520","launcher":"799210","reason":"bigpicture-appid-adoption","was":"bigpicture"}}
+{"t": 1785982317.3750288, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785982318.4703524, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785982324.4702935, "target": "kodi"}}
+{"t": 1785982325.062677, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785982441.9430737, "src": "watcher", "verb": "launch", "subject": "367520", "args": {"mode": "resume", "gesture": "tap", "via": "game-launch resume", "yielded": true, "owner": "couchd"}}
+{"t": 1785982442.128, "src": "game-launch", "verb": "invoked", "subject": "resume", "args": {"argv":["resume"],"appid":""}}
+{"t": 1785982442.136, "src": "game-launch", "verb": "invoked", "subject": "focus", "args": {"argv":["focus"],"appid":""}}
+{"t": 1785982442.138, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"resume"}}
+{"t": 1785982442.219, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[799765,799766,799767,799826,799851,799857,799860,799877,799880,799889,799947,799960,800000,800012,800022,800024,800030,800040],"resolver":"game-pids","signal":"SIGCONT","mode":"resume"}}
+{"t": 1785982442.274, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785982442.287, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"focus","pids":[799765,799766,799767,799826,799851,799857,799860,799877,799880,799889,799947,799960,800000,800012,800022,800024,800030,800040],"resolver":"game-pids"}}
+{"t": 1785982442.9158924, "src": "watcher", "verb": "route_pad", "subject": "game", "args": {"reason": "joystick-setting-drift", "repair": "reconcile", "was": true, "via": "kodi-jsonrpc"}}
+{"t": 1785982443.087, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x8000001","mode":"resume"}}
+{"t": 1785982443.118, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"resume"}}
+{"t": 1785982444.200, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"resume","pids":[799765,799766,799767,799826,799851,799857,799860,799877,799880,799889,799947,799960,800000,800012,800022,800024,800030,800040],"resolver":"game-pids"}}
+{"t": 1785982728.7057562, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1785982728.8907769, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785982734.890722, "target": "kodi"}}
+{"t": 1785982729.9919214, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785982732.1186733, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785982734.2319758, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785982736.297069, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": ["menu-close", "menu-close", "menu-close"], "fix_count": 3, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785982739.523, "src": "game-launch", "verb": "invoked", "subject": "resume", "args": {"argv":["resume"],"appid":""}}
+{"t": 1785982739.534, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"resume"}}
+{"t": 1785982739.619, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[811131,811132,811133,811193,811220,811247,811254,811258,811261,811271,811298,811357,811379,811385,811395,811397,811403,811412],"resolver":"game-pids","signal":"SIGCONT","mode":"resume"}}
+{"t": 1785982739.678, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785982740.146, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x8000001","mode":"resume"}}
+{"t": 1785982740.198, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"resume"}}
+{"t": 1785982741.288, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"resume","pids":[811131,811132,811133,811193,811220,811247,811254,811258,811261,811271,811298,811357,811379,811385,811395,811397,811403,811412],"resolver":"game-pids"}}
+{"t": 1785982741.521615, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1785982747.521582, "target": "game"}}
+{"t": 1785982741.563098, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "game", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785982743.7298503, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "game", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785982745.880416, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "game", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785982747.9838898, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": ["menu-close", "menu-close", "menu-close"], "fix_count": 3, "reason": "deadline reached", "target": "game"}}
+{"t": 1785982801.5931246, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785982802.2804532, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785982808.2804236, "target": "kodi"}}
+{"t": 1785982805.979, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1785982805.991, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"resume","source":"kodi-tile","app":"steam"}}
+{"t": 1785982806.151, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[811131,811132,811133,811193,811220,811247,811254,811258,811261,811271,811298,811357,811379,811385,811395,811397,811403,811412],"resolver":"game-pids","signal":"SIGCONT","mode":"steam"}}
+{"t": 1785982806.319, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785982807.038, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x8000001","mode":"steam"}}
+{"t": 1785982807.070, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785982807.6583943, "src": "guard", "verb": "show", "subject": "kodi", "args": {"mode": "kodi", "via": "xlib-restack", "reason": "wanted window not on top", "invariant": 2, "top": "Hollow Knight", "topcls": "steam_app_367520"}}
+{"t": 1785982808.269, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[811131,811132,811133,811193,811220,811247,811254,811258,811261,811271,811298,811357,811379,811385,811395,811397,811403,811412],"resolver":"game-pids"}}
+{"t": 1785982808.7120306, "src": "guard", "verb": "kill", "subject": "steam-input-guard", "args": {"pids": [816952], "resolver": "guard-pidfile", "signal": "SIGTERM", "reason": "superseded-by-newer-guard"}}
+{"t": 1785982808.712105, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"reason": "superseded"}}
+{"t": 1785982808.7846959, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1785982814.784659, "target": "game"}}
+{"t": 1785982814.8195965, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "game"}}
+{"t": 1785983155.599454, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785983156.2641838, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785983162.2641513, "target": "kodi"}}
+{"t": 1785983157.7973707, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785983159.892, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1785983160.177, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[811131,811132,811133,811193,811220,811247,811254,811258,811261,811271,811298,811357,811379,811385,811395,811397,811403,811412],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1785983161.342, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[811131,811132,811133,811193,811220,811247,811254,811258,811261,811271,811298,811357,811379,811385,811395,811397,811403,811412],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1785983162.599818, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785983163.255, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1785983164.642, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"799210"}}
+{"t": 1785983164.664, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"bigpicture"}}
+{"t": 1785983164.674, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"bigpicture"}}
+{"t": 1785983170.245, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1785983170.253, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"steam","app":"steam","source":"fresh-launch"}}
+{"t": 1785983170.263, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch steam"}}
+{"t": 1785983170.270, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"824858 steam 367520","launcher":"824858","reason":"launch"}}
+{"t": 1785983170.289, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785983170.420, "src": "game-launch", "verb": "launch", "subject": "bigpicture", "args": {"reason":"ensure-bp-before-game","via":"steam-open-bigpicture","was":"7","mode":"steam","appid":"367520"}}
+{"t": 1785983178.210, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486],"resolver":"game-pids"}}
+{"t": 1785983633.3017874, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1785983633.571904, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785983639.5718703, "target": "kodi"}}
+{"t": 1785983634.6577454, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983636.298, "src": "game-launch", "verb": "invoked", "subject": "resume", "args": {"argv":["resume"],"appid":""}}
+{"t": 1785983636.307, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"resume"}}
+{"t": 1785983636.391, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids","signal":"SIGCONT","mode":"resume"}}
+{"t": 1785983636.451, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785983636.7720551, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983636.808, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x7c00001","mode":"resume"}}
+{"t": 1785983636.855, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"resume"}}
+{"t": 1785983637.8140686, "src": "guard", "verb": "show", "subject": "kodi", "args": {"mode": "kodi", "via": "xlib-restack", "reason": "wanted window not on top", "invariant": 2, "top": "Hollow Knight", "topcls": "steam_app_367520"}}
+{"t": 1785983637.946, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"resume","pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids"}}
+{"t": 1785983638.139532, "src": "guard", "verb": "kill", "subject": "steam-input-guard", "args": {"pids": [834888], "resolver": "guard-pidfile", "signal": "SIGTERM", "reason": "superseded-by-newer-guard"}}
+{"t": 1785983638.1396108, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"reason": "superseded"}}
+{"t": 1785983638.1826472, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1785983644.1826017, "target": "game"}}
+{"t": 1785983638.22456, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "game", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983640.3750699, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "game", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983642.535472, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "game", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983644.6532216, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": ["menu-close", "menu-close", "menu-close"], "fix_count": 3, "reason": "deadline reached", "target": "game"}}
+{"t": 1785983659.1229541, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785983659.8418343, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785983665.841801, "target": "kodi"}}
+{"t": 1785983659.8798673, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983661.9688206, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983664.0325632, "src": "guard", "verb": "close_steam_menu", "subject": "steam", "args": {"mode": "kodi", "via": "vpad-guide", "reason": "ClientUI routed but steam not focused", "invariant": 1, "vpad_started": false}}
+{"t": 1785983666.0818994, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": ["menu-close", "menu-close", "menu-close"], "fix_count": 3, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785983677.7728298, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1785983887.516779, "src": "watcher", "verb": "launch", "subject": "367520", "args": {"mode": "resume", "gesture": "tap", "via": "game-launch resume", "yielded": true, "owner": "couchd"}}
+{"t": 1785983887.656, "src": "game-launch", "verb": "invoked", "subject": "resume", "args": {"argv":["resume"],"appid":""}}
+{"t": 1785983887.658, "src": "game-launch", "verb": "invoked", "subject": "focus", "args": {"argv":["focus"],"appid":""}}
+{"t": 1785983887.666, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"resume"}}
+{"t": 1785983887.759, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids","signal":"SIGCONT","mode":"resume"}}
+{"t": 1785983887.808, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"focus","pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids"}}
+{"t": 1785983887.819, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785983891.174, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x7c00001","mode":"resume"}}
+{"t": 1785983891.208, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"resume"}}
+{"t": 1785983892.296, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"resume","pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids"}}
+{"t": 1785984020.090518, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785984020.6599941, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785984026.6599593, "target": "kodi"}}
+{"t": 1785984026.9166372, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785984121.254, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1785984121.283, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"resume","source":"kodi-tile","app":"steam"}}
+{"t": 1785984121.451, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids","signal":"SIGCONT","mode":"steam"}}
+{"t": 1785984121.631, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1785984122.340, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x7c00001","mode":"steam"}}
+{"t": 1785984122.373, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785984123.569, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids"}}
+{"t": 1785984124.098037, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1785984130.0980043, "target": "game"}}
+{"t": 1785984131.2702112, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "game"}}
+{"t": 1785984405.814702, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785984406.3263535, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785984412.3263223, "target": "kodi"}}
+{"t": 1785984407.7559338, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785984409.121, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1785984409.419, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1785984410.591, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[825244,825245,825247,825355,825379,825381,825383,825387,825442,825452,825460,825467,825486,825498,825522,825524,825531,825542],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1785984412.523, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1785984412.6661325, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785984414.151, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"824858"}}
+{"t": 1785984414.180, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1785984414.190, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"steam"}}
+{"t": 1785984422.980, "src": "game-launch", "verb": "invoked", "subject": "bigpicture", "args": {"argv":["bigpicture"],"appid":""}}
+{"t": 1785984423.248, "src": "game-launch", "verb": "launch", "subject": "bigpicture", "args": {"mode":"bigpicture","app":"bigpicture","source":"fresh-launch"}}
+{"t": 1785984423.266, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch bigpicture"}}
+{"t": 1785984423.283, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"854356 bigpicture ","launcher":"854356","reason":"launch"}}
+{"t": 1785984423.312, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"bigpicture"}}
+{"t": 1785984440.3684347, "src": "watcher", "verb": "freeze", "subject": "bigpicture", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785984442.1453, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785984448.1452706, "target": "kodi"}}
+{"t": 1785984448.4419518, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785984488.7121193, "src": "watcher", "verb": "launch", "subject": "bigpicture", "args": {"mode": "resume", "gesture": "tap", "via": "game-launch resume", "yielded": true, "owner": "couchd"}}
+{"t": 1785984488.800, "src": "game-launch", "verb": "invoked", "subject": "resume", "args": {"argv":["resume"],"appid":""}}
+{"t": 1785984488.810, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"resume"}}
+{"t": 1785984488.815, "src": "game-launch", "verb": "invoked", "subject": "focus", "args": {"argv":["focus"],"appid":""}}
+{"t": 1785984488.923, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"bigpicture"}}
+{"t": 1785984488.942, "src": "game-launch", "verb": "show", "subject": "bp", "args": {"via":"xlib-restack","mode":"focus","pids":[],"resolver":"game-pids"}}
+{"t": 1785984489.017, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"resume"}}
+{"t": 1785984490.116, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"resume","pids":[],"resolver":"game-pids"}}
+{"t": 1785984490.327, "src": "game-launch", "verb": "show", "subject": "bp", "args": {"via":"xlib-restack","mode":"resume","pids":[],"resolver":"game-pids"}}
+{"t": 1785984495.678374, "src": "watcher", "verb": "freeze", "subject": "bigpicture", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785984497.384478, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785984503.3844416, "target": "kodi"}}
+{"t": 1785984925.471961, "src": "watcher", "verb": "freeze", "subject": "bigpicture", "args": {"pids": [], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1785984926.393373, "src": "guard", "verb": "kill", "subject": "steam-input-guard", "args": {"pids": [856268], "resolver": "guard-pidfile", "signal": "SIGTERM", "reason": "superseded-by-newer-guard"}}
+{"t": 1785984926.393566, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"reason": "superseded"}}
+{"t": 1785984926.4256134, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1785984932.4255803, "target": "kodi"}}
+{"t": 1785984930.308, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1785984930.710065, "src": "guard", "verb": "show", "subject": "kodi", "args": {"mode": "kodi", "via": "xlib-restack", "reason": "wanted window not on top", "invariant": 2, "top": "Steam Big Picture Mode", "topcls": "steamwebhelper"}}
+{"t": 1785984932.056, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1785984932.786, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1785984932.8050778, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": ["raise-kodi(over Steam Big Picture Mode)"], "fix_count": 1, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1785984934.487, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"854356"}}
+{"t": 1785984934.521, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"bigpicture"}}
+{"t": 1785984934.534, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"bigpicture"}}

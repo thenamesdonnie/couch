@@ -1,7 +1,7 @@
 {
- "t": 1785950007.6815195,
+ "t": 1785985223.645413,
  "pid": 175610,
- "uptime_s": 271.9,
+ "uptime_s": 35487.8,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -13,7 +13,7 @@
  "owns_warnings": [],
  "model_version": "d1adeed4083a",
  "git": "1be7d9973eca",
- "acted": 10,
+ "acted": 101,
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
@@ -26,89 +26,95 @@
   "gesture": "idle",
   "pad": "absent"
  },
- "games": {},
+ "games": {
+  "367520": "STOPPED",
+  "bigpicture": "STOPPED"
+ },
  "last_would_do": [
-  "would show_switcher tv [gesture:double-tap-switcher]",
-  "would show kodi [gesture:double-tap-switcher]",
-  "would show_switcher tv [gesture:double-tap-switcher]"
+  "would show kodi [transition:session-ended]",
+  "would route_pad kodi [transition:session-ended]",
+  "would show kodi [guard:wanted-window-not-on-top]"
  ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 92,
+   "events": 996381,
    "detail": "0 node(s)",
-   "age_s": 1.0,
+   "age_s": 0.2,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 5,
-   "detail": "0 present",
-   "age_s": 0.1,
+   "events": 79,
+   "detail": "2 present",
+   "age_s": 0.0,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 0,
+   "events": 2049,
    "detail": "0 pid(s)",
-   "age_s": 0.0,
+   "age_s": 4.9,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 23,
-   "detail": "joystick=True window=10000",
-   "age_s": 0.1,
+   "events": 1365,
+   "detail": "joystick=True window=10025",
+   "age_s": 5.0,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 2,
+   "events": 164,
    "detail": "0 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 0,
-   "detail": "game-launch log absent (nothing launched yet)",
+   "events": 17,
+   "detail": "quit (save and close)",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 115,
-   "detail": "top='Kodi' ev=115",
+   "events": 2525,
+   "detail": "top='Kodi' ev=2525",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 129,
+  "obs": 6204,
   "daemon": 2,
-  "transition": 66,
-  "invariant": 1,
-  "latency": 41,
-  "agreement": 13,
-  "intent": 10,
-  "effect": 10,
-  "decision": 15
+  "transition": 707,
+  "invariant": 26,
+  "latency": 115,
+  "agreement": 786,
+  "intent": 181,
+  "effect": 101,
+  "decision": 30
  },
- "passes": 667,
- "intents": 10,
+ "passes": 31412,
+ "intents": 181,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 22,
-  "steam_guide_lines": 1,
-  "first_event_latency_s": 6.123
+  "evdev": 59,
+  "steam_guide_lines": 38,
+  "first_event_latency_s": 79.964
  },
- "last_trigger": "",
+ "last_trigger": "quit (save and close)",
  "edges": {
-  "seen": 45,
-  "coalesced": 4,
-  "last_latency_s": 0.5431
+  "seen": 122,
+  "coalesced": 7,
+  "last_latency_s": 0.3649
  },
- "resource_leaks": [],
+ "resource_leaks": [
+  "vpad.fifo with no live guard",
+  "stale guard pidfile (pid 865026)"
+ ],
  "bindings": {
   "tap": "none",
   "double_tap": "switcher",
@@ -121,5 +127,5 @@
   "double_tap_seconds": 0.35,
   "long_hold_seconds": 3.0
  },
- "shadow_log": "/home/ds2000/couch/shadow/couchd-20260805.jsonl"
+ "shadow_log": "/home/ds2000/couch/shadow/couchd-20260806.jsonl"
 }
