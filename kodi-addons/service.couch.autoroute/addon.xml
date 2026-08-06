@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="service.couch.autoroute" name="Couch HDR Auto-route" version="1.0.0" provider-name="ds2000">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+    <!-- Not decoration: service.py puts this addon's directory on sys.path and
+         imports its playontv module, so the Jellyfin id extraction exists once
+         on this box rather than twice. -->
+    <import addon="context.couch.playontv" version="1.0.0"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py"/>
+  <extension point="xbmc.addon.metadata">
+    <summary>Play HDR films on the TV's own app automatically</summary>
+    <description>Watches what Kodi starts playing. If it is a movie or episode whose file is HDR or Dolby Vision, playback stops here and the couch server hands it to the TV's native Jellyfin app instead, where it plays with real HDR rather than the PC's tonemapped picture. SDR titles are left alone and play in Kodi exactly as before.
+
+Turn it off under Configure and every click plays in Kodi again. The context item "Play on TV (HDR)" still works as a manual override in both directions.</description>
+    <platform>all</platform>
+  </extension>
+</addon>

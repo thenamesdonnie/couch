@@ -125,6 +125,30 @@ export async function playableFor(itemId) {
   };
 }
 
+// The HDR facts for one item, straight from the file Jellyfin would play.
+// MediaSources[0] is that file; the Type=Video stream inside it carries
+// VideoRange ("HDR"/"SDR") and VideoRangeType ("HDR10"/"HDR10Plus"/"DOVI"/
+// "HLG"/"SDR"). Verified live 6 Aug 2026: The Batman reports HDR / HDR10,
+// hevc, 10-bit, 3840 wide; Batman (1989) reports SDR / SDR, h264, 8-bit.
+// NOTE the route: /Items/{id} on its own 404s, it has to be the user-scoped
+// one, and that is also what carries MediaSources without extra Fields.
+export async function videoProfileFor(itemId) {
+  if (!creds) creds = readCreds();
+  const item = await jf(`/Users/${creds.userId}/Items/${itemId}`);
+  const video = ((item.MediaSources || [])[0]?.MediaStreams || [])
+    .find((s) => s.Type === 'Video') || null;
+  return {
+    id: item.Id,
+    type: item.Type,
+    name: item.Name,
+    videoRange: video?.VideoRange ?? null,
+    videoRangeType: video?.VideoRangeType ?? null,
+    codec: video?.Codec ?? null,
+    bitDepth: video?.BitDepth ?? null,
+    width: video?.Width ?? null,
+  };
+}
+
 export function jfImageRequest(itemId, type, params) {
   if (!creds) creds = readCreds();
   const url = new URL(`${BASE}/Items/${itemId}/Images/${type}`);

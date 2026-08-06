@@ -89,6 +89,29 @@ nothing left for Donnie except the game-dependent items:**
 - differ over the post-deploy window: VALID, 0 gating, acted 12, 0 failures,
   edge-to-decision p50 71ms on the new model.
 
+**HDR AUTO-ROUTING: BUILT + INSTALLED, DELIBERATELY SWITCHED OFF.** Donnie's
+ruling: a plain click on an HDR/DV film should play on the TV's Jellyfin app;
+SDR stays in Kodi. Server half is LIVE and verified (GET
+/api/tv/should-route: The Batman -> route true "HDR10 on the TV app";
+Batman Returns -> false "SDR, Kodi plays it"; junk id -> false). Kodi half
+(service.couch.autoroute) is installed and running but its setting is
+pre-seeded FALSE **and** the server kill switch file exists
+(~/couch/data/tv-autoroute-off) - EITHER off means no routing.
+TO TURN ON (do it with eyes on the TV): rm ~/couch/data/tv-autoroute-off,
+then set the addon's toggle on (Settings > Add-ons > service.couch.autoroute).
+WHY IT IS OFF: Kodi 20 has no pre-play veto, so the addon lets Kodi start and
+then stops it - expect a visible flicker/busy-dialog before the TV takes over,
+and Kodi WILL write a resume position on that stop (unverified whether it
+damages the resume point of a part-watched film). Watch both on the first try.
+KNOWN GAP - cinema lights: TV playback now drives the lights via the `lights`
+CLI (dim 10, restore on stop/pause). light-watch instead speaks WiZ UDP
+directly (2200K, per-bulb save/restore, 1.8s ramp), so TV-playback lighting
+is slightly different (2700K, all-bulbs) and the two can confuse each other
+(light-watch may capture our dimmed state if a Kodi film starts during a TV
+playback). Proper fix = teach light-watch about TV playbacks (a ~/.local/bin
+edit, needs its own review). Lights cannot get stuck through the normal
+paths (disown/failed-handoff/15-min blind timer all restore).
+
 **DONNIE'S PAD-IN-HAND CHECKLIST (now 2 items, both need a real game):**
 (1) with a game paused, double-tap: the sheet should float over the game's
 freeze-frame. (2) suspend/resume from the PHONE: first live

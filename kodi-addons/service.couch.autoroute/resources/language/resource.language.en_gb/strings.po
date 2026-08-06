@@ -1,0 +1,46 @@
+# Kodi Media Center language file
+# Addon Name: Couch HDR Auto-route
+# Addon id: service.couch.autoroute
+# Addon Provider: ds2000
+msgid ""
+msgstr ""
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en_GB\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+#########################################################################################################
+#: SETTINGS            320XX
+#########################################################################################################
+
+#: /resources/settings.xml
+msgctxt "#32000"
+msgid "Couch HDR Auto-route"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32001"
+msgid "General"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32002"
+msgid "Whether HDR titles hand themselves to the TV."
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32003"
+msgid "Auto-routing"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32010"
+msgid "Auto-route HDR to the TV"
+msgstr ""
+
+#: /resources/settings.xml
+msgctxt "#32011"
+msgid "On: clicking a movie or episode whose file is HDR or Dolby Vision stops it here and plays it on the TV's own Jellyfin app, with real HDR instead of the tonemapped picture. SDR titles always play in Kodi. Off: everything plays in Kodi, and the context item Play on TV (HDR) is still there when you want it."
+msgstr ""

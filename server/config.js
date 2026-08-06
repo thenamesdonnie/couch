@@ -47,6 +47,12 @@ export const RADARR_CONFIG = e.RADARR_CONFIG || '/var/lib/radarr/config.xml';
 // published LAN address rather than on localhost.
 export const QBITTORRENT_URL = e.QBITTORRENT_URL || `http://${LAN_HOST}:8080`;
 
+// The server-side kill switch for HDR auto-routing: create this file and a
+// plain click plays everything in Kodi again, no restart, no Kodi UI needed
+// (`touch ~/couch/data/tv-autoroute-off`). The Kodi addon has its own toggle
+// as well; either one being off is enough to stop it.
+export const AUTOROUTE_OFF = e.COUCH_AUTOROUTE_OFF || path.join(ROOT, 'data', 'tv-autoroute-off');
+
 // couchd's status file, rewritten atomically every few seconds. Reading it is
 // the only contact this server has with the shadow daemon; its absence is a
 // normal state, never an error.

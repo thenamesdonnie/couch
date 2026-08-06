@@ -4,7 +4,10 @@
 // no live calls, no real sleeps, no files. Run: npm test (node --test).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTvCast, pickWebosSession, foregroundApp } from './tvcast.js';
+import {
+  createTvCast, createHdrRouter, hdrVerdict, pickWebosSession, foregroundApp,
+} from './tvcast.js';
+import { createTvLights, restorableTemp, restoreLevel } from './tvlights.js';
 
 const ITEM = 'a'.repeat(32);
 const WEBOS = {
@@ -13,6 +16,22 @@ const WEBOS = {
   SupportsRemoteControl: true,
   LastActivityDate: '2026-08-06T01:00:00Z',
 };
+
+// Stand-in for the lights driver: records only the TRANSITIONS, the same way
+// the real one only shells `lights` when the state actually changes, so tests
+// can assert "the room came back up once".
+function fakeLights(calls) {
+  let dimmed = false;
+  return {
+    set: (target) => {
+      if (target === 'dim' && !dimmed) { dimmed = true; calls.push('lights:dim'); }
+      if (target === 'restore' && dimmed) { dimmed = false; calls.push('lights:restore'); }
+      return Promise.resolve();
+    },
+    state: () => ({ dimmed }),
+    settled: () => Promise.resolve(),
+  };
+}
 
 // A harness around createTvCast: fake clock (sleep advances it), scripted tv
 // and Jellyfin sides, and a log of every outbound call.
@@ -28,6 +47,7 @@ function rig(overrides = {}) {
     return arr.length > 1 ? arr.shift() : arr[0];
   };
   const cast = createTvCast({
+    lights: fakeLights(calls),
     configured: () => true,
     tvStatus: async () => {
       calls.push('tvStatus');
@@ -376,4 +396,383 @@ test('nowPlaying reports the owned session and goes inactive when it is not ours
   assert.equal((await cast.nowPlaying()).active, false);
   const bare = rig().cast;
   assert.equal((await bare.nowPlaying()).active, false);
+});
+
+// --- HDR auto-routing: is this item one for the TV? ---
+
+const profile = (over = {}) => ({
+  id: ITEM, type: 'Movie', name: 'Test Film',
+  videoRange: 'SDR', videoRangeType: 'SDR', codec: 'h264', bitDepth: 8, width: 1920,
+  ...over,
+});
+
+test('hdrVerdict: every HDR flavour the TV should take', () => {
+  for (const t of ['HDR10', 'HDR10Plus', 'DOVI', 'HLG']) {
+    const v = hdrVerdict(profile({ videoRange: 'HDR', videoRangeType: t }));
+    assert.equal(v.hdr, true, t);
+    assert.equal(v.label, t);
+  }
+  // Dolby Vision is the one Donnie cares most about; spelled out both ways.
+  assert.equal(hdrVerdict(profile({ videoRange: 'HDR', videoRangeType: 'DolbyVision' })).hdr, true);
+  // VideoRange alone (older files carry no VideoRangeType) still counts.
+  assert.equal(hdrVerdict(profile({ videoRange: 'HDR', videoRangeType: null })).hdr, true);
+});
+
+test('hdrVerdict: SDR and anything unknown stay in Kodi', () => {
+  assert.equal(hdrVerdict(profile()).hdr, false);
+  assert.equal(hdrVerdict(profile()).label, 'SDR');
+  // No video stream at all, a field we have never seen, nothing at all: all
+  // false. Never route on a guess.
+  for (const p of [profile({ videoRange: null, videoRangeType: null }),
+    profile({ videoRange: 'WHO KNOWS', videoRangeType: 'MYSTERY' }), null]) {
+    const v = hdrVerdict(p);
+    assert.equal(v.hdr, false);
+    assert.equal(v.label, 'unknown');
+  }
+});
+
+function router(over = {}) {
+  const asked = [];
+  const r = createHdrRouter({
+    profileFor: async (id) => { asked.push(id); return profile({ videoRange: 'HDR', videoRangeType: 'HDR10' }); },
+    log: () => {},
+    now: () => 0,
+    ...over,
+  });
+  return { r, asked };
+}
+
+test('shouldRoute: an HDR film routes, an SDR film does not', async () => {
+  const { r } = router();
+  const yes = await r.shouldRoute(ITEM);
+  assert.equal(yes.route, true);
+  assert.match(yes.reason, /HDR10/);
+  assert.equal(yes.videoRangeType, 'HDR10');
+
+  const { r: r2 } = router({ profileFor: async () => profile() });
+  const no = await r2.shouldRoute(ITEM);
+  assert.equal(no.route, false);
+  assert.match(no.reason, /Kodi plays it/);
+});
+
+test('shouldRoute: junk ids never route and never reach jellyfin', async () => {
+  const { r, asked } = router();
+  for (const bad of ['', null, undefined, 'not-an-id', ITEM.slice(1), `${ITEM}a`, '../../etc']) {
+    const a = await r.shouldRoute(bad);
+    assert.equal(a.route, false);
+    assert.match(a.reason, /not a jellyfin item id/);
+  }
+  assert.deepEqual(asked, []);
+});
+
+test('shouldRoute: jellyfin unreadable answers an honest false', async () => {
+  const { r } = router({ profileFor: async () => { throw new Error('jellyfin 500'); } });
+  const a = await r.shouldRoute(ITEM);
+  assert.equal(a.route, false);
+  assert.match(a.reason, /could not read/);
+});
+
+test('shouldRoute: containers and non-video types never route', async () => {
+  for (const type of ['Series', 'Season', 'MusicVideo', 'BoxSet']) {
+    const { r } = router({
+      profileFor: async () => profile({ type, videoRange: 'HDR', videoRangeType: 'HDR10' }),
+    });
+    const a = await r.shouldRoute(ITEM);
+    assert.equal(a.route, false, type);
+    assert.match(a.reason, /not a film or episode/);
+  }
+  // ...but an HDR episode is exactly as routable as an HDR film.
+  const { r } = router({
+    profileFor: async () => profile({ type: 'Episode', videoRange: 'HDR', videoRangeType: 'DOVI' }),
+  });
+  assert.equal((await r.shouldRoute(ITEM)).route, true);
+});
+
+test('shouldRoute: the kill switch beats the file', async () => {
+  const { r, asked } = router({ enabled: () => false });
+  const a = await r.shouldRoute(ITEM);
+  assert.equal(a.route, false);
+  assert.equal(a.enabled, false);
+  assert.match(a.reason, /switched off/);
+  assert.deepEqual(asked, []); // and costs Jellyfin nothing
+});
+
+test('shouldRoute: a live game or a busy TV stops the interception', async () => {
+  const live = router({ gameLive: () => true });
+  assert.match((await live.r.shouldRoute(ITEM)).reason, /game session/);
+  assert.deepEqual(live.asked, []);
+  const busy = router({ tvBusy: () => true });
+  assert.match((await busy.r.shouldRoute(ITEM)).reason, /already playing/);
+  assert.deepEqual(busy.asked, []);
+});
+
+test('shouldRoute: an explicit "play it in Kodi" is not overruled', async () => {
+  // The phone's Play button and its Play on TV button sit on the same card.
+  // Pressing the first one has to mean the first one.
+  let t = 0;
+  const { r, asked } = router({ now: () => t });
+  r.suppress();
+  const a = await r.shouldRoute(ITEM);
+  assert.equal(a.route, false);
+  assert.match(a.reason, /asked for in Kodi/);
+  assert.deepEqual(asked, []);
+  t += 21 * 1000; // the window is only as long as a playback takes to start
+  assert.equal((await r.shouldRoute(ITEM)).route, true);
+});
+
+test('shouldRoute: answers are cached briefly, failures far more briefly', async () => {
+  let t = 0;
+  const { r, asked } = router({ now: () => t });
+  await r.shouldRoute(ITEM);
+  await r.shouldRoute(ITEM);
+  assert.equal(asked.length, 1); // a re-click costs nothing
+  t += 6 * 60 * 1000;
+  await r.shouldRoute(ITEM);
+  assert.equal(asked.length, 2); // ...but the cache does expire
+
+  t = 0;
+  let fail = true;
+  const tries = [];
+  const r2 = createHdrRouter({
+    now: () => t,
+    log: () => {},
+    profileFor: async () => {
+      tries.push(t);
+      if (fail) throw new Error('jellyfin down');
+      return profile({ videoRange: 'HDR', videoRangeType: 'HDR10' });
+    },
+  });
+  assert.equal((await r2.shouldRoute(ITEM)).route, false);
+  await r2.shouldRoute(ITEM);
+  assert.equal(tries.length, 1); // a blip is not re-asked on every tick
+  t += 25 * 1000;
+  fail = false;
+  assert.equal((await r2.shouldRoute(ITEM)).route, true); // ...and heals fast
+});
+
+test('shouldRoute: the cache cannot grow without bound', async () => {
+  const r = createHdrRouter({
+    profileFor: async () => profile(), log: () => {}, now: () => 0, maxEntries: 5,
+  });
+  for (let i = 0; i < 20; i += 1) {
+    await r.shouldRoute(i.toString(16).padStart(32, '0'));
+  }
+  assert.ok(r._cacheSize() <= 5);
+});
+
+// --- cinema lights on the TV path ---
+
+const STATUS = (lines) => lines.join('\n');
+const BULB = (ip, on, dim, mode) => `${ip}  ${on ? 'on' : 'off'}  ${dim}%  ${mode}  (rssi -55)`;
+
+function lightRig(script = {}) {
+  const calls = [];
+  const lights = createTvLights({
+    log: () => {},
+    run: async (cmd, arg) => {
+      calls.push(arg === undefined ? cmd : `${cmd}:${arg}`);
+      if (script[cmd] instanceof Error) throw script[cmd];
+      if (cmd === 'status') return script.status ?? STATUS([BULB('10.0.0.1', true, 80, '2700K')]);
+      return 'ok';
+    },
+  });
+  return { lights, calls };
+}
+
+test('lights: a lit warm room dims to 10 and comes back to where it was', async () => {
+  const { lights, calls } = lightRig();
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status', 'warm', 'dim:10']);
+  assert.equal(lights.state().dimmed, true);
+  calls.length = 0;
+  await lights.set('restore');
+  assert.deepEqual(calls, ['warm', 'on:80']);
+  assert.equal(lights.state().dimmed, false);
+});
+
+test('lights: a dark room stays dark', async () => {
+  const { lights, calls } = lightRig({
+    status: STATUS([BULB('10.0.0.1', false, 80, '2700K'), BULB('10.0.0.2', false, 50, '2700K')]),
+  });
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status']); // looked, touched nothing
+  assert.equal(lights.state().dimmed, false);
+  calls.length = 0;
+  await lights.set('restore'); // and never "restores" a room it did not dim
+  assert.deepEqual(calls, []);
+});
+
+test('lights: a colour the CLI cannot put back means brightness only', async () => {
+  for (const mode of ['scene 6', 'rgb', '4000K']) {
+    const { lights, calls } = lightRig({ status: STATUS([BULB('10.0.0.1', true, 65, mode)]) });
+    await lights.set('dim');
+    assert.deepEqual(calls, ['status', 'dim:10'], mode); // no warm: it is not reversible
+    calls.length = 0;
+    await lights.set('restore');
+    assert.deepEqual(calls, ['on:65'], mode);
+  }
+});
+
+test('lights: bulbs disagreeing on colour are left on their colours', async () => {
+  const { lights, calls } = lightRig({
+    status: STATUS([BULB('10.0.0.1', true, 40, '2700K'), BULB('10.0.0.2', true, 90, '5000K')]),
+  });
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status', 'dim:10']);
+  calls.length = 0;
+  await lights.set('restore');
+  assert.deepEqual(calls, ['on:90']); // the brightest wins: never leave the room darker
+});
+
+test('lights: a cool room dims and returns cool', async () => {
+  const { lights, calls } = lightRig({ status: STATUS([BULB('10.0.0.1', true, 100, '5000K')]) });
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status', 'warm', 'dim:10']);
+  calls.length = 0;
+  await lights.set('restore');
+  assert.deepEqual(calls, ['cool', 'on:100']);
+});
+
+test('lights: helpers agree with the transitions', () => {
+  assert.equal(restorableTemp([{ on: true, mode: '2700K' }]), 'warm');
+  assert.equal(restorableTemp([{ on: true, mode: '5000K' }]), 'cool');
+  assert.equal(restorableTemp([{ on: true, mode: 'scene 6' }]), null);
+  assert.equal(restorableTemp([]), null);
+  assert.equal(restoreLevel([{ on: true, dimming: 20 }, { on: true, dimming: 70 }]), 70);
+  assert.equal(restoreLevel([]), 100); // knowing nothing, come back bright
+});
+
+test('lights: no bulbs answering is a shrug, not a failure', async () => {
+  const { lights, calls } = lightRig({ status: 'no bulbs answered' });
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status']);
+  assert.equal(lights.state().dimmed, false);
+});
+
+test('lights: an unreachable CLI never throws and never claims a dim', async () => {
+  const { lights, calls } = lightRig({ status: new Error('ENOENT lights') });
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status']);
+  assert.equal(lights.state().dimmed, false);
+
+  const dead = lightRig({ warm: new Error('no reply'), dim: new Error('no reply') });
+  await dead.lights.set('dim');
+  assert.equal(dead.lights.state().dimmed, false); // nothing landed: nothing to undo
+  dead.calls.length = 0;
+  await dead.lights.set('restore');
+  assert.deepEqual(dead.calls, []);
+});
+
+test('lights: a half-failed dim is still a dim, and a failed restore is not retried', async () => {
+  const half = lightRig({ warm: new Error('no reply') });
+  await half.lights.set('dim');
+  assert.equal(half.lights.state().dimmed, true); // brightness did land
+  const broken = lightRig({ on: new Error('no reply') });
+  await broken.lights.set('dim');
+  await broken.lights.set('restore');
+  assert.equal(broken.lights.state().dimmed, false);
+  broken.calls.length = 0;
+  await broken.lights.set('restore');
+  assert.deepEqual(broken.calls, []); // never a retry storm against dead bulbs
+});
+
+test('lights: repeats are free and overlapping asks settle on the last one', async () => {
+  const { lights, calls } = lightRig();
+  await lights.set('dim');
+  await lights.set('dim');
+  assert.deepEqual(calls, ['status', 'warm', 'dim:10']);
+  calls.length = 0;
+  // Fired without awaiting, the way the monitor does it.
+  lights.set('restore');
+  lights.set('dim');
+  lights.set('restore');
+  await lights.settled();
+  assert.equal(lights.state().dimmed, false);
+  assert.ok(calls.length > 0);
+});
+
+// --- the lights as the monitor drives them ---
+
+const pausedSession = { ...WEBOS, NowPlayingItem: { Id: ITEM }, PlayState: { IsPaused: true } };
+
+test('lights: playing on the TV dims the room', async () => {
+  const { cast, calls, state } = rig();
+  state.sessionsReplies = [[WEBOS]];
+  cast.start(ITEM);
+  await settle(cast);
+  assert.ok(calls.includes('lights:dim'));
+  assert.equal(cast.lightsState().dimmed, true);
+});
+
+test('lights: pause brings them up, resume takes them down again', async () => {
+  const { cast, calls, state } = await playing();
+  state.sessionsReplies = [[pausedSession]];
+  await cast._monitorTick();
+  assert.deepEqual(calls.filter((c) => c.startsWith('lights')), ['lights:restore']);
+  state.sessionsReplies = [[ourPlaying]];
+  await cast._monitorTick();
+  assert.deepEqual(calls.filter((c) => c.startsWith('lights')), ['lights:restore', 'lights:dim']);
+  // and a second unpaused tick is not a second dim
+  await cast._monitorTick();
+  assert.equal(calls.filter((c) => c === 'lights:dim').length, 1);
+});
+
+test('lights: the film ending brings them up at once, not after the input dwell', async () => {
+  const { cast, calls, state } = await playing();
+  state.sessionsReplies = [[idleSession]];
+  state.tvStatusReplies = ['on (org.jellyfin.webos)'];
+  await cast._monitorTick(); // only arms the input restore...
+  assert.ok(!calls.includes('hdmi1'));
+  assert.ok(calls.includes('lights:restore')); // ...but the room is already back
+});
+
+test('lights: every way out of ownership restores them', async () => {
+  // Donnie started something else on the TV himself
+  const a = await playing();
+  a.state.sessionsReplies = [[otherPlaying]];
+  await a.cast._monitorTick();
+  assert.ok(a.calls.includes('lights:restore'));
+
+  // he walked off to another app
+  const b = await playing();
+  b.state.sessionsReplies = [[idleSession]];
+  b.state.tvStatusReplies = ['on (youtube.leanback.v4)'];
+  await b.cast._monitorTick();
+  b.clock.advance(31000);
+  await b.cast._monitorTick();
+  assert.equal(b.cast.lightsState().dimmed, false);
+
+  // the normal end: dwell served, input handed back
+  const c = await playing();
+  c.state.sessionsReplies = [[idleSession]];
+  c.state.tvStatusReplies = ['on (org.jellyfin.webos)'];
+  await c.cast._monitorTick();
+  c.clock.advance(31000);
+  await c.cast._monitorTick();
+  assert.ok(c.calls.includes('hdmi1'));
+  assert.equal(c.cast.lightsState().dimmed, false);
+});
+
+test('lights: a handoff that fails after a dim does not leave the room dark', async () => {
+  const { cast, calls, state } = await playing();
+  assert.equal(cast.lightsState().dimmed, true);
+  state.sessionsReplies = [[]]; // the app never checks in this time
+  cast.start(ITEM);
+  await settle(cast);
+  assert.equal(cast.status().stage, 'failed');
+  assert.equal(cast.lightsState().dimmed, false);
+  assert.ok(calls.includes('lights:restore'));
+});
+
+test('lights: jellyfin going dark keeps ownership but not the dim forever', async () => {
+  const { cast, calls, state, clock } = await playing();
+  state.sessionsReplies = [new Error('jellyfin down')];
+  await cast._monitorTick();
+  clock.advance(60 * 1000);
+  await cast._monitorTick();
+  assert.equal(cast.lightsState().dimmed, true); // a minute of blindness is nothing
+  clock.advance(15 * 60 * 1000);
+  await cast._monitorTick();
+  assert.ok(calls.includes('lights:restore'));
+  assert.notEqual(cast.ownedPlayback(), null); // the TV is still ours; only the room came back
 });

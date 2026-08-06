@@ -13,6 +13,7 @@
 // route can long-poll.
 import * as sys from './sys.js';
 import * as jellyfin from './jellyfin.js';
+import { createTvLights } from './tvlights.js';
 
 // The webOS app's session, out of everything Jellyfin has seen lately. Ids
 // rotate per app start, so callers must take the FULL id from this fresh
@@ -63,6 +64,13 @@ const DEFAULTS = {
   sessionTimeoutMs: 30000,
   sessionPollMs: 2000,
   monitorPollMs: 5000,
+  // Cinema lights, driven off the same session poll (see tvlights.js).
+  lights: undefined,
+  // If Jellyfin has not confirmed OUR item playing for this long while we are
+  // holding a dim, put the lights back. Covers "the poller went blind" (a
+  // Jellyfin outage mid-film): ownership is deliberately sticky there, but a
+  // dark room must not be.
+  lightsBlindMs: 15 * 60 * 1000,
   // How long a vanished/idle session must stay that way before the TV goes
   // back to the PC input; a phone-pressed Stop shortens it (that press IS the
   // "I'm done" signal).
@@ -72,6 +80,9 @@ const DEFAULTS = {
 
 export function createTvCast(overrides = {}) {
   const d = { ...DEFAULTS, ...overrides };
+  // One lights driver per cast, built lazily so importing this module never
+  // touches the bulbs and tests can inject a fake.
+  const lights = d.lights ?? createTvLights();
 
   let stage = 'idle';
   let seq = 0;
@@ -193,14 +204,27 @@ export function createTvCast(overrides = {}) {
       });
       if (dead()) return;
 
-      owned = { sessionId: session.Id, itemId: target.id, goneAt: null, stopRequested: false };
+      owned = {
+        sessionId: session.Id,
+        itemId: target.id,
+        goneAt: null,
+        stopRequested: false,
+        // Last tick that saw Jellyfin actually playing our item; the lights
+        // blind-timer counts from here.
+        seenAt: d.now(),
+      };
       startMonitor();
       setStage('playing', { item: target });
+      lights.set('dim');
     } catch (e) {
       if (dead()) return;
       const at = e instanceof StageFail ? e.stage : stage;
       d.log(`failed while ${at}:`, e.message);
       setStage('failed', { error: e.message, failedStage: at });
+      // A handoff that died after a previous one dimmed the room (start()
+      // keeps the dim on purpose, expecting to play again) must not leave it
+      // dark with nothing playing.
+      lights.set('restore');
     }
   }
 
@@ -279,7 +303,19 @@ export function createTvCast(overrides = {}) {
   function disown() {
     owned = null;
     stopMonitor();
+    // Every way out of ownership passes through here, which is exactly why the
+    // lights hang off it: whatever ended the playback, the room comes back up.
+    lights.set('restore');
     if (stage === 'playing') setStage('idle', { item: null });
+  }
+
+  // We are holding a dim but cannot see the session. Ownership stays (the TV
+  // may well still be playing) - the lights do not, past the blind timeout.
+  function lightsBlindCheck(mine) {
+    if (!lights.state().dimmed) return;
+    if (d.now() - mine.seenAt < d.lightsBlindMs) return;
+    d.log('no confirmed playback for the blind timeout, putting the lights back');
+    lights.set('restore');
   }
 
   async function monitorTick() {
@@ -292,7 +328,10 @@ export function createTvCast(overrides = {}) {
     try {
       list = await d.sessions();
     } catch {
-      return; // Jellyfin unreachable: we know nothing, so we touch nothing.
+      // Jellyfin unreachable: we know nothing, so we touch nothing - except
+      // that a dim cannot be held blind forever.
+      lightsBlindCheck(mine);
+      return;
     }
     if (owned !== mine) return; // superseded while we were querying
     const s = (list || []).find((x) => x.Id === mine.sessionId);
@@ -305,9 +344,15 @@ export function createTvCast(overrides = {}) {
     }
     if (nowId === mine.itemId) {
       mine.goneAt = null; // still ours, still going (credits pause included)
+      mine.seenAt = d.now();
+      // Same rule light-watch uses on Kodi: playing = dim, paused = back up.
+      lights.set(s.PlayState?.IsPaused ? 'restore' : 'dim');
       return;
     }
-    // Session gone, or alive with nothing playing.
+    // Session gone, or alive with nothing playing. The film is over as far as
+    // the room is concerned, so the lights come up now rather than after the
+    // input-restore dwell (which exists for the TV, not for the bulbs).
+    lights.set('restore');
     if (mine.goneAt === null) {
       mine.goneAt = d.now();
       return;
@@ -347,7 +392,120 @@ export function createTvCast(overrides = {}) {
     nowPlaying,
     configured: () => d.configured(),
     ownedPlayback: () => (owned ? { ...owned } : null),
+    lightsState: () => lights.state(),
     // test hooks: drive the monitor by hand, no timers involved
     _monitorTick: monitorTick,
+  };
+}
+
+// --- should this item auto-route to the TV? -----------------------------
+//
+// Donnie's ruling (7 Aug 2026): a plain click on an HDR or Dolby Vision film
+// or episode should play on the TV's own Jellyfin app by itself; SDR keeps
+// playing in Kodi exactly as before. The Kodi service addon asks this before
+// it intercepts anything, so ALL the "when not to" rules live here, in one
+// place, where the server can see the game session and its own TV state.
+//
+// The bias is absolute: anything we are not sure about answers false. A
+// missing video stream, an unreadable Jellyfin, a container item, an id that
+// is not an id - all of them mean "play it in Kodi", which is the behaviour
+// that existed before this feature and cannot surprise anyone.
+
+// VideoRangeType values that mean "the TV should do this one". HDR10+ and
+// Dolby Vision report DOVI/HDR10Plus; HLG is broadcast HDR and equally
+// tonemapped by the PC path.
+const HDR_RANGE_TYPES = new Set(['HDR10', 'HDR10PLUS', 'DOVI', 'DOLBYVISION', 'HLG', 'HDR']);
+const ROUTABLE_TYPES = new Set(['Movie', 'Episode']);
+
+// profile (from jellyfin.videoProfileFor) -> { hdr, label }. Pure.
+export function hdrVerdict(profile) {
+  if (!profile) return { hdr: false, label: 'unknown' };
+  const type = String(profile.videoRangeType || '').toUpperCase().replace(/[\s_-]/g, '');
+  const range = String(profile.videoRange || '').toUpperCase();
+  if (type && HDR_RANGE_TYPES.has(type)) return { hdr: true, label: profile.videoRangeType };
+  // VideoRange alone is the older field and only ever says HDR or SDR; trust
+  // it when the finer one is missing or is something we have never seen.
+  if (range === 'HDR') return { hdr: true, label: profile.videoRangeType || 'HDR' };
+  if (range === 'SDR') return { hdr: false, label: 'SDR' };
+  return { hdr: false, label: 'unknown' };
+}
+
+const ID_RE = /^[0-9a-f]{32}$/;
+
+const ROUTER_DEFAULTS = {
+  profileFor: (id) => jellyfin.videoProfileFor(id),
+  // The kill switch. Anything truthy from this means auto-routing is on.
+  enabled: () => true,
+  // Auto-routing while a game is up would yank the room mid-session.
+  gameLive: () => false,
+  // The TV is already busy with a handoff we started.
+  tvBusy: () => false,
+  now: () => Date.now(),
+  log: (...a) => console.error('[tvroute]', ...a),
+  // How long an explicit "play it in Kodi" (the phone's own Play button)
+  // switches auto-routing off for. It only has to outlive the gap between
+  // Player.Open and the service addon making up its mind, a few seconds.
+  suppressMs: 20 * 1000,
+  // A file's HDR-ness does not change; the cache only exists so a click does
+  // not wait on Jellyfin twice (the addon asks, then the user re-clicks).
+  ttlMs: 5 * 60 * 1000,
+  // Failures are cached far more briefly: a Jellyfin blip must not pin an
+  // item to "SDR" for the evening.
+  failTtlMs: 20 * 1000,
+  maxEntries: 200,
+};
+
+export function createHdrRouter(overrides = {}) {
+  const d = { ...ROUTER_DEFAULTS, ...overrides };
+  const cache = new Map(); // itemId -> { at, profile|null }
+  // The phone's Play button opens the item in KODI on purpose - the same card
+  // carries a separate Play on TV button. Auto-routing that click would take
+  // one of the two explicit overrides away, so a deliberate Kodi play buys a
+  // short window in which nothing is intercepted.
+  let suppressUntil = 0;
+
+  async function profile(itemId) {
+    const hit = cache.get(itemId);
+    if (hit && d.now() - hit.at < (hit.profile ? d.ttlMs : d.failTtlMs)) return hit.profile;
+    let got = null;
+    try {
+      got = await d.profileFor(itemId);
+    } catch (e) {
+      d.log(`could not read ${itemId}:`, e.message);
+      got = null;
+    }
+    if (cache.size >= d.maxEntries) cache.delete(cache.keys().next().value);
+    cache.set(itemId, { at: d.now(), profile: got });
+    return got;
+  }
+
+  // Always resolves; never throws. { route, reason, ... }
+  async function shouldRoute(itemId) {
+    const id = String(itemId || '').toLowerCase();
+    if (!ID_RE.test(id)) return { route: false, reason: 'not a jellyfin item id' };
+    if (!d.enabled()) return { route: false, reason: 'auto-routing is switched off', enabled: false };
+    if (d.now() < suppressUntil) return { route: false, reason: 'this playback was asked for in Kodi' };
+    if (d.gameLive()) return { route: false, reason: 'a game session is live' };
+    if (d.tvBusy()) return { route: false, reason: 'the TV is already playing something couch started' };
+    const p = await profile(id);
+    if (!p) return { route: false, reason: 'could not read the item from jellyfin' };
+    if (!ROUTABLE_TYPES.has(p.type)) return { route: false, reason: `not a film or episode (${p.type})` };
+    const v = hdrVerdict(p);
+    return {
+      route: v.hdr,
+      reason: v.hdr ? `${v.label} on the TV app` : `${v.label}, Kodi plays it`,
+      videoRange: p.videoRange,
+      videoRangeType: p.videoRangeType,
+      width: p.width,
+      bitDepth: p.bitDepth,
+      name: p.name,
+    };
+  }
+
+  return {
+    shouldRoute,
+    // Called by whatever deliberately starts a Kodi playback.
+    suppress: () => { suppressUntil = d.now() + d.suppressMs; },
+    _cacheSize: () => cache.size,
   };
 }

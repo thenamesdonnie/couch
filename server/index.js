@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 
-import { PORT, LAN_HOST } from './config.js';
+import { PORT, LAN_HOST, AUTOROUTE_OFF } from './config.js';
 import { rpc, artUrl, kodiAuthHeader, KodiEvents, playerState, sendBuiltin } from './kodi.js';
 import { listGames, isAllowedArt } from './games.js';
 import * as sys from './sys.js';
@@ -24,7 +24,7 @@ import * as steam from './steam.js';
 import * as youtube from './youtube.js';
 import { activeDownloads } from './downloads.js';
 import * as ytprogress from './ytprogress.js';
-import { createTvCast } from './tvcast.js';
+import { createTvCast, createHdrRouter } from './tvcast.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
@@ -490,6 +490,23 @@ app.post('/api/pad/disconnect', wrap(async () => ({ out: await sys.padDisconnect
 
 const tvcast = createTvCast();
 
+// The HDR auto-route oracle. The Kodi service addon asks this the instant a
+// plain click starts playing something; every "when not to route" rule lives
+// on this side because only the server can see the game session and its own
+// TV handoff. It NEVER throws: an unknown answer is a false one, and a false
+// one means Kodi keeps playing exactly as it always did.
+const hdrRouter = createHdrRouter({
+  enabled: () => !fs.existsSync(AUTOROUTE_OFF),
+  gameLive: () => sys.gameSession().active,
+  tvBusy: () => !!tvcast.ownedPlayback()
+    || ['waking', 'launching', 'connecting'].includes(tvcast.status().stage),
+});
+
+app.get('/api/tv/should-route', wrap(async (req, res) => {
+  res.set('cache-control', 'no-store');
+  return hdrRouter.shouldRoute(req.query.itemId);
+}));
+
 // Registered before /api/tv/:cmd so "play"/"stop"/... are never read as raw
 // tv-webos verbs by the catch-all below.
 app.post('/api/tv/play', wrap(async (req, res) => {
@@ -607,6 +624,10 @@ app.post('/api/cast', wrap(async (req) => {
   const keys = { movie: 'movieid', episode: 'episodeid', musicvideo: 'musicvideoid' };
   const key = keys[mediaType];
   if (!key) throw new Error(`cannot cast a ${mediaType}`);
+  // This button means "play it HERE" - the same card has a Play on TV button
+  // right next to it. Tell the HDR auto-router to keep its hands off the
+  // playback that is about to start, even if the file is HDR.
+  hdrRouter.suppress();
   await rpc('Player.Open', {
     item: { [key]: kodiId },
     options: { resume: !fromStart },
