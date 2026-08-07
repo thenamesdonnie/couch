@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Couch Library (Stagelight phase 2 preview) - the v5 Netflix-shaped page:
-     Continue / New as image rows, then Everything A-Z. Facts for the focused
-     item live in the bottom strip. Window 1197; Back returns. Plain controls
-     (C13). -->
+<!-- Couch Library (Stagelight phase 2) - the v5 Netflix-shaped page, all four
+     sections: Next up / Continue / New / Everything A-Z. The whole stack
+     slides up as focus moves down (conditional slides, the standard Kodi
+     scrolling-widgets pattern; transitions only, still frames between - C3).
+     Facts for the focused item live in the fixed bottom strip. Window 1197.
+     Plain controls (C13). -->
 <window type="window" id="1197">
-	<defaultcontrol always="true">8000</defaultcontrol>
+	<defaultcontrol always="true">7900</defaultcontrol>
 	<controls>
 
 		<!-- ground -->
@@ -33,16 +35,336 @@
 		</include>
 		<include>Couch_GlowField</include>
 
-		<!-- header + clock -->
-		<control type="label">
-			<left>96</left>
-			<top>44</top>
-			<width>600</width>
-			<height>56</height>
-			<font>Couch_Header</font>
-			<textcolor>ffeceef1</textcolor>
-			<label>Library</label>
+		<!-- the sliding stack: header + four sections. Each section is 340
+		     tall (46 label + 268 row + 26 air); focus below the first row
+		     slides the whole group up one section at a time. -->
+		<control type="group">
+			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000)">Conditional</animation>
+			<animation effect="slide" end="0,-680" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100)">Conditional</animation>
+			<animation effect="slide" end="0,-1020" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200)">Conditional</animation>
+
+			<control type="label">
+				<left>96</left>
+				<top>44</top>
+				<width>600</width>
+				<height>56</height>
+				<font>Couch_Header</font>
+				<textcolor>ffeceef1</textcolor>
+				<label>Library</label>
+			</control>
+
+			<!-- NEXT UP -->
+			<control type="label">
+				<left>96</left>
+				<top>128</top>
+				<width>800</width>
+				<height>38</height>
+				<font>Couch_Label</font>
+				<textcolor>d2eceef1</textcolor>
+				<label>Next up</label>
+			</control>
+			<control type="list" id="7900">
+				<left>96</left>
+				<top>174</top>
+				<width>1730</width>
+				<height>268</height>
+				<orientation>horizontal</orientation>
+				<scrolltime tween="sine" easing="out">210</scrolltime>
+				<ondown>8000</ondown>
+				<itemlayout width="312" height="268">
+					<control type="image">
+						<left>0</left>
+						<top>6</top>
+						<width>292</width>
+						<height>164</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<aspectratio>scale</aspectratio>
+						<colordiffuse>c8ffffff</colordiffuse>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>184</top>
+						<width>292</width>
+						<height>32</height>
+						<font>Couch_Caption</font>
+						<textcolor>d2eceef1</textcolor>
+						<label>$INFO[ListItem.TVShowTitle]</label>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>216</top>
+						<width>292</width>
+						<height>30</height>
+						<font>Couch_Caption</font>
+						<textcolor>ff8a93a0</textcolor>
+						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
+					</control>
+				</itemlayout>
+				<focusedlayout width="312" height="268">
+					<control type="image">
+						<left>-4</left>
+						<top>0</top>
+						<width>300</width>
+						<height>176</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<aspectratio>scale</aspectratio>
+						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
+						<bordersize>3</bordersize>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>184</top>
+						<width>300</width>
+						<height>32</height>
+						<font>Couch_Caption</font>
+						<textcolor>ffffffff</textcolor>
+						<label>$INFO[ListItem.TVShowTitle]</label>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>216</top>
+						<width>300</width>
+						<height>30</height>
+						<font>Couch_Caption</font>
+						<textcolor>ff8a93a0</textcolor>
+						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
+					</control>
+					<control type="image">
+						<left>-12</left>
+						<top>248</top>
+						<width>316</width>
+						<height>18</height>
+						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
+						<aspectratio>stretch</aspectratio>
+					</control>
+				</focusedlayout>
+				<content target="videos">plugin://script.embuary.helper/?info=getnextup</content>
+			</control>
+
+			<!-- CONTINUE -->
+			<control type="label">
+				<left>96</left>
+				<top>468</top>
+				<width>800</width>
+				<height>38</height>
+				<font>Couch_Label</font>
+				<textcolor>d2eceef1</textcolor>
+				<label>Continue</label>
+			</control>
+			<control type="list" id="8000">
+				<left>96</left>
+				<top>514</top>
+				<width>1730</width>
+				<height>268</height>
+				<orientation>horizontal</orientation>
+				<scrolltime tween="sine" easing="out">210</scrolltime>
+				<onup>7900</onup>
+				<ondown>8100</ondown>
+				<itemlayout width="312" height="268">
+					<control type="image">
+						<left>0</left>
+						<top>6</top>
+						<width>292</width>
+						<height>164</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<aspectratio>scale</aspectratio>
+						<colordiffuse>c8ffffff</colordiffuse>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>184</top>
+						<width>292</width>
+						<height>32</height>
+						<font>Couch_Caption</font>
+						<textcolor>d2eceef1</textcolor>
+						<label>$INFO[ListItem.TVShowTitle]</label>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>216</top>
+						<width>292</width>
+						<height>30</height>
+						<font>Couch_Caption</font>
+						<textcolor>ff8a93a0</textcolor>
+						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
+					</control>
+				</itemlayout>
+				<focusedlayout width="312" height="268">
+					<control type="image">
+						<left>-4</left>
+						<top>0</top>
+						<width>300</width>
+						<height>176</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<aspectratio>scale</aspectratio>
+						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
+						<bordersize>3</bordersize>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>184</top>
+						<width>300</width>
+						<height>32</height>
+						<font>Couch_Caption</font>
+						<textcolor>ffffffff</textcolor>
+						<label>$INFO[ListItem.TVShowTitle]</label>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>216</top>
+						<width>300</width>
+						<height>30</height>
+						<font>Couch_Caption</font>
+						<textcolor>ff8a93a0</textcolor>
+						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
+					</control>
+					<control type="image">
+						<left>-12</left>
+						<top>248</top>
+						<width>316</width>
+						<height>18</height>
+						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
+						<aspectratio>stretch</aspectratio>
+					</control>
+				</focusedlayout>
+				<content target="videos">special://skin/extras/playlists/inprogress_episodes.xsp</content>
+			</control>
+
+			<!-- NEW -->
+			<control type="label">
+				<left>96</left>
+				<top>808</top>
+				<width>800</width>
+				<height>38</height>
+				<font>Couch_Label</font>
+				<textcolor>d2eceef1</textcolor>
+				<label>New</label>
+			</control>
+			<control type="list" id="8100">
+				<left>96</left>
+				<top>854</top>
+				<width>1730</width>
+				<height>268</height>
+				<orientation>horizontal</orientation>
+				<scrolltime tween="sine" easing="out">210</scrolltime>
+				<onup>8000</onup>
+				<ondown>8200</ondown>
+				<itemlayout width="172" height="268">
+					<control type="image">
+						<left>0</left>
+						<top>6</top>
+						<width>152</width>
+						<height>228</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
+						<aspectratio>scale</aspectratio>
+						<colordiffuse>c8ffffff</colordiffuse>
+					</control>
+				</itemlayout>
+				<focusedlayout width="172" height="268">
+					<control type="image">
+						<left>-4</left>
+						<top>0</top>
+						<width>160</width>
+						<height>240</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
+						<aspectratio>scale</aspectratio>
+						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
+						<bordersize>3</bordersize>
+					</control>
+					<control type="image">
+						<left>-12</left>
+						<top>244</top>
+						<width>176</width>
+						<height>18</height>
+						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
+						<aspectratio>stretch</aspectratio>
+					</control>
+				</focusedlayout>
+				<content target="videos">special://skin/extras/playlists/recent_movies.xsp</content>
+			</control>
+
+			<!-- EVERYTHING -->
+			<control type="label">
+				<left>96</left>
+				<top>1148</top>
+				<width>1200</width>
+				<height>38</height>
+				<font>Couch_Label</font>
+				<textcolor>d2eceef1</textcolor>
+				<label>Everything · A to Z</label>
+			</control>
+			<control type="panel" id="8200">
+				<left>96</left>
+				<top>1194</top>
+				<width>1730</width>
+				<height>790</height>
+				<orientation>vertical</orientation>
+				<scrolltime tween="sine" easing="out">210</scrolltime>
+				<onup>8100</onup>
+				<itemlayout width="288" height="500">
+					<control type="image">
+						<left>0</left>
+						<top>6</top>
+						<width>268</width>
+						<height>402</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
+						<aspectratio>scale</aspectratio>
+						<colordiffuse>c8ffffff</colordiffuse>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>414</top>
+						<width>268</width>
+						<height>34</height>
+						<font>Couch_Caption</font>
+						<textcolor>d2eceef1</textcolor>
+						<label>$INFO[ListItem.Label]</label>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>448</top>
+						<width>268</width>
+						<height>32</height>
+						<font>Couch_Caption</font>
+						<textcolor>ff8a93a0</textcolor>
+						<label>$INFO[ListItem.Year]</label>
+					</control>
+				</itemlayout>
+				<focusedlayout width="288" height="500">
+					<control type="image">
+						<left>-4</left>
+						<top>0</top>
+						<width>276</width>
+						<height>414</height>
+						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
+						<aspectratio>scale</aspectratio>
+						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
+						<bordersize>3</bordersize>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>418</top>
+						<width>268</width>
+						<height>34</height>
+						<font>Couch_Caption</font>
+						<textcolor>ffffffff</textcolor>
+						<label>$INFO[ListItem.Label]</label>
+					</control>
+					<control type="label">
+						<left>0</left>
+						<top>452</top>
+						<width>268</width>
+						<height>32</height>
+						<font>Couch_Caption</font>
+						<textcolor>ff8a93a0</textcolor>
+						<label>$INFO[ListItem.Year]</label>
+					</control>
+				</focusedlayout>
+				<content target="videos">videodb://movies/titles/</content>
+			</control>
 		</control>
+
+		<!-- clock, ambient, above the stack -->
 		<control type="label">
 			<left>1224</left>
 			<top>54</top>
@@ -52,227 +374,6 @@
 			<textcolor>ccffffff</textcolor>
 			<align>right</align>
 			<label>$INFO[System.Time]</label>
-		</control>
-
-		<!-- CONTINUE -->
-		<control type="label">
-			<left>96</left>
-			<top>128</top>
-			<width>800</width>
-			<height>38</height>
-			<font>Couch_Label</font>
-			<textcolor>d2eceef1</textcolor>
-			<label>Continue</label>
-		</control>
-		<control type="list" id="8000">
-			<left>96</left>
-			<top>174</top>
-			<width>1730</width>
-			<height>268</height>
-			<orientation>horizontal</orientation>
-			<scrolltime tween="sine" easing="out">210</scrolltime>
-			<ondown>8100</ondown>
-			<itemlayout width="312" height="268">
-				<control type="image">
-					<left>0</left>
-					<top>6</top>
-					<width>292</width>
-					<height>164</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-					<aspectratio>scale</aspectratio>
-					<colordiffuse>c8ffffff</colordiffuse>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>184</top>
-					<width>292</width>
-					<height>32</height>
-					<font>Couch_Caption</font>
-					<textcolor>d2eceef1</textcolor>
-					<label>$INFO[ListItem.TVShowTitle]</label>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>216</top>
-					<width>292</width>
-					<height>30</height>
-					<font>Couch_Caption</font>
-					<textcolor>ff8a93a0</textcolor>
-					<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
-				</control>
-			</itemlayout>
-			<focusedlayout width="312" height="268">
-				<control type="image">
-					<left>-4</left>
-					<top>0</top>
-					<width>300</width>
-					<height>176</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-					<aspectratio>scale</aspectratio>
-					<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-					<bordersize>3</bordersize>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>184</top>
-					<width>300</width>
-					<height>32</height>
-					<font>Couch_Caption</font>
-					<textcolor>ffffffff</textcolor>
-					<label>$INFO[ListItem.TVShowTitle]</label>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>216</top>
-					<width>300</width>
-					<height>30</height>
-					<font>Couch_Caption</font>
-					<textcolor>ff8a93a0</textcolor>
-					<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
-				</control>
-				<control type="image">
-					<left>-12</left>
-					<top>248</top>
-					<width>316</width>
-					<height>18</height>
-					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
-					<aspectratio>stretch</aspectratio>
-				</control>
-			</focusedlayout>
-			<content target="videos">special://skin/extras/playlists/inprogress_episodes.xsp</content>
-		</control>
-
-		<!-- NEW -->
-		<control type="label">
-			<left>96</left>
-			<top>468</top>
-			<width>800</width>
-			<height>38</height>
-			<font>Couch_Label</font>
-			<textcolor>d2eceef1</textcolor>
-			<label>New</label>
-		</control>
-		<control type="list" id="8100">
-			<left>96</left>
-			<top>514</top>
-			<width>1730</width>
-			<height>268</height>
-			<orientation>horizontal</orientation>
-			<scrolltime tween="sine" easing="out">210</scrolltime>
-			<onup>8000</onup>
-			<ondown>8200</ondown>
-			<itemlayout width="172" height="268">
-				<control type="image">
-					<left>0</left>
-					<top>6</top>
-					<width>152</width>
-					<height>228</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
-					<aspectratio>scale</aspectratio>
-					<colordiffuse>c8ffffff</colordiffuse>
-				</control>
-			</itemlayout>
-			<focusedlayout width="172" height="268">
-				<control type="image">
-					<left>-4</left>
-					<top>0</top>
-					<width>160</width>
-					<height>240</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
-					<aspectratio>scale</aspectratio>
-					<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-					<bordersize>3</bordersize>
-				</control>
-				<control type="image">
-					<left>-12</left>
-					<top>244</top>
-					<width>176</width>
-					<height>18</height>
-					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
-					<aspectratio>stretch</aspectratio>
-				</control>
-			</focusedlayout>
-			<content target="videos">special://skin/extras/playlists/recent_movies.xsp</content>
-		</control>
-
-		<!-- EVERYTHING -->
-		<control type="label">
-			<left>96</left>
-			<top>810</top>
-			<width>1200</width>
-			<height>38</height>
-			<font>Couch_Label</font>
-			<textcolor>d2eceef1</textcolor>
-			<label>Everything · A to Z</label>
-		</control>
-		<control type="panel" id="8200">
-			<left>96</left>
-			<top>856</top>
-			<width>1730</width>
-			<height>224</height>
-			<orientation>vertical</orientation>
-			<scrolltime tween="sine" easing="out">210</scrolltime>
-			<onup>8100</onup>
-			<itemlayout width="288" height="500">
-				<control type="image">
-					<left>0</left>
-					<top>6</top>
-					<width>268</width>
-					<height>402</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
-					<aspectratio>scale</aspectratio>
-					<colordiffuse>c8ffffff</colordiffuse>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>414</top>
-					<width>268</width>
-					<height>34</height>
-					<font>Couch_Caption</font>
-					<textcolor>d2eceef1</textcolor>
-					<label>$INFO[ListItem.Label]</label>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>448</top>
-					<width>268</width>
-					<height>32</height>
-					<font>Couch_Caption</font>
-					<textcolor>ff8a93a0</textcolor>
-					<label>$INFO[ListItem.Year]</label>
-				</control>
-			</itemlayout>
-			<focusedlayout width="288" height="500">
-				<control type="image">
-					<left>-4</left>
-					<top>0</top>
-					<width>276</width>
-					<height>414</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
-					<aspectratio>scale</aspectratio>
-					<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-					<bordersize>3</bordersize>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>418</top>
-					<width>268</width>
-					<height>34</height>
-					<font>Couch_Caption</font>
-					<textcolor>ffffffff</textcolor>
-					<label>$INFO[ListItem.Label]</label>
-				</control>
-				<control type="label">
-					<left>0</left>
-					<top>452</top>
-					<width>268</width>
-					<height>32</height>
-					<font>Couch_Caption</font>
-					<textcolor>ff8a93a0</textcolor>
-					<label>$INFO[ListItem.Year]</label>
-				</control>
-			</focusedlayout>
-			<content target="videos">videodb://movies/titles/</content>
 		</control>
 
 		<!-- facts strip: whatever has focus, explained in place -->
