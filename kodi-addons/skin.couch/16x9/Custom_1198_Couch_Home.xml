@@ -56,8 +56,8 @@
 			<width>110</width>
 			<height>110</height>
 			<label></label>
-			<texturefocus border="14" colordiffuse="ff262c37">couch/mask-round.png</texturefocus>
-			<texturenofocus border="14" colordiffuse="cc161a22">couch/mask-round.png</texturenofocus>
+			<texturefocus colordiffuse="ff262c37">couch/libtile.png</texturefocus>
+			<texturenofocus colordiffuse="cc161a22">couch/libtile.png</texturenofocus>
 			<onclick>ActivateWindow(1197)</onclick>
 			<onright>9000</onright>
 		</control>
@@ -67,28 +67,28 @@
 			<top>158</top>
 			<width>18</width>
 			<height>18</height>
-			<texture border="6" colordiffuse="ffeceef1">couch/mask-round.png</texture>
+			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
 		</control>
 		<control type="image">
 			<left>154</left>
 			<top>158</top>
 			<width>18</width>
 			<height>18</height>
-			<texture border="6" colordiffuse="ffeceef1">couch/mask-round.png</texture>
+			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
 		</control>
 		<control type="image">
 			<left>130</left>
 			<top>182</top>
 			<width>18</width>
 			<height>18</height>
-			<texture border="6" colordiffuse="ffeceef1">couch/mask-round.png</texture>
+			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
 		</control>
 		<control type="image">
 			<left>154</left>
 			<top>182</top>
 			<width>18</width>
 			<height>18</height>
-			<texture border="6" colordiffuse="$VAR[Couch_Live_Color]">couch/mask-round.png</texture>
+			<texture colordiffuse="$VAR[Couch_Live_Color]">couch/glyph.png</texture>
 		</control>
 		<control type="label">
 			<left>66</left>
@@ -129,7 +129,7 @@
 					<top>-7</top>
 					<width>186</width>
 					<height>186</height>
-					<texture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</texture>
+					<texture border="18" infill="false" colordiffuse="e6ffffff">couch/ring.png</texture>
 				</control>
 				<control type="image">
 					<left>5</left>
@@ -198,7 +198,7 @@
 			<top>856</top>
 			<width>232</width>
 			<height>64</height>
-			<texture border="14" colordiffuse="d8161d28">couch/mask-round.png</texture>
+			<texture colordiffuse="d8161d28">couch/pill.png</texture>
 			<visible>!Control.HasFocus(9001)</visible>
 		</control>
 		<control type="label">
