@@ -1447,14 +1447,25 @@ def _suspend_intents(o, appid, running, reason, defer_handoff):
             reason, _pred('/tmp/game-suspended exists', 2.0),
             requires=('gesture', 'session'), cooldown=3.0))
         out.append(_snapshot_intent(appid, reason))
-    elif o.session_mode == 'bigpicture' or o.regions.get('foreground') == 'bigpicture':
+    elif o.session_present and (o.session_mode == 'bigpicture'
+                                or o.regions.get('foreground') == 'bigpicture'):
         # R7(a) done RIGHT: record the suspend even though there is nothing to
         # freeze, so the joystick repair below can never decide the pad belongs
-        # to an invisible Big Picture.
+        # to an invisible Big Picture. Gated on a SESSION existing, same as
+        # _switcher_intents always was: legacy's freeze_game() reads the mode
+        # from the session file, so with no session it writes nothing.
         out.append(Intent(
             'set_flag', 'suspended', {'value': 'bigpicture', 'pids': []},
             reason + '-bigpicture', _pred('/tmp/game-suspended exists', 2.0),
             requires=('gesture', 'session'), cooldown=3.0))
+    elif o.regions.get('foreground') == 'bigpicture':
+        # Steam's shell on top with NO session - it raised itself off the raw
+        # PS presses, or stayed up after a session ended. Nothing to suspend
+        # and NO flag to write: stamping "bigpicture" here with no session is
+        # what armed every later PS tap into "resume big picture" and threw
+        # the operator back onto the screen he was escaping (7 Aug 2026, the
+        # stuck-on-BP report). The way out is the handoff alone.
+        pass
     else:
         return []           # no live game, not Big Picture: nothing meaningful
     if not defer_handoff:
@@ -1675,11 +1686,20 @@ def reconcile(o):
         # emit the whole handoff regardless; on a Kodi screen that is
         # idempotent, but from the DESKTOP it would raise Kodi where the old
         # stack did nothing, which is a behaviour change nobody declared.
-        # It may well be a better console - "PS hold always returns the room to
-        # Kodi" is a real feature - but it is the owner's call, not a side
-        # effect of the flip, so the hold stays a no-op decision until he makes
-        # it (see the note in tools/shadow-diff's triage docstring).
-        if o.binding('hold') == 'suspend_to_kodi' and o.session_present:
+        #
+        # RULED, 7 Aug 2026, for ONE screen: Donnie, stuck on a session-less
+        # Big Picture ("holding the ps button doesn't work when it sticks me
+        # on steam bp"), holds PS to get the room back. So: foreground ==
+        # bigpicture hands off even with no session, under its own reason
+        # (-bp-return) so the differ can pre-declare the one-sided rows
+        # (legacy's hold_ready never even spends this hold). The DESKTOP case
+        # is still unruled and stays a no-op decision (see the note in
+        # tools/shadow-diff's triage docstring).
+        bp_stuck = o.regions.get('foreground') == 'bigpicture'
+        if o.binding('hold') == 'suspend_to_kodi' \
+                and (o.session_present or bp_stuck):
+            if not o.session_present:
+                reason += '-bp-return'
             out += _handoff_intents(o, appid, reason)
         # ...and whatever the release itself is bound to, on top. 'none' by
         # default, so this line changes nothing until someone binds it.

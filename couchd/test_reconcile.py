@@ -1729,6 +1729,54 @@ def test_the_timeout_arm_is_gated_the_same_way():
 
 
 # =========================================================================
+# ...EXCEPT a session-less Big Picture, ruled 7 Aug 2026: Steam's shell
+# raised itself (off the raw PS presses, or left over after a session
+# ended), there is no session file, and the operator is stuck - the old
+# stack's hold_ready() never spends the hold at all there. Donnie ruled the
+# hold must hand the room back to Kodi on exactly this screen; the desktop
+# case above stays a no-op.
+# =========================================================================
+def test_a_hold_on_a_sessionless_big_picture_hands_off():
+    o = make_obs(regions={'gesture': 'handoff-pending', 'session': 'none',
+                          'foreground': 'bigpicture'},
+                 session=None, top_name='Steam Big Picture Mode',
+                 top_class='steam', big_picture_window=True)
+    got = reconcile(o)
+    assert find(got, 'route_pad', 'kodi') and find(got, 'show', 'kodi')
+    # ...under its own reason, so the differ's pre-declared entry can key on
+    # it (legacy writes no shadow line at all for this hold).
+    assert all('bp-return' in i.reason for i in
+               find(got, 'route_pad') + find(got, 'show'))
+    # NO flag: stamping "bigpicture" with no session armed every later tap
+    # into "resume big picture" (the trap that stuck the operator on BP).
+    assert not find(got, 'set_flag', 'suspended')
+
+
+def test_a_sessionless_big_picture_hold_fire_writes_no_flag():
+    """The hold-fired half (flag write deferred-handoff) must also stay
+    silent: it used to stamp /tmp/game-suspended = "bigpicture" off the
+    foreground region alone, which legacy never does without a session."""
+    o = make_obs(regions={'gesture': 'hold-fired', 'session': 'none',
+                          'foreground': 'bigpicture'},
+                 session=None, top_name='Steam Big Picture Mode',
+                 top_class='steam', big_picture_window=True)
+    assert not find(reconcile(o), 'set_flag', 'suspended')
+
+
+def test_a_real_bigpicture_session_hold_still_writes_the_flag():
+    """R7(a) unchanged where it was right: WITH a bigpicture session the
+    flag is recorded, so the joystick repair can never decide the pad
+    belongs to an invisible Big Picture."""
+    o = make_obs(session=BP_SESSION,
+                 regions={'gesture': 'hold-fired', 'session': 'active',
+                          'foreground': 'bigpicture'},
+                 top_name='Steam Big Picture Mode', top_class='steam',
+                 big_picture_window=True)
+    flag = find(reconcile(o), 'set_flag', 'suspended')
+    assert flag and flag[0].args['value'] == 'bigpicture'
+
+
+# =========================================================================
 # the transition curtain (deploy item 1, 6 Aug 2026)
 #
 # tools/curtain draws a freeze-frame overlay (WM_CLASS couch-curtain) over

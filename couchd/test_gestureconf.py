@@ -322,7 +322,11 @@ def test_the_addon_settings_page_offers_exactly_our_vocabulary():
     assert root.tag == 'settings' and root.get('version') == '1', \
         'the versioned schema, as every other Kodi 19+ addon on the box uses'
     ids = [s.get('id') for s in root.iter('setting')]
-    assert ids == [f'gesture.{g}' for g in GESTURES] + \
+    # ui.* settings are the addon's own (the sheet-animation toggle landed
+    # with the speedups batch); the contract this test guards is only the
+    # gesture/timing vocabulary gestureconf reads.
+    ours = [i for i in ids if not i.startswith('ui.')]
+    assert ours == [f'gesture.{g}' for g in GESTURES] + \
         [f'timing.{t}' for t in DEFAULT_TIMINGS]
     for s in root.iter('setting'):
         sid = s.get('id')

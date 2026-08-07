@@ -840,19 +840,25 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         legacy-only row still fires for the same row read as SHADOW-ONLY. Read
         those the way the catch-up note above says: post-flip a SHADOW-ONLY row
         on a pre-declared entry means couchd's version did not fire.
-      * NOT LIVE, AWAITING THE OWNER'S RULING: "the PS hold as a universal
+      * PARTIALLY RULED 7 Aug 2026: "the PS hold as a universal
         return-to-Kodi". pad-home-watcher.hold_ready() requires
         /tmp/game-session for suspend_to_kodi, so with nothing running the old
         stack does not spend the hold at all. couchd briefly emitted the whole
         handoff regardless - idempotent on a Kodi screen, but from the DESKTOP
         it would have raised Kodi where the old stack never did, which is a
         behaviour change nobody declared. Gated back to legacy's rule on the
-        evening of 5 Aug; the no-session hold now records a
-        `decision`/`gesture-no-op` instead of acting. It is an attractive
-        console feature - the PS button ALWAYS gets the room back - and it is
-        the owner's call to make deliberately, not something that arrives as a
-        side effect of a flip. Until he rules, expect neither stack to act on
-        it: a hold-with-no-session is not a divergence in either direction.
+        evening of 5 Aug; the no-session hold recorded a
+        `decision`/`gesture-no-op` instead of acting.
+        THE RULING (7 Aug, "holding the ps button doesn't work when it sticks
+        me on steam bp"): on a SESSION-LESS BIG PICTURE screen the hold now
+        hands the room back to Kodi, under reason gesture:hold-release-bp-return
+        (entry below - legacy writes no shadow line at all for that hold, so
+        the rows are one-sided BY CONSTRUCTION). The same 7 Aug fix removed
+        couchd's no-session flag write (set_flag suspended=bigpicture off the
+        foreground region alone), which had been arming every later PS tap
+        into "resume big picture"; those COUCHD-ONLY set_flag rows disappear
+        from tonight. The DESKTOP case is still unruled and stays a no-op
+        decision on both sides.
       * DEPLOY-DAY DECLARATIONS, written 6 Aug 2026 BEFORE the deploy (the
         model fingerprint moves off d1adeed4083a when couchd restarts with
         the curtain whitelist; these are declared against the NEW model so
@@ -944,6 +950,18 @@ def triage(section, li, ci, flags, couchd_i, legacy_i):
         return 'T5', 'R7(g) pre-declared: legacy switches Steam to Big Picture ' \
                      'before a game launch (uimode 7 -> 4); couchd model ' \
                      'catch-up pending'
+    # BP-RETURN, the 7 Aug 2026 ruling (see the docstring): a hold on a
+    # session-less Big Picture screen hands the room back to Kodi. Legacy's
+    # hold_ready() never spends that hold - no shadow line exists to match -
+    # so every intent in this handoff is one-sided BY CONSTRUCTION. Keyed on
+    # the reason couchd stamps for exactly this path and nothing else; the
+    # same verbs under a plain gesture:hold-release still compare as always.
+    if section == 'COUCHD-ONLY' and ci and \
+            'bp-return' in canon(ci.get('reason')):
+        return 'T5', 'pre-declared with the 7 Aug bp-return ruling: a hold ' \
+                     'on a session-less Big Picture hands off to Kodi; ' \
+                     'legacy never spends that hold, so the row is ' \
+                     'one-sided by construction'
     # CURTAIN OVERLAY, pre-declared 6 Aug 2026 with the deploy-day model
     # change (see the docstring). Keyed on the curtain being NAMED in the row,
     # either side: neither stack should enforce against a couch-curtain window
