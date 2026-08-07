@@ -147,17 +147,32 @@ keeps separate nexus/master branches). The more we replace Copacetic's XML
 with our own, the smaller the rebase surface - an argument for the restyle
 going deep rather than shallow.
 
-## Open choices (Donnie's)
+## The identity: STAGELIGHT (decided 7 Aug, Donnie: no hero, "BOLD,
+## over-engineer, cool as hell, not generic")
 
-- **O1 Wrap-around rows?** Fire TV wraps, tvOS doesn't, Android is silent.
-  Pick one for everything. (Engine supports both.)
-- **O2 Hero spot on home?** Evidence is thin and the slot is where every
-  platform put its ads. If yes: in-progress/owned content only (C8).
-  Recommendation: no hero, the focused tile IS the hero via C7.
-- **O3 How bold visually?** Sony's theme restoration is the one commercial
-  proof people want character. Options: restrained (Copacetic-adjacent,
-  new mechanics) vs distinct look (own palette/type personality).
-- **O4 Sound?** No research worth the name; old consoles' per-section audio
-  is remembered fondly (essay-grade evidence). Kodi supports navigation
-  sounds. If yes: subtle, with an off switch (Netflix's 2025 mistake was no
-  switch).
+One idea carried all the way down: **the artwork lights the room.**
+
+- **Dynamic accent.** The focused item's dominant colour IS the interface's
+  accent, extracted live. Feasible today: script.copacetic.helper's art.py
+  already extracts dominant colour + luminosity into window properties, and
+  every Kodi texture takes colordiffuse from an infolabel. No fixed accent
+  anywhere in the chrome; amber #E8A849 is the "pilot light" fallback when
+  nothing has art.
+- **The lightbar.** Focus signature everywhere (tiles, posters, tabs, seek
+  bar): a thin bar in the live colour with a baked glow PNG, under the
+  focused element. DualSense lightbar as the motif, pad-first console.
+- **Type: Chakra Petch** (OFL, ship in skin fonts/) for titles + labels,
+  uppercase, angular console-HUD energy; quiet system-grade face (keep
+  Copacetic's Inter) for plots/captions. 28px floor holds (C10).
+- **Ground:** near-black cool greys (#0A0C10 / #12151B / #8A93A0 / #ECEEF1)
+  so the art is the only colour that matters.
+- **Motion:** focus ~150ms, relight crossfade ~350ms debounced, then fully
+  static (C3, C14).
+- Mockup (approved direction): claude.ai/code/artifact/fb5b7dfe-b72c-42a1-a006-09fc2634398e
+
+## Open choices (Donnie's, remaining)
+
+- **O1 Wrap-around rows?** Ships behind a skin setting; Donnie feels both
+  on the pad and picks.
+- **O4 Sound?** Later, subtle, always with an off switch (Netflix's 2025
+  mistake was no switch).
