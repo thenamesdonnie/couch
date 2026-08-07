@@ -1,0 +1,1109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<includes>
+
+	<include name="Default_Scrolltime">
+		<scrolltime tween="sine" easing="inout">360</scrolltime>
+	</include>
+	<include name="Quick_Scrolltime">
+		<scrolltime tween="sine" easing="inout">100</scrolltime>
+	</include>
+	<include name="Zero_Scrolltime">
+		<scrolltime>0</scrolltime>
+	</include>
+
+	<include name="Hidden_List">
+		<param name="id" default="3100" />
+		<param name="visible" default="ListItem(0).IsFolder" />
+		<param name="content" default="$INFO[ListItem(0).FolderPath]" />
+		<param name="sortby" default="date" />
+		<param name="sortorder" default="descending" />
+		<definition>
+			<control type="list" id="$PARAM[id]">
+				<visible>$PARAM[visible]</visible>
+				<width>0</width>
+				<height>0</height>
+				<orientation>vertical</orientation>
+				<itemlayout />
+				<focusedlayout />
+				<content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" browse="never">$PARAM[content]</content>
+			</control>
+		</definition>
+	</include>
+
+	<include name="User_Scroll_Delay_Template">
+		<param name="onprevious_id" default="5001" />
+		<param name="onprevious_trigger" default="Container.OnPrevious | Container(50).OnPrevious | Container(3201).OnPrevious | Container(3202).OnPrevious | Container(3203).OnPrevious | Container(3204).OnPrevious | Container(3205).OnPrevious | Container(3206).OnPrevious | Container(3207).OnPrevious | Container(3208).OnPrevious | Container(3209).OnPrevious | Container(11).OnPrevious | Container(52).OnPrevious" />
+		<param name="onnext_id" default="5002" />
+		<param name="onnext_trigger" default="Container.OnNext | Container(50).OnNext | Container(3201).OnNext | Container(3202).OnNext | Container(3203).OnNext | Container(3204).OnNext | Container(3205).OnNext | Container(3206).OnNext | Container(3207).OnNext | Container(3208).OnNext | Container(3209).OnNext | Container(11).OnNext | Container(52).OnNext" />
+		<param name="oncontainerswitch_id" default="5006" />
+		<param name="oncontainerswitch_trigger" default="$EXP[Container_Switching]" />
+		<param name="content_delay" default="Default_Transition_1x" />
+		<param name="container_delay" default="Default_Transition_2x" />
+		<definition>
+			<control type="group" id="$PARAM[onprevious_id]">
+				<visible>$PARAM[onprevious_trigger]</visible>
+				<animation effect="slide" end="0,0" time="$PARAM[content_delay]" reversible="false">Hidden</animation>
+			</control>
+			<control type="group" id="$PARAM[onnext_id]">
+				<visible>$PARAM[onnext_trigger]</visible>
+				<animation effect="slide" end="0,0" time="$PARAM[content_delay]" reversible="false">Hidden</animation>
+			</control>
+			<control type="group" id="$PARAM[oncontainerswitch_id]">
+				<visible>$PARAM[oncontainerswitch_trigger]</visible>
+				<animation effect="slide" end="0,0" time="$PARAM[container_delay]" reversible="false">Hidden</animation>
+			</control>
+		</definition>
+	</include>
+
+	<include name="User_Scroll_Delay">
+		<include content="User_Scroll_Delay_Template" condition="![Skin.HasSetting(Quick_Transitions) + Skin.HasSetting(Zero_Transitions)]">
+			<param name="onprevious_id" value="$PARAM[onprevious_id]" />
+			<param name="onprevious_trigger" value="$PARAM[onprevious_trigger]" />
+			<param name="onnext_id" value="$PARAM[onnext_id]" />
+			<param name="onnext_trigger" value="$PARAM[onnext_trigger]" />
+			<param name="oncontainerswitch_id" value="$PARAM[oncontainerswitch_id]" />
+			<param name="oncontainerswitch_trigger" value="$PARAM[oncontainerswitch_trigger]" />
+		</include>
+		<include content="User_Scroll_Delay_Template" condition="Skin.HasSetting(Quick_Transitions) + Skin.HasSetting(Zero_Transitions)">
+			<param name="onprevious_id" value="$PARAM[onprevious_id]" />
+			<param name="onprevious_trigger" value="$PARAM[onprevious_trigger]" />
+			<param name="onnext_id" value="$PARAM[onnext_id]" />
+			<param name="onnext_trigger" value="$PARAM[onnext_trigger]" />
+			<param name="oncontainerswitch_id" value="$PARAM[oncontainerswitch_id]" />
+			<param name="oncontainerswitch_trigger" value="$PARAM[oncontainerswitch_trigger]" />
+			<param name="content_delay" value="Quick_Transition_0x" />
+			<param name="container_delay" value="Quick_Transition_0x" />
+		</include>
+	</include>
+	
+	<include name="HiddenFocusButton">
+		<param name="widget" default="false" />
+		<definition>
+			<control type="button">
+				<visible allowhiddenfocus="true">false</visible>
+				<!-- Grid position -->
+				<onfocus condition="Control.HasFocus(505) + Container.Content(files) + System.AddonIsEnabled(script.copacetic.helper)">RunScript(script.copacetic.helper,action=clean_filename)</onfocus>
+				<onfocus condition="Control.Hasfocus(505)">SetProperty(GridView_Column,$INFO[Container.Column],home)</onfocus>
+				<onfocus condition="Control.Hasfocus(505)">SetProperty(GridView_Row,$INFO[Container.Row],home)</onfocus>
+				<!-- Multiart -->
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Window(home).Property(Multiart_Fadeout),true) + !Control.HasFocus(3100)">ClearProperty(Multiart_Fadeout,home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Window(home).Property(Multiart_Fadeout),delayed) + !Control.HasFocus(3100)">SetProperty(Multiart_Fadeout,true,home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),thumb) + !String.IsEmpty(ListItem.Art(thumb))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(thumb)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),keyart) + !String.IsEmpty(ListItem.Art(keyart))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(keyart)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),poster) + !String.IsEmpty(ListItem.Art(poster))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(poster)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),fanart) + !String.IsEmpty(ListItem.Art(fanart))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(fanart)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),landscape) + !String.IsEmpty(ListItem.Art(landscape))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(landscape)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),square) + !String.IsEmpty(ListItem.Art(square))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(square)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),tvshow.keyart) + !String.IsEmpty(ListItem.Art(tvshow.keyart))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(tvshow.keyart)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),tvshow.poster) + !String.IsEmpty(ListItem.Art(tvshow.poster))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(tvshow.poster)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),tvshow.fanart) + !String.IsEmpty(ListItem.Art(tvshow.fanart))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(tvshow.fanart)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),tvshow.landscape) + !String.IsEmpty(ListItem.Art(tvshow.landscape))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(tvshow.landscape)],home)</onfocus>
+				<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + String.IsEqual(Control.GetLabel(6400),tvshow.square) + !String.IsEmpty(ListItem.Art(tvshow.square))">SetProperty(Multiart_0,$ESCINFO[Container.ListItem.Art(tvshow.square)],home)</onfocus>
+				<!-- Trailer Autoplay -->
+				<onunfocus condition="Skin.TimerIsRunning(trailer_autoplay)">Skin.TimerStop(trailer_autoplay)</onunfocus>
+				<onunfocus condition="Skin.TimerIsRunning(trailer_autoplay_home)">Skin.TimerStop(trailer_autoplay_home)</onunfocus>
+				<onunfocus condition="String.IsEqual(Window(home).Property(Trailer_Autoplay),true) + Player.HasVideo">PlayerControl(Stop)</onunfocus>
+				<onunfocus condition="String.IsEqual(Window(home).Property(Trailer_Autoplay),true)">ClearProperty(Trailer_Autoplay,home)</onunfocus>
+				<!-- Settings transition from addonbrowser -->
+				<onfocus condition="Window.Is(addonbrowser) + $EXP[Container_Addons_NonRepo]">SetProperty(Container_Addons_NonRepo,true,home)</onfocus>
+				<onfocus condition="Window.Is(addonbrowser) + !$EXP[Container_Addons_NonRepo]">ClearProperty(Container_Addons_NonRepo,home)</onfocus>
+				<!-- Go back if container is empty -->
+				<onfocus condition="Skin.HasSetting(Experiment_ParentDir_IfEmptyContainer) + !Integer.IsGreater(Container.NumItems,0)">ParentDir</onfocus>
+				<!-- Clear window prop used to calculate set percentage complete -->
+				<onfocus condition="String.IsEqual(ListItem.DBType,set) + !Control.HasFocus(3100) + !$EXP[Secondary_List_Container_Switching] + !String.IsEqual(Window(home).Property(collection_watched_dbid),ListItem.DBID)">ClearProperty(collection_watched_dbid,home)</onfocus>
+				<onfocus condition="String.IsEqual(ListItem.DBType,set) + !Control.HasFocus(3100) + !$EXP[Secondary_List_Container_Switching] + !String.IsEqual(Window(home).Property(collection_watched_dbid),ListItem.DBID)">ClearProperty(collection_watched_percentage,home)</onfocus>
+				<onfocus condition="String.IsEqual(ListItem.DBType,set) + !Control.HasFocus(3100) + !$EXP[Secondary_List_Container_Switching] + !String.IsEqual(Window(home).Property(collection_watched_dbid),ListItem.DBID)">ClearProperty(collection_unwatched,home)</onfocus>
+				<onfocus condition="String.IsEqual(ListItem.DBType,set) + String.IsEqual(ListItem.Overlay,OverlayUnwatched.png) + !String.IsEqual(Window(home).Property(collection_watched_dbid),ListItem.DBID)">RunScript(script.copacetic.helper,action=get_collection_status,dbid=$INFO[ListItem.DBID])</onfocus>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Multiart_Resetter">
+		<control type="button">
+			<animation effect="slide" end="0,0" time="Default_Transition_1x" reversible="false">Focus</animation>
+			<visible allowhiddenfocus="true">false</visible>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_1,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_2,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_3,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_4,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_5,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_6,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_7,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_8,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_9,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_10,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_11,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_12,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_13,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_14,home)</onfocus>
+			<onfocus condition="!Window.IsVisible(1120)">ClearProperty(Multiart_15,home)</onfocus>
+		</control>
+	</include>
+
+	<include name="Multiart_Setter">
+		<control type="button">
+			<animation effect="slide" end="0,0" time="Default_Transition_1.5x" reversible="false">Focus</animation>
+			<visible allowhiddenfocus="true">false</visible>
+			<onfocus condition="Skin.HasSetting(Multiart_Slideshow) + !Window.IsVisible(1120) + !String.IsEqual(Control.GetLabel(6400),flags/blank.png)">SetProperty(Multiart_Fadeout,true,home)</onfocus>
+			<include content="Set_Multiart_OnFocus_Conditions" condition="Skin.HasSetting(Multiart_Slideshow) + [Window.Is(home) | Window.Is(videos) | Window.Is(music)]" />
+		</control>
+	</include>
+
+	<include name="Custom_List">
+		<param name="type" default="fixedlist" />
+		<param name="id" />
+		<param name="viewtype_label" />
+		<param name="viewtype" />
+		<param name="visible" />
+		<param name="orientation" />
+		<definition>
+			<control type="$PARAM[type]" id="$PARAM[id]">
+				<width>1920</width>
+				<viewtype label="$PARAM[viewtype_label]">$PARAM[viewtype]</viewtype>
+				<visible>$PARAM[visible]</visible>
+				<focusposition>0</focusposition>
+				<include content="$PARAM[viewtype_label]_Navigation" />
+				<onfocus>ClearProperty(Widget_DBID,home)</onfocus>
+				<pagecontrol>60</pagecontrol>
+				<preloaditems>2</preloaditems>
+				<orientation>$PARAM[orientation]</orientation>
+				<include content="Default_Scrolltime" condition="!Skin.HasSetting(Quick_Transitions)" />
+				<include content="Quick_Scrolltime" condition="Skin.HasSetting(Quick_Transitions) + !Skin.HasSetting(Zero_Transitions)" />
+				<include content="Zero_Scrolltime" condition="Skin.HasSetting(Quick_Transitions) + Skin.HasSetting(Zero_Transitions)" />
+				<focusedlayout width="480">
+					<include content="HiddenFocusButton" />
+					<include content="Multiart_Resetter" condition="Skin.HasSetting(Multiart_Slideshow)" />
+					<include content="Multiart_Setter" condition="Skin.HasSetting(Multiart_Slideshow)" />
+				</focusedlayout>
+				<itemlayout width="480" />
+			</control>
+		</definition>
+	</include>
+
+	<include name="Track_Number_Label">
+		<control type="label">
+			<height>100%</height>
+			<visible>!ListItem.IsPlaying</visible>
+			<include content="Visible_Fade_Animation" />
+			<width>$PARAM[width]</width>
+			<align>center</align>
+			<aligny>center</aligny>
+			<font>$PARAM[font]</font>
+			<textcolor>$PARAM[textcolor]</textcolor>
+			<disabledcolor>$VAR[Light_Grey_Color]</disabledcolor>
+			<selectedcolor>$PARAM[selectedcolor]</selectedcolor>
+			<label>$VAR[TrackNumber_Label]</label>
+		</control>
+	</include>
+
+	<include name="Music_Rating">
+		<param name="visible" default="!String.IsEmpty(ListItem.UserRating) + Integer.IsGreaterOrEqual(ListItem.UserRating,Skin.Numeric(Music_Rating_Like_Threshold))" />
+		<definition>
+			<include content="$PARAM[like_texture]" condition="Skin.String(Music_Rating_Like_Threshold)">
+				<param name="visible" value="String.IsEqual(ListItem.DBType,song) + $PARAM[visible]" />
+				<param name="color" value="$PARAM[color]" />
+				<animation effect="slide" end="$PARAM[slide],8" time="0" condition="true">Conditional</animation>
+			</include>
+		</definition>
+	</include>
+
+	<include name="Simple_List_Layout">
+		<param name="visible" default="true" />
+		<param name="font" default="Main_Menu_Unfocused" />
+		<param name="textcolor" default="$VAR[Light_Color]" />
+		<param name="selectedcolor" default="$VAR[Light_Color]" />
+		<param name="scroll" default="false" />
+		<param name="label" default="$VAR[Title_Label]" />
+		<param name="label_left" default="120" />
+		<param name="label_maxwidth" default="720" />
+		<definition>
+			<control type="label">
+				<visible>$PARAM[visible]</visible>
+				<height>100%</height>
+				<left>$PARAM[label_left]</left>
+				<width max="$PARAM[label_maxwidth]">auto</width>
+				<font>$PARAM[font]</font>
+				<textcolor>$PARAM[textcolor]</textcolor>
+				<disabledcolor>$VAR[Light_Grey_Color]</disabledcolor>
+				<selectedcolor>$PARAM[selectedcolor]</selectedcolor>
+				<label>$PARAM[label]</label>
+				<scroll>$PARAM[scroll]</scroll>
+				<scrollsuffix> / </scrollsuffix>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_List_Layout">
+		<param name="visible" default="true" />
+		<param name="icon_color" default="$VAR[Light_Color]" />
+		<param name="now_playing_icon" default="true" />
+		<param name="list_icon" default="String.IsEqual(ListItem.Overlay,OverlayWatched.png) + !$EXP[ListItem(0)_NowPlaying]" />
+		<param name="list_icon_texture" default="Check_unfocused" />
+		<param name="music_rating_like_texture" default="Like_unfocused" />
+		<param name="music_rating_color" default="$VAR[Accent_Color]" />
+		<param name="font" default="List_Unfocused" />
+		<param name="textcolor" default="$VAR[Light_Color]" />
+		<param name="selectedcolor" default="$VAR[Light_Color]" />
+		<param name="scroll" default="false" />
+		<param name="label" default="$VAR[Title_Label]" />
+		<definition>
+			<control type="group">
+				<visible>$PARAM[visible]</visible>
+				<width>100%</width>
+				<include content="Now_Playing_Icon" condition="Window.Is(videos) | Window.Is(music) | Window.Is(musicplaylist) | Window.Is(videoplaylist) | Window.Is(musicinformation)">
+					<param name="visible" value="$PARAM[now_playing_icon] + $EXP[ListItem(0)_NowPlaying]" />
+					<param name="color" value="$PARAM[icon_color]" />
+					<animation effect="slide" end="$PARAM[icon_slide],0" time="0" condition="true">Conditional</animation>
+					<animation effect="slide" end="0,5" time="0" condition="Player.Paused">Conditional</animation>
+				</include>
+				<include content="$PARAM[list_icon_texture]" condition="Window.Is(videos) | Window.Is(videoplaylist) | Window.Is(addonbrowser) | Window.Is(programs)">
+					<param name="visible" value="$PARAM[list_icon]" />
+					<param name="color" value="$PARAM[icon_color]" />
+					<animation effect="slide" end="$PARAM[icon_slide],0" time="0" condition="true">Conditional</animation>
+				</include>
+				<include content="Track_Number_Label" condition="Window.Is(music) | Window.Is(musicplaylist) | Window.Is(musicinformation)">
+					<param name="width" value="$PARAM[label_left]" />
+					<param name="font" value="$PARAM[font]" />
+					<param name="textcolor" value="$PARAM[textcolor]" />
+					<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+				</include>
+				<include content="Music_Rating" condition="Window.Is(music) | Window.Is(musicinformation)">
+					<param name="like_texture" value="$PARAM[music_rating_like_texture]" />
+					<param name="color" value="$PARAM[music_rating_color]" />
+					<param name="slide" value="$PARAM[music_rating_slide]" />
+				</include>
+				<include content="PVR_Progress" condition="Window.Is(tvsearch)" />
+				<include content="Simple_List_Layout" condition="!Skin.HasSetting(List_Prefer_Scrolling)">
+					<param name="label_left" value="$PARAM[label_left]" />
+					<param name="label_maxwidth" value="$PARAM[label_maxwidth]" />
+					<param name="font" value="$PARAM[font]" />
+					<param name="textcolor" value="$VAR[Light_Color]" />
+					<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+					<param name="label" value="$PARAM[label]" />
+					<param name="scroll" value="false" />
+				</include>
+				<include content="Simple_List_Layout" condition="Skin.HasSetting(List_Prefer_Scrolling)">
+					<param name="label_left" value="$PARAM[label_left]" />
+					<param name="label_maxwidth" value="$PARAM[label_maxwidth]" />
+					<param name="font" value="$PARAM[font]" />
+					<param name="textcolor" value="$VAR[Light_Color]" />
+					<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+					<param name="label" value="$PARAM[label]" />
+					<param name="scroll" value="$PARAM[scroll]" />
+				</include>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_List_Unfocused">
+		<param name="icon_slide" default="-525" />
+		<param name="list_icon" default="String.IsEqual(ListItem.Overlay,OverlayWatched.png) + !$EXP[ListItem(0)_NowPlaying]" />
+		<param name="list_icon_texture" default="Check_unfocused" />
+		<param name="music_rating_slide" default="525" />
+		<param name="music_rating_color" default="$VAR[Accent_Color]" />
+		<param name="label_left" default="90" />
+		<param name="label_maxwidth" default="840" />
+		<param name="selectedcolor" default="$VAR[Light_Color]" />
+		<definition>
+			<param name="selectedcolor" />
+			<include content="Common_List_Layout">
+				<param name="icon_slide" value="$PARAM[icon_slide]" />
+				<param name="list_icon" value="$PARAM[list_icon]" />
+				<param name="list_icon_texture" value="$PARAM[list_icon_texture]" />
+				<param name="music_rating_like_texture" value="Like_focused" />
+				<param name="music_rating_color" value="$PARAM[music_rating_color]" />
+				<param name="music_rating_slide" value="$PARAM[music_rating_slide]" />
+				<param name="label" value="$VAR[Title_Unfocused_Label]" />
+				<param name="label_left" value="$PARAM[label_left]" />
+				<param name="label_maxwidth" value="$PARAM[label_maxwidth]" />
+				<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+			</include>
+		</definition>
+	</include>
+
+	<include name="Common_List_Focused">
+		<param name="icon_slide" default="-525" />
+		<param name="list_icon" default="String.IsEqual(ListItem.Overlay,OverlayWatched.png) + !$EXP[ListItem(0)_NowPlaying]" />
+		<param name="list_icon_texture" default="Check_focused" />
+		<param name="music_rating_slide" default="525" />
+		<param name="music_rating_color" default="$VAR[Accent_Color]" />
+		<param name="label_left" default="90" />
+		<param name="label_maxwidth" default="990" />
+		<param name="selectedcolor" default="$VAR[Light_Color]" />
+		<definition>
+			<include content="HiddenFocusButton" />
+			<include content="Multiart_Resetter" condition="Skin.HasSetting(Multiart_Slideshow)" />
+			<include content="Multiart_Setter" condition="Skin.HasSetting(Multiart_Slideshow)" />
+			<include content="Common_List_Layout">
+				<param name="icon_slide" value="$PARAM[icon_slide]" />
+				<param name="list_icon" value="$PARAM[list_icon]" />
+				<param name="list_icon_texture" value="$PARAM[list_icon_texture]" />
+				<param name="music_rating_like_texture" value="Like_focused" />
+				<param name="music_rating_color" value="$PARAM[music_rating_color]" />
+				<param name="music_rating_slide" value="$PARAM[music_rating_slide]" />
+				<param name="track_number_color" value="$VAR[Light_Color]" />
+				<param name="label" value="$VAR[Title_Label]" />
+				<param name="label_left" value="$PARAM[label_left]" />
+				<param name="label_maxwidth" value="$PARAM[label_maxwidth]" />
+				<param name="font" value="List_Focused" />
+				<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+				<param name="scroll" value="true" />
+			</include>
+		</definition>
+	</include>
+
+	<include name="Common_List_Info_Label">
+		<param name="visible" />
+		<param name="infolabel_visible" />
+		<param name="width" default="1680" />
+		<param name="left" default="120" />
+		<param name="hiddenlabel" default="$VAR[Title_Label]" />
+		<param name="hiddenlabelmaxwidth" default="1200" />
+		<param name="infolabel" default="$VAR[ListView_Info_Label_Divider,, ]$VAR[Info_Label]" />
+		<param name="infolabelwidth" default="180" />
+		<definition>
+			<include content="Secondary_List_Icons" condition="Skin.HasSetting(Secondary_List_Enabled)">
+				<param name="visible" value="$PARAM[visible]" />
+				<param name="left" value="$PARAM[left]" />
+			</include>
+			<include content="Music_Rating" condition="Window.Is(music) + Skin.HasSetting(Secondary_List_Enabled)">
+				<param name="visible" value="Control.HasFocus(3100) + !String.IsEmpty(Container(3100).ListItem.UserRating) + Integer.IsGreaterOrEqual(Container(3100).ListItem.UserRating,Skin.Numeric(Music_Rating_Like_Threshold))" />
+				<param name="like_texture" value="Like_focused" />
+				<param name="color" value="$VAR[Accent_Color]" />
+				<param name="slide" value="840" />
+			</include>
+			<control type="grouplist">
+				<visible>$PARAM[visible]</visible>
+				<left>$PARAM[left]</left>
+				<top>500</top>
+				<width>$PARAM[width]</width>
+				<height>80</height>
+				<itemgap>10</itemgap>
+				<orientation>horizontal</orientation>
+				<usecontrolcoords>true</usecontrolcoords>
+				<!-- Title Gap -->
+				<control type="label">
+					<width max="$PARAM[hiddenlabelmaxwidth]">auto</width>
+					<height>80</height>
+					<aligny>center</aligny>
+					<font>List_Focused</font>
+					<textcolor>$VAR[Common_List_Info_Label_Color]</textcolor>
+					<label>$PARAM[hiddenlabel]</label>
+				</control>
+				<!-- Abbreviated Details -->
+				<control type="label">
+					<visible>$PARAM[infolabel_visible]</visible>
+					<width max="$PARAM[infolabelwidth]">auto</width>
+					<top>30</top>
+					<height>35</height>
+					<font>List_Info</font>
+					<textcolor>$VAR[Light_Color]</textcolor>
+					<label>$PARAM[infolabel]</label>
+					<aligny>center</aligny>
+				</control>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Simple_List">
+		<param name="id" />
+		<param name="visible" default="true" />
+		<param name="layout" default="Simple" />
+		<param name="orientation" default="vertical" />
+		<param name="left" default="780" />
+		<param name="width" default="1020" />
+		<param name="height" default="540" />
+		<param name="focusposition" default="4" />
+		<param name="label_left" default="0" />
+		<param name="label" default="$INFO[ListItem.Label]" />
+		<param name="label_maxwidth" default="1020" />
+		<param name="textcolor" default="$VAR[Light_Color]" />
+		<param name="selectedcolor" default="$VAR[Accent_Color]" />
+		<param name="pagecontrol" default="60" />
+		<definition>
+			<control type="fixedlist" id="$PARAM[id]">
+				<visible allowhiddenfocus="true">$PARAM[visible]</visible>
+				<pagecontrol>$PARAM[pagecontrol]</pagecontrol>
+				<nested />
+				<left>$PARAM[left]</left>
+				<width>$PARAM[width]</width>
+				<centertop>50%</centertop>
+				<height>$PARAM[height]</height>
+				<include content="Simple_List_Navigation" />
+				<onup>$PARAM[id]</onup>
+				<ondown>$PARAM[id]</ondown>
+				<preloaditems>2</preloaditems>
+				<focusposition>$PARAM[focusposition]</focusposition>
+				<orientation>vertical</orientation>
+				<include content="Default_Scrolltime" condition="!Skin.HasSetting(Quick_Transitions)" />
+				<include content="Quick_Scrolltime" condition="Skin.HasSetting(Quick_Transitions)" />
+				<itemlayout height="60" width="$PARAM[width]">
+					<include content="$PARAM[layout]_List_Layout">
+						<param name="icon_slide" value="$PARAM[icon_slide]" />
+						<param name="music_rating_slide" value="$PARAM[music_rating_slide]" />
+						<param name="now_playing_icon" value="$PARAM[now_playing_icon]" />
+						<param name="list_icon" value="false" />
+						<param name="label" value="$PARAM[label]" />
+						<param name="label_left" value="$PARAM[label_left]" />
+						<param name="textcolor" value="$PARAM[textcolor]" />
+						<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+					</include>
+				</itemlayout>
+				<focusedlayout height="60" width="$PARAM[width]" condition="Control.HasFocus($PARAM[id])">
+					<include content="$PARAM[layout]_List_Layout">
+						<param name="icon_slide" value="$PARAM[icon_slide]" />
+						<param name="now_playing_icon" value="$PARAM[now_playing_icon]" />
+						<param name="music_rating_slide" value="$PARAM[music_rating_slide]" />
+						<param name="music_rating_like_texture" value="Like_focused" />
+						<param name="list_icon" value="false" />
+						<param name="label" value="$PARAM[label]" />
+						<param name="label_left" value="$PARAM[label_left]" />
+						<param name="label_maxwidth" value="$PARAM[label_maxwidth]" />
+						<param name="font" value="Main_Menu_Focused" />
+						<param name="textcolor" value="$PARAM[textcolor]" />
+						<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+					</include>
+				</focusedlayout>
+				<focusedlayout height="60" width="$PARAM[width]" condition="!Control.HasFocus($PARAM[id])">
+					<include content="Simple_List_Layout">
+						<param name="label" value="$PARAM[label]" />
+						<param name="label_left" value="$PARAM[label_left]" />
+						<param name="label_maxwidth" value="$PARAM[label_maxwidth]" />
+						<param name="textcolor" value="$PARAM[textcolor]" />
+						<param name="selectedcolor" value="$PARAM[selectedcolor]" />
+					</include>
+				</focusedlayout>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_Details_Logo">
+		<param name="visible" />
+		<param name="id" default="6310" />
+		<param name="texture" default="$VAR[Cropped_Clearlogo]" />
+		<param name="width" default="640" />
+		<param name="maxheight" default="240" />
+		<param name="align" default="left" />
+		<param name="aligny" default="bottom" />
+		<definition>
+			<control type="image" id="$PARAM[id]">
+				<visible>$PARAM[visible]</visible>
+				<width>$PARAM[width]</width>
+				<height max="$PARAM[maxheight]">auto</height>
+				<aspectratio align="$PARAM[align]" aligny="$PARAM[aligny]">keep</aspectratio>
+				<texture background="true">$PARAM[texture]</texture>
+				<nested />
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_Details_Textbox">
+		<param name="visible" default="true" />
+		<param name="gap" default="0" />
+		<param name="maxheight" default="210" />
+		<param name="font" />
+		<param name="color" />
+		<param name="label" />
+		<param name="align" default="left" />
+		<param name="scroll" default="false" />
+		<definition>
+			<control type="textbox">
+				<visible>$PARAM[visible]</visible>
+				<top>$PARAM[gap]</top>
+				<height min="105" max="$PARAM[maxheight]">auto</height>
+				<font>$PARAM[font]</font>
+				<textcolor>$PARAM[color]</textcolor>
+				<label>$PARAM[label]</label>
+				<align>$PARAM[align]</align>
+				<nested />
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_Details_Info">
+		<param name="visible" default="true" />
+		<param name="gap" default="0" />
+		<param name="maxheight" default="35" />
+		<param name="font" />
+		<param name="color" />
+		<param name="label" />
+		<param name="align" default="left" />
+		<definition>
+			<control type="textbox">
+				<visible>$PARAM[visible]</visible>
+				<top>$PARAM[gap]</top>
+				<height min = "35" max="$PARAM[maxheight]">auto</height>
+				<font>$PARAM[font]</font>
+				<textcolor>$PARAM[color]</textcolor>
+				<label>$PARAM[label]</label>
+				<align>$PARAM[align]</align>
+				<scroll>true</scroll>
+				<scrollsuffix> / </scrollsuffix>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_Details">
+		<param name="viewtype_label" default="Billboard" />
+		<param name="left" default="120" />
+		<param name="bottom" default="0" />
+		<param name="width" default="1680" />
+		<param name="height" default="100%" />
+		<param name="itemgap" default="0" />
+		<param name="logo_width" default="640" />
+		<param name="title_label" default="$VAR[Title_Label]" />
+		<param name="title_color" default="$VAR[Light_Color]" />
+		<param name="title_maxheight" default="146" />
+		<param name="info_label" default="$VAR[Info_Label]" />
+		<param name="info_maxheight" default="70" />
+		<param name="info_gap" default="-5" />
+		<param name="plot_label" default="$VAR[Plot_Label]" />
+		<param name="plot_maxheight" default="103" />
+		<param name="widget_clearlogos" default="false" />
+		<definition>
+			<include content="Hidden_Components">
+				<control type="label" id="6003">
+					<label>$PARAM[plot_label]</label>
+				</control>
+			</include>
+			<control type="group">
+				<visible>[!$EXP[$PARAM[viewtype_label]View_Details_Off] + ![$EXP[StripView_IsVisible] + $EXP[StripView_Details_Title] + !$EXP[StripView_Logo_On]]] | Window.Is(home) | $EXP[Infoscreen_Widget_HasFocus]</visible>
+				<nested />
+				<left>$PARAM[left]</left>
+				<width>$PARAM[width]</width>
+				<height>$PARAM[height]</height>
+				<bottom>$PARAM[bottom]</bottom>
+				<control type="group">
+					<visible>![Control.HasFocus(3100) + $EXP[Secondary_List_Content_Switching]]</visible>
+					<include content="Visible_Fade_Delayed_Animation" />
+					<!-- Logos -->
+					<include content="Common_Details_Logo" condition="Window.Is(videos) | Window.Is(music) | Window.Is(programs)">
+						<param name="visible" value="!$EXP[BillboardView_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + $EXP[$PARAM[viewtype_label]View_Details_Title]" />
+						<param name="width" value="$PARAM[logo_width]" />
+						<param name="align" value="center" />
+						<param name="aligny" value="center" />
+						<centertop>50%</centertop>
+						<centerleft>50%</centerleft>
+					</include>
+					<control type="grouplist">
+						<include content="Common_Details_Slides" condition="Skin.HasSetting(Crop_Clearlogos) + ![Window.Is(home) + !$PARAM[widget_clearlogos]] + ![Skin.HasSetting(Quick_Transitions) + Skin.HasSetting(Zero_Transitions)]">
+							<param name="viewtype_label" value="$PARAM[viewtype_label]" />
+						</include>
+						<orientation>vertical</orientation>
+						<align>center</align>
+						<itemgap>$PARAM[itemgap]</itemgap>
+						<usecontrolcoords>true</usecontrolcoords>
+						<include content="Common_Details_Logo" condition="[Window.Is(home) + $PARAM[widget_clearlogos]] | Window.Is(videos) | Window.Is(music) | Window.Is(programs)">
+							<param name="visible" value="[!$EXP[BillboardView_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !$EXP[$PARAM[viewtype_label]View_Details_Title]] | [$EXP[BillboardView_IsVisible] + $EXP[BillboardView_Logo_IsVisible]] | [Window.Is(home) + $EXP[Widget_HasLogo]]" />
+							<param name="align" value="left" />
+							<param name="aligny" value="bottom" />
+							<param name="width" value="$PARAM[logo_width]" />
+							<animation effect="slide" start="0,0" end="0,-10" time="0" condition="true">Conditional</animation>
+							<animation effect="slide" start="0,0" end="-60,366" time="0" condition="$EXP[BillboardView_IsVisible] + $EXP[BillboardView_Logo_IsVisible] + $EXP[BillboardView_Details_Title]">Conditional</animation>
+						</include>
+						<include content="Common_Details_Textbox">
+							<param name="visible" value="[$EXP[$PARAM[viewtype_label]View_Media_IsVisible] + !$EXP[$PARAM[viewtype_label]View_Logo_IsVisible]] | [$EXP[ShowcaseView_Media_IsVisible] + ![$EXP[ShowcaseView_Logo_IsVisible] | $EXP[ShowcaseView_Details_Overlay_IsVisible]]] | $EXP[Infoscreen_Widget_HasFocus] | [Window.Is(home) + [!$EXP[Widget_HasLogo] | !$PARAM[widget_clearlogos]]]" />
+							<param name="font" value="$PARAM[viewtype_label]_Title" />
+							<param name="color" value="$PARAM[title_color]" />
+							<param name="maxheight" value="$PARAM[title_maxheight]" />
+							<param name="label" value="$PARAM[title_label]" />
+						</include>
+						<include content="Common_Details_Textbox" condition="Window.Is(videos) | Window.Is(music) | Window.Is(programs)">
+							<param name="visible" value="![$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + $EXP[ShowcaseView_IsVisible] + $EXP[ShowcaseView_Details_Overlay_IsVisible]" />
+							<param name="font" value="$PARAM[viewtype_label]_Title" />
+							<param name="color" value="$PARAM[title_color]" />
+							<param name="label" value="$PARAM[title_label]" />
+							<param name="maxheight" value="$PARAM[title_maxheight]" />
+							<param name="align" value="center" />
+						</include>
+						<include content="Common_Details_Info">
+							<param name="visible" value="$EXP[$PARAM[viewtype_label]View_Details_Info_IsVisible] | Window.Is(home) | $EXP[Infoscreen_Widget_HasFocus]" />
+							<param name="gap" value="$PARAM[info_gap]" />
+							<param name="maxheight" value="$PARAM[info_maxheight]" />
+							<param name="font" value="$PARAM[viewtype_label]_Info" />
+							<param name="color" value="$PARAM[title_color]" />
+							<param name="label" value="$PARAM[info_label]" />
+						</include>
+						<include content="Common_Details_Textbox" condition="Window.Is(videos) | Window.Is(music) | Window.Is(programs)">
+							<param name="visible" value="$EXP[$PARAM[viewtype_label]View_Details_Plot_IsVisible] + !String.IsEmpty(Control.GetLabel(6003)) + ![Control.HasFocus(3100) + Container.Content(tvshows)]" />
+							<param name="gap" value="60" />
+							<param name="maxheight" value="$PARAM[plot_maxheight]" />
+							<param name="font" value="Body" />
+							<param name="color" value="$VAR[Plot_Color]" />
+							<param name="label" value="$PARAM[plot_label]" />
+							<param name="scroll" value="true" />
+						</include>
+					</control>
+				</control>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Common_Details_Slides">
+		<!-- Secondary/Primary list clearlogo-alt_cropped -->
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),220)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),200)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),180)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),160)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),140)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),120)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),100)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),80)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),60)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),40)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Skin.String(Theme,Light) + !String.IsEmpty(Window(home).Property(clearlogo-alt_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo-alt_cropped-height),20)">Conditional</animation>
+		<!-- Secondary list clearlogo_cropped -->
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),220)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),200)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),180)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),160)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),140)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),120)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),100)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),80)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),60)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),40)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(Container(3100).ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),20)">Conditional</animation>
+		<!-- Primary list clearlogo_cropped -->
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),220)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),200)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),180)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),160)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),140)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),120)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),100)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),80)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),60)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),40)">Conditional</animation>
+		<animation effect="slide" start="0,0" end="0,-10" time="0" condition="![$EXP[BillboardView_IsVisible] + [Skin.HasSetting(Quick_Transitions) | $EXP[BillboardView_Details_Title]]] + $EXP[$PARAM[viewtype_label]View_IsVisible] + [$EXP[$PARAM[viewtype_label]View_Logo_IsVisible] | $EXP[Widget_HasLogo]] + !Control.HasFocus(3100) + [[Skin.String(Theme,Light) + String.IsEmpty(ListItem.Art(clearlogo-alt))] | !Skin.String(Theme,Light)] + !String.IsEmpty(Window(home).Property(clearlogo_cropped-height)) + Integer.IsLessOrEqual(Window(home).Property(clearlogo_cropped-height),20)">Conditional</animation>
+	</include>
+
+	<include name="Variable_Title_Label">
+		<param name="visible" default="true" />
+		<param name="visible_large" default="!Container(6005).HasNext" />
+		<param name="visible_medium" default="Container(6005).HasNext + !Container(6006).HasNext" />
+		<param name="visible_small" default="Container(6005).HasNext + Container(6006).HasNext" />
+		<param name="width" default="1200" />
+		<param name="left" default="360" />
+		<param name="bottom" default="45" />
+		<param name="height" default="80" />
+		<param name="textcolor" default="$VAR[visualisation_Label_Color]" />
+		<param name="align" default="center" />
+		<param name="font_large" default="Strip_Title" />
+		<param name="font_medium" default="Title_Breadcrumb_Label" />
+		<param name="font_small" default="MusicPlayer_Title" />
+		<definition>
+			<control type="group">
+				<visible>$PARAM[visible]</visible>
+				<width>$PARAM[width]</width>
+				<left>$PARAM[left]</left>
+				<height>$PARAM[height]</height>
+				<bottom>$PARAM[bottom]</bottom>
+				<nested />
+				<control type="textbox" id="6005">
+					<visible>$PARAM[visible_large]</visible>
+					<font>$PARAM[font_large]</font>
+					<textcolor>$PARAM[textcolor]</textcolor>
+					<label>$PARAM[label]</label>
+					<align>$PARAM[align]</align>
+					<aligny>center</aligny>
+					<autoscroll>false</autoscroll>
+				</control>
+				<control type="textbox" id="6006">
+					<visible>$PARAM[visible_medium]</visible>
+					<font>$PARAM[font_medium]</font>
+					<textcolor>$PARAM[textcolor]</textcolor>
+					<label>$PARAM[label]</label>
+					<align>$PARAM[align]</align>
+					<aligny>center</aligny>
+					<autoscroll>false</autoscroll>
+				</control>
+				<control type="label">
+					<visible>$PARAM[visible_small]</visible>
+					<font>$PARAM[font_small]</font>
+					<textcolor>$PARAM[textcolor]</textcolor>
+					<label>$PARAM[label]</label>
+					<wrapmultiline>true</wrapmultiline>
+					<align>$PARAM[align]</align>
+					<aligny>center</aligny>
+					<scroll>false</scroll>
+				</control>
+			</control>
+		</definition>
+	</include>
+
+
+	<include name="Breadcrumb_Label">
+		<param name="visible" default="true" />
+		<param name="animation" default="Visible_Fade_Animation" />
+		<param name="align" default="left" />
+		<param name="bar" default="true" />
+		<param name="left" default="60" />
+		<param name="right" default="60" />
+		<param name="top" default="60" />
+		<param name="title_label_id" default="6308" />
+		<param name="title_label" default="$VAR[Title_Breadcrumb_Label]" />
+		<param name="title_font" default="Title_Breadcrumb_Label" />
+		<param name="maxtitlelabelwidth" default="1700" />
+		<param name="haspath" default="false" />
+		<param name="textcolor" default="$VAR[Breadcrumb_Label_Color]" />
+		<param name="info_label" default="$VAR[Info_Breadcrumb_Label]" />
+		<param name="info_label_visible" default="false" />
+		<param name="info_font" default="Info_Breadcrumb_Label" />
+		<param name="maxinfolabelwidth" default="1700" />
+		<definition>
+			<control type="group">
+				<visible>$PARAM[visible]</visible>
+				<include content="$PARAM[animation]" />
+				<nested />
+				<left>$PARAM[left]</left>
+				<right>$PARAM[right]</right>
+				<top>$PARAM[top]</top>
+				<height>60</height>
+				<control type="grouplist">
+					<orientation>horizontal</orientation>
+					<align>$PARAM[align]</align>
+					<itemgap>12</itemgap>
+					<usecontrolcoords>true</usecontrolcoords>
+					<control type="image">
+						<visible>$PARAM[bar]</visible>
+						<visible>!String.IsEmpty(Control.GetLabel($PARAM[title_label_id]))</visible>
+						<top>6</top>
+						<height>48</height>
+						<width>6</width>
+						<texture colordiffuse="$VAR[Accent_Color]">views/white_100.png</texture>
+					</control>
+					<control type="label" id="$PARAM[title_label_id]">
+						<height>60</height>
+						<width max="$PARAM[maxtitlelabelwidth]">auto</width>
+						<label>$PARAM[title_label]</label>
+						<font>$PARAM[title_font]</font>
+						<textcolor>$PARAM[textcolor]</textcolor>
+						<haspath>$PARAM[haspath]</haspath>
+					</control>
+					<control type="label">
+						<width max="$PARAM[maxinfolabelwidth]">auto</width>
+						<height>35</height>
+						<top>16</top>
+						<label>$PARAM[info_label]</label>
+						<font>$PARAM[info_font]</font>
+						<textcolor>$PARAM[textcolor]</textcolor>
+						<visible>$PARAM[info_label_visible]</visible>
+						<visible>!String.IsEmpty(Control.GetLabel($PARAM[title_label_id]))</visible>
+					</control>
+				</control>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Description_Label">
+		<param name="id" default="" />
+		<param name="type" default="label" />
+		<param name="visible" default="true" />
+		<param name="textcolor" default="$VAR[Breadcrumb_Label_Color]" />
+		<param name="font" default="Description" />
+		<param name="label" default="" />
+		<param name="left" default="150" />
+		<param name="right" default="240" />
+		<param name="height" default="180" />
+		<param name="bottom" default="0" />
+		<param name="align" default="left" />
+		<param name="aligny" default="center" />
+		<param name="haspath" default="false" />
+		<definition>
+			<control type="$PARAM[type]" id="$PARAM[id]">
+				<include content="Visible_Fade_Animation" />
+				<visible>$PARAM[visible]</visible>
+				<left>$PARAM[left]</left>
+				<right>$PARAM[right]</right>
+				<height>$PARAM[height]</height>
+				<bottom>$PARAM[bottom]</bottom>
+				<label>$PARAM[label]</label>
+				<align>$PARAM[align]</align>
+				<aligny>$PARAM[aligny]</aligny>
+				<font>$PARAM[font]</font>
+				<textcolor>$PARAM[textcolor]</textcolor>
+				<haspath>$PARAM[haspath]</haspath>
+				<nested />
+			</control>
+		</definition>
+	</include>
+
+	<include name="Progress_Bar">
+		<param name="id" default="50" />
+		<param name="background_color" default="$VAR[Progress_Background_Color]" />
+		<param name="focus_color" default="$VAR[Progress_Focused_Color]" />
+		<param name="progress_indicator_background" default="$VAR[Progress_Indicator_Background_Color]" />
+		<param name="progress_indicator_textcolor" default="$VAR[Progress_Indicator_Label_Color]" />
+		<param name="slides" default="360" />
+		<definition>
+			<control type="group">
+				<visible>$PARAM[visible]</visible>
+				<animation effect="slide" start="0,0" end="0,6" time="0" condition="Skin.HasSetting(Unwatched_Indicator) + $EXP[ShowcaseView_IsVisible] + $EXP[ShowcaseView_Details_Off] + Integer.IsGreater(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),0)">Conditional</animation>
+				<include content="Progress_Bar_0">
+					<param name="id" value="$PARAM[id]" />
+					<param name="background_color" value="$PARAM[background_color]" />
+				</include>
+				<include content="Progress_Bar_WatchedEpisodePercent">
+					<param name="id" value="$PARAM[id]" />
+					<param name="background_color" value="$PARAM[background_color]" />
+					<param name="focus_color" value="$PARAM[focus_color]" />
+				</include>
+				<include content="Progress_Bar_WatchedProgress">
+					<param name="id" value="$PARAM[id]" />
+					<param name="background_color" value="$PARAM[background_color]" />
+					<param name="focus_color" value="$PARAM[focus_color]" />
+				</include>
+				<include content="Progress_Bar_Resumable">
+					<param name="id" value="$PARAM[id]" />
+					<param name="background_color" value="$PARAM[background_color]" />
+					<param name="focus_color" value="$PARAM[focus_color]" />
+				</include>
+				<include content="Progress_Bar_SetProgress">
+					<param name="id" value="$PARAM[id]" />
+					<param name="focus_color" value="$PARAM[focus_color]" />
+				</include>
+				<include content="Progress_Bar_100">
+					<param name="id" value="$PARAM[id]" />
+					<param name="focus_color" value="$PARAM[focus_color]" />
+				</include>
+				<include content="Unwatched_Indicator" condition="Skin.HasSetting(Unwatched_Indicator) + !Window.Is(music)">
+					<param name="id" value="$PARAM[id]" />
+					<param name="slides" value="$PARAM[slides]" />
+					<param name="background" value="$PARAM[progress_indicator_background]" />
+					<param name="textcolor" value="$PARAM[progress_indicator_textcolor]" />
+				</include>
+			</control>
+		</definition>
+	</include>
+
+	<include name="Progress_Bar_0">
+		<control type="image">
+			<visible>[!String.IsEmpty(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent)) + Integer.IsEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),0)] | [!String.IsEmpty(Container($PARAM[id]).ListItem.Property(WatchedProgress)) + Integer.IsEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),0)] | [Container($PARAM[id]).ListItem.IsCollection + String.IsEqual(ListItem.Overlay,OverlayUnwatched.png)]</visible>
+			<width>100%</width>
+			<height>100%</height>
+			<texture colordiffuse="$PARAM[background_color]">views/white_100.png</texture>
+		</control>
+	</include>
+
+	<include name="Progress_Bar_WatchedEpisodePercent">
+		<control type="progress">
+			<visible>Integer.IsGreater(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),0)</visible>
+			<visible>![Control.HasFocus(505) + Skin.HasSetting(GridView_AltWatchedStatus_Enabled) + Integer.IsEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),100)]</visible>
+			<visible>![Integer.IsEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),100) + $EXP[ListView_IsVisible]]</visible>
+			<width>100%</width>
+			<height>100%</height>
+			<texturebg colordiffuse="$PARAM[background_color]">views/white_100.png</texturebg>
+			<midtexture colordiffuse="$PARAM[focus_color]">views/white_100.png</midtexture>
+			<info>Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent)</info>
+		</control>
+	</include>
+
+	<include name="Progress_Bar_WatchedProgress">
+		<control type="progress">
+			<visible>Integer.IsGreater(Container($PARAM[id]).ListItem.Property(WatchedProgress),0)</visible>
+			<visible>![Control.HasFocus(505) + Skin.HasSetting(GridView_AltWatchedStatus_Enabled) + Integer.IsEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),100)]</visible>
+			<visible>![Integer.IsEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),100) + $EXP[ListView_IsVisible]]</visible>
+			<width>100%</width>
+			<height>100%</height>
+			<texturebg colordiffuse="$PARAM[background_color]">views/white_100.png</texturebg>
+			<midtexture colordiffuse="$PARAM[focus_color]">views/white_100.png</midtexture>
+			<info>Container($PARAM[id]).ListItem.Property(WatchedProgress)</info>
+		</control>
+	</include>
+
+	<include name="Progress_Bar_Resumable">
+		<control type="progress">
+			<visible>Container($PARAM[id]).ListItem.IsResumable + !Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreater(ListItem.PercentPlayed,0)</visible>
+			<width>100%</width>
+			<height>100%</height>
+			<texturebg colordiffuse="$PARAM[background_color]">views/white_100.png</texturebg>
+			<midtexture colordiffuse="$PARAM[focus_color]">views/white_100.png</midtexture>
+			<info>Container($PARAM[id]).ListItem.PercentPlayed</info>
+		</control>
+	</include>
+
+	<include name="Progress_Bar_SetProgress">
+		<control type="image">
+			<visible>Container($PARAM[id]).ListItem.IsCollection + !String.IsEmpty(Window(home).Property(collection_unwatched),0) + Integer.IsGreater(Window(home).Property(collection_watched_percentage),0)</visible>
+			<visible>![$EXP[ListView_IsVisible] + !$EXP[Infoscreen_IsVisible]]</visible>
+			<width>100%</width>
+			<height>100%</height>
+			<texture colordiffuse="$PARAM[focus_color]">views/white_100.png</texture>
+			<animation effect="zoom" center="0,0" end="95,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),93) + Integer.IsLess(Window(home).Property(collection_watched_percentage),100)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="90,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),88) + Integer.IsLess(Window(home).Property(collection_watched_percentage),93)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="85,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),83) + Integer.IsLess(Window(home).Property(collection_watched_percentage),88)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="80,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),78) + Integer.IsLess(Window(home).Property(collection_watched_percentage),83)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="75,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),73) + Integer.IsLess(Window(home).Property(collection_watched_percentage),78)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="70,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),68) + Integer.IsLess(Window(home).Property(collection_watched_percentage),73)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="65,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),63) + Integer.IsLess(Window(home).Property(collection_watched_percentage),68)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="60,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),58) + Integer.IsLess(Window(home).Property(collection_watched_percentage),63)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="55,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),53) + Integer.IsLess(Window(home).Property(collection_watched_percentage),58)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="50,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),48) + Integer.IsLess(Window(home).Property(collection_watched_percentage),53)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="45,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),43) + Integer.IsLess(Window(home).Property(collection_watched_percentage),48)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="40,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),38) + Integer.IsLess(Window(home).Property(collection_watched_percentage),43)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="35,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),33) + Integer.IsLess(Window(home).Property(collection_watched_percentage),38)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="30,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),28) + Integer.IsLess(Window(home).Property(collection_watched_percentage),33)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="25,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),23) + Integer.IsLess(Window(home).Property(collection_watched_percentage),28)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="20,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),18) + Integer.IsLess(Window(home).Property(collection_watched_percentage),23)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="15,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),13) + Integer.IsLess(Window(home).Property(collection_watched_percentage),18)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="10,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),8) + Integer.IsLess(Window(home).Property(collection_watched_percentage),13)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="5,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),3) + Integer.IsLess(Window(home).Property(collection_watched_percentage),8)" reversible="false">Conditional</animation>
+			<animation effect="zoom" center="0,0" end="3,100" time="0" condition="Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),0) + Integer.IsLess(Window(home).Property(collection_watched_percentage),3)" reversible="false">Conditional</animation>
+		</control>
+	</include>
+
+	<include name="Progress_Bar_100">
+		<control type="image">
+			<visible>String.IsEqual(Container($PARAM[id]).ListItem.Overlay,OverlayWatched.png) | String.IsEqual(Container($PARAM[id]).ListItem.Overlay,1) | Integer.IsGreater(Container($PARAM[id]).ListItem.PlayCount,0)</visible>
+			<visible>![$EXP[ListView_IsVisible] + !$EXP[Infoscreen_IsVisible]] + !Container($PARAM[id]).ListItem.IsResumable</visible>
+			<visible>![Control.HasFocus(505) + Skin.HasSetting(GridView_AltWatchedStatus_Enabled)]</visible>
+			<width>100%</width>
+			<height>100%</height>
+			<texture colordiffuse="$PARAM[focus_color]">views/white_100.png</texture>
+		</control>
+	</include>
+
+	<include name="Unwatched_Indicator">
+		<control type="group">
+			<visible>Integer.IsGreater(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),0) | [Container($PARAM[id]).ListItem.IsCollection + String.IsEqual(ListItem.Overlay,OverlayUnwatched.png)]</visible>
+			<include content="Progress_Slides_$PARAM[slides]">
+				<param name="id" value="$PARAM[id]" />
+			</include>
+			<nested />
+			<width>60</width>
+			<height>30</height>
+			<centertop>50%</centertop>
+			<centerleft>50%</centerleft>
+			<control type="image">
+				<centerleft>50%</centerleft>
+				<width>30</width>
+				<animation effect="zoom" end="200,100" time="0" center="auto" condition="Integer.IsGreater(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),99)">Conditional</animation>
+				<texture colordiffuse="$PARAM[background]">views/white_100.png</texture>
+			</control>
+			<control type="label">
+				<width>100%</width>
+				<height>100%</height>
+				<align>center</align>
+				<aligny>center</aligny>
+				<font>Unwatched_Indicator</font>
+				<textcolor>$PARAM[textcolor]</textcolor>
+				<label>$VAR[Unwatched_Indicator_Label]</label>
+			</control>
+		</control>
+	</include>
+
+	<include name="Progress_Slides_Template">
+		<animation effect="slide" end="$PARAM[05]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),3) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),3) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),3)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[10]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),8) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),8) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),8)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[15]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),13) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),13) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),13)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[20]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),18) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),18) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),18)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[25]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),23) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),23) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),23)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[30]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),28) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),28) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),28)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[35]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),33) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),33) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),33)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[40]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),38) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),38) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),38)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[45]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),43) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),43) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),43)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[50]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),48) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),48) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),48)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[55]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),53) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),53) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),53)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[60]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),58) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),58) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),58)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[65]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),63) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),63) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),63)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[70]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),68) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),68) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),68)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[75]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),73) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),73) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),73)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[80]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),78) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),78) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),78)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[85]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),83) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),83) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),83)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[90]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),88) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),88) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),88)]">Conditional</animation>
+		<animation effect="slide" end="$PARAM[95]" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedEpisodePercent),93) | Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),93) | [Container($PARAM[id]).ListItem.IsCollection + Integer.IsGreaterOrEqual(Window(home).Property(collection_watched_percentage),93)]">Conditional</animation>
+		<animation effect="slide" end="-3" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),18) + Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),100)		">Conditional</animation>
+		<animation effect="slide" end="-3" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),38) + Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),100)">Conditional</animation>
+		<animation effect="slide" end="-3" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),58) + Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),100)">Conditional</animation>
+		<animation effect="slide" end="-3" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),78) + Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),100)">Conditional</animation>
+		<animation effect="slide" end="-3" time="0" condition="Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(WatchedProgress),98) + Integer.IsGreaterOrEqual(Container($PARAM[id]).ListItem.Property(UnwatchedEpisodes),100)">Conditional</animation>
+	</include>
+
+	<!-- for 360 width progress bar (30 off each side for the width of the number icon -->
+	<include name="Progress_Slides_360">
+		<include content="Progress_Slides_Template">
+			<param name="id" value="$PARAM[id]" />
+			<param name="05" value="9" />
+			<param name="10" value="9" />
+			<param name="15" value="9" />
+			<param name="20" value="9" />
+			<param name="25" value="9" />
+			<param name="30" value="9" />
+			<param name="35" value="9" />
+			<param name="40" value="9" />
+			<param name="45" value="9" />
+			<param name="50" value="9" />
+			<param name="55" value="8" />
+			<param name="60" value="7" />
+			<param name="65" value="8" />
+			<param name="70" value="7" />
+			<param name="75" value="8" />
+			<param name="80" value="7" />
+			<param name="85" value="8" />
+			<param name="90" value="7" />
+			<param name="95" value="8" />
+		</include>
+	</include>
+
+	<!-- for 240 width progress bar (30 off each side for the width of the number icon -->
+	<include name="Progress_Slides_240">
+		<include content="Progress_Slides_Template">
+			<param name="id" value="$PARAM[id]" />
+			<param name="05" value="6" />
+			<param name="10" value="6" />
+			<param name="15" value="6" />
+			<param name="20" value="6" />
+			<param name="25" value="6" />
+			<param name="30" value="6" />
+			<param name="35" value="6" />
+			<param name="40" value="6" />
+			<param name="45" value="6" />
+			<param name="50" value="6" />
+			<param name="55" value="5" />
+			<param name="60" value="4" />
+			<param name="65" value="5" />
+			<param name="70" value="4" />
+			<param name="75" value="5" />
+			<param name="80" value="4" />
+			<param name="85" value="5" />
+			<param name="90" value="4" />
+			<param name="95" value="5" />
+		</include>
+	</include>
+
+	<include name="Flag_Checker">
+		<control type="image" id="$PARAM[id]">
+			<include content="Hidden_Control" />
+			<texture fallback="flags/blank.png">$PARAM[texture]</texture>
+		</control>
+	</include>
+
+	<include name="Flag_Icon">
+		<param name="visible" default="true" />
+		<param name="id" />
+		<param name="texture" />
+		<param name="colordiffuse" default="$VAR[Light_Color]" />
+		<param name="fadetime" default="0" />
+		<definition>
+			<control type="group">
+				<visible>$PARAM[visible]</visible>
+				<visible>!String.IsEqual(Control.GetLabel($PARAM[id]),flags/blank.png)</visible>
+				<animation effect="slide" end="-60" time="0" condition="[Window.Is(videos) | Window.Is(videoplaylist)] + $EXP[ListView_Display_IsThumbnails]">Conditional</animation>
+				<nested />
+				<width>180</width>
+				<height>180</height>
+				<control type="image">
+					<centerleft>50%</centerleft>
+					<centertop>50%</centertop>
+					<width>90</width>
+					<height>60</height>
+					<aspectratio>keep</aspectratio>
+					<texture fallback="flags/blank.png" colordiffuse="$PARAM[colordiffuse]">$PARAM[texture]</texture>
+					<fadetime>$PARAM[fadetime]</fadetime>
+				</control>
+			</control>
+		</definition>
+	</include>
+
+</includes>

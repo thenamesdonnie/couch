@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<includes>
+
+	<include name="Infoscreen_PathTracing">
+		<!-- first load -->
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(Breadcrumb_Level,01)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_00,$VAR[ContainerPath_0])</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_01,$VAR[ContainerPath_X])</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(Origin,$INFO[Window(home).Property(Home_Widget)],home)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_02)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_03)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_04)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_05)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_06)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_07)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_08)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_09)</onload>
+		<onload condition="!String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">ClearProperty(ContainerPath_10)</onload>
+		<!-- loop: Record new container path if previous container path is occupied and GoToNext true, -->
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_10)) + !String.IsEmpty(Window.Property(ContainerPath_09)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_10,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_09)) + !String.IsEmpty(Window.Property(ContainerPath_08)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_09,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_08)) + !String.IsEmpty(Window.Property(ContainerPath_07)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_08,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_07)) + !String.IsEmpty(Window.Property(ContainerPath_06)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_07,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_06)) + !String.IsEmpty(Window.Property(ContainerPath_05)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_06,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_05)) + !String.IsEmpty(Window.Property(ContainerPath_04)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_05,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_04)) + !String.IsEmpty(Window.Property(ContainerPath_03)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_04,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_03)) + !String.IsEmpty(Window.Property(ContainerPath_02)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_03,$VAR[ContainerPath_X])</onload>
+		<onload condition="String.IsEmpty(Window.Property(ContainerPath_02)) + !String.IsEmpty(Window.Property(ContainerPath_01)) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true) + !String.IsEqual(Window.Property(SentFromInfo),true)">SetProperty(ContainerPath_02,$VAR[ContainerPath_X])</onload>
+		<!-- breadcrumb counter up -->
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),01) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,02)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),02) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,03)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),03) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,04)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),04) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,05)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),05) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,06)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),06) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,07)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),07) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,08)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),08) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,09)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),09) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToNext),true)">SetProperty(Breadcrumb_Level,10)</onload>
+		<!-- breadcrumb counter down -->
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),02) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,01)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),03) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,02)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),04) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,03)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),05) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,04)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),06) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,05)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),07) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,06)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),08) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,07)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),09) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,08)</onload>
+		<onload condition="String.IsEqual(Window.Property(Breadcrumb_Level),10) + !String.IsEqual(Window.Property(SentFromInfo),true) + String.IsEqual(Window.Property(Breadcrumb_GoToPrevious),true)">SetProperty(Breadcrumb_Level,09)</onload>
+		<onload>ClearProperty(SentFromInfo)</onload>
+		<onload>ClearProperty(Breadcrumb_GoToPrevious)</onload>
+		<onload>ClearProperty(Breadcrumb_GoToNext)</onload>
+	</include>
+
+	<include name="movieinformation_OnLoadUnload">
+		<onload condition="Skin.HasSetting(Trailer_Autoplay) + String.IsEqual(Window(home).Property(Trailer_Autoplay),true) + Player.HasVideo">PlayerControl(Stop)</onload>
+		<onload condition="Skin.HasSetting(Trailer_Autoplay) + String.IsEqual(Window(home).Property(Trailer_Autoplay),true)">ClearProperty(Trailer_Autoplay,home)</onload>
+		<onload condition="!String.IsEmpty(ListItem.DBID)">SetProperty(SelectedItem,$INFO[ListItem.DBID],movieinformation)</onload>
+		<onload condition="String.IsEmpty(ListItem.DBID) + !String.IsEmpty(ListItem.Property(tmdb_id))">SetProperty(SelectedItem,$INFO[ListItem.Property(tmdb_id)],movieinformation)</onload>
+		<onload>SetProperty(ResetScroll," ")</onload>
+		<include content="Infoscreen_PathTracing" />
+		<include content="Widget_Position_Reset_OnLoad" />
+		<onunload>ClearProperty(Focused_Button,movieinformation)</onunload>
+	</include>
+
+	<include name="musicinformation_OnLoadUnload">
+		<onload condition="String.IsEqual(ListItem.DBType,artist)">SetProperty(Info_Type,artist,musicinformation)</onload>
+		<onload condition="String.IsEqual(ListItem.DBType,album)">SetProperty(Info_Type,album,musicinformation)</onload>
+		<onload>SetProperty(SelectedItem,$INFO[ListItem.DBID],musicinformation)</onload>
+		<onload>SetProperty(ResetScroll," ")</onload>
+		<include content="Widget_Position_Reset_OnLoad" />
+		<onunload>ClearProperty(Focused_Button,musicinformation)</onunload>
+	</include>
+
+	<!-- Replaces the old skinsettings_OnLoadUnload include. The conditional
+	     Object_Include/nested pattern inside a cached include definition
+	     corrupted Kodi 20's include cache after all seven settings windows
+	     had been opened, crashing on the seventh load of
+	     SettingsCategory.xml. These plain includes carry no nested content
+	     and are referenced with conditions directly from
+	     SettingsCategory.xml instead. -->
+	<include name="Settings_Default_Focus_Interface">
+		<defaultcontrol always="true">3002</defaultcontrol>
+	</include>
+	<include name="Settings_Default_Focus_Media">
+		<defaultcontrol always="true">3003</defaultcontrol>
+	</include>
+	<include name="Settings_Default_Focus_Player">
+		<defaultcontrol always="true">3004</defaultcontrol>
+	</include>
+	<include name="Settings_Default_Focus_System">
+		<defaultcontrol always="true">3005</defaultcontrol>
+	</include>
+	<include name="Settings_Default_Focus_Service">
+		<defaultcontrol always="true">3006</defaultcontrol>
+	</include>
+	<include name="Settings_Default_Focus_Game">
+		<defaultcontrol always="true">3007</defaultcontrol>
+	</include>
+	<include name="Settings_Default_Focus_PVR">
+		<defaultcontrol always="true">3008</defaultcontrol>
+	</include>
+
+</includes>
