@@ -73,7 +73,7 @@
 				<ondown>8000</ondown>
 				<itemlayout width="312" height="268">
 					<control type="image">
-						<left>0</left>
+						<left>10</left>
 						<top>6</top>
 						<width>292</width>
 						<height>164</height>
@@ -82,7 +82,7 @@
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>10</left>
 						<top>184</top>
 						<width>292</width>
 						<height>32</height>
@@ -91,7 +91,7 @@
 						<label>$INFO[ListItem.TVShowTitle]</label>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>10</left>
 						<top>216</top>
 						<width>292</width>
 						<height>30</height>
@@ -102,7 +102,7 @@
 				</itemlayout>
 				<focusedlayout width="312" height="268">
 					<control type="image">
-						<left>-4</left>
+						<left>6</left>
 						<top>0</top>
 						<width>300</width>
 						<height>176</height>
@@ -112,7 +112,7 @@
 						<bordersize>3</bordersize>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>6</left>
 						<top>184</top>
 						<width>300</width>
 						<height>32</height>
@@ -121,7 +121,7 @@
 						<label>$INFO[ListItem.TVShowTitle]</label>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>6</left>
 						<top>216</top>
 						<width>300</width>
 						<height>30</height>
@@ -130,9 +130,9 @@
 						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
 					</control>
 					<control type="image">
-						<left>-12</left>
+						<left>0</left>
 						<top>248</top>
-						<width>316</width>
+						<width>312</width>
 						<height>18</height>
 						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 						<aspectratio>stretch</aspectratio>
@@ -162,7 +162,7 @@
 				<ondown>8100</ondown>
 				<itemlayout width="312" height="268">
 					<control type="image">
-						<left>0</left>
+						<left>10</left>
 						<top>6</top>
 						<width>292</width>
 						<height>164</height>
@@ -171,7 +171,7 @@
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>10</left>
 						<top>184</top>
 						<width>292</width>
 						<height>32</height>
@@ -180,7 +180,7 @@
 						<label>$INFO[ListItem.TVShowTitle]</label>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>10</left>
 						<top>216</top>
 						<width>292</width>
 						<height>30</height>
@@ -191,7 +191,7 @@
 				</itemlayout>
 				<focusedlayout width="312" height="268">
 					<control type="image">
-						<left>-4</left>
+						<left>6</left>
 						<top>0</top>
 						<width>300</width>
 						<height>176</height>
@@ -201,7 +201,7 @@
 						<bordersize>3</bordersize>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>6</left>
 						<top>184</top>
 						<width>300</width>
 						<height>32</height>
@@ -210,7 +210,7 @@
 						<label>$INFO[ListItem.TVShowTitle]</label>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>6</left>
 						<top>216</top>
 						<width>300</width>
 						<height>30</height>
@@ -219,9 +219,9 @@
 						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
 					</control>
 					<control type="image">
-						<left>-12</left>
+						<left>0</left>
 						<top>248</top>
-						<width>316</width>
+						<width>312</width>
 						<height>18</height>
 						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 						<aspectratio>stretch</aspectratio>
@@ -251,7 +251,7 @@
 				<ondown>8200</ondown>
 				<itemlayout width="172" height="268">
 					<control type="image">
-						<left>0</left>
+						<left>10</left>
 						<top>6</top>
 						<width>152</width>
 						<height>228</height>
@@ -262,7 +262,7 @@
 				</itemlayout>
 				<focusedlayout width="172" height="268">
 					<control type="image">
-						<left>-4</left>
+						<left>6</left>
 						<top>0</top>
 						<width>160</width>
 						<height>240</height>
@@ -272,9 +272,9 @@
 						<bordersize>3</bordersize>
 					</control>
 					<control type="image">
-						<left>-12</left>
+						<left>2</left>
 						<top>244</top>
-						<width>176</width>
+						<width>168</width>
 						<height>18</height>
 						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 						<aspectratio>stretch</aspectratio>
@@ -303,7 +303,7 @@
 				<onup>8100</onup>
 				<itemlayout width="288" height="500">
 					<control type="image">
-						<left>0</left>
+						<left>10</left>
 						<top>6</top>
 						<width>268</width>
 						<height>402</height>
@@ -312,7 +312,7 @@
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>10</left>
 						<top>414</top>
 						<width>268</width>
 						<height>34</height>
@@ -321,7 +321,7 @@
 						<label>$INFO[ListItem.Label]</label>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>10</left>
 						<top>448</top>
 						<width>268</width>
 						<height>32</height>
@@ -332,7 +332,7 @@
 				</itemlayout>
 				<focusedlayout width="288" height="500">
 					<control type="image">
-						<left>-4</left>
+						<left>6</left>
 						<top>0</top>
 						<width>276</width>
 						<height>414</height>
@@ -342,7 +342,7 @@
 						<bordersize>3</bordersize>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>6</left>
 						<top>418</top>
 						<width>268</width>
 						<height>34</height>
@@ -351,7 +351,7 @@
 						<label>$INFO[ListItem.Label]</label>
 					</control>
 					<control type="label">
-						<left>0</left>
+						<left>6</left>
 						<top>452</top>
 						<width>268</width>
 						<height>32</height>
