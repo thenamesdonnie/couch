@@ -223,10 +223,14 @@ def _ps4_games():
         title = _sfo(sfo).get('TITLE') if os.path.isfile(sfo) else ''
         # PS4 icon0 is square (512x512); a portrait cover.png (2:3) in the game
         # folder is preferred so the tile fills without cropping the square art.
+        # A hand-placed tile.png (square key art) beats both for the home row's
+        # square tiles; cover.png still serves the portrait poster grids.
         cover = os.path.join(gdir, 'cover.png')
         icon0 = os.path.join(gdir, 'sce_sys', 'icon0.png')
+        tile = os.path.join(gdir, 'tile.png')
         art = cover if os.path.isfile(cover) else (icon0 if os.path.isfile(icon0) else '')
-        out.append((title or entry, eboot, art))
+        thumb = tile if os.path.isfile(tile) else art
+        out.append((title or entry, eboot, art, thumb))
     return sorted(out, key=lambda g: g[0].lower())
 
 
@@ -281,10 +285,11 @@ def games_route(info, params):
         li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
 
     # Emulated PS4 dumps, each launching straight into its own game.
-    for title, eboot, icon in _ps4_games():
+    for title, eboot, icon, thumb in _ps4_games():
         item = xbmcgui.ListItem(title, offscreen=True)
-        if icon:
-            item.setArt({'thumb': icon, 'poster': icon, 'icon': icon})
+        if icon or thumb:
+            item.setArt({'thumb': thumb or icon, 'poster': icon or thumb,
+                         'icon': icon or thumb})
         gid = 'ps4:' + urllib.parse.quote(eboot, safe='')
         li.append((f'{sys.argv[0]}?info=launch_game&id={gid}', item, False))
 
@@ -301,4 +306,4 @@ def games_route(info, params):
         li.append((f'{sys.argv[0]}?info=launch_game&id=shadps4', shad, False))
 
     xbmcplugin.addDirectoryItems(handle, li)
-    xbmcplugin.endOfDirectory(handle)
+    xbmcplugin.endOfDirectory(handle, cacheToDisc=False)
