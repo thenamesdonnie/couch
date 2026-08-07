@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Stagelight token test card (phase 1 proof). ActivateWindow(1199) to view,
+     Back returns. Temporary by design: dies when phase 2 replaces it as the
+     proof that the tokens render. Plain controls only (spec C13). -->
+<window type="window" id="1199">
+	<defaultcontrol always="true">9000</defaultcontrol>
+	<controls>
+
+		<!-- ground -->
+		<control type="image">
+			<left>0</left>
+			<top>0</top>
+			<width>1920</width>
+			<height>1080</height>
+			<texture colordiffuse="ff0a0c10">couch/white.png</texture>
+		</control>
+
+		<!-- the room light, tinted by the live colour (amber pilot if no art) -->
+		<include>Couch_GlowField</include>
+
+		<!-- header -->
+		<control type="label">
+			<left>96</left>
+			<top>64</top>
+			<width>1400</width>
+			<height>100</height>
+			<font>Couch_Display</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>Stagelight</label>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>168</top>
+			<width>1600</width>
+			<height>56</height>
+			<font>Couch_Header</font>
+			<textcolor>ff8a93a0</textcolor>
+			<label>Phase 1 tokens, rendered by the TV itself</label>
+		</control>
+
+		<!-- type specimen -->
+		<control type="label">
+			<left>96</left>
+			<top>290</top>
+			<width>1200</width>
+			<height>72</height>
+			<font>Couch_Title</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>Dune: Part Two</label>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>372</top>
+			<width>1200</width>
+			<height>52</height>
+			<font>Couch_Header</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>Library</label>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>432</top>
+			<width>1200</width>
+			<height>44</height>
+			<font>Couch_Emph</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>Continue watching</label>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>484</top>
+			<width>1200</width>
+			<height>40</height>
+			<font>Couch_Label</font>
+			<textcolor>ff8a93a0</textcolor>
+			<label>Next up · Continue · New · Everything</label>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>528</top>
+			<width>1200</width>
+			<height>36</height>
+			<font>Couch_Caption</font>
+			<textcolor>ff8a93a0</textcolor>
+			<label>2024 · 2h 46m · 8.5 · 4K · HDR tonemapped</label>
+		</control>
+		<!-- size tags, right side -->
+		<control type="label">
+			<left>1350</left>
+			<top>290</top>
+			<width>470</width>
+			<height>300</height>
+			<font>Couch_Caption</font>
+			<textcolor>ff5a626e</textcolor>
+			<label>Title 64[CR]Header 44[CR]Emph 36[CR]Label 32[CR]Caption 28 (the floor)</label>
+		</control>
+
+		<!-- the focus mark: title + lightbar in the live colour -->
+		<control type="label">
+			<left>96</left>
+			<top>640</top>
+			<width>900</width>
+			<height>72</height>
+			<font>Couch_Title</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>The Simpsons</label>
+		</control>
+		<include content="Couch_Lightbar">
+			<param name="x" value="86" />
+			<param name="y" value="716" />
+			<param name="width" value="480" />
+		</include>
+
+		<!-- palette: panel, line, muted, text, pilot, live -->
+		<control type="image">
+			<left>96</left>
+			<top>820</top>
+			<width>96</width>
+			<height>96</height>
+			<texture border="4" infill="false" colordiffuse="ff333944">couch/mask-round.png</texture>
+		</control>
+		<control type="image">
+			<left>100</left>
+			<top>824</top>
+			<width>88</width>
+			<height>88</height>
+			<texture colordiffuse="ff0a0c10">couch/white.png</texture>
+		</control>
+		<control type="image">
+			<left>212</left>
+			<top>820</top>
+			<width>96</width>
+			<height>96</height>
+			<texture colordiffuse="ff12151b">couch/white.png</texture>
+		</control>
+		<control type="image">
+			<left>328</left>
+			<top>820</top>
+			<width>96</width>
+			<height>96</height>
+			<texture colordiffuse="ff8a93a0">couch/white.png</texture>
+		</control>
+		<control type="image">
+			<left>444</left>
+			<top>820</top>
+			<width>96</width>
+			<height>96</height>
+			<texture colordiffuse="ffeceef1">couch/white.png</texture>
+		</control>
+		<control type="image">
+			<left>560</left>
+			<top>820</top>
+			<width>96</width>
+			<height>96</height>
+			<texture colordiffuse="ffe8a849">couch/white.png</texture>
+		</control>
+		<control type="image">
+			<left>676</left>
+			<top>820</top>
+			<width>96</width>
+			<height>96</height>
+			<texture colordiffuse="$VAR[Couch_Live_Color]">couch/white.png</texture>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>928</top>
+			<width>1700</width>
+			<height>36</height>
+			<font>Couch_Caption</font>
+			<textcolor>ff8a93a0</textcolor>
+			<label>ground · panel · muted · text · pilot · live = $VAR[Couch_Live_Color] (amber means the pilot light, nothing focused with art)</label>
+		</control>
+
+		<!-- focus sink so Back leaves cleanly -->
+		<control type="button" id="9000">
+			<left>-200</left>
+			<top>-200</top>
+			<width>1</width>
+			<height>1</height>
+			<label></label>
+			<texturefocus>-</texturefocus>
+			<texturenofocus>-</texturenofocus>
+			<onclick>PreviousWindow</onclick>
+			<onback>PreviousWindow</onback>
+		</control>
+
+	</controls>
+</window>
