@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Couch Home (Stagelight phase 3 preview) - the v5 structure: one row of
-     square game tiles with the Library tile at the left end, the focused
-     item's art filling the screen. Runs as window 1198 until Donnie approves
-     the look, then this layout becomes Home.xml. Plain controls (C13). -->
+<!-- Couch Home (Stagelight phase 3 preview), PS5-emulating layout per
+     Donnie's reference photo (8 Aug): tight top row of small square tiles
+     (110px, 10px gaps), focused tile enlarged (172px) with a halo ring and
+     its name underneath, the focused game's key art filling the screen,
+     its clearlogo lower-left with a Play pill. Library tile leads the row.
+     Runs as window 1198 until approved as the real Home. Plain controls
+     (C13). -->
 <window type="window" id="1198">
 	<defaultcontrol always="true">9000</defaultcontrol>
 	<controls>
@@ -26,9 +29,11 @@
 			<aspectratio>scale</aspectratio>
 			<fadetime>400</fadetime>
 		</control>
+		<!-- PS5-style veil: darker lower-left for the logo block, plus the
+		     usual bottom scrim -->
 		<include content="Couch_Scrim_Bottom">
-			<param name="y" value="420" />
-			<param name="height" value="660" />
+			<param name="y" value="380" />
+			<param name="height" value="700" />
 		</include>
 		<include>Couch_GlowField</include>
 
@@ -44,112 +49,176 @@
 			<label>$INFO[System.Time]</label>
 		</control>
 
-		<!-- the Library tile, left end of the row -->
+		<!-- the Library tile: first stop on the row, PS5-icon sized -->
 		<control type="button" id="9001">
 			<left>96</left>
-			<top>530</top>
-			<width>190</width>
-			<height>190</height>
+			<top>124</top>
+			<width>110</width>
+			<height>110</height>
 			<label></label>
-			<texturefocus border="14" colordiffuse="ff2a303b">couch/mask-round.png</texturefocus>
-			<texturenofocus border="14" colordiffuse="ff181c24">couch/mask-round.png</texturenofocus>
+			<texturefocus border="14" colordiffuse="ff262c37">couch/mask-round.png</texturefocus>
+			<texturenofocus border="14" colordiffuse="cc161a22">couch/mask-round.png</texturenofocus>
 			<onclick>ActivateWindow(1197)</onclick>
 			<onright>9000</onright>
 		</control>
+		<!-- 2x2 grid glyph -->
 		<control type="image">
-			<left>156</left>
-			<top>586</top>
-			<width>70</width>
-			<height>52</height>
-			<texture colordiffuse="ffeceef1">couch/lightbar.png</texture>
-			<aspectratio>stretch</aspectratio>
-			<visible>true</visible>
+			<left>130</left>
+			<top>158</top>
+			<width>18</width>
+			<height>18</height>
+			<texture border="6" colordiffuse="ffeceef1">couch/mask-round.png</texture>
+		</control>
+		<control type="image">
+			<left>154</left>
+			<top>158</top>
+			<width>18</width>
+			<height>18</height>
+			<texture border="6" colordiffuse="ffeceef1">couch/mask-round.png</texture>
+		</control>
+		<control type="image">
+			<left>130</left>
+			<top>182</top>
+			<width>18</width>
+			<height>18</height>
+			<texture border="6" colordiffuse="ffeceef1">couch/mask-round.png</texture>
+		</control>
+		<control type="image">
+			<left>154</left>
+			<top>182</top>
+			<width>18</width>
+			<height>18</height>
+			<texture border="6" colordiffuse="$VAR[Couch_Live_Color]">couch/mask-round.png</texture>
 		</control>
 		<control type="label">
-			<left>96</left>
-			<top>640</top>
-			<width>190</width>
-			<height>36</height>
+			<left>66</left>
+			<top>244</top>
+			<width>170</width>
+			<height>34</height>
 			<font>Couch_Caption</font>
 			<textcolor>ffeceef1</textcolor>
 			<align>center</align>
 			<label>Library</label>
+			<visible>Control.HasFocus(9001)</visible>
 		</control>
-		<include content="Couch_Lightbar">
-			<param name="x" value="86" />
-			<param name="y" value="728" />
-			<param name="width" value="210" />
-			<param name="visible" value="Control.HasFocus(9001)" />
-		</include>
 
-		<!-- the row -->
+		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
 		<control type="list" id="9000">
-			<left>298</left>
-			<top>460</top>
-			<width>1622</width>
-			<height>300</height>
+			<left>211</left>
+			<top>116</top>
+			<width>1709</width>
+			<height>250</height>
 			<orientation>horizontal</orientation>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onleft>9001</onleft>
-			<itemlayout width="214" height="300">
+			<itemlayout width="120" height="250">
 				<control type="image">
-					<left>12</left>
-					<top>70</top>
-					<width>190</width>
-					<height>190</height>
+					<left>5</left>
+					<top>8</top>
+					<width>110</width>
+					<height>110</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<colordiffuse>c8ffffff</colordiffuse>
 				</control>
 			</itemlayout>
-			<focusedlayout width="284" height="300">
+			<focusedlayout width="182" height="250">
+				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
-					<left>12</left>
-					<top>0</top>
-					<width>260</width>
-					<height>260</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-					<aspectratio>scale</aspectratio>
-					<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-					<bordersize>3</bordersize>
+					<left>-2</left>
+					<top>-7</top>
+					<width>186</width>
+					<height>186</height>
+					<texture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</texture>
 				</control>
 				<control type="image">
-					<left>2</left>
-					<top>268</top>
-					<width>280</width>
-					<height>18</height>
+					<left>5</left>
+					<top>0</top>
+					<width>172</width>
+					<height>172</height>
+					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+					<aspectratio>scale</aspectratio>
+				</control>
+				<control type="image">
+					<left>5</left>
+					<top>182</top>
+					<width>172</width>
+					<height>12</height>
 					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 					<aspectratio>stretch</aspectratio>
+				</control>
+				<control type="label">
+					<left>5</left>
+					<top>198</top>
+					<width>620</width>
+					<height>38</height>
+					<font>Couch_Label</font>
+					<textcolor>ffeceef1</textcolor>
+					<label>$INFO[ListItem.Label]</label>
 				</control>
 			</focusedlayout>
 			<content target="videos">plugin://script.copacetic.helper/?info=games</content>
 		</control>
 
-		<!-- focused title + facts, under the row -->
+		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
+		     when Steam has no separate logo for it -->
+		<control type="image">
+			<left>96</left>
+			<top>520</top>
+			<width>560</width>
+			<height>240</height>
+			<texture background="true">$INFO[Container(9000).ListItem.Art(clearlogo)]</texture>
+			<aspectratio align="left" aligny="bottom">keep</aspectratio>
+			<fadetime>300</fadetime>
+			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
+		</control>
 		<control type="label">
 			<left>96</left>
-			<top>800</top>
-			<width>1400</width>
+			<top>688</top>
+			<width>1000</width>
 			<height>76</height>
 			<font>Couch_Title</font>
 			<textcolor>ffeceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Label]</label>
-			<visible>!Control.HasFocus(9001)</visible>
+			<visible>!Control.HasFocus(9001) + String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
-			<top>884</top>
-			<width>1400</width>
+			<top>790</top>
+			<width>1000</width>
 			<height>40</height>
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Genre]</label>
 			<visible>!Control.HasFocus(9001)</visible>
 		</control>
+		<!-- the Play pill -->
+		<control type="image">
+			<left>96</left>
+			<top>856</top>
+			<width>232</width>
+			<height>64</height>
+			<texture border="14" colordiffuse="d8161d28">couch/mask-round.png</texture>
+			<visible>!Control.HasFocus(9001)</visible>
+		</control>
 		<control type="label">
 			<left>96</left>
-			<top>800</top>
-			<width>1400</width>
+			<top>856</top>
+			<width>232</width>
+			<height>64</height>
+			<font>Couch_Emph</font>
+			<textcolor>ffeceef1</textcolor>
+			<align>center</align>
+			<aligny>center</aligny>
+			<label>Play</label>
+			<visible>!Control.HasFocus(9001)</visible>
+		</control>
+
+		<!-- Library focused: its own lower-left block -->
+		<control type="label">
+			<left>96</left>
+			<top>688</top>
+			<width>1000</width>
 			<height>76</height>
 			<font>Couch_Title</font>
 			<textcolor>ffeceef1</textcolor>
@@ -158,8 +227,8 @@
 		</control>
 		<control type="label">
 			<left>96</left>
-			<top>884</top>
-			<width>1400</width>
+			<top>790</top>
+			<width>1000</width>
 			<height>40</height>
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
