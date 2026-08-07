@@ -26,6 +26,42 @@ the user target) so couchd does NOT autostart on boot - started by hand
 15:41, unit fix belongs to the couchd session. Full detail in
 auto-memory `homelab-usb-disk-dropout.md`.
 
+## ▶ STAGELIGHT - the console skin build (added 7 Aug ~23:00, phase 1 LIVE)
+
+The evening session: skin.couch forked (a43c5fa, ACTIVE on the TV, symlinked
+from ~/couch/kodi-addons/skin.couch - edit + ReloadSkin to iterate) and the
+console-UI redesign researched, specced, mocked and STARTED. Read
+`docs/specs/console-skin.md` first: 14 constraints, the Stagelight identity
+(artwork lights the room via Window(home).Property(clearlogo_cropped-color),
+lightbar focus mark, Figtree, no hero, v5 structure = PS5 home row with a
+Library tile -> Netflix-style image rows + A-Z grid). Approved interactive
+mockup: claude.ai/code/artifact/fb5b7dfe-b72c-42a1-a006-09fc2634398e (v5).
+Research receipts: docs/research/console-ui-patterns.md +
+10-foot-ux-and-kodi-engine.md (read the engine one before writing XML).
+
+- [x] Phase 1 (dff2d13): Figtree in fonts/Figtree + Couch_* scale in all 3
+      fontsets (28/32/36/44/64/90), 16x9/Includes_Couch.xml (Couch_Live_Color
+      + Couch_Lightbar/GlowField/Scrim includes, safe-area constants),
+      media/couch/ white textures (tint via colordiffuse). Verified live
+      22:49:42, clean reload.
+- [ ] Phase 2 NEXT: the Library page (v5 mockup, frame 2) - Next up /
+      Continue (widgets, per-tile progress lightbar) / New / Everything A-Z
+      grid with L1 R1 letter jump. Smart playlists feed the rows. Exercises
+      the phase-1 tokens for real.
+- [ ] Phase 3: Home row (PS5 squares + Library tile left, art fills screen,
+      idle fade to art). Phase 4: player OSD (lightbar = seek bar). Phase 5:
+      dialog re-theme sweep (tokens only, structure untouched).
+- [ ] Open: wrap-around ships behind a skin setting (Donnie feels both);
+      nav sounds later, off switch mandatory.
+- Gotchas for the builder: C13 crash rules (no conditional nested blocks in
+  cached includes, non-empty param defaults); no ambient animation EVER
+  (full-viewport redraw); helper colour only updates when
+  Skin.HasSetting(Crop_Clearlogos); posters upscale soft at 4K until
+  <imageres> is raised in advancedsettings.xml (measure disk first);
+  screenshots via kodi-send TakeScreenshot. Kodi log may be rotated out from
+  under the live instance after a watchdog double-relaunch race (19:33
+  today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
+
 ## ▶ Resume here (updated 7 Aug 2026 ~16:00 — hardware settled, one live incident)
 
 **READ FIRST - THE INCIDENT (7 Aug 01:55): our synthetic Steam guide press
