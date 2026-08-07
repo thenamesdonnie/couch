@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Couch Home (Stagelight phase 3 preview) - the v5 structure: one row of
+     square game tiles with the Library tile at the left end, the focused
+     item's art filling the screen. Runs as window 1198 until Donnie approves
+     the look, then this layout becomes Home.xml. Plain controls (C13). -->
+<window type="window" id="1198">
+	<defaultcontrol always="true">9000</defaultcontrol>
+	<controls>
+
+		<!-- ground -->
+		<control type="image">
+			<left>0</left>
+			<top>0</top>
+			<width>1920</width>
+			<height>1080</height>
+			<texture colordiffuse="ff0a0c10">couch/white.png</texture>
+		</control>
+
+		<!-- the focused item's art owns the screen -->
+		<control type="image">
+			<left>0</left>
+			<top>0</top>
+			<width>1920</width>
+			<height>1080</height>
+			<texture background="true">$INFO[Container(9000).ListItem.Art(fanart)]</texture>
+			<aspectratio>scale</aspectratio>
+			<fadetime>400</fadetime>
+		</control>
+		<include content="Couch_Scrim_Bottom">
+			<param name="y" value="420" />
+			<param name="height" value="660" />
+		</include>
+		<include>Couch_GlowField</include>
+
+		<!-- clock -->
+		<control type="label">
+			<left>1224</left>
+			<top>54</top>
+			<width>600</width>
+			<height>40</height>
+			<font>Couch_Label</font>
+			<textcolor>ccffffff</textcolor>
+			<align>right</align>
+			<label>$INFO[System.Time]</label>
+		</control>
+
+		<!-- the Library tile, left end of the row -->
+		<control type="button" id="9001">
+			<left>96</left>
+			<top>530</top>
+			<width>190</width>
+			<height>190</height>
+			<label></label>
+			<texturefocus border="14" colordiffuse="ff2a303b">couch/mask-round.png</texturefocus>
+			<texturenofocus border="14" colordiffuse="ff181c24">couch/mask-round.png</texturenofocus>
+			<onclick>ActivateWindow(1197)</onclick>
+			<onright>9000</onright>
+		</control>
+		<control type="image">
+			<left>156</left>
+			<top>586</top>
+			<width>70</width>
+			<height>52</height>
+			<texture colordiffuse="ffeceef1">couch/lightbar.png</texture>
+			<aspectratio>stretch</aspectratio>
+			<visible>true</visible>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>640</top>
+			<width>190</width>
+			<height>36</height>
+			<font>Couch_Caption</font>
+			<textcolor>ffeceef1</textcolor>
+			<align>center</align>
+			<label>Library</label>
+		</control>
+		<include content="Couch_Lightbar">
+			<param name="x" value="86" />
+			<param name="y" value="728" />
+			<param name="width" value="210" />
+			<param name="visible" value="Control.HasFocus(9001)" />
+		</include>
+
+		<!-- the row -->
+		<control type="list" id="9000">
+			<left>320</left>
+			<top>460</top>
+			<width>1510</width>
+			<height>300</height>
+			<orientation>horizontal</orientation>
+			<scrolltime tween="sine" easing="out">210</scrolltime>
+			<onleft>9001</onleft>
+			<itemlayout width="214" height="300">
+				<control type="image">
+					<left>0</left>
+					<top>70</top>
+					<width>190</width>
+					<height>190</height>
+					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+					<aspectratio>scale</aspectratio>
+					<colordiffuse>c8ffffff</colordiffuse>
+				</control>
+			</itemlayout>
+			<focusedlayout width="284" height="300">
+				<control type="image">
+					<left>0</left>
+					<top>0</top>
+					<width>260</width>
+					<height>260</height>
+					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+					<aspectratio>scale</aspectratio>
+					<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
+					<bordersize>3</bordersize>
+				</control>
+				<control type="image">
+					<left>-10</left>
+					<top>268</top>
+					<width>280</width>
+					<height>18</height>
+					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
+					<aspectratio>stretch</aspectratio>
+				</control>
+			</focusedlayout>
+			<content target="videos">plugin://script.copacetic.helper/?info=games</content>
+		</control>
+
+		<!-- focused title + facts, under the row -->
+		<control type="label">
+			<left>96</left>
+			<top>800</top>
+			<width>1400</width>
+			<height>76</height>
+			<font>Couch_Title</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>$INFO[Container(9000).ListItem.Label]</label>
+			<visible>!Control.HasFocus(9001)</visible>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>884</top>
+			<width>1400</width>
+			<height>40</height>
+			<font>Couch_Label</font>
+			<textcolor>b4eceef1</textcolor>
+			<label>$INFO[Container(9000).ListItem.Genre]</label>
+			<visible>!Control.HasFocus(9001)</visible>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>800</top>
+			<width>1400</width>
+			<height>76</height>
+			<font>Couch_Title</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>Library</label>
+			<visible>Control.HasFocus(9001)</visible>
+		</control>
+		<control type="label">
+			<left>96</left>
+			<top>884</top>
+			<width>1400</width>
+			<height>40</height>
+			<font>Couch_Label</font>
+			<textcolor>b4eceef1</textcolor>
+			<label>Films · TV · YouTube · everything you have</label>
+			<visible>Control.HasFocus(9001)</visible>
+		</control>
+
+	</controls>
+</window>
