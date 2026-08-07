@@ -323,6 +323,38 @@
 			<filename>Inter/Inter-Light.ttf</filename>
 			<size>21</size>
 		</font>
+		<!-- Couch (Stagelight) type scale - Figtree, 28px floor at 1080p design res.
+		     Six steps only (spec C10): Caption 28, Label 32, Emph 36, Header 44, Title 64, Display 90. -->
+		<font>
+			<name>Couch_Caption</name>
+			<filename>Figtree/Figtree-Regular.ttf</filename>
+			<size>28</size>
+		</font>
+		<font>
+			<name>Couch_Label</name>
+			<filename>Figtree/Figtree-Medium.ttf</filename>
+			<size>32</size>
+		</font>
+		<font>
+			<name>Couch_Emph</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>36</size>
+		</font>
+		<font>
+			<name>Couch_Header</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>44</size>
+		</font>
+		<font>
+			<name>Couch_Title</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>64</size>
+		</font>
+		<font>
+			<name>Couch_Display</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>90</size>
+		</font>
 	</fontset>
 
 	<fontset id="Inter + Noto Sans KR" unicode="true">
@@ -629,6 +661,38 @@
 			<name>font13</name>
 			<filename>resource://resource.fonts.copacetic/Inter-NotoSansKR-Light.ttf</filename>
 			<size>21</size>
+		</font>
+		<!-- Couch (Stagelight) type scale - Figtree, 28px floor at 1080p design res.
+		     Six steps only (spec C10): Caption 28, Label 32, Emph 36, Header 44, Title 64, Display 90. -->
+		<font>
+			<name>Couch_Caption</name>
+			<filename>Figtree/Figtree-Regular.ttf</filename>
+			<size>28</size>
+		</font>
+		<font>
+			<name>Couch_Label</name>
+			<filename>Figtree/Figtree-Medium.ttf</filename>
+			<size>32</size>
+		</font>
+		<font>
+			<name>Couch_Emph</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>36</size>
+		</font>
+		<font>
+			<name>Couch_Header</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>44</size>
+		</font>
+		<font>
+			<name>Couch_Title</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>64</size>
+		</font>
+		<font>
+			<name>Couch_Display</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>90</size>
 		</font>
 	</fontset>
 
@@ -942,6 +1006,38 @@
 			<name>font13</name>
 			<filename>resource://resource.fonts.copacetic/Inter-NotoSansSC-Light.ttf</filename>
 			<size>21</size>
+		</font>
+		<!-- Couch (Stagelight) type scale - Figtree, 28px floor at 1080p design res.
+		     Six steps only (spec C10): Caption 28, Label 32, Emph 36, Header 44, Title 64, Display 90. -->
+		<font>
+			<name>Couch_Caption</name>
+			<filename>Figtree/Figtree-Regular.ttf</filename>
+			<size>28</size>
+		</font>
+		<font>
+			<name>Couch_Label</name>
+			<filename>Figtree/Figtree-Medium.ttf</filename>
+			<size>32</size>
+		</font>
+		<font>
+			<name>Couch_Emph</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>36</size>
+		</font>
+		<font>
+			<name>Couch_Header</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>44</size>
+		</font>
+		<font>
+			<name>Couch_Title</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>64</size>
+		</font>
+		<font>
+			<name>Couch_Display</name>
+			<filename>Figtree/Figtree-SemiBold.ttf</filename>
+			<size>90</size>
 		</font>
 	</fontset>
 

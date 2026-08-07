@@ -82,19 +82,20 @@ re-themed.
 
 ## The design (per surface)
 
-**Home (10000)** - PS5 skeleton, our content: one full-width row of large
-tiles (Continue Watching first, then Games, Recently Added - skinshortcuts
-widgets we already have), focused tile's fanart fills the screen behind a
-scrim (C7), metadata under the focused tile (C6). Nav chrome is a slim
-overlay strip, not a page (NN/g slim-menu rule; webOS 1-5's loved launcher).
-System row (search/settings/power) demoted below content, PS5-April-2026
-style. Idle: widgets fade to clean art after ~20s (PS5 Showcase; must be an
-on-idle transition to a STATIC state, not a loop - C3).
+**Home (10000)** - v5 structure (Donnie, 7 Aug, after seeing and rejecting
+both the hero variant and the crate/index recomposition): ONE PS5-style row
+of square tiles, recency-mixed games + in-progress media, focused tile grows
+and its art fills the screen behind a scrim (C7), metadata under the row
+(C6). A LIBRARY TILE sits at the LEFT END of the row (grid glyph) - no tab
+bar anywhere. Up reveals search/system; idle ~20s fades chrome to clean art
+(a transition to a STATIC state, not a loop - C3).
 
-**Library (10025)** - the daily driver. Poster grid 6-across with title+year
-captions (C4, C5, C11), L1/R1 letter-jump overlay (C1), focused-item info
-strip in place (C6), background follows focus debounced (C7). Views: Grid /
-List only - the current five Copacetic view types collapse to two done well.
+**Library (10025)** - v5: the Library tile opens a Netflix-shaped page of
+IMAGE rows: "Next up" (wide stills, per-tile progress lightbar in the item's
+own colour), "Continue watching", "New" (posters), then "Everything" as the
+full A-Z poster grid with L1/R1 letter jumps (C1). Focused item's facts in a
+bottom strip, in place (C6). Every row is a widget fed by a smart playlist.
+Approved interactive mockup: the artifact (stagelight-v5-ps5-netflix label).
 
 **Playing (12005 + OSD)** - minimal OSD, transport on d-pad centre/left/right
 (Android TV-PC), our pause-snap freeze-frames already integrate here. Seek
@@ -161,9 +162,11 @@ One idea carried all the way down: **the artwork lights the room.**
 - **The lightbar.** Focus signature everywhere (tiles, posters, tabs, seek
   bar): a thin bar in the live colour with a baked glow PNG, under the
   focused element. DualSense lightbar as the motif, pad-first console.
-- **Type: Chakra Petch** (OFL, ship in skin fonts/) for titles + labels,
-  uppercase, angular console-HUD energy; quiet system-grade face (keep
-  Copacetic's Inter) for plots/captions. 28px floor holds (C10).
+- **Type: Figtree** (OFL, shipped in skin fonts/), Donnie's pick 7 Aug after
+  rejecting Chakra Petch ("2015") and the wide/loud candidates. PS5
+  treatment: sentence case, medium weights (400/600), tight tracking, air.
+  Quiet face for plots/captions is Figtree 400 (one family everywhere).
+  28px floor holds (C10).
 - **Ground:** near-black cool greys (#0A0C10 / #12151B / #8A93A0 / #ECEEF1)
   so the art is the only colour that matters.
 - **Motion:** focus ~150ms, relight crossfade ~350ms debounced, then fully

@@ -67,4 +67,5 @@
 	<include file="Variables_Textures_Artwork_Widgets.xml" />
 	<include file="Variables_Textures_Flags.xml" />
 	<include file="Variables_Textures_Icons.xml" />
+	<include file="Includes_Couch.xml" />
 </includes>

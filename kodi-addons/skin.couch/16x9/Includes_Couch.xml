@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ================================================================
+     Couch (Stagelight) token layer, phase 1. Spec: couch/docs/specs/console-skin.md
+     The artwork lights the room: Couch_Live_Color is the focused item's
+     dominant colour (extracted by script.copacetic.helper into the
+     clearlogo_cropped-color window property) with the amber pilot light
+     as fallback. Everything Stagelight tints, tints through that ONE
+     variable. Textures in media/couch/ are white and take the colour
+     via colordiffuse.
+
+     Crash rules honoured here (spec C13): no conditional nested blocks
+     inside include definitions, every param has a non-empty default.
+     ================================================================ -->
+<includes>
+
+	<!-- 5% safe area at the 1920x1080 design res: content stays inside
+	     Couch_Safe_X/Y; only background art may cross it. -->
+	<constant name="Couch_Safe_X">96</constant>
+	<constant name="Couch_Safe_Y">54</constant>
+
+	<!-- Motion: focus moves fast, the relight breathes, then stillness.
+	     Times pre-divided by addon.xml's effectslowdown 0.7. -->
+	<constant name="Couch_Focus_Time">210</constant>
+	<constant name="Couch_Relight_Time">500</constant>
+
+	<!-- Ground palette (ARGB). Chrome carries NO fixed accent; colour
+	     only ever arrives through Couch_Live_Color.
+	       ground ff0a0c10 / panel ff12151b / line ff222630
+	       text ffeceef1 / muted ff8a93a0 / pilot ffe8a849       -->
+
+	<expression name="Couch_Has_Live_Color">!String.IsEmpty(Window(home).Property(clearlogo_cropped-color)) + !String.IsEqual(Window(home).Property(clearlogo_cropped-color),ff000000) + !String.IsEqual(Window(home).Property(clearlogo_cropped-color),ffffffff)</expression>
+
+	<variable name="Couch_Live_Color">
+		<value condition="$EXP[Couch_Has_Live_Color]">$INFO[Window(home).Property(clearlogo_cropped-color)]</value>
+		<value>ffe8a849</value>
+	</variable>
+
+	<!-- The focus mark. One grammar for the whole skin: a lit bar in the
+	     live colour under whatever has focus. -->
+	<include name="Couch_Lightbar">
+		<param name="x" default="0" />
+		<param name="y" default="0" />
+		<param name="width" default="240" />
+		<param name="visible" default="true" />
+		<definition>
+			<control type="image">
+				<left>$PARAM[x]</left>
+				<top>$PARAM[y]</top>
+				<width>$PARAM[width]</width>
+				<height>18</height>
+				<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
+				<aspectratio>stretch</aspectratio>
+				<visible>$PARAM[visible]</visible>
+			</control>
+		</definition>
+	</include>
+
+	<!-- The room light: a soft wash of the live colour over the ground.
+	     Sits between the ground colour and the content. -->
+	<include name="Couch_GlowField">
+		<param name="visible" default="true" />
+		<definition>
+			<control type="image">
+				<left>0</left>
+				<top>0</top>
+				<width>1920</width>
+				<height>1080</height>
+				<texture colordiffuse="$VAR[Couch_Live_Color]">couch/glow-radial.png</texture>
+				<aspectratio>stretch</aspectratio>
+				<visible>$PARAM[visible]</visible>
+			</control>
+		</definition>
+	</include>
+
+	<!-- Legibility scrim for text over full-bleed art. Place with y
+	     (its top edge); it fades to full ground colour by its bottom. -->
+	<include name="Couch_Scrim_Bottom">
+		<param name="y" default="600" />
+		<param name="height" default="480" />
+		<definition>
+			<control type="image">
+				<left>0</left>
+				<top>$PARAM[y]</top>
+				<width>1920</width>
+				<height>$PARAM[height]</height>
+				<texture>couch/scrim-bottom.png</texture>
+				<aspectratio>stretch</aspectratio>
+			</control>
+		</definition>
+	</include>
+
+</includes>
