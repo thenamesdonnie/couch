@@ -26,7 +26,89 @@ the user target) so couchd does NOT autostart on boot - started by hand
 15:41, unit fix belongs to the couchd session. Full detail in
 auto-memory `homelab-usb-disk-dropout.md`.
 
-## ▶ Resume here (updated 6 Aug 2026 ~21:00 — deploy day + evening build run)
+## ▶ Resume here (updated 7 Aug 2026 ~16:00 — hardware settled, one live incident)
+
+**READ FIRST - THE INCIDENT (7 Aug 01:55): our synthetic Steam guide press
+SUSPENDED THE MACHINE mid-game.** couchd's close_steam_menu fired one vpad
+guide press and the legacy guard fired three more inside 5s; in a live Big
+Picture session those presses drive Steam's OWN menu, reached its power
+options, and Steam called logind to sleep the box. Donnie lost an Elden Ring
+session and had to press the power button (TV had lost signal, PSU light
+blinking - it read exactly like a crash). Receipts: Steam's
+console-linux.txt "Closing timeline on system suspend" 01:55:13 plus a dbus
+method return at 01:55:16.466, the same millisecond logind logged "The system
+will suspend now!". FIXED + committed (1ac3ab0): both call sites are inert
+behind `~/couch/data/steam-guide-press-enabled` (absent = off). The verb still
+exists so the differ keeps comparing it. Model fingerprint now **90366b2bd84b**.
+**RULING NEEDED before re-enabling:** the underlying job (make Steam release
+the pad on handoff) still has no working mechanism - every close_steam_menu
+effect check has ALWAYS verdicted MISSED. Redesign must be: a press that
+cannot reach a power menu, gated on evidence the menu is really open, owned by
+exactly ONE stack. Aftershock also seen: Steam Input's virtual Xbox pad stayed
+registered alongside the real DualSense while a session was loaded, doubling
+every Kodi button press (cleared by closing the session).
+
+**DISPLAY / ADAPTER (7 Aug): Cable Matters 102101 DP->HDMI 2.1 is IN.**
+Output renamed again: **DisplayPort-2** (card1-DP-3); the TV's native HDMI
+input is now unused and its old xfconf profiles are deleted. Running
+**4K60 full colour**; Kodi re-set to 4K (mode string
+`0384002160059.94000pstd` - the 60.00 variant is NOT in Kodi's list and
+silently drops it back to 1080p). **4K120 does NOT work yet**: a hand-built
+CVT-RB 4K120 modeline applied on the DP side but produced NO SIGNAL, and the
+adapter advertises max 4K60. The adapter is ALREADY on the VRR firmware, so
+the remaining suspect is **Ultra HD Deep Colour being off for the HDMI port
+the adapter now sits in** (it is per-port; enabling it on the previous port is
+exactly what made 4K120 appear over native HDMI). NEXT STEP: Donnie enables
+Deep Colour for that input, then re-probe with
+`xrandr | grep -A3 "DisplayPort-2 connected"`. TV EDID advertises HDMI 2.1
+FRL rate 4 (32 Gbps), so the panel side is ready.
+LESSON: Kodi enumerates screen modes ONCE at startup - after any output
+change it must be restarted or it keeps re-applying a stale mode (it dragged
+the desktop back to 1080p twice). Also: the TV's EDID physical size is
+nonsense (reports ~72" for a 42" set) - never trust that field.
+
+**FAN CONTROL (7 Aug): case fan now on a measured curve, CPU fan untouched.**
+fancontrol installed + enabled; config lives in `~/fancontrol.conf` (copy of
+/etc/fancontrol). MEASURED, do not re-derive: **fan2/pwm2 is the CPU FAN**
+(ramped 1231->2125 RPM as Tctl went 37->77C) and **fan1/pwm1 is the CASE FAN**
+(sat at 1656 RPM throughout) - the header numbering lies, and trusting it made
+me quieten the CPU fan first. The case fan STALLS at duty 60 and needs 70 to
+start, so the floor is 80 (~1136 RPM) with a 110 restart kick. Curve follows
+**GPU edge temp** (55->85C), because SYSTIN is inert (pinned 32.0C through a
+77C CPU load) and Ryzen's Tctl is too spiky (idles 37-43C but flicks past 50C,
+which made the fan hunt). Verified ramping to ~2160 RPM under load and
+settling back. NOT yet verified across a reboot - check
+`systemctl is-active fancontrol` and that fan1 reads ~1136 RPM after the next
+boot (hwmon renumbering is the risk; fancontrol has a guard, failure is safe).
+
+**STILL OPEN (Donnie):**
+- Enable Ultra HD Deep Colour for the adapter's HDMI input -> then 4K120.
+- BIOS trip (he was heading there): **Re-Size BAR + Above 4G Decoding is OFF**
+  and worth real performance (kernel reports BAR=256M against 16GB VRAM);
+  **Power Supply Idle Control = Typical Current Idle** (the documented fix for
+  the unexplained 5 Aug idle freeze, still unexplained, memtest still never
+  run); Restore on AC Power Loss = Power On; WoL needs "Power On by PCI-E" AND
+  ErP/EuP DISABLED. Leave RAM at stock 2667 and Secure Boot OFF (patched
+  bluetooth.ko). After the BIOS trip, the NIC still needs `ethtool wol g`
+  set + persisted (currently `disabled`).
+- Wall mount for the 42" C5: **VESA 300x200, M6**, screws must not enter more
+  than ~20mm; small mounts often ship M4 only.
+- Witcher 3 mods: game IS installed (next-gen build, 58G, `mods/` created).
+  Blocked on Nexus needing a login - drop files at http://files.home into
+  `witcher3-mods` (or paste a CDN link) and the install is mine. No Script
+  Merger needed (texture/config mods only). RT costs roughly half the frame
+  rate on this card; benchmark plan is MangoHud, RT off vs tuned vs ultra.
+- Main PC (separate machine): colour glitching after taking the 4070. Likely
+  driver leftovers -> DDU then clean install. Diagnostic: does it glitch in
+  BIOS screens too (hardware/cable) or only in Windows (drivers)?
+
+**HDR AUTO-ROUTING: still built, installed and OFF** (both kill switches on:
+`~/couch/data/tv-autoroute-off` exists AND the addon toggle is false). Server
+half verified live. Turning it on needs Donnie watching a real HDR film,
+because Kodi 20 has no pre-play veto: the addon lets playback start then stops
+it, so expect a flicker, and Kodi writes a resume position on that stop.
+
+## ▶ Previous resume block (6 Aug 2026 ~21:00 — deploy day + evening build run)
 
 **EVENING BUILD RUN (6 Aug ~18:00-21:00, commits cbbe281..9d78c86):**
 - **DEPLOYED + verified tonight:** Play on TV (phone button + full remote:
