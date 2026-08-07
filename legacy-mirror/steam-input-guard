@@ -593,7 +593,24 @@ def main():
                     vpad_started = True
                     _cleanup['vpad'] = True
                     time.sleep(1.5)  # Steam needs a beat to enumerate it
-                subprocess.run([VPAD, 'press', 'guide'], check=False)
+                # DISABLED 7 Aug 2026 (live incident 01:55): a synthetic guide
+                # press drives Steam Big Picture's OWN menu, and a run of them
+                # (couchd fired one, this guard three more inside 5s) walked
+                # into Steam's power options and SUSPENDED THE MACHINE mid-game
+                # - Steam asked logind to sleep at 01:55:13, the TV lost signal,
+                # Donnie had to press the power button. The mechanism also has
+                # never demonstrably worked: every close_steam_menu effect check
+                # tonight verdicted MISSED. It stays off behind a file switch
+                # until it is redesigned (a press that cannot reach a power
+                # menu, gated on evidence the menu is actually open, and owned
+                # by ONE stack).
+                if os.path.exists(os.path.expanduser(
+                        '~/couch/data/steam-guide-press-enabled')):
+                    subprocess.run([VPAD, 'press', 'guide'], check=False)
+                else:
+                    say('guide press SKIPPED (disabled after the 7 Aug suspend '
+                        'incident; touch ~/couch/data/steam-guide-press-enabled '
+                        'to restore)')
                 if arm_b and not arm_a:
                     fixes.append('desktop-overlay-close')
                     say('closing steam desktop overlay (guide consumed after tap)')

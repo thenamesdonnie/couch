@@ -2147,7 +2147,22 @@ SNAP_CLEAR_ON_UNSUSPEND = True
 # measured beats - Steam needs ~1.5s to enumerate the pad and ~1s to act on the
 # press - which is why this is a detached shell line and not three calls in the
 # supervisor's loop (R6: the loop never blocks on Steam).
+# DISABLED 7 Aug 2026 after a live incident: a synthetic guide press drives
+# Steam Big Picture's OWN menu, and a run of them (this verb fired once, the
+# legacy guard three more inside 5s) reached Steam's power options and
+# SUSPENDED THE MACHINE mid-game at 01:55:13 - Steam called logind, the TV
+# lost signal, Donnie had to hit the power button. The mechanism has also
+# never confirmed: every close_steam_menu effect check has verdicted MISSED.
+# The verb still exists (removing it would be a vocabulary change and the
+# differ compares it), but its body is inert unless the file switch exists.
+# Redesign before re-enabling: a press that cannot reach a power menu, gated
+# on evidence the menu is really open, owned by exactly ONE stack.
+GUIDE_PRESS_ENABLED_FLAG = os.path.expanduser(
+    '~/couch/data/steam-guide-press-enabled')
 GUIDE_PRESS_SH = (
+    f'if [ ! -e "{GUIDE_PRESS_ENABLED_FLAG}" ]; then '
+    f'echo "guide press SKIPPED (disabled 7 Aug; see GUIDE_PRESS_SH)"; '
+    f'exit 0; fi; '
     f'if [ ! -e /tmp/vpad.fifo ]; then "{VPAD}" up >/dev/null 2>&1; '
     f'started=1; sleep 1.5; fi; "{VPAD}" press guide >/dev/null 2>&1; '
     f'sleep 1; [ -n "${{started:-}}" ] && "{VPAD}" quit >/dev/null 2>&1; true')
