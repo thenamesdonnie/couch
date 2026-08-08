@@ -935,6 +935,16 @@ app.get('/api/art/game', wrap(async (req, res) => {
   res.send(fs.readFileSync(p));
 }));
 
+app.get('/api/art/winthumb', wrap(async (req, res) => {
+  try {
+    const jpg = await screen.windowThumb(String(req.query.id || ''));
+    // Immutable by URL: the timestamp in the query is the cache key.
+    res.set('cache-control', 'public, max-age=86400, immutable');
+    res.set('content-type', 'image/jpeg');
+    res.send(jpg);
+  } catch { res.status(404).end(); }
+}));
+
 // --- state snapshot for first paint ---
 
 app.get('/api/state', wrap(async () => lastState));

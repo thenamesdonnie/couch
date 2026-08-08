@@ -207,8 +207,15 @@ def main():
                     cls = (w.get_wm_class() or ('', ''))[0]
                 except Exception:
                     cls = ''
+                # map_state 2 = IsViewable: the compositor holds real pixels
+                # for it (even obscured), so a live thumbnail capture works.
+                # Iconified/unmapped windows would capture black.
+                try:
+                    viewable = w.get_attributes().map_state == 2
+                except Exception:
+                    viewable = False
                 out.append({'id': hex(wid), 'title': nm, 'kodi': nm == 'Kodi',
-                            'cls': cls})
+                            'cls': cls, 'mapped': viewable})
             except Exception:
                 pass
         print(json.dumps(out))

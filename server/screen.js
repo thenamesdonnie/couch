@@ -407,7 +407,34 @@ export async function windows() {
       }
     }
   }
+  // Alt-tab thumbnails: any window still on screen (mapped - the compositor
+  // holds real pixels even when Kodi covers it) gets a live-capture URL. The
+  // timestamp busts Kodi's by-URL texture cache, same lesson as pause-snap's
+  // stamped filenames. Frozen games keep their freeze-frame thumb from above
+  // (truth at suspend time beats a capture of an unmapped window).
+  const ts = Date.now();
+  for (const w of list) {
+    if (!w.thumb && w.mapped && !w.kodi) {
+      w.thumb = `/api/art/winthumb?id=${w.id}&t=${ts}`;
+    }
+  }
   return [...list, { ...DESKTOP }];
+}
+
+// One X window, as pixels, resized for a tile. import(1) reads through the
+// compositor so an obscured window still captures; an unmapped one would be
+// black, which is why windows() only hands this URL to mapped rows.
+export async function windowThumb(id) {
+  if (!/^0x[0-9a-f]+$/i.test(id)) throw new Error('bad window id');
+  return await new Promise((resolve, reject) => {
+    execFile('import', ['-silent', '-window', id, '-resize', '480', 'jpeg:-'],
+      { env: XENV, encoding: 'buffer', maxBuffer: 4 * 1024 * 1024, timeout: 4000 },
+      (err, stdout) => {
+        if (err || !stdout || stdout.length < 1000) {
+          reject(err || new Error('empty capture'));
+        } else resolve(stdout);
+      });
+  });
 }
 
 export async function activateWindow(id) {
