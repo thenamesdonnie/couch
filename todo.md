@@ -163,13 +163,17 @@ while Radarr already avoids it twice over), and Cache-Control on JSON.
 502, it costs ~3.5s on every YouTube tab open, and the app retries forever.
 Needs the Google device-code sign-in again.
 
-ANSWERED, the paused-card question: the Games row does NOT rebuild on Home -
-Container.Refresh is still a no-op there because Home.xml is KEEP_IN_MEMORY,
-re-tested properly on the Stagelight home. So the minimise ANIMATION is
-instant (~0.2s, a window property) but the card's steady state and the
-"- paused" label wait until you leave the row and come back. A dynamic URL
-string on Home.xml:386 would fix it and is proven to work; it is [C] because a
-rebuild may reset row focus and that wants your eyes.
+ANSWERED AND FIXED, the paused-card question. Container.Refresh is a no-op on
+Home (Home.xml is KEEP_IN_MEMORY), so the Games row never corrected itself:
+measured with a real quit, game-launch cleared the flag at 107ms and deleted
+the freeze-frames at 164ms while the row kept reading "- paused" and kept
+drawing a card whose image file was gone - Kodi had cached the texture. Not
+lag; it never corrected itself at all until you left the row and came back.
+The row's content URL now carries $INFO[Window(Home).Property(CouchGamesRev)]
+and pause-snap stamps it on every capture and every clear. Verified both
+directions on the TV, and focus stayed on item #4 across both rebuilds, which
+was the one thing worth checking. The minimise ANIMATION was always instant
+(~0.2s) because it rides a window property, not the row.
 
 **STILL NEEDS DONNIE'S EYES ON THE TV** — nothing else can settle these:
 picture, audio over eARC, 4K120; the DualSense actually driving the UI (the
