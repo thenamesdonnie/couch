@@ -656,6 +656,27 @@ def g_released_double(o):
             and gesture.is_tap(o.press_duration))
 
 
+def g_tap_window_fire(o):
+    """The deferred BOUND tap's window shut with no second press: fire it.
+
+    Ordered before the plain expiry in 'tap-wait', so an unbound tap still
+    falls through to idle exactly as before. is_tap() for the same reason the
+    emission re-checks it: with `hold` unbound a >=0.9s press releases into
+    'tap-wait' and must not fire the tap action."""
+    return (o.binding('tap') != 'none'
+            and gesture.is_tap(o.press_duration, o.hold_seconds)
+            and gesture.double_tap_window_over(_since(o, 'gesture'),
+                                               o.double_tap_seconds))
+
+
+def g_tap_decided(o):
+    """The tap's bound action was emitted, whatever it is bound to - the
+    same state-closing rule as g_double_tap_decided one tier up."""
+    return any(k.count('|') >= 2
+               and k.split('|', 2)[2].startswith('gesture:ps-tap')
+               and (o.mono - t) < 3.0 for k, t in o.recent.items())
+
+
 def g_double_window_over(o):
     """No second press came: the single tap is final and we go quiet.
 
@@ -912,7 +933,17 @@ TRANSITIONS = {
                      # PAUSED game waited out the double-tap window here (see
                      # g_released_tap_resume) and now means what it always meant.
                      ('tap_resume_due', 'tap-resume', 'paused-tap-window-expired'),
+                     # The deferred BOUND tap (tap + double-tap both bound
+                     # since 8 Aug 2026): window shut, no second press - the
+                     # tap fires from its own state so the emission below gets
+                     # a pass to run before the region reaches idle.
+                     ('tap_window_fire', 'tap-fired', 'tap-window-expired'),
                      ('double_window_over', 'idle', 'double-tap-window-expired')],
+        # Reachable ONLY from tap-wait via the shut window: the single tap is
+        # now final and its bound action emits here (mirroring 'double-tap').
+        'tap-fired': [('pad_unknown', UNKNOWN, 'pad-observer-blind'),
+                      ('button_down', 'down', 'ps-press'),
+                      ('tap_decided', 'idle', 'tap-decided')],
         # Reachable ONLY from tap-wait, which is why a double-tap can never
         # follow a tap that resumed a paused game: that tap goes to
         # 'tap-resume' instead, and the resume owns the pad from there.
@@ -1732,9 +1763,9 @@ def reconcile(o):
     if g == 'double-tap':
         out += action_intents(o, 'double_tap', appid, running)
 
-    if (g == 'tap-wait' and gesture.is_tap(o.press_duration, o.hold_seconds)
-            and (o.binding('double_tap') == 'none'
-                 or g_double_window_over(o))):
+    if (g in ('tap-wait', 'tap-fired')
+            and gesture.is_tap(o.press_duration, o.hold_seconds)
+            and (g == 'tap-fired' or o.binding('double_tap') == 'none')):
         # A tap that did nothing else. With the double-tap unbound it fires at
         # once; with both bound it fires only when the window shuts with no
         # second press - the same deferral the watcher runs (Donnie accepted
@@ -3142,6 +3173,9 @@ class ActingExecutor(Executor):
     def _a_show(self, it, o):
         if it.subject == 'kodi':
             return self.act.raise_kodi()
+        if it.subject == 'home':
+            self.act.raise_kodi()
+            return self.act.kodi('GUI.ActivateWindow', {'window': 'home'})
         if it.subject == 'power-menu':
             return self.act.kodi('GUI.ActivateWindow',
                                  {'window': 'shutdownmenu'})
