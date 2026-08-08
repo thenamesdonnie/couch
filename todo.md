@@ -271,6 +271,20 @@ loop is the cold boot nobody was watching.
 Cold-launch Bloodborne (4K + skip intro + the whole cinematic), PS tap in-game
 (the fix + the minimise animation's live timing), hold-at-home power screen,
 first earned trophy (does shadPS4 record unlocks?), phone slider with the TV on.
+Also: the switcher's new power bar with the TV actually on — does a 12px amber
+underline read from the couch, and does "Controller + TV off" do the right
+thing for real? Its parameter crossing is proved, its side effects are not
+(deliberately: testing it meant driving the television).
+
+### Open: the power bar is unreachable when nothing else is running
+`script.couch.switcher`'s main() returns early with "Nothing else is running"
+when the window list has no non-Kodi rows, which was right when the dialog was
+only a switcher — but the power bar is now the other half of it, and "turn the
+controller off" is *most* wanted when you are sitting in Kodi with nothing
+running. Not changed yet because the PS-button hold menu still covers that case
+and opening a switcher with an empty switch list needs a considered empty
+state (focus has to start on the bar; 9000 is the defaultcontrol). Decide:
+open with the bar only, or leave the two routes as they are.
 
 ### Levers not yet flipped
 couchd `owns.conf` still only has `gestures` - transitions/guard/reconcile are
