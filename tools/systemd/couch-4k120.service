@@ -1,0 +1,12 @@
+[Unit]
+Description=4K120 via DP->HDMI PCON: force YCbCr420 stream building (resets each boot)
+# The LG C5 accepts 4K120 only in 4:2:0 through the DP1.4 adapter on kernel
+# 7.0 (full colour needs the 7.2 DSC path). This flips amdgpu's per-connector
+# debugfs switch for every DP connector - the TV is the only DP display here.
+# Recipe proven live 8 Aug 2026; see homelab-tv-control memory.
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for f in /sys/kernel/debug/dri/*/DP-*/force_yuv420_output; do echo 1 > "$f" 2>/dev/null || true; done'
+[Install]
+WantedBy=multi-user.target
