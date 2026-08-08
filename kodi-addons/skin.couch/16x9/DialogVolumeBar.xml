@@ -1,18 +1,68 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Stagelight volume bar (8 Aug 2026): Copacetic reused its top-right
+     notification slot, which sat on top of the clock and corner strip. This
+     is a self-contained pill along the BOTTOM CENTRE: a lightbar-style meter
+     that fills in the live colour, out of the way of everything up top. -->
 <window>
 	<!-- volumebar -->
 	<include content="Notification_OpenClose_Fade_Delayed_Animation" />
 	<zorder>3</zorder>
 	<controls>
-		<control type="progress" id="63">
-			<info>Player.Volume</info>
+		<control type="group">
+			<centerleft>50%</centerleft>
+			<top>936</top>
+			<width>540</width>
+			<height>96</height>
+
+			<!-- panel -->
+			<control type="image">
+				<left>0</left>
+				<top>0</top>
+				<width>540</width>
+				<height>96</height>
+				<texture border="20" colordiffuse="e60a0c10">couch/pill.png</texture>
+			</control>
+
+			<!-- speaker glyph (muted vs level share one icon; the meter tells
+			     the story) -->
+			<control type="image">
+				<left>34</left>
+				<top>30</top>
+				<width>36</width>
+				<height>36</height>
+				<texture colordiffuse="ffeceef1">couch/ic-volume.png</texture>
+				<visible>!Player.Muted</visible>
+			</control>
+			<control type="image">
+				<left>34</left>
+				<top>30</top>
+				<width>36</width>
+				<height>36</height>
+				<texture colordiffuse="ffff5174">couch/ic-mute.png</texture>
+				<visible>Player.Muted</visible>
+			</control>
+
+			<!-- track -->
+			<control type="image">
+				<left>96</left>
+				<top>44</top>
+				<width>430</width>
+				<height>8</height>
+				<texture border="4" colordiffuse="33ffffff">couch/pill.png</texture>
+			</control>
+			<!-- fill: a progress control clipped to the same rounded track -->
+			<control type="progress" id="63">
+				<left>96</left>
+				<top>44</top>
+				<width>430</width>
+				<height>8</height>
+				<info>Player.Volume</info>
+				<texturebg border="4" colordiffuse="00000000">couch/pill.png</texturebg>
+				<lefttexture>-</lefttexture>
+				<righttexture>-</righttexture>
+				<overlaytexture>-</overlaytexture>
+				<midtexture border="4" colordiffuse="$VAR[Couch_Live_Color]">couch/pill.png</midtexture>
+			</control>
 		</control>
-		<include content="Shared_Dialog_Layouts">
-			<param name="type" value="Notification" />
-			<param name="visible" value="!Window.IsVisible(notification) + !Window.IsVisible(extendedprogressdialog)" />
-			<param name="content_visible" value="!Window.IsVisible(notification) + !Window.IsVisible(extendedprogressdialog)" />
-			<param name="label1" value="$VAR[Notification_Widget_Title_Label]" />
-			<param name="label2" value="$VAR[Notification_Widget_Info_Label]" />
-		</include>
 	</controls>
 </window>
