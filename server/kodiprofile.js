@@ -43,15 +43,17 @@ function read(file) {
 // flavour flip, and a stale answer here means reading the wrong Kodi's
 // jellyfin credentials, which fails in a way that looks like Jellyfin being
 // down. The cost is two stat()s on a path that is already in page cache.
+// The CHOICE is deliberately not a fallback for the RECORD. `kodi21-migrate
+// switch` writes the choice, and until Kodi is relaunched the running Kodi is
+// still the old one - reading the choice as the record points this server at
+// a profile that does not exist yet, which surfaces as "Jellyfin credentials
+// unavailable" and reads like Jellyfin being down. An intention is not a fact.
 export function flavour({ active = true } = {}) {
-  const files = active ? [ACTIVE_FILE, FLAVOUR_FILE] : [FLAVOUR_FILE];
-  for (const file of files) {
-    const word = read(file);
-    // An unrecognised word is treated as absent, never trusted: a typo must
-    // not point the server at a directory that does not exist.
-    if (Object.prototype.hasOwnProperty.call(FLAVOURS, word)) return word;
-  }
-  return DEFAULT_FLAVOUR;
+  const word = read(active ? ACTIVE_FILE : FLAVOUR_FILE);
+  // An unrecognised word is treated as absent, never trusted: a typo must
+  // not point the server at a directory that does not exist.
+  return Object.prototype.hasOwnProperty.call(FLAVOURS, word)
+    ? word : DEFAULT_FLAVOUR;
 }
 
 export function profileDir(name = flavour()) {

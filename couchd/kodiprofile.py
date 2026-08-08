@@ -56,17 +56,25 @@ def flavour(active=True):
     """'apt' or 'flatpak'.
 
     `active=True` (the default, and what every reader wants) answers with the
-    flavour that is actually running. `active=False` answers with the choice,
-    which is what a launcher wants. An unrecognised word in either file is
-    treated as absent rather than trusted: this decides which directory the
-    console's settings are read from, and a typo must not send it somewhere
-    that does not exist.
+    flavour that is actually RUNNING, from the record kodi-tv writes at
+    launch. `active=False` answers with the CHOICE, which is what a launcher
+    wants.
+
+    The choice is deliberately NOT a fallback for the record, and that is the
+    whole subtlety of this function. It was written the other way first and
+    the bug showed up within the hour: `kodi21-migrate switch` writes the
+    choice, and until Kodi is actually relaunched the running Kodi is still
+    the old one. Reading the choice as though it were the record pointed
+    gestureconf at a profile that did not exist yet, so it fell back to the
+    default bindings without a word and the PS button quietly changed
+    behaviour under a live console. An intention is not a fact.
+
+    An unrecognised word is treated as absent rather than trusted: this
+    decides which directory the console's settings come from, and a typo must
+    not send it somewhere that does not exist.
     """
-    for path in ([ACTIVE_FILE, FLAVOUR_FILE] if active else [FLAVOUR_FILE]):
-        word = _read(path)
-        if word in FLAVOURS:
-            return word
-    return DEFAULT
+    word = _read(ACTIVE_FILE if active else FLAVOUR_FILE)
+    return word if word in FLAVOURS else DEFAULT
 
 
 def profile_dir(name=None):

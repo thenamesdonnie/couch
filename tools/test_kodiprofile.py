@@ -135,6 +135,38 @@ def test_the_record_beats_the_choice(py_files):
     assert py.flavour(active=False) == 'flatpak'
 
 
+def test_a_choice_with_no_launch_yet_is_still_apt(py_files):
+    """THE REGRESSION. The first cut let the record fall back to the choice,
+    and this is the state that broke it - the one that actually occurs, right
+    after `kodi21-migrate switch` and before Kodi is relaunched: the choice
+    says flatpak, nothing has launched it, apt-Kodi is still on screen.
+
+    Reading the choice as though it were the record sent gestureconf to a
+    profile that did not exist yet, where it found no settings.xml and fell
+    back to DEFAULT_BINDINGS in silence - so the PS button quietly stopped
+    doing what Donnie had bound it to, under a live console with a game
+    suspended. An intention is not a fact.
+    """
+    py_files.choice('flatpak')                      # switch has run
+    # ...and no active file at all, because nothing has launched since
+    assert py.flavour() == 'apt'
+    assert py.profile_dir() == os.path.join(HOME, '.kodi')
+    assert py.flavour(active=False) == 'flatpak'    # the launcher still sees it
+
+
+def test_the_js_half_does_not_fall_back_to_the_choice_either(tmp_path):
+    """Same regression, executed in Node - where the symptom would have been
+    'Jellyfin credentials unavailable', which reads like Jellyfin being down
+    rather than like a path bug."""
+    home = tmp_path / 'home'
+    (home / 'couch' / 'data').mkdir(parents=True)
+    (home / 'couch' / 'data' / 'kodi-flavour').write_text('flatpak\n')
+    out = _node({'HOME': str(home)})
+    assert out['flavour'] == 'apt'
+    assert out['choice'] == 'flatpak'
+    assert out['resolvedProfile'] == str(home / '.kodi')
+
+
 def test_a_launched_flavour_moves_every_reader(py_files):
     py_files.choice('flatpak')
     py_files.active('flatpak')
