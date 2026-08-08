@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Bloodborne (shadPS4) texture/file mod installer.
+#
+#   bb-mod-install list                 - show archives in the drop-zone + installed mods
+#   bb-mod-install install <archive>    - install one archive from the drop-zone
+#   bb-mod-install install all          - install every archive in the drop-zone
+#   bb-mod-install revert <modname>     - undo a mod (restore originals, remove added files)
+#
+# Mods ship a dvdroot_ps4 folder that merges over the game dump's dvdroot_ps4.
+# Every file a mod overwrites is backed up first, and every file it adds is
+# recorded, so revert restores the dump exactly. Install order matters if two
+# mods touch the same file; the last one in wins, and reverting restores what
+# was there just before that mod went in.
+set -euo pipefail
+
+DROP="${BB_DROP_DIR:-$HOME/fileshare/bloodborne-mods}"
+GAME="${BB_GAME_DIR:-$HOME/games/ps4/CUSA00900}"
+STATE="${BB_STATE_DIR:-$HOME/games/ps4/bloodborne/mod-backups}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+extract() { # archive -> dir
+    local a="$1" d="$2"
+    case "${a,,}" in
+        *.7z)  7z x -y -o"$d" "$a" >/dev/null ;;
+        *.zip) unzip -qo "$a" -d "$d" ;;
+        *.rar) unrar x -y -idq "$a" "$d/" ;;
+        *) die "don't know how to extract $a" ;;
+    esac
+}
+
+cmd_list() {
+    echo "Drop-zone ($DROP):"
+    find "$DROP" -maxdepth 1 \( -iname '*.7z' -o -iname '*.zip' -o -iname '*.rar' \) -printf '  %f  (%s bytes)\n' 2>/dev/null || true
+    echo "Installed mods ($STATE):"
+    [ -d "$STATE" ] && ls -1 "$STATE" 2>/dev/null | sed 's/^/  /' || echo "  (none)"
+}
+
+cmd_install() {
+    local arc="$1"
+    [ -f "$arc" ] || arc="$DROP/$arc"
+    [ -f "$arc" ] || die "archive not found: $1"
+    [ -d "$GAME/dvdroot_ps4" ] || die "game dump not found at $GAME/dvdroot_ps4"
+    local name; name=$(basename "$arc"); name="${name%.*}"
+    local bdir="$STATE/$name"
+    [ -e "$bdir" ] && die "'$name' already installed - revert it first to reinstall"
+
+    local tmp; tmp=$(mktemp -d /tmp/bbmod.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    echo "extracting $(basename "$arc")..."
+    extract "$arc" "$tmp"
+
+    # the mod's payload is wherever dvdroot_ps4 lives in the archive
+    local src=""
+    local roots; mapfile -t roots < <(find "$tmp" -type d -name dvdroot_ps4)
+    if [ ${#roots[@]} -eq 1 ]; then
+        src="${roots[0]}"
+    elif [ ${#roots[@]} -gt 1 ]; then
+        die "multiple dvdroot_ps4 folders in the archive (variants?) - install the wanted one by hand from $tmp"
+    else
+        # BB Reborne layout: no dvdroot_ps4 folder, just a single top-level
+        # folder (e.g. BBReborne_textures_0) whose CONTENTS mirror dvdroot_ps4
+        # (map/ chr/ obj/ param/ ...). Accept that folder as the payload root
+        # if its children look like dump categories.
+        local tops; mapfile -t tops < <(find "$tmp" -mindepth 1 -maxdepth 1 -type d)
+        [ ${#tops[@]} -eq 1 ] || die "no dvdroot_ps4 folder and not a single-top-folder mod - inspect $tmp by hand"
+        if find "${tops[0]}" -mindepth 1 -maxdepth 1 -type d \
+             \( -name map -o -name chr -o -name obj -o -name param -o -name menu \
+                -o -name sfx -o -name msg -o -name parts -o -name facegen -o -name sound \
+                -o -name paramdef -o -name mtd -o -name shader -o -name event \
+                -o -name action -o -name remo -o -name script -o -name movie -o -name other \) \
+             | grep -q .; then
+            src="${tops[0]}"
+            echo "  (BB Reborne layout: merging $(basename "${tops[0]}")/ into dvdroot_ps4)"
+        else
+            die "archive layout not recognised (no dvdroot_ps4, top folder isn't dump-shaped) - inspect $tmp by hand"
+        fi
+    fi
+    trap - EXIT
+    mkdir -p "$bdir/files"
+    : > "$bdir/added.txt"
+    local n_new=0 n_repl=0
+    while IFS= read -r -d '' f; do
+        local rel="${f#"$src"/}"
+        local dst="$GAME/dvdroot_ps4/$rel"
+        if [ -f "$dst" ]; then
+            mkdir -p "$bdir/files/$(dirname "$rel")"
+            cp -p "$dst" "$bdir/files/$rel"
+            n_repl=$((n_repl+1))
+        else
+            printf '%s\n' "$rel" >> "$bdir/added.txt"
+            n_new=$((n_new+1))
+        fi
+        mkdir -p "$(dirname "$dst")"
+        cp -p "$f" "$dst"
+    done < <(find "$src" -type f -print0)
+    rm -rf "$tmp"
+    echo "installed '$name': $n_repl file(s) replaced (originals backed up), $n_new added"
+    echo "backup: $bdir"
+}
+
+cmd_revert() {
+    local name="$1" bdir="$STATE/$1"
+    [ -d "$bdir" ] || die "no installed mod called '$name' (see: bb-mod-install list)"
+    # remove files the mod added
+    while IFS= read -r rel; do
+        [ -n "$rel" ] && rm -f "$GAME/dvdroot_ps4/$rel"
+    done < "$bdir/added.txt"
+    # restore originals
+    if [ -d "$bdir/files" ]; then
+        (cd "$bdir/files" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+            rel="${rel#./}"
+            mkdir -p "$GAME/dvdroot_ps4/$(dirname "$rel")"
+            cp -p "$bdir/files/$rel" "$GAME/dvdroot_ps4/$rel"
+        done
+    fi
+    find "$GAME/dvdroot_ps4" -type d -empty -delete
+    rm -rf "$bdir"
+    echo "reverted '$name'"
+}
+
+case "${1:-list}" in
+    list) cmd_list ;;
+    install)
+        [ $# -ge 2 ] || die "usage: bb-mod-install install <archive|all>"
+        if [ "$2" = all ]; then
+            found=0
+            for a in "$DROP"/*.7z "$DROP"/*.zip "$DROP"/*.rar; do
+                [ -f "$a" ] || continue
+                found=1; cmd_install "$a"
+            done
+            [ "$found" = 1 ] || die "no archives in $DROP"
+        else
+            cmd_install "$2"
+        fi ;;
+    revert)
+        [ $# -ge 2 ] || die "usage: bb-mod-install revert <modname>"
+        cmd_revert "$2" ;;
+    *) die "usage: bb-mod-install [list | install <archive|all> | revert <modname>]" ;;
+esac
