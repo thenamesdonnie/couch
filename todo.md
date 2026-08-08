@@ -59,9 +59,37 @@ Research receipts: docs/research/console-ui-patterns.md +
       (live window captures via /api/art/winthumb, mapped-only, compositor
       reads obscured windows; phone switcher gets them free).
 - [x] kodi-tv flock (twin-instance crash-race fixed, 8 Aug).
-- [ ] Phase 4: player OSD (lightbar = seek bar). Phase 5: dialog re-theme
-      sweep (tokens only, structure untouched). Games in search. Continue
-      progress bars.
+SLEEP SESSION (8 Aug ~06:45, "fix everything while i sleep") - done, all
+verified loading + committed, TV left OFF:
+- [x] Continue tiles: resume progress bar (CouchProgress property, helper
+      1.1.7.4).
+- [x] Volume bar: moved off the top-right clock to a bottom-centre pill
+      (DialogVolumeBar, no dB number - Kodi only exposes dB).
+- [x] Power menu (PS-hold / corner icon): Stagelight tile sheet replaces
+      Copacetic's DialogButtonMenu (Home/Suspend/Restart/Power off/Exit,
+      Lucide icons, amber halo). ondown=Close was self-closing it - fixed.
+- [x] Film seek bar fill -> amber (Seekbar_Focused_Color default, token-only,
+      seekbar STRUCTURE untouched so playback cannot break).
+- [x] Stock dialog accent -> amber (Accent_Hex ff5174 -> e8a849): select,
+      confirm, context, keyboard, settings, notification all match Stagelight
+      now via one variable. Hand-built windows use literals, unaffected.
+- [x] 4K120 WORKS (kernel 7.0, 4:2:0 via force_yuv420) - persistence staged,
+      NEEDS: sudo cp ~/couch/tools/systemd/couch-4k120.service /etc/systemd/
+      system/ && systemctl enable it.
+NOT done (deliberately - need Donnie awake / would wake the TV / risk the
+working UI blind):
+- [ ] Full player OSD restyle (play/pause controls, info) - needs watched
+      playback, which fires OnPlay -> tv-waker. Seek fill amber is the only
+      safe piece done.
+- [ ] YouTube row on Library - adding a 5th section reworks the slide-stack
+      geometry; risky blind, do it awake.
+- [ ] Games in search - needs a custom search window (globalsearch is
+      library-only). Bigger feature.
+- [ ] Notification/volume toasts still overlap the clock corner on the rare
+      stock-notification path (volume's own bar is fixed; the toast is
+      Copacetic's shared layout).
+- [ ] Continue/Next up rows take ~10s to paint (plugin walks the library per
+      open) - consider caching.
 - [ ] Open: wrap-around ships behind a skin setting (Donnie feels both);
       nav sounds later, off switch mandatory.
 - Gotchas for the builder: C13 crash rules (no conditional nested blocks in
