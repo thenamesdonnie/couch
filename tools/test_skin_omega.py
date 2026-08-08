@@ -167,6 +167,42 @@ def test_every_referenced_include_is_defined():
     assert 'favourites_Views' in defined
 
 
+#: files this session touched for Omega. Their $VAR/$EXP references get the
+#: strict treatment; the rest of the skin has a pre-existing tail of
+#: parameter-interpolated names that no static check can resolve.
+TOUCHED_FOR_OMEGA = [
+    'MyFavourites.xml', 'Templates_MyWindows.xml', 'Navigation.xml',
+    'Notifications.xml', 'Templates_Dialogs.xml', 'FileBrowser.xml',
+    'Viewtype_50_List.xml',
+]
+
+
+def test_the_omega_edits_reference_nothing_undefined():
+    """The other way a skin edit fails quietly: a `$VAR[]` or `$EXP[]` that
+    nobody defines renders as empty rather than as an error. MyFavourites.xml
+    and favourites_Views were written against THIS fork's vocabulary
+    precisely because upstream's Omega version wants a `Background_IsLight`
+    expression Copacetic 1.6.1 never had.
+    """
+    variables, expressions = set(), set()
+    for _, text in loaded_text():
+        variables |= set(re.findall(r'<variable name="([^"]+)"', text))
+        expressions |= set(re.findall(r'<expression name="([^"]+)"', text))
+
+    missing = []
+    for name in TOUCHED_FOR_OMEGA:
+        text = open(os.path.join(XML, name), encoding='utf-8').read()
+        for ref in set(re.findall(r'\$VAR\[([^\],]+)', text)):
+            # $PARAM is substituted before the name is looked up, so a name
+            # built out of one cannot be resolved here.
+            if '$PARAM' not in ref and ref not in variables:
+                missing.append('%s: $VAR[%s]' % (name, ref))
+        for ref in set(re.findall(r'\$EXP\[([^\]]+)\]', text)):
+            if '$PARAM' not in ref and ref not in expressions:
+                missing.append('%s: $EXP[%s]' % (name, ref))
+    assert missing == [], '\n'.join(missing)
+
+
 # =========================================================================
 # the live wire
 # =========================================================================
