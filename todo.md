@@ -134,11 +134,14 @@ Decided rather than escalated: **addon updates are now NOTIFY-ONLY** (five
 addons carry hand-applied patches whose only protection is out-ranking the
 repo version); the dead `Custom_1196_Couch_HaloPicker.xml` deleted.
 
-**ONE [B] LEFT FROM THE AUDIT:** `kodi-tv`'s crash-relaunch has never been
-observed through `flatpak run`. The loop keys on exit 131-136/139, the
-in-sandbox `kodi.sh` does `exit $RET`, and `server/sys.js`'s hardened restart
-depends on the same path - but nobody has watched it happen. Next time Kodi is
-being restarted anyway, crash it once and confirm the watchdog brings it back.
+The audit's one [B] is now CLOSED too: `kodi-tv`'s crash-relaunch **does**
+propagate through `flatpak run`. Verified by `POST /api/system/kodi-restart`
+(server/sys.js SIGABRTing kodi.bin) - back in ~6s, wrapper still supervising.
+So the hardened restart the phone app offers still works on Kodi 21.
+
+**Home tweak the same evening:** a paused game's row tile keeps its own cover
+art now; only the dedicated card shows the screencap (Donnie: "we now have a
+dedicated space"). `tools/test_games_paused_tile.py`.
 
 **STILL NEEDS DONNIE'S EYES ON THE TV** — nothing else can settle these:
 picture, audio over eARC, 4K120; the DualSense actually driving the UI (the
