@@ -380,7 +380,7 @@
 			<height>40</height>
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
-			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]</label>
+			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]$INFO[Container(9000).ListItem.Property(CouchAchievements),   ·   ]</label>
 			<visible>!Control.HasFocus(9001)</visible>
 		</control>
 		<!-- the Play pill -->

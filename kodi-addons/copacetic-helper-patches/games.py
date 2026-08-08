@@ -12,6 +12,7 @@
 # dump's own metadata, and a "shadPS4" tile opens the emulator's library. Both
 # launch through the same game-launch handoff as Steam.
 import glob
+import json
 import os
 import re
 import struct
@@ -147,6 +148,32 @@ def _fmt_lastplayed(ts):
 HERO_DIR = os.path.expanduser('~/.local/share/game-tiles/heroes')
 HERO_FETCHER = os.path.expanduser('~/couch/tools/fetch-steam-heroes')
 HERO_STAMP = os.path.join(HERO_DIR, '.last-fetch')
+
+# Achievement counts (got/total) cached by tools/fetch-steam-achievements,
+# refreshed hourly in the background. Empty until the Steam profile's "Game
+# details" privacy is Public - the row just shows no achievement line then.
+ACH_CACHE = os.path.expanduser('~/.local/share/game-tiles/achievements.json')
+ACH_FETCHER = os.path.expanduser('~/couch/tools/fetch-steam-achievements')
+ACH_STAMP = os.path.expanduser('~/.local/share/game-tiles/.ach-fetch')
+
+
+def _achievements():
+    try:
+        return json.load(open(ACH_CACHE))
+    except Exception:
+        return {}
+
+
+def _ach_refresh():
+    try:
+        import time
+        if (not os.path.isfile(ACH_STAMP)
+                or time.time() - os.path.getmtime(ACH_STAMP) > 3600):
+            open(ACH_STAMP, 'w').close()
+            subprocess.Popen(['python3', ACH_FETCHER], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 def _hero_refresh():
@@ -379,7 +406,9 @@ def games_route(info, params):
         pass
 
     _hero_refresh()
+    _ach_refresh()
     steam_pt = _steam_playtimes()
+    ach = _achievements()
 
     # One merged, recency-sorted list of every game (Steam + PS4), so the row
     # leads with whatever was played last regardless of platform. Never-played
@@ -406,6 +435,8 @@ def games_route(info, params):
             item.setArt(art)
             item.setProperty('CouchPlaytime', _fmt_playtime(steam_pt.get(appid, 0)))
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
+            if ach.get(appid):
+                item.setProperty('CouchAchievements', ach[appid] + ' achievements')
             li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
         else:
             title, eboot, icon, thumb = payload

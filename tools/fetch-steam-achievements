@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Cache Steam achievement counts (got/total) per installed game.
+
+The Games row shows "37/63 achievements" under each game. Hitting Steam's
+Web API per game on every listing would be slow and rate-limited, so this
+fetches once and writes a cache JSON that games.py reads. Run in the
+background; games.py re-runs it at most once an hour.
+
+Needs STEAM_API_KEY + STEAM_ID in ~/couch/.env AND the Steam profile's
+"Game details" privacy set to Public (Steam -> Edit Profile -> Privacy).
+Until that's public every game returns "Profile is not public" and the
+cache stays empty - the row simply shows no achievement line, no error.
+
+    cache: ~/.local/share/game-tiles/achievements.json  {appid: "got/total"}
+"""
+import glob
+import json
+import os
+import re
+import sys
+import urllib.request
+
+HOME = os.path.expanduser('~')
+ENV = os.path.join(HOME, 'couch/.env')
+STEAMAPPS = os.path.join(HOME, '.steam/steam/steamapps')
+CACHE = os.path.join(HOME, '.local/share/game-tiles/achievements.json')
+API = 'https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/'
+
+
+def env():
+    out = {}
+    try:
+        for line in open(ENV):
+            m = re.match(r'\s*([A-Z_]+)\s*=\s*(.+?)\s*$', line)
+            if m:
+                out[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return out
+
+
+def installed_appids():
+    ids = []
+    for p in glob.glob(os.path.join(STEAMAPPS, 'appmanifest_*.acf')):
+        m = re.search(r'appmanifest_(\d+)\.acf$', p)
+        if m:
+            ids.append(m.group(1))
+    return ids
+
+
+def fetch(appid, key, sid):
+    url = '%s?appid=%s&key=%s&steamid=%s' % (API, appid, key, sid)
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            d = json.load(r).get('playerstats', {})
+    except Exception:
+        return None
+    if not d.get('success'):
+        return None  # profile private, or game has no achievements
+    ach = d.get('achievements', [])
+    if not ach:
+        return None
+    got = sum(1 for a in ach if a.get('achieved'))
+    return '%d/%d' % (got, len(ach))
+
+
+def main():
+    e = env()
+    key, sid = e.get('STEAM_API_KEY'), e.get('STEAM_ID')
+    if not key or not sid:
+        sys.exit('no STEAM_API_KEY / STEAM_ID in %s' % ENV)
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    out = {}
+    try:
+        out = json.load(open(CACHE))
+    except Exception:
+        pass
+    changed = 0
+    for appid in installed_appids():
+        v = fetch(appid, key, sid)
+        if v is not None and out.get(appid) != v:
+            out[appid] = v
+            changed += 1
+        elif v is None and appid in out:
+            # keep the last-known value if a single call blips; only a full
+            # privacy block leaves the whole run empty, which we tolerate.
+            pass
+    tmp = CACHE + '.part'
+    json.dump(out, open(tmp, 'w'))
+    os.replace(tmp, CACHE)
+    print('achievements: %d games cached, %d updated' % (len(out), changed))
+
+
+if __name__ == '__main__':
+    main()
