@@ -253,7 +253,17 @@
 			<label>$INFO[System.Time]</label>
 		</control>
 
-		<!-- the Library tile: first stop on the row, PS5-icon sized -->
+		<!-- the Library tile: first stop on the row, PS5-icon sized.
+		     Wrapped in a group so the tile and its glyph grow TOGETHER on
+		     focus - the game tiles beside it grow to 172px and this one used
+		     to sit still at 110, which read as the row skipping it
+		     (Donnie, 8 Aug: "hovering library it doesn't get bigger").
+		     110 -> 172 is 156%, about the tile's own centre (96+55, 124+55),
+		     so it lands exactly where a focused game tile would. The caption
+		     below is deliberately OUTSIDE the group: it is positioned under
+		     the row, not part of the tile, and scaling it would drag it. -->
+		<control type="group">
+			<animation effect="zoom" start="100" end="156" center="151,179" time="180" tween="sine" easing="out" condition="Control.HasFocus(9001)">Conditional</animation>
 		<control type="button" id="9001">
 			<left>96</left>
 			<top>124</top>
@@ -295,9 +305,13 @@
 			<height>18</height>
 			<texture colordiffuse="$VAR[Couch_Live_Color]">couch/glyph.png</texture>
 		</control>
+		</control>
 		<control type="label">
+			<!-- top 272: the tile only ever shows this caption while focused,
+			     and focused it is 172px tall (centre 179, so it ends at 265).
+			     At the old 244 the caption sat INSIDE the grown tile. -->
 			<left>66</left>
-			<top>244</top>
+			<top>272</top>
 			<width>170</width>
 			<height>34</height>
 			<font>Couch_Caption</font>
@@ -354,6 +368,14 @@
 					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
+				<!-- The focused tile at full size - but ONLY while the row
+				     actually has focus. Kodi keeps drawing focusedlayout for a
+				     container's current item even when the container is not
+				     focused, so moving left to Library left the last game
+				     sitting there enlarged and haloed as though it were still
+				     selected (Donnie, 8 Aug: "the game before it stays big").
+				     The halo, lightbar and label were already gated this way;
+				     the tile itself was not. -->
 				<control type="image">
 					<left>30</left>
 					<top>40</top>
@@ -361,6 +383,25 @@
 					<height>172</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
+					<visible>Control.HasFocus(9000)</visible>
+				</control>
+				<!-- ...and the resting tile in its place, geometry and diffuse
+				     copied from itemlayout above so a row that has lost focus
+				     reads as one unbroken line of equal tiles. -->
+				<control type="image">
+					<!-- left 61, not 30: the focused slot is 182 wide against
+					     itemlayout's 120, and a layout width cannot be made
+					     conditional - so the resting tile is centred in the slot
+					     it inherited and the extra 62px falls evenly either side
+					     instead of piling up after it. -->
+					<left>61</left>
+					<top>48</top>
+					<width>110</width>
+					<height>110</height>
+					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+					<aspectratio>scale</aspectratio>
+					<colordiffuse>c8ffffff</colordiffuse>
+					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
 					<left>30</left>
