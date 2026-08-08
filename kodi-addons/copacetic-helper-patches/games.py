@@ -62,6 +62,13 @@ SHADPS4_TILE = os.path.expanduser('~/.local/share/game-tiles/shadps4.png')
 # Square variants for the home row: portrait art centre-cropped to a square
 # loses the skin's rounding mask along with the crop, so square thumbs only.
 STEAM_TILE_SQ = os.path.expanduser('~/.local/share/game-tiles/steam-sq.png')
+# The Library entry is a ROW ITEM, not a control the skin draws beside the
+# row. It used to be its own button in Home.xml and it drifted: it did not
+# grow on focus, it had no halo or lightbar, and every change to the row had
+# to be made twice. As an item it inherits itemlayout, focusedlayout, the
+# halo, the label and the spacing for free - "so it all works the same".
+LIBRARY_TILE = os.path.expanduser('~/.local/share/game-tiles/library.png')
+LIBRARY_TILE_SQ = os.path.expanduser('~/.local/share/game-tiles/library-sq.png')
 SHADPS4_TILE_SQ = os.path.expanduser('~/.local/share/game-tiles/shadps4-sq.png')
 
 # Freeze-frames of paused games, written at suspend time by
@@ -460,6 +467,14 @@ def games_route(info, params):
 
     if info == 'launch_game':
         target = params.get('id', '')
+        if target == 'library':
+            # Not a launch at all - the row's first tile is a destination.
+            # Handled here rather than by a plugin:// path because a directory
+            # item cannot activate a window on its own.
+            import xbmc
+            xbmc.executebuiltin('ActivateWindow(1197)')
+            xbmcplugin.endOfDirectory(handle, succeeded=False)
+            return
         if target == 'bigpicture':
             cmd = [LAUNCHER, 'bigpicture']
         elif target == 'shadps4':
@@ -514,6 +529,29 @@ def games_route(info, params):
     entries.sort(key=lambda e: (-e[0], e[1]))
 
     li = []
+
+    # Library leads the row, and only on the HOME row: the full-window Games
+    # listing is a list of games and a "go to the Library" tile in it would be
+    # a door back to where you just came from. Home.xml asks for it with
+    # &home=1 on its content url.
+    if params.get('home'):
+        lib = xbmcgui.ListItem('Library', offscreen=True)
+        lib_poster = LIBRARY_TILE if os.path.isfile(LIBRARY_TILE) else ''
+        lib_thumb = (LIBRARY_TILE_SQ if os.path.isfile(LIBRARY_TILE_SQ)
+                     else lib_poster)
+        art = {}
+        if lib_thumb:
+            art['thumb'] = lib_thumb
+        if lib_poster:
+            art['poster'] = lib_poster
+        if art:
+            lib.setArt(art)
+        # What the skin keys its lower-left block on. A property, not the
+        # label, so the block does not break the day this is translated.
+        lib.setProperty('couchkind', 'library')
+        lib.setProperty('CouchSubtitle', 'Films · TV · YouTube · everything you have')
+        li.append((f'{sys.argv[0]}?info=launch_game&id=library', lib, False))
+
     for last, _key, kind, payload in entries:
         if kind == 'steam':
             name, appid, size = payload

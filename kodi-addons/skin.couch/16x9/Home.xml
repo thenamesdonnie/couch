@@ -253,83 +253,17 @@
 			<label>$INFO[System.Time]</label>
 		</control>
 
-		<!-- the Library tile: first stop on the row, PS5-icon sized.
-		     Wrapped in a group so the tile and its glyph grow TOGETHER on
-		     focus - the game tiles beside it grow to 172px and this one used
-		     to sit still at 110, which read as the row skipping it
-		     (Donnie, 8 Aug: "hovering library it doesn't get bigger").
-		     110 -> 172 is 156%, about the tile's own centre (96+55, 124+55),
-		     so it lands exactly where a focused game tile would. The caption
-		     below is deliberately OUTSIDE the group: it is positioned under
-		     the row, not part of the tile, and scaling it would drag it. -->
-		<control type="group">
-			<animation effect="zoom" start="100" end="156" center="151,179" time="180" tween="sine" easing="out" condition="Control.HasFocus(9001)">Conditional</animation>
-		<control type="button" id="9001">
-			<left>96</left>
-			<top>124</top>
-			<width>110</width>
-			<height>110</height>
-			<label></label>
-			<texturefocus colordiffuse="ff262c37">couch/libtile.png</texturefocus>
-			<texturenofocus colordiffuse="cc161a22">couch/libtile.png</texturenofocus>
-			<onclick>ActivateWindow(1197)</onclick>
-			<onright>9000</onright>
-			<onup>9101</onup>
-		</control>
-		<!-- 2x2 grid glyph -->
-		<control type="image">
-			<left>130</left>
-			<top>158</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
-		</control>
-		<control type="image">
-			<left>154</left>
-			<top>158</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
-		</control>
-		<control type="image">
-			<left>130</left>
-			<top>182</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
-		</control>
-		<control type="image">
-			<left>154</left>
-			<top>182</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="$VAR[Couch_Live_Color]">couch/glyph.png</texture>
-		</control>
-		</control>
-		<control type="label">
-			<!-- top 272: the tile only ever shows this caption while focused,
-			     and focused it is 172px tall (centre 179, so it ends at 265).
-			     At the old 244 the caption sat INSIDE the grown tile. -->
-			<left>66</left>
-			<top>272</top>
-			<width>170</width>
-			<height>34</height>
-			<font>Couch_Caption</font>
-			<textcolor>ffeceef1</textcolor>
-			<align>center</align>
-			<label>Library</label>
-			<visible>Control.HasFocus(9001)</visible>
-		</control>
-
 		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
 		<control type="list" id="9000">
-			<left>186</left>
+			<!-- left 96, where the standalone Library button used to sit: the
+			     Library entry is the row's first ITEM now, so the row simply
+			     starts further left. -->
+			<left>96</left>
 			<top>76</top>
 			<width>1794</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
-			<onleft>9001</onleft>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
 			<itemlayout width="120" height="290">
@@ -443,7 +377,7 @@
 			     changes, so pause-snap stamps CouchGamesRev on every capture and
 			     every clear and the row follows. Empty property = empty suffix, so
 			     the URL stays valid before anything has ever been stamped. -->
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;home=1&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -456,7 +390,7 @@
 			<texture background="true">$INFO[Container(9000).ListItem.Art(clearlogo)]</texture>
 			<aspectratio align="left" aligny="bottom">keep</aspectratio>
 			<fadetime>300</fadetime>
-			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
+			<visible>!$EXP[Home_Library_Focused] + !String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -466,7 +400,7 @@
 			<font>Couch_Title</font>
 			<textcolor>ffeceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Label]</label>
-			<visible>!Control.HasFocus(9001) + String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
+			<visible>!$EXP[Home_Library_Focused] + String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -476,7 +410,7 @@
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]$INFO[Container(9000).ListItem.Property(CouchAchievements),   ·   ]$INFO[Container(9000).ListItem.Property(CouchSize),   ·   ]</label>
-			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
+			<visible>!$EXP[Home_Library_Focused] + !Control.HasFocus(9500)</visible>
 		</control>
 		<!-- the Play pill -->
 		<control type="image">
@@ -485,7 +419,7 @@
 			<width>232</width>
 			<height>64</height>
 			<texture colordiffuse="d8161d28">couch/pill.png</texture>
-			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
+			<visible>!$EXP[Home_Library_Focused] + !Control.HasFocus(9500)</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -497,7 +431,7 @@
 			<align>center</align>
 			<aligny>center</aligny>
 			<label>Play</label>
-			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
+			<visible>!$EXP[Home_Library_Focused] + !Control.HasFocus(9500)</visible>
 		</control>
 
 		<!-- Library focused: its own lower-left block -->
@@ -509,7 +443,7 @@
 			<font>Couch_Title</font>
 			<textcolor>ffeceef1</textcolor>
 			<label>Library</label>
-			<visible>Control.HasFocus(9001)</visible>
+			<visible>$EXP[Home_Library_Focused]</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -519,7 +453,7 @@
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
 			<label>Films · TV · YouTube · everything you have</label>
-			<visible>Control.HasFocus(9001)</visible>
+			<visible>$EXP[Home_Library_Focused]</visible>
 		</control>
 
 		<!-- achievements shelf: the focused game's Steam achievements as icon
@@ -527,7 +461,7 @@
 		     the shelf is focused the game's Play/stats step aside and the focused
 		     achievement's name + description own the lower-left. -->
 		<control type="group">
-			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Property(CouchAchievements))</visible>
+			<visible>!$EXP[Home_Library_Focused] + !String.IsEmpty(Container(9000).ListItem.Property(CouchAchievements))</visible>
 
 			<!-- focused achievement detail (only while browsing the shelf) -->
 			<control type="label">

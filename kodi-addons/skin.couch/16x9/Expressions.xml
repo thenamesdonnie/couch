@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <includes>
+	<!-- The Library entry is the first ITEM of the games row now, not a
+	     control beside it, so "is Library the thing in focus" is a
+	     question about the focused item rather than about a control id.
+	     games.py stamps couchkind=library on it. -->
+	<expression name="Home_Library_Focused">Control.HasFocus(9000) + String.IsEqual(Container(9000).ListItem.Property(couchkind),library)</expression>
 	
 	<!-- Windows -->
 	<expression name="Home_HasBackground">Window.IsVisible(home) + [String.IsEmpty(Window(home).Property(Home_Widget)) | $EXP[BillboardView_Display_IsFanart_Widget_Home]] + !$EXP[globalsearch_IsVisible] + !$EXP[Infoscreen_IsVisible]</expression>
