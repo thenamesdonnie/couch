@@ -1,39 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The on-TV switcher, drawn by default.py's SwitcherDialog.
 
-     This exists for ONE reason the stock select dialog cannot give: a console
-     entrance. A skin owns DialogSelect.xml, so an addon cannot animate it
-     without editing the skin - and every skin edit on this box has been eaten
-     by a skin update (Copacetic grid views, the include-cache fix, the
-     breadcrumb width). So the switcher brings its own window.
+     Stagelight restyle (8 Aug 2026): the sheet keeps its entrance, but the
+     rows became a PS5-style horizontal rail of rounded tiles - the same
+     grammar as the Couch home row (halo glow + white core on focus, lightbar
+     underneath, Figtree type via the skin's Couch_* font names). Amber is the
+     pilot accent, a literal here because $VAR does not cross the addon
+     boundary.
 
-     Everything that can be addon-local IS addon-local, for the same reason:
-     the one texture is ours (media/couch-fill.png, an 8x8 white square that
-     colordiffuse tints - flat panels need no art), and every colour is a
-     literal ARGB rather than a skin colour name. The only skin-owned things
-     referenced are two font NAMES, and a font Kodi cannot resolve falls back
-     to the default font with a log line - it degrades, it does not break.
+     Everything that can be addon-local IS addon-local: the Stagelight
+     textures are COPIES in media/ (mask-round, halo-glow, halo-core,
+     lightbar), so a skin switch degrades colours, never breaks the dialog.
+     Font names resolve from the active skin; an unknown name falls back to
+     the default font with a log line.
 
-     The animation: the scrim fades (window-level) while the sheet rides up
-     (group 100), cubic/out over 280ms - fast, decelerating, the phone
-     switcher's own curve (web/src/lib/anim.js). Kodi runs window animations
-     on the render thread, so the list is focusable and stick-navigable from
-     frame one; nothing here gates input.
-
-     Control ids are a contract with default.py: 9000 is the list, and it is
-     the ONLY control the python fetches. Two id ranges are deliberately
-     avoided because WindowXML (the C++ class behind WindowXMLDialog) claims
-     them for itself: 50-59 are CGUIMediaWindow's "main container", and 2/3/4
-     (plus 12) are the old media-window view/sort buttons - WindowXML::
-     OnMessage eats GUI_MSG_CLICKED from those ids ("Internal sort button not
-     implemented" in the log) and python's onClick never runs. The list was id
-     3 once and select presses vanished into exactly that; do not renumber
-     into either range.
-
-     One log line is expected and harmless per open: "Control 9000 ... has
-     been asked to focus, but it can't". WINDOW_INIT tries the defaultcontrol
-     before python has filled the list, and an empty list refuses focus;
-     onInit's setFocusId lands the real focus a beat later. -->
+     Control ids are a contract with default.py: 9000 is the list and the ONLY
+     control the python fetches. Avoid ids 50-59 and 2/3/4/12 (WindowXML
+     claims them; clicks vanish - the list was id 3 once). One log line is
+     expected per open: "Control 9000 ... has been asked to focus, but it
+     can't" - WINDOW_INIT races python filling the list; onInit's setFocusId
+     lands a beat later. -->
 <window type="dialog">
   <defaultcontrol always="true">9000</defaultcontrol>
   <animation effect="fade" start="0" end="100" time="200" tween="sine" easing="out">WindowOpen</animation>
@@ -41,14 +27,8 @@
 
   <controls>
 
-    <!-- The paused game's freeze-frame, fullscreen at the very bottom of the
-         stack: the sheet appears to float over the game the room just left.
-         default.py owns the property - set only for a live session with a
-         fresh capture, and possibly a beat after open (the snapshot races the
-         dialog; a short poll fills it in). Empty property = hidden control =
-         the dialog exactly as it was before this existed. background="true"
-         decodes the jpg off the render thread; the fadetime turns the late
-         arrival into a soft fade instead of a pop. -->
+    <!-- The paused game's freeze-frame, fullscreen behind everything.
+         default.py owns the property; empty = hidden. -->
     <control type="image">
       <left>0</left>
       <top>0</top>
@@ -60,10 +40,7 @@
       <visible>!String.IsEmpty(Window.Property(couch.pausedframe))</visible>
     </control>
 
-    <!-- Scrim. Full-bleed so the room's eye goes to the sheet, not to the
-         paused game's last frame behind it - and, when the freeze-frame above
-         is showing, the dim layer that keeps the sheet readable over a bright
-         frame. Sits between frame and sheet by stack order. -->
+    <!-- Scrim: keeps the sheet readable over a bright frame. -->
     <control type="image">
       <left>0</left>
       <top>0</top>
@@ -73,125 +50,141 @@
       <colordiffuse>B3000000</colordiffuse>
     </control>
 
-    <!-- The sheet. Bottom-anchored and full-width: a switcher is a decision
-         bar, not a floating box, and bottom-anchored is what makes the slide
-         read as "up from the edge of the screen" rather than "grew". -->
+    <!-- The sheet: bottom-anchored, slides up from the edge. -->
     <control type="group" id="100">
       <animation effect="slide" start="0,140" end="0,0" time="280" tween="cubic" easing="out">WindowOpen</animation>
       <animation effect="slide" start="0,0" end="0,140" time="200" tween="cubic" easing="in">WindowClose</animation>
 
       <control type="image">
         <left>0</left>
-        <top>470</top>
+        <top>640</top>
         <width>1920</width>
-        <height>610</height>
+        <height>440</height>
         <texture>couch-fill.png</texture>
-        <colordiffuse>F20E1216</colordiffuse>
+        <colordiffuse>F20A0C10</colordiffuse>
       </control>
 
-      <!-- Accent rule along the top edge: the one piece of colour, and the
-           thing that makes the sheet look attached to the screen edge. -->
+      <!-- Amber pilot rule along the top edge. -->
       <control type="image">
         <left>0</left>
-        <top>470</top>
+        <top>640</top>
         <width>1920</width>
-        <height>4</height>
+        <height>3</height>
         <texture>couch-fill.png</texture>
-        <colordiffuse>FF4DA3FF</colordiffuse>
+        <colordiffuse>FFE8A849</colordiffuse>
       </control>
 
       <control type="label">
         <left>96</left>
-        <top>506</top>
+        <top>668</top>
         <width>1728</width>
-        <height>56</height>
+        <height>44</height>
         <align>left</align>
         <aligny>center</aligny>
-        <font>Title_Breadcrumb_Label</font>
-        <textcolor>FF8FA3B5</textcolor>
+        <font>Couch_Label</font>
+        <textcolor>FF8A93A0</textcolor>
         <label>Switch to</label>
       </control>
 
-      <!-- The list. Same rows, same order, same trailing Cancel as the select
-           dialog it replaces - default.py builds them, this only draws them. -->
+      <!-- The rail. Same items, same order, same trailing Cancel as the
+           select dialog it replaces - default.py builds them, this draws
+           them as tiles. Landscape thumbs (window snapshots / game art);
+           a tile with no art shows its name centred on a panel. -->
       <control type="list" id="9000">
-        <left>80</left>
-        <top>586</top>
-        <width>1760</width>
-        <height>440</height>
+        <left>66</left>
+        <top>716</top>
+        <width>1788</width>
+        <height>330</height>
         <onleft>9000</onleft>
         <onright>9000</onright>
         <onup>9000</onup>
         <ondown>9000</ondown>
-        <itemgap>8</itemgap>
-        <orientation>vertical</orientation>
+        <orientation>horizontal</orientation>
+        <scrolltime tween="sine" easing="out">210</scrolltime>
 
-        <itemlayout height="84" width="1760">
+        <itemlayout height="330" width="272">
           <control type="image">
-            <left>0</left>
-            <top>0</top>
-            <width>1760</width>
-            <height>84</height>
-            <texture>couch-fill.png</texture>
-            <colordiffuse>14FFFFFF</colordiffuse>
+            <left>30</left>
+            <top>52</top>
+            <width>232</width>
+            <height>130</height>
+            <texture diffuse="mask-round.png">couch-fill.png</texture>
+            <colordiffuse>FF161A22</colordiffuse>
           </control>
           <control type="image">
-            <left>16</left>
-            <top>8</top>
-            <width>118</width>
-            <height>68</height>
-            <aspectratio align="center" aligny="center">keep</aspectratio>
-            <texture background="true">$INFO[ListItem.Art(thumb)]</texture>
+            <left>30</left>
+            <top>52</top>
+            <width>232</width>
+            <height>130</height>
+            <aspectratio align="center" aligny="center">scale</aspectratio>
+            <texture background="true" diffuse="mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+            <colordiffuse>C8FFFFFF</colordiffuse>
             <visible>!String.IsEmpty(ListItem.Art(thumb))</visible>
           </control>
           <control type="label">
-            <left>154</left>
-            <top>0</top>
-            <width>1590</width>
-            <height>84</height>
-            <align>left</align>
+            <left>30</left>
+            <top>52</top>
+            <width>232</width>
+            <height>130</height>
+            <align>center</align>
             <aligny>center</aligny>
-            <font>Grid_Title</font>
-            <textcolor>FF9FB0BF</textcolor>
+            <font>Couch_Caption</font>
+            <textcolor>FF8A93A0</textcolor>
             <label>$INFO[ListItem.Label]</label>
+            <visible>String.IsEmpty(ListItem.Art(thumb))</visible>
           </control>
         </itemlayout>
 
-        <focusedlayout height="84" width="1760">
+        <focusedlayout height="330" width="272">
+          <!-- halo: amber glow + white core, the home row's focus grammar -->
           <control type="image">
-            <left>0</left>
-            <top>0</top>
-            <width>1760</width>
-            <height>84</height>
-            <texture>couch-fill.png</texture>
-            <colordiffuse>FF22303D</colordiffuse>
+            <left>-14</left>
+            <top>4</top>
+            <width>300</width>
+            <height>226</height>
+            <texture border="48" infill="false" colordiffuse="C8E8A849">halo-glow.png</texture>
           </control>
           <control type="image">
-            <left>0</left>
-            <top>0</top>
-            <width>6</width>
-            <height>84</height>
-            <texture>couch-fill.png</texture>
-            <colordiffuse>FF4DA3FF</colordiffuse>
+            <left>-14</left>
+            <top>4</top>
+            <width>300</width>
+            <height>226</height>
+            <texture border="48" infill="false" colordiffuse="DCFFFFFF">halo-core.png</texture>
           </control>
           <control type="image">
             <left>16</left>
-            <top>8</top>
-            <width>118</width>
-            <height>68</height>
-            <aspectratio align="center" aligny="center">keep</aspectratio>
-            <texture background="true">$INFO[ListItem.Art(thumb)]</texture>
+            <top>34</top>
+            <width>240</width>
+            <height>166</height>
+            <texture diffuse="mask-round.png">couch-fill.png</texture>
+            <colordiffuse>FF1B212C</colordiffuse>
+          </control>
+          <control type="image">
+            <left>16</left>
+            <top>34</top>
+            <width>240</width>
+            <height>166</height>
+            <aspectratio align="center" aligny="center">scale</aspectratio>
+            <texture background="true" diffuse="mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
             <visible>!String.IsEmpty(ListItem.Art(thumb))</visible>
           </control>
+
+          <control type="image">
+            <left>16</left>
+            <top>210</top>
+            <width>240</width>
+            <height>16</height>
+            <texture>lightbar.png</texture>
+            <colordiffuse>FFE8A849</colordiffuse>
+          </control>
           <control type="label">
-            <left>154</left>
-            <top>0</top>
-            <width>1590</width>
-            <height>84</height>
+            <left>16</left>
+            <top>232</top>
+            <width>640</width>
+            <height>38</height>
             <align>left</align>
-            <aligny>center</aligny>
-            <font>Grid_Title</font>
-            <textcolor>FFFFFFFF</textcolor>
+            <font>Couch_Label</font>
+            <textcolor>FFECEEF1</textcolor>
             <label>$INFO[ListItem.Label]</label>
           </control>
         </focusedlayout>
