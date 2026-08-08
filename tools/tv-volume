@@ -1,0 +1,150 @@
+#!/home/ds2000/tv-remote/bin/python
+"""TV/soundbar volume over webOS, for the couch app's Remote page.
+
+WHY A SEPARATE TOOL: the `tv` CLI (tv-webos) owns power and inputs, and every
+one of its verbs is allowed to WAKE the set. Volume must never do that - the
+phone polls it the moment the Remote tab opens, and a poll that turns the
+television on would be a bug you notice from the sofa. So this is its own
+binary with one rule: it never sends a magic packet, never calls turnOnScreen,
+never touches system/turnOff. If the set does not answer, the answer is
+{"off": true} and exit 0 - standby is a STATE, not a failure.
+
+The volume it moves is the SOUNDBAR's: the bar sits on eARC, so webOS routes
+audio/* at the external amplifier rather than the panel's own speakers. Same
+calls either way, which is why nothing here special-cases it.
+
+  tv-volume get            -> {"volume": 14, "muted": false}  |  {"off": true}
+  tv-volume set 0..100     -> the new state, same shape
+  tv-volume up             -> ditto
+  tv-volume down           -> ditto
+  tv-volume mute on|off    -> ditto
+
+Everything prints ONE json object on stdout and exits 0 when it reached the TV
+or found it asleep. Exit 1 (with json {"error": ...} on stdout) is a real
+fault: bad arguments, no pairing, a TV that answered and then refused.
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+# lgssap.py lives next to the other TV tooling in ~/.local/bin. Python only
+# puts the RUNNING script's directory on sys.path, and this script lives in the
+# couch repo instead, so the import path has to be added by hand.
+sys.path.insert(0, str(Path.home() / ".local" / "bin"))
+
+from lgssap import LGTV  # noqa: E402
+
+CONF = Path.home() / ".config" / "tv-remote" / "tv.json"
+
+# Short on purpose. An unreachable set costs two failed socket opens (lgssap
+# tries wss://:3001 then ws://:3000), so the worst case a phone waits on is
+# roughly 2 x CONNECT_TIMEOUT, and DEADLINE caps the whole run regardless.
+CONNECT_TIMEOUT = 2.0
+REQUEST_TIMEOUT = 3.0
+DEADLINE = 8.0
+
+
+def out(obj, code=0):
+    print(json.dumps(obj))
+    return code
+
+
+def load_conf():
+    try:
+        c = json.loads(CONF.read_text())
+    except OSError:
+        return None
+    except ValueError:
+        return None
+    return c if c.get("host") and c.get("key") else None
+
+
+def parse_volume(payload):
+    """webOS answers audio/getVolume two different ways depending on firmware:
+    older sets put volume/muted at the top level, webOS 4+ nests them in
+    volumeStatus with muteStatus instead of muted. Read both, prefer the nested
+    one (that is what the C5 sends)."""
+    status = payload.get("volumeStatus") or {}
+    volume = status.get("volume", payload.get("volume"))
+    muted = status.get("muteStatus", payload.get("muted", payload.get("mute")))
+    result = {}
+    if isinstance(volume, (int, float)):
+        result["volume"] = int(volume)
+    result["muted"] = bool(muted)
+    return result
+
+
+async def run(cmd, arg, conf):
+    # NOTE: no wol(), no probe-then-wake. The connect below is the only contact
+    # with the set, and a refusal is answered with {"off": true}.
+    tv = LGTV(conf["host"], conf["key"])
+    try:
+        await tv.connect(timeout=CONNECT_TIMEOUT)
+    except Exception:
+        # Unreachable, refused, or registration timed out: the set is asleep or
+        # off the network. Not an error.
+        await tv.close()
+        return out({"off": True})
+
+    try:
+        if cmd == "set":
+            await tv.request("audio/setVolume", {"volume": arg},
+                             timeout=REQUEST_TIMEOUT)
+        elif cmd == "up":
+            await tv.request("audio/volumeUp", timeout=REQUEST_TIMEOUT)
+        elif cmd == "down":
+            await tv.request("audio/volumeDown", timeout=REQUEST_TIMEOUT)
+        elif cmd == "mute":
+            await tv.request("audio/setMute", {"mute": arg},
+                             timeout=REQUEST_TIMEOUT)
+
+        # Always read back, so the caller never has to guess what the set did
+        # with a step (the soundbar's step size is its own business).
+        state = parse_volume(await tv.request("audio/getVolume",
+                                              timeout=REQUEST_TIMEOUT))
+        return out(state)
+    except Exception as e:
+        # It answered the handshake and then failed the call: that IS worth
+        # reporting, otherwise a permissions problem would read as "TV off"
+        # forever.
+        return out({"error": str(e) or e.__class__.__name__}, 1)
+    finally:
+        await tv.close()
+
+
+async def main(argv):
+    if not argv:
+        print(__doc__, file=sys.stderr)
+        return 2
+    cmd = argv[0].lower()
+
+    arg = None
+    if cmd == "set":
+        if len(argv) < 2:
+            return out({"error": "set needs a level 0-100"}, 1)
+        try:
+            arg = max(0, min(100, int(float(argv[1]))))
+        except ValueError:
+            return out({"error": "level must be a number 0-100"}, 1)
+    elif cmd == "mute":
+        if len(argv) < 2 or argv[1].lower() not in ("on", "off"):
+            return out({"error": "mute needs on or off"}, 1)
+        arg = argv[1].lower() == "on"
+    elif cmd not in ("get", "up", "down"):
+        return out({"error": f"unrecognised command {cmd!r}"}, 1)
+
+    conf = load_conf()
+    if conf is None:
+        return out({"error": "no paired TV - run tv-setup-lg"}, 1)
+
+    try:
+        return await asyncio.wait_for(run(cmd, arg, conf), DEADLINE)
+    except asyncio.TimeoutError:
+        # The set half-answered and then went quiet. Same shape as standby:
+        # there is nothing the phone can usefully do differently.
+        return out({"off": True})
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main(sys.argv[1:])))

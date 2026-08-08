@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 
-import { COUCHD_STATUS } from './config.js';
+import { COUCHD_STATUS, ROOT } from './config.js';
 
 const HOME = os.homedir();
 const BIN = path.join(HOME, '.local/bin');
@@ -154,6 +154,51 @@ export const tvJellyfinApp = () => cli('tv', ['app', 'org.jellyfin.webos']);
 // Whether the tv CLI has a TV to talk to at all. Its absence is a normal
 // state on a fresh checkout; callers answer 503 with words, not a stack.
 export const tvConfigured = () => fs.existsSync(path.join(HOME, '.config/tv-remote/tv.json'));
+
+// --- TV / soundbar volume ---
+//
+// Deliberately NOT the `tv` CLI: every verb that one has is allowed to wake
+// the set, and the phone reads the volume the instant the Remote tab opens.
+// tools/tv-volume is the no-wake path - it only ever dials the TV, and a set
+// that does not answer comes back as {off:true}, which is a state and not a
+// fault. So this never rejects on a sleeping TV either; the route hands the
+// shape straight to the phone.
+//
+// It lives in the repo (tools/), not ~/.local/bin, because it exists for this
+// app. The wall-clock cost of a standby TV is ~3s (two refused socket opens),
+// hence a timeout comfortably above it rather than the 30s the CLIs get.
+const TV_VOLUME = path.join(ROOT, 'tools', 'tv-volume');
+
+export function tvVolume(args) {
+  return new Promise((resolve, reject) => {
+    execFile(TV_VOLUME, args, { timeout: 12000 }, (err, out, errOut) => {
+      let parsed = null;
+      try { parsed = JSON.parse((out || '').trim()); } catch { /* not json */ }
+      // A non-zero exit still prints {"error": ...}; prefer its words to
+      // execFile's "Command failed".
+      if (parsed && typeof parsed === 'object' && !parsed.error) { resolve(parsed); return; }
+      if (err || parsed?.error) {
+        reject(new Error(parsed?.error || (errOut || out || '').trim() || err.message));
+        return;
+      }
+      reject(new Error('tv-volume printed nothing usable'));
+    });
+  });
+}
+
+// The one place that decides what the phone is allowed to ask for, so the
+// route below stays a thin translation of the request body.
+export function tvVolumeArgs({ level, action }) {
+  if (level !== undefined && level !== null) {
+    const n = Number(level);
+    if (!Number.isFinite(n)) throw new Error('level must be a number 0-100');
+    return ['set', String(Math.max(0, Math.min(100, Math.round(n))))];
+  }
+  if (action === 'up' || action === 'down') return [action];
+  if (action === 'mute') return ['mute', 'on'];
+  if (action === 'unmute') return ['mute', 'off'];
+  throw new Error('level, or action up/down/mute/unmute, required');
+}
 
 export function lights(cmd, dim) {
   const args = [];

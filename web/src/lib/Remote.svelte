@@ -30,7 +30,70 @@
       tvStatus = d.status;
     } catch { /* keep the optimistic state */ } finally {
       tvBusy = false;
+      // The bar only answers while the set is awake, so a power change is the
+      // one moment worth re-reading it outside the initial load.
+      loadTvVolume();
     }
+  }
+
+  // --- TV / soundbar volume ---
+  //
+  // Separate knob from the Kodi mixer below: the soundbar is on eARC, so these
+  // calls move the ROOM's volume while /api/volume only moves Kodi's own
+  // output. Read ONCE when this tab opens - a standby TV costs the server ~3s
+  // of refused sockets, which is fine as a one-off and unacceptable on a
+  // timer. Nothing here can wake the set; when it is asleep the card greys out
+  // and says so rather than showing an error.
+  let tvVol = $state(null);
+  let tvMuted = $state(false);
+  let tvVolOff = $state(false);
+  let tvVolLoading = $state(true);
+
+  // Bumped by every user action. A reply from an older request is dropped, so
+  // a slow round-trip can never yank the slider back under a moving thumb.
+  let volSeq = 0;
+  let tvVolTimer = null;
+
+  function adoptTvVolume(d) {
+    tvVolOff = !!d.off;
+    if (d.off) return;
+    if (Number.isFinite(d.volume)) tvVol = d.volume;
+    tvMuted = !!d.muted;
+  }
+
+  function loadTvVolume() {
+    tvVolLoading = true;
+    const seq = ++volSeq;
+    api('/api/tv/volume')
+      .then((d) => { if (seq === volSeq) adoptTvVolume(d); })
+      .catch(() => { if (seq === volSeq) tvVolOff = true; })
+      .finally(() => { if (seq === volSeq) tvVolLoading = false; });
+  }
+  onMount(loadTvVolume);
+
+  async function sendTvVolume(body, seq) {
+    try {
+      const d = await api('/api/tv/volume', body);
+      if (seq === volSeq) adoptTvVolume(d);
+    } catch { /* api() surfaces it in the error toast */ }
+  }
+
+  // Optimistic: the thumb follows the finger immediately and the POST is
+  // debounced, so a full sweep is one call to the TV rather than fifty.
+  function setTvVolume(ev) {
+    const level = Number(ev.target.value);
+    tvVol = level;
+    if (tvMuted) tvMuted = false; // any set unmutes the bar
+    clearTimeout(tvVolTimer);
+    const seq = ++volSeq;
+    tvVolTimer = setTimeout(() => sendTvVolume({ level }, seq), 150);
+  }
+
+  function toggleTvMute() {
+    const next = !tvMuted;
+    tvMuted = next; // optimistic
+    clearTimeout(tvVolTimer);
+    sendTvVolume({ action: next ? 'mute' : 'unmute' }, ++volSeq);
   }
 
   const input = (action) => () => api(`/api/input/${action}`, {});
@@ -209,12 +272,42 @@
 </div>
 
 <div class="card">
+  <h2>Kodi volume</h2>
   <div class="row">
     <button class="mutebtn" class:primary={live.muted} onclick={() => api('/api/volume', { mute: !live.muted })}>
       {live.muted ? 'Unmute' : 'Mute'}
     </button>
     <input class="grow" type="range" min="0" max="100" value={live.volume ?? 0} oninput={setVolume} disabled={live.volume === null} aria-label="Volume" />
     <span class="mono vol dim">{live.volume ?? '--'}</span>
+  </div>
+</div>
+
+<div class="card" class:asleep={tvVolOff && !tvVolLoading}>
+  <h2>
+    <Icon name="speaker" size={14} />TV &amp; soundbar
+    {#if tvVolLoading}<span class="tag">reading…</span>
+    {:else if tvVolOff}<span class="tag">TV off</span>{/if}
+  </h2>
+  <div class="row">
+    <button
+      class="mutebtn"
+      class:primary={tvMuted && !tvVolOff}
+      onclick={toggleTvMute}
+      disabled={tvVolOff || tvVolLoading}
+    >
+      {tvMuted && !tvVolOff ? 'Unmute' : 'Mute'}
+    </button>
+    <input
+      class="grow"
+      type="range"
+      min="0"
+      max="100"
+      value={tvVol ?? 0}
+      oninput={setTvVolume}
+      disabled={tvVolOff || tvVolLoading}
+      aria-label="TV and soundbar volume"
+    />
+    <span class="mono vol dim">{tvVolOff || tvVol === null ? '--' : tvVol}</span>
   </div>
 </div>
 
@@ -360,4 +453,18 @@
 
   .mutebtn { min-width: 84px; }
   .vol { width: 30px; text-align: right; font-size: 13px; }
+
+  /* A standby TV is not an error, so the card recedes rather than shouting:
+     the controls grey out and the heading says why. */
+  .card h2 { display: flex; align-items: center; gap: 6px; }
+  .card.asleep { opacity: 0.6; }
+  .tag {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--faint);
+    background: var(--raise);
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
 </style>

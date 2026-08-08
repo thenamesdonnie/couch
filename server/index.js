@@ -556,6 +556,29 @@ app.post('/api/tv/seek', wrap(async (req, res) => {
   return tvcast.seek(seconds);
 }));
 
+// --- TV / soundbar volume ---
+//
+// The set has a soundbar on eARC, so these move the BAR, not the panel. Kept
+// completely apart from /api/volume (which is Kodi's own mixer): the two are
+// different knobs on different boxes and collapsing them would mean the phone
+// could not turn the room down while Kodi sat at 100.
+//
+// Registered above /api/tv/:cmd so "volume" is never read as a raw tv verb.
+// Neither of these can wake the TV - see sys.tvVolume. A sleeping set answers
+// {off:true} with a 200, because "the TV is in standby" is something the phone
+// should DRAW, not something it should show as a failed request.
+app.get('/api/tv/volume', wrap(async (req, res) => {
+  res.set('cache-control', 'no-store');
+  if (!sys.tvConfigured()) return { off: true, reason: 'no TV paired' };
+  return sys.tvVolume(['get']);
+}));
+
+app.post('/api/tv/volume', wrap(async (req) => {
+  const args = sys.tvVolumeArgs(req.body ?? {});
+  if (!sys.tvConfigured()) return { off: true, reason: 'no TV paired' };
+  return sys.tvVolume(args);
+}));
+
 let tvCache = { at: 0, status: null };
 app.get('/api/tv', wrap(async (req) => {
   if (req.query.fresh || Date.now() - tvCache.at > 60000) {

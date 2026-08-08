@@ -8,7 +8,9 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+// The checkout root. Exported because a few of the helpers this server shells
+// out to live in the repo's own tools/ rather than in ~/.local/bin.
+export const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 try { process.loadEnvFile(path.join(ROOT, '.env')); } catch { /* systemd already supplied it */ }
 
 const e = process.env;
