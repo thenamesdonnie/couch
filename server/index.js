@@ -6,9 +6,10 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import compression from 'compression';
 import { WebSocketServer } from 'ws';
 
 import { PORT, LAN_HOST, AUTOROUTE_OFF } from './config.js';
@@ -30,6 +31,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
 
 const app = express();
+
+// Nothing was compressed before this line. Measured on this box: the library
+// list is 48.6 KB and gzips to 18.1 KB, shows 18.1 -> 6.8 KB, the app bundle
+// 149 KB -> 48 KB and its CSS 47 KB -> 8.6 KB. The bundle only costs that
+// once per deploy (assets are content-hashed and served immutable) but the
+// JSON is every request, on a phone, over wifi, on the sofa.
+//
+// The filter is an ALLOWLIST rather than the default `compressible` guess,
+// because two things on this server must never be touched: the screen stream
+// is `multipart/x-mixed-replace` and is watched live, and the art proxies
+// serve JPEGs that are already compressed and would only be made slower.
+// Naming what we compress is also how the next person knows what is safe to
+// add.
+app.use(compression({
+  filter: (req, res) => {
+    const type = String(res.getHeader('content-type') || '');
+    return /^(application\/json|text\/|application\/javascript|image\/svg)/.test(type);
+  },
+}));
+
 app.use(express.json());
 
 // A body-less POST is a CORS "simple" request: any page anyone opens on the LAN
@@ -428,7 +449,10 @@ app.post('/api/notify', wrap(async (req) => {
 app.get('/api/games', wrap(async () => {
   const games = listGames().map((g) => ({
     ...g,
-    poster: g.poster ? `/api/art/game?p=${encodeURIComponent(g.poster)}` : null,
+    // w=360: the tile is ~117 CSS px, so this covers a 3x phone and still
+    // arrives as a ~30 KB JPEG instead of a half-megabyte 600px PNG cut
+    // for the 4K television.
+    poster: g.poster ? `/api/art/game?p=${encodeURIComponent(g.poster)}&w=360` : null,
     hero: undefined,
   }));
   return { games, session: sys.gameSession() };
@@ -948,12 +972,57 @@ app.get('/api/art/kodi', wrap(async (req, res) => {
 }));
 
 // Game art comes straight off disk, restricted to the known art roots.
+// Game art is sized for the TELEVISION: the composed tiles are 600x600 PNGs
+// (434-564 KB each) and a PS4 cover is 600x900 at 947 KB, which is right for
+// a 4K Kodi grid and absurd for a phone tile ~117 CSS px wide. Measured: the
+// Games tab pulled 2.5 MB of PNG to draw a strip of thumbnails, and the
+// biggest of them is the FIRST tile, so lazy loading never saved it.
+//
+// So `w` resizes, exactly as the Jellyfin proxy already does. Without `w` the
+// bytes on disk are served untouched - Kodi and anything else that wants the
+// real thing still gets it, and this stays a phone optimisation rather than a
+// change to the art pipeline.
+//
+// Converted copies are memoised on (path, mtime, width) so `convert` runs
+// once per tile per server lifetime rather than once per request; a recomposed
+// tile changes its mtime and misses the memo, which is why mtime is in the
+// key rather than just the path.
+const artCache = new Map();
+const ART_CACHE_MAX = 64;
+
+function resizedArt(file, width) {
+  const { mtimeMs, size } = fs.statSync(file);
+  const key = `${file}|${mtimeMs}|${size}|${width}`;
+  const hit = artCache.get(key);
+  if (hit) return Promise.resolve(hit);
+  return new Promise((resolve, reject) => {
+    execFile('convert', [file, '-resize', `${width}x>`, '-quality', '82',
+      '-strip', 'jpeg:-'],
+    { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 8000 },
+    (err, stdout) => {
+      if (err || !stdout || stdout.length < 512) { reject(err || new Error('convert failed')); return; }
+      if (artCache.size >= ART_CACHE_MAX) artCache.delete(artCache.keys().next().value);
+      artCache.set(key, stdout);
+      resolve(stdout);
+    });
+  });
+}
+
 app.get('/api/art/game', wrap(async (req, res) => {
   const p = String(req.query.p || '');
   if (!p || !isAllowedArt(p) || !fs.existsSync(p)) { res.status(404).end(); return; }
+  res.set('cache-control', 'public, max-age=3600');
+  const want = Math.min(Number(req.query.w) || 0, 1200);
+  if (want >= 32) {
+    try {
+      const jpeg = await resizedArt(p, want);
+      res.set('content-type', 'image/jpeg');
+      res.send(jpeg);
+      return;
+    } catch { /* fall through to the original bytes - art is never worth a 500 */ }
+  }
   // Not res.sendFile: express refuses dotfile path segments and Steam's art
   // lives under ~/.steam.
-  res.set('cache-control', 'public, max-age=3600');
   res.set('content-type', p.endsWith('.png') ? 'image/png' : 'image/jpeg');
   res.send(fs.readFileSync(p));
 }));
