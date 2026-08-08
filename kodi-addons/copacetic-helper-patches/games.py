@@ -364,31 +364,34 @@ def _art(appid):
     return art
 
 
-def _paused_art(appid):
-    """The newest freeze-frame pair for a paused game, as art overrides.
+def _paused_frame(appid):
+    """The newest freeze-frame for a paused game, for the CARD only.
 
-    pause-snap writes <appid>__<epoch_ms>.jpg (the 16:9 frame) beside
-    <appid>__<epoch_ms>.tile.jpg (a 2:3 centre crop for the poster grid), and
-    keeps only the newest pair, so the last name in sort order is the current
-    capture. Returns {} when there is nothing to show.
+    pause-snap writes <appid>__<epoch_ms>.jpg and keeps only the newest, so
+    the last name in sort order is the current capture. Returns '' when there
+    is nothing to show.
+
+    THE TILE KEEPS ITS OWN ART. This used to hand back thumb/poster overrides
+    as well, so a paused game's tile in the row became the screencap - which
+    made sense when the freeze-frame had nowhere else to live. It has a
+    dedicated card now (Home.xml reads CouchPausedSnap), and showing the same
+    frame twice cost the row the thing that makes it scannable: every game
+    recognisable by its own cover. A paused game is still marked - it carries
+    the "- paused" label and the card - it just no longer stops looking like
+    itself. (pause-snap's 2:3 `.tile.jpg` crop existed only for this and is
+    now unused; it is left alone rather than chased out of the writer.)
     """
     safe = re.sub(r'[^A-Za-z0-9._-]', '_', str(appid))[:100]
     try:
         names = os.listdir(PAUSED_DIR)
     except OSError:
-        return {}
+        return ''
     frames = sorted(n for n in names
                     if n.startswith(safe + '__') and n.endswith('.jpg')
                     and not n.endswith('.tile.jpg'))
     if not frames:
-        return {}
-    frame = os.path.join(PAUSED_DIR, frames[-1])
-    tile = frame[:-len('.jpg')] + '.tile.jpg'
-    # The row is a portrait poster grid, so the tile gets the 2:3 crop and the
-    # full frame becomes the backdrop behind the highlighted game.
-    art = {'thumb': frame, 'fanart': frame}
-    art['poster'] = tile if os.path.isfile(tile) else frame
-    return art
+        return ''
+    return os.path.join(PAUSED_DIR, frames[-1])
 
 
 def _sfo(path):
@@ -519,13 +522,11 @@ def games_route(info, params):
             if tile:
                 art['thumb'] = tile
             if appid == suspended:
-                pa = _paused_art(appid)
-                if pa:
-                    # the card owns the freeze-frame; the backdrop stays on
-                    # the hero art (two copies of the same frame said nothing)
-                    item.setProperty('CouchPausedSnap', pa['fanart'])
-                    pa.pop('fanart', None)
-                    art.update(pa)
+                # The card owns the freeze-frame, and only the card: the
+                # backdrop keeps the hero art and the tile keeps its cover.
+                snap = _paused_frame(appid)
+                if snap:
+                    item.setProperty('CouchPausedSnap', snap)
             item.setArt(art)
             item.setProperty('CouchPlaytime', _fmt_playtime(steam_pt.get(appid, 0)))
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
@@ -559,11 +560,9 @@ def games_route(info, params):
             if os.path.isfile(logo):
                 art['clearlogo'] = logo
             if paused4:
-                pa = _paused_art(eboot)
-                if pa:
-                    item.setProperty('CouchPausedSnap', pa['fanart'])
-                    pa.pop('fanart', None)
-                    art.update(pa)
+                snap = _paused_frame(eboot)
+                if snap:
+                    item.setProperty('CouchPausedSnap', snap)
             if art:
                 item.setArt(art)
             serial = os.path.basename(os.path.dirname(eboot))
