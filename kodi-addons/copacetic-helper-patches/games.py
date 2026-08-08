@@ -436,6 +436,19 @@ def games_route(info, params):
             cmd = [LAUNCHER, 'shadps4', urllib.parse.unquote(target[4:])]
         else:
             cmd = [LAUNCHER, 'steam', target]
+        # The launch flourish: home's focused tile zooms and the screen fades
+        # to black under it (Home.xml reads this property) - the dark cover
+        # also hides the Kodi -> Big Picture flip until the curtain takes
+        # over. The alarm self-clears it so a failed launch cannot strand a
+        # black home screen.
+        try:
+            import xbmc
+            xbmcgui.Window(10000).setProperty('CouchLaunching', '1')
+            xbmc.executebuiltin(
+                'AlarmClock(couchlaunchclear,'
+                'ClearProperty(CouchLaunching,home),00:00:12,silent)')
+        except Exception:
+            pass
         # Detached: the launcher outlives this interpreter and always hands
         # the controller back, however the game ends.
         subprocess.Popen(cmd, start_new_session=True)

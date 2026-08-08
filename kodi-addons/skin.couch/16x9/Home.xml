@@ -375,7 +375,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=6</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=7</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -549,5 +549,18 @@
 			</control>
 		</control>
 
+
+		<!-- launch flourish: the screen fades to black while the focused tile
+		     zooms (CouchLaunching, set by the games plugin, self-clearing).
+		     Also hides the Kodi -> Big Picture shuffle until the curtain. -->
+		<control type="image">
+			<left>0</left>
+			<top>0</top>
+			<width>1920</width>
+			<height>1080</height>
+			<texture colordiffuse="ff000000">couch/white.png</texture>
+			<animation effect="fade" start="0" end="100" time="600" tween="sine" easing="in">Visible</animation>
+			<visible>!String.IsEmpty(Window(home).Property(CouchLaunching))</visible>
+		</control>
 	</controls>
 </window>
