@@ -191,10 +191,36 @@ time, not as a batch.
 
 | workaround | retire when |
 | --- | --- |
-| `kodi-tv` crash-restart loop | 14 days with no `kodi_crashlog-*` in `~/.var/app/tv.kodi.Kodi/data/` and no `tries=` increment. It is also a general safety net, so the honest end state may be "keep, but stop pretending it is a Python bug". |
+| `kodi-tv` crash-restart loop | 14 days with no `kodi_crashlog-*` in `~/.var/app/tv.kodi.Kodi/data/` and no `tries=` increment. It is also a general safety net, so the honest end state may be "keep, but stop pretending it is a Python bug". **The clock starts 9 Aug 2026, not 8 Aug** - see below. |
 | `reuselanguageinvoker` in script.copacetic.helper / embuary | a cold boot with debug logging that shows no `Py_EndInterpreter` churn. Harmless and a small perf win either way, so this is the lowest-value one to remove. |
 | never live-switch skins / never `ReloadSkin()` | one deliberate `ReloadSkin()` on Kodi 21 with the TV on and Donnie watching. This is the one that would change day-to-day work the most. |
 | jellyfin `startupDelay=45` | after the above, since it exists purely to thin the boot churn window. |
+
+### The 13 crashlogs of 8-9 Aug are ours, and the criterion above nearly lied
+
+A killed Kodi writes a `kodi_crashlog-*` that is indistinguishable, after the
+fact, from the Python-teardown crash the loop exists for: same filename, same
+"gdb not installed, can't get stack trace", same abrupt log tail. Restarting
+Kodi by hand with SIGKILL during the skin work on 8 Aug produced **thirteen**
+of them between 20:18 and 00:02. Read literally, the retirement criterion would
+have said "Kodi 21 crashes constantly, keep the loop" on the strength of
+evidence entirely manufactured by the person doing the reading.
+
+Two things follow, and both are now enforced rather than remembered:
+
+- `tools/kodi-restart` quits over JSON-RPC (exit 0, **no crashlog**), escalates
+  to SIGTERM then SIGKILL only if Kodi wedges, says loudly when it escalates,
+  and prints any crashlog the restart itself created. Use it; do not hand-roll
+  `pkill -9 kodi.bin` again.
+- SIGKILL is exit 137, which is *not* in the wrapper's retry set
+  (`131-136|139`), so it exits rather than relaunching - correct, but it means
+  every kill must be followed by a relaunch. On 9 Aug one wasn't, and Kodi sat
+  dead on the desktop until it was noticed, because the ad-hoc restart printed
+  "restarted" without ever checking. kodi-restart verifies a JSON-RPC answer
+  from the new process before it reports success, and exits non-zero otherwise.
+
+So: ignore every `kodi_crashlog-*` dated 8 or 9 Aug 2026. Anything from 9 Aug
+onward that kodi-restart did not announce is real.
 
 ## Checked, and cheaper than it looked
 

@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Restart the living-room Kodi, cleanly, and prove it came back.
+
+Written after an outage on 9 Aug 2026 in which Kodi sat dead on the desktop
+for several minutes because the ad-hoc restart I was typing by hand did two
+things wrong. Both are fixed here rather than in a comment, because a habit
+cannot be reviewed:
+
+1. It stopped Kodi with SIGKILL. The kodi-tv wrapper retries only on
+   131-136/139 (the fault signals); SIGKILL is 137, which falls through to
+   `exit $ret`. So a kill stops the wrapper for good - correct behaviour, but
+   it means EVERY kill must be followed by a relaunch, and one wasn't.
+
+2. Worse, a killed Kodi still writes a kodi_crashlog-*. Thirteen of them were
+   written on 8-9 Aug, all of them mine. The retirement criterion for the
+   Python-teardown crash in docs/kodi21-flatpak-migration.md is "fourteen days
+   with no kodi_crashlog-* under the Flatpak's data dir" - so hand-killing
+   Kodi forges exactly the evidence that decision reads. A clean quit exits 0
+   and writes nothing.
+
+So: quit over JSON-RPC, escalate only if it wedges, SAY SO when it escalates,
+and never report success without a JSON-RPC answer from the new process.
+
+    tools/kodi-restart              # quit, relaunch, verify
+    tools/kodi-restart --stop       # quit only
+    tools/kodi-restart --check      # is it up? (no change)
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import couchenv  # noqa: E402
+
+WRAPPER = os.path.expanduser('~/.local/bin/kodi-tv')
+CRASHDIR = os.path.expanduser('~/.var/app/tv.kodi.Kodi/data')
+QUIT_WAIT = 25.0    # Kodi saves its databases on the way out; 20 is plenty.
+UP_WAIT = 90.0      # Cold start with the Jellyfin sync behind it.
+
+
+def rpc(method, params=None, timeout=5.0):
+    """One JSON-RPC call. Returns the result, or None if Kodi isn't answering."""
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method,
+                       'params': params or {}}).encode()
+    req = urllib.request.Request(couchenv.kodi_url(), data=body,
+                                 headers={'Content-Type': 'application/json'})
+    user, _, password = couchenv.kodi_auth().partition(':')
+    mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    mgr.add_password(None, couchenv.kodi_url(), user, password)
+    opener = urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(mgr))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return json.load(resp).get('result')
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def pids():
+    out = subprocess.run(['pgrep', '-x', 'kodi.bin'], capture_output=True, text=True)
+    return [int(p) for p in out.stdout.split()]
+
+
+def crashlogs():
+    try:
+        return {f for f in os.listdir(CRASHDIR) if f.startswith('kodi_crashlog-')}
+    except OSError:
+        return set()
+
+
+def window():
+    """The current window's label, or None. This is the up/down test: a
+    process that exists but cannot answer JSON-RPC is not a working Kodi."""
+    got = rpc('GUI.GetProperties', {'properties': ['currentwindow']})
+    if not got:
+        return None
+    return got.get('currentwindow', {}).get('label')
+
+
+def wait_for(predicate, limit, poll=1.0):
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        got = predicate()
+        if got:
+            return got
+        time.sleep(poll)
+    return None
+
+
+def stop():
+    """Quit Kodi the way the remote does. Returns True if it went quietly.
+
+    The escalation ladder is deliberate and loud: each rung is a worse kind of
+    stop, and the two hard rungs both write a crashlog that will later look
+    like a fault the box suffered rather than one we caused.
+    """
+    if not pids():
+        print('already stopped')
+        return True
+    print('quitting over JSON-RPC...')
+    rpc('Application.Quit')
+    if wait_for(lambda: not pids(), QUIT_WAIT):
+        print('stopped cleanly (no crashlog)')
+        return True
+
+    print('WARNING: did not quit in %gs - sending SIGTERM' % QUIT_WAIT, file=sys.stderr)
+    subprocess.run(['pkill', '-TERM', '-x', 'kodi.bin'])
+    if wait_for(lambda: not pids(), 15.0):
+        print('stopped on SIGTERM', file=sys.stderr)
+        return True
+
+    print('WARNING: wedged - SIGKILL. This WILL write a kodi_crashlog-* that '
+          'is ours, not the box\'s. Note it before reading the 14-day '
+          'teardown-crash criterion.', file=sys.stderr)
+    subprocess.run(['pkill', '-KILL', '-x', 'kodi.bin'])
+    wait_for(lambda: not pids(), 10.0)
+    return False
+
+
+def session_env():
+    """The XFCE session's own environment.
+
+    Harvested from the running session rather than hardcoded: DISPLAY and
+    XAUTHORITY guessed wrong give a Kodi that starts and then exits with no
+    screen, which is indistinguishable from a crash until you read the log.
+    """
+    out = subprocess.run(['pgrep', '-x', 'xfce4-session'], capture_output=True, text=True)
+    pid = out.stdout.split()[0] if out.stdout.split() else None
+    env = {'HOME': os.path.expanduser('~'), 'USER': os.environ.get('USER', 'ds2000')}
+    if pid:
+        try:
+            with open('/proc/%s/environ' % pid, 'rb') as f:
+                for chunk in f.read().split(b'\0'):
+                    key, _, val = chunk.decode('utf-8', 'replace').partition('=')
+                    if key:
+                        env[key] = val
+        except OSError as e:
+            print('WARNING: could not read the session env (%s)' % e, file=sys.stderr)
+    else:
+        print('WARNING: no xfce4-session - Kodi may have no display to open',
+              file=sys.stderr)
+    env.setdefault('DISPLAY', ':0')
+    env.setdefault('PATH', os.path.expanduser('~/.local/bin') + ':/usr/local/bin:/usr/bin:/bin')
+    return env
+
+
+def start():
+    """Launch the wrapper detached and wait for a JSON-RPC answer."""
+    if not os.access(WRAPPER, os.X_OK):
+        sys.exit('%s is missing or not executable' % WRAPPER)
+    log = open('/tmp/kodi-restart.log', 'ab', buffering=0)
+    subprocess.Popen([WRAPPER], env=session_env(), stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=log, start_new_session=True)
+    print('launched, waiting for JSON-RPC...')
+    label = wait_for(window, UP_WAIT, poll=2.0)
+    if not label:
+        print('FAILED: no JSON-RPC answer after %gs. /tmp/kodi-restart.log and '
+              '%s/temp/kodi.log' % (UP_WAIT, CRASHDIR), file=sys.stderr)
+        return False
+    print('up: window %r, pid %s' % (label, ', '.join(str(p) for p in pids())))
+    return True
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else ''
+    if arg == '--check':
+        label = window()
+        print('up: %r' % label if label else 'DOWN (no JSON-RPC answer)')
+        return 0 if label else 1
+    before = crashlogs()
+    if arg == '--stop':
+        return 0 if stop() else 1
+    if arg and arg != '--restart':
+        sys.exit(__doc__)
+    stop()
+    ok = start()
+    new = crashlogs() - before
+    if new:
+        # Said out loud every time, because the whole point is that these are
+        # indistinguishable from a real fault after the fact.
+        print('note: this restart wrote %d crashlog(s), ours not the box\'s: %s'
+              % (len(new), ', '.join(sorted(new))), file=sys.stderr)
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
