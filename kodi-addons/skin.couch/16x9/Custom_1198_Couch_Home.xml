@@ -381,7 +381,7 @@
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]$INFO[Container(9000).ListItem.Property(CouchAchievements),   ·   ]</label>
-			<visible>!Control.HasFocus(9001)</visible>
+			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
 		</control>
 		<!-- the Play pill -->
 		<control type="image">
@@ -390,7 +390,7 @@
 			<width>232</width>
 			<height>64</height>
 			<texture colordiffuse="d8161d28">couch/pill.png</texture>
-			<visible>!Control.HasFocus(9001)</visible>
+			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -402,7 +402,7 @@
 			<align>center</align>
 			<aligny>center</aligny>
 			<label>Play</label>
-			<visible>!Control.HasFocus(9001)</visible>
+			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
 		</control>
 
 		<!-- Library focused: its own lower-left block -->
@@ -428,57 +428,94 @@
 		</control>
 
 		<!-- achievements shelf: the focused game's Steam achievements as icon
-		     tiles (Down from the game row drops in). Unlocked bright, locked
-		     dimmed; focused one shows its name + description. -->
+		     tiles (Down from the game row). Unlocked bright, locked dimmed; when
+		     the shelf is focused the game's Play/stats step aside and the focused
+		     achievement's name + description own the lower-left. -->
 		<control type="group">
 			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Property(CouchAchievements))</visible>
+
+			<!-- focused achievement detail (only while browsing the shelf) -->
 			<control type="label">
 				<left>96</left>
-				<top>908</top>
-				<width>900</width>
-				<height>34</height>
-				<font>Couch_Caption</font>
-				<textcolor>ff8a93a0</textcolor>
-				<label>$INFO[Container(9000).ListItem.Property(CouchAchievements)]$INFO[Container(9500).ListItem.Label,   ·   ]</label>
+				<top>760</top>
+				<width>1200</width>
+				<height>56</height>
+				<font>Couch_Header</font>
+				<textcolor>ffeceef1</textcolor>
+				<label>$INFO[Container(9500).ListItem.Label]</label>
+				<visible>Control.HasFocus(9500)</visible>
 			</control>
 			<control type="label">
 				<left>96</left>
-				<top>942</top>
-				<width>1200</width>
-				<height>30</height>
-				<font>Couch_Caption</font>
+				<top>822</top>
+				<width>1300</width>
+				<height>60</height>
+				<font>Couch_Label</font>
 				<textcolor>b4eceef1</textcolor>
 				<label>$INFO[Container(9500).ListItem.Property(desc)]</label>
 				<visible>Control.HasFocus(9500)</visible>
 			</control>
+			<control type="label">
+				<left>96</left>
+				<top>892</top>
+				<width>600</width>
+				<height>34</height>
+				<font>Couch_Caption</font>
+				<textcolor>ffe8a849</textcolor>
+				<label>Unlocked</label>
+				<visible>Control.HasFocus(9500) + !String.IsEmpty(Container(9500).ListItem.Property(unlocked))</visible>
+			</control>
+			<control type="label">
+				<left>96</left>
+				<top>892</top>
+				<width>600</width>
+				<height>34</height>
+				<font>Couch_Caption</font>
+				<textcolor>ff8a93a0</textcolor>
+				<label>Locked</label>
+				<visible>Control.HasFocus(9500) + String.IsEmpty(Container(9500).ListItem.Property(unlocked))</visible>
+			</control>
+
 			<control type="list" id="9500">
 				<left>96</left>
 				<top>980</top>
 				<width>1740</width>
-				<height>92</height>
+				<height>96</height>
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">200</scrolltime>
 				<onup>9000</onup>
 				<ondown>9500</ondown>
-				<itemlayout width="80" height="92">
+				<itemlayout width="84" height="96">
 					<control type="image">
-						<left>8</left>
-						<top>8</top>
+						<left>10</left>
+						<top>14</top>
 						<width>64</width>
 						<height>64</height>
 						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 						<colordiffuse>$VAR[Couch_Ach_Tint]</colordiffuse>
 					</control>
 				</itemlayout>
-				<focusedlayout width="80" height="92">
+				<focusedlayout width="84" height="96">
 					<control type="image">
-						<left>0</left>
+						<left>-6</left>
 						<top>0</top>
-						<width>80</width>
-						<height>80</height>
+						<width>96</width>
+						<height>96</height>
+						<texture border="48" infill="false" colordiffuse="c8e8a849">couch/halo-glow.png</texture>
+					</control>
+					<control type="image">
+						<left>-6</left>
+						<top>0</top>
+						<width>96</width>
+						<height>96</height>
+						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+					</control>
+					<control type="image">
+						<left>10</left>
+						<top>14</top>
+						<width>64</width>
+						<height>64</height>
 						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-						<bordertexture border="18" infill="false" colordiffuse="e6ffffff">couch/ring.png</bordertexture>
-						<bordersize>3</bordersize>
 					</control>
 				</focusedlayout>
 				<content target="videos">plugin://script.copacetic.helper/?info=couch_achievements&amp;appid=$INFO[Container(9000).ListItem.Property(appid)]</content>
