@@ -37,6 +37,183 @@
 		</include>
 		<include>Couch_GlowField</include>
 
+
+		<!-- top strip: pad battery, search, settings, power (PS5 corner) -->
+		<control type="group">
+			<left>1370</left>
+			<top>52</top>
+			<width>75</width>
+			<height>40</height>
+			<visible>!String.IsEmpty(Window(home).Property(PadConnected))</visible>
+			<control type="image">
+				<left>0</left>
+				<top>0</top>
+				<width>43</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/ps5_pad_simple.png</texture>
+			</control>
+			<control type="image">
+				<visible>!Integer.IsGreater(Window(home).Property(PadBattery),0)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="FFFF5174">icons/couch_battv_0.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),0) + !Integer.IsGreater(Window(home).Property(PadBattery),7)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="FFFF5174">icons/couch_battv_7.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),7) + !Integer.IsGreater(Window(home).Property(PadBattery),15)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="FFFF5174">icons/couch_battv_15.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),15) + !Integer.IsGreater(Window(home).Property(PadBattery),25)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/couch_battv_25.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),25) + !Integer.IsGreater(Window(home).Property(PadBattery),40)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/couch_battv_40.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),40) + !Integer.IsGreater(Window(home).Property(PadBattery),55)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/couch_battv_55.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),55) + !Integer.IsGreater(Window(home).Property(PadBattery),70)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/couch_battv_70.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),70) + !Integer.IsGreater(Window(home).Property(PadBattery),85)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/couch_battv_85.png</texture>
+			</control>
+			<control type="image">
+				<visible>Integer.IsGreater(Window(home).Property(PadBattery),85) + !Integer.IsGreater(Window(home).Property(PadBattery),101)</visible>
+				<left>49</left>
+				<top>0</top>
+				<width>20</width>
+				<height>40</height>
+				<aspectratio aligny="bottom">keep</aspectratio>
+				<texture colordiffuse="cceceef1">icons/couch_battv_100.png</texture>
+			</control>
+		</control>
+		<control type="button" id="9101">
+			<left>1482</left>
+			<top>40</top>
+			<width>64</width>
+			<height>64</height>
+			<label></label>
+			<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
+			<texturenofocus>-</texturenofocus>
+			<onclick>RunScript(script.globalsearch)</onclick>
+			<onleft>9101</onleft>
+			<onright>9102</onright>
+			<ondown>9000</ondown>
+		</control>
+		<control type="image">
+			<left>1496</left>
+			<top>54</top>
+			<width>36</width>
+			<height>36</height>
+			<texture colordiffuse="d2eceef1">couch/ic-search.png</texture>
+		</control>
+		<include content="Couch_Lightbar">
+			<param name="x" value="1486" />
+			<param name="y" value="108" />
+			<param name="width" value="56" />
+			<param name="visible" value="Control.HasFocus(9101)" />
+		</include>
+		<control type="button" id="9102">
+			<left>1552</left>
+			<top>40</top>
+			<width>64</width>
+			<height>64</height>
+			<label></label>
+			<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
+			<texturenofocus>-</texturenofocus>
+			<onclick>ActivateWindow(settings)</onclick>
+			<onleft>9101</onleft>
+			<onright>9103</onright>
+			<ondown>9000</ondown>
+		</control>
+		<control type="image">
+			<left>1566</left>
+			<top>54</top>
+			<width>36</width>
+			<height>36</height>
+			<texture colordiffuse="d2eceef1">couch/ic-settings.png</texture>
+		</control>
+		<include content="Couch_Lightbar">
+			<param name="x" value="1556" />
+			<param name="y" value="108" />
+			<param name="width" value="56" />
+			<param name="visible" value="Control.HasFocus(9102)" />
+		</include>
+		<control type="button" id="9103">
+			<left>1622</left>
+			<top>40</top>
+			<width>64</width>
+			<height>64</height>
+			<label></label>
+			<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
+			<texturenofocus>-</texturenofocus>
+			<onclick>ActivateWindow(shutdownmenu)</onclick>
+			<onleft>9102</onleft>
+			<onright>9103</onright>
+			<ondown>9000</ondown>
+		</control>
+		<control type="image">
+			<left>1636</left>
+			<top>54</top>
+			<width>36</width>
+			<height>36</height>
+			<texture colordiffuse="d2eceef1">couch/ic-power.png</texture>
+		</control>
+		<include content="Couch_Lightbar">
+			<param name="x" value="1626" />
+			<param name="y" value="108" />
+			<param name="width" value="56" />
+			<param name="visible" value="Control.HasFocus(9103)" />
+		</include>
+
 		<!-- clock -->
 		<control type="label">
 			<left>1224</left>
@@ -60,6 +237,7 @@
 			<texturenofocus colordiffuse="cc161a22">couch/libtile.png</texturenofocus>
 			<onclick>ActivateWindow(1197)</onclick>
 			<onright>9000</onright>
+			<onup>9101</onup>
 		</control>
 		<!-- 2x2 grid glyph -->
 		<control type="image">
@@ -111,6 +289,7 @@
 			<orientation>horizontal</orientation>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onleft>9001</onleft>
+			<onup>9101</onup>
 			<itemlayout width="120" height="290">
 				<control type="image">
 					<left>30</left>
