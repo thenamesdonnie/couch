@@ -361,7 +361,57 @@ function pausedLabel(appid) {
   return appid || 'Game';
 }
 
-export async function windows() {
+// Building the window list costs a python3 spawn and an X walk: measured
+// 215ms end to end on this box for a 523-byte answer, of which ~33ms is the
+// interpreter plus python-xlib and the rest is the walk. That is not a
+// background number - it sits in front of the switcher sheet, which is a
+// GESTURE (double-tap PS), and in front of every Screen-tab poll.
+//
+// So: one in-flight walk at a time, and a very short memory of the answer.
+// The window doesn't have to be long to work, because the cost is bursty -
+// the switcher and the phone both ask two or three times in quick succession
+// while a sheet opens. TTL is deliberately shorter than a human notices a
+// stale row (a window that closed 400ms ago still being listed) and shorter
+// than the switcher's own list timeout.
+//
+// activateWindow() clears it, because the one moment staleness would be felt
+// is the redraw straight after acting.
+export const WINDOWS_TTL_MS = 600;
+const _cache = { at: 0, value: null, inflight: null };
+let _now = () => Date.now();
+let _build = () => buildWindows();
+
+// Test seams, in the shape awaitGuardClaim already uses: the real work stays
+// the default and the test injects a clock and a builder rather than a live
+// X server and a python spawn.
+export function _setWindowsSeams({ now, build } = {}) {
+  _now = now || (() => Date.now());
+  _build = build || (() => buildWindows());
+  invalidateWindows();
+}
+
+export function invalidateWindows() {
+  _cache.at = 0;
+  _cache.value = null;
+}
+
+export function windows() {
+  if (_cache.value && _now() - _cache.at < WINDOWS_TTL_MS) {
+    return Promise.resolve(_cache.value);
+  }
+  if (_cache.inflight) return _cache.inflight;      // single-flight
+  _cache.inflight = Promise.resolve()
+    .then(_build)
+    .then((list) => {
+      _cache.value = list;
+      _cache.at = _now();
+      return list;
+    })
+    .finally(() => { _cache.inflight = null; });
+  return _cache.inflight;
+}
+
+async function buildWindows() {
   const out = await run('python3', [XINPUT, 'windows']);
   let list;
   try { list = JSON.parse(out); } catch { return []; }
@@ -438,6 +488,10 @@ export async function windowThumb(id) {
 }
 
 export async function activateWindow(id) {
+  // Whatever happens below changes the stacking, and the next thing the
+  // caller does is ask for the list again. Drop the memo so that redraw is
+  // the truth rather than a copy of the world before the tap.
+  invalidateWindows();
   const session = gameSessionActive();
   const suspended = suspendedFlag();
   if (id === 'desktop') {
