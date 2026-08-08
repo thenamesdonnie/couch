@@ -343,26 +343,35 @@
 					<colordiffuse>c8ffffff</colordiffuse>
 				</control>
 			</itemlayout>
-			<focusedlayout width="182" height="290">
+			<!-- SAME WIDTH as itemlayout, deliberately. Kodi sizes a slot from its
+			     layout, and focusedlayout being 62px wider meant the row's current
+			     item kept a fat slot even after the row lost focus - a visible hole
+			     between two tiles (Donnie, 8 Aug: "a weird gap between bb and hk").
+			     With both at 120 the rhythm never changes and the focused tile grows
+			     OVER its neighbours instead, which is what the halo (232px wide in a
+			     182px slot) has always done anyway. Everything below is re-centred on
+			     itemlayout's tile centre (85,103) so it expands symmetrically about
+			     where the resting tile already sits. -->
+			<focusedlayout width="120" height="290">
 				<control type="group">
 					<!-- launch flourish: the whole focused tile expands and fades
 					     while the room cover darkens (CouchLaunching). Animations
 					     must sit on a CONTROL; on the layout element Kodi silently
 					     ignores them, which is why v1 of this never moved. -->
-					<animation effect="zoom" start="100" end="150" center="116,126" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+					<animation effect="zoom" start="100" end="150" center="85,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
-					<left>0</left>
-					<top>10</top>
+					<left>-31</left>
+					<top>-13</top>
 					<width>232</width>
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>0</left>
-					<top>10</top>
+					<left>-31</left>
+					<top>-13</top>
 					<width>232</width>
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
@@ -377,8 +386,8 @@
 				     The halo, lightbar and label were already gated this way;
 				     the tile itself was not. -->
 				<control type="image">
-					<left>30</left>
-					<top>40</top>
+					<left>-1</left>
+					<top>17</top>
 					<width>172</width>
 					<height>172</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
@@ -394,7 +403,7 @@
 					     conditional - so the resting tile is centred in the slot
 					     it inherited and the extra 62px falls evenly either side
 					     instead of piling up after it. -->
-					<left>61</left>
+					<left>30</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -404,8 +413,8 @@
 					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>30</left>
-					<top>222</top>
+					<left>-1</left>
+					<top>199</top>
 					<width>172</width>
 					<height>12</height>
 					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
@@ -413,8 +422,8 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="label">
-					<left>30</left>
-					<top>238</top>
+					<left>-1</left>
+					<top>215</top>
 					<width>620</width>
 					<height>38</height>
 					<font>Couch_Label</font>
