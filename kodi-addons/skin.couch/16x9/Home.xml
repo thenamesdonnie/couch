@@ -298,6 +298,30 @@
 					     ignores them, which is why v1 of this never moved. -->
 					<animation effect="zoom" start="100" end="150" center="116,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
+				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
+				     layouts on a frame boundary. 64 is not a taste number - it is
+				     110/172, so the zoom starts at exactly the resting tile's size
+				     and ends at exactly the focused one, about the (116,103) centre
+				     both already share. Change one of those sizes and this must
+				     change with it.
+
+				     Both halves were measured on the set by stretching the times to
+				     2000ms and burst-capturing (the halo's height through the tile
+				     centre x, calibrated against its known 232):
+
+				       Focus    197.0 -> 215.5 -> 227.5 -> 229.5   animates
+				       Unfocus  232.0 -> 227.0 -> 211.5 -> resting  animates, but
+				                                                    the tail is cut
+
+				     Kodi reverts the item to itemlayout partway through an Unfocus
+				     rather than holding the layout for the full duration, so the
+				     shrink cannot be relied on to finish. Hence 120ms and easing
+				     OUT on the way down: most of the distance is covered early, so
+				     whatever Kodi truncates is a short hop rather than a pop. The
+				     grow keeps 170ms because nothing interrupts it. Without any
+				     Unfocus at all the outgoing tile measured resting size in the
+				     very first frame - a hard jump. -->
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
 					<left>0</left>
@@ -306,6 +330,8 @@
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
+					<animation effect="zoom" start="64" end="100" center="116,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="64" center="116,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<control type="image">
 					<left>0</left>
@@ -314,6 +340,8 @@
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
+					<animation effect="zoom" start="64" end="100" center="116,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="64" center="116,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- The focused tile at full size - but ONLY while the row
 				     actually has focus. Kodi keeps drawing focusedlayout for a
@@ -331,6 +359,8 @@
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
+					<animation effect="zoom" start="64" end="100" center="116,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="64" center="116,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- ...and the resting tile in its place, geometry and diffuse
 				     copied from itemlayout above so a row that has lost focus
