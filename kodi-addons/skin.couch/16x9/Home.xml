@@ -383,7 +383,17 @@
 				</control>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=8</content>
+			<!-- The trailing $INFO is a REVISION, not decoration. Kodi caches a
+			     plugin listing for the life of the container, and Container.Refresh
+			     is a no-op on Home (this window is KEEP_IN_MEMORY) - so a game that
+			     was paused or quit kept its old row until the player left and came
+			     back. Measured: after quitting, the tile still read "- paused" and
+			     the card still drew a freeze-frame whose file had been deleted 164ms
+			     earlier. A container DOES rebuild when its resolved content string
+			     changes, so pause-snap stamps CouchGamesRev on every capture and
+			     every clear and the row follows. Empty property = empty suffix, so
+			     the URL stays valid before anything has ever been stamped. -->
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback

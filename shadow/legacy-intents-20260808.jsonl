@@ -111,3 +111,12 @@
 {"t": 1786216187.0973248, "src": "watcher", "verb": "iconify", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"via": "wm-change-state", "reason": "reconcile:refreeze-lost-suspend", "window": "0x540000b"}}
 {"t": 1786217230.191808, "src": "watcher", "verb": "freeze", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids": [798988, 798993, 1170032], "resolver": "game-pids", "signal": "SIGSTOP", "repair": "reconcile", "reason": "reconcile:refreeze-lost-suspend", "topcls": "Kodi"}}
 {"t": 1786217667.2781928, "src": "watcher", "verb": "freeze", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids": [798988, 798993, 1179946], "resolver": "game-pids", "signal": "SIGSTOP", "repair": "reconcile", "reason": "reconcile:refreeze-lost-suspend", "topcls": "Kodi"}}
+{"t": 1786220872.826, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1786220872.938, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1786220872.989, "src": "game-launch", "verb": "thaw", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids":[798988,798993],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1786220874.041, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[798988,798993],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1786220875.2673867, "src": "watcher", "verb": "route_pad", "subject": "game", "args": {"reason": "joystick-setting-drift", "repair": "reconcile", "was": true, "via": "kodi-jsonrpc"}}
+{"t": 1786220875.577, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"798837"}}
+{"t": 1786220875.590, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786220875.595, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"shadps4"}}
+{"t": 1786221056.016957, "src": "watcher", "verb": "clear_flag", "subject": "suspended", "args": {"reason": "stale-suspended-flag", "repair": "reconcile", "pids": [], "resolver": "game-pids"}}
