@@ -48,9 +48,20 @@ Research receipts: docs/research/console-ui-patterns.md +
       Continue (widgets, per-tile progress lightbar) / New / Everything A-Z
       grid with L1 R1 letter jump. Smart playlists feed the rows. Exercises
       the phase-1 tokens for real.
-- [ ] Phase 3: Home row (PS5 squares + Library tile left, art fills screen,
-      idle fade to art). Phase 4: player OSD (lightbar = seek bar). Phase 5:
-      dialog re-theme sweep (tokens only, structure untouched).
+- [x] Phase 3 built as window 1198 (8 Aug, all-nighter): PS5 layout per
+      Donnie's reference photo - 110px tile row, halo H (live-colour glow +
+      white core, slice-safe assets after 3 clipping fixes), clearlogo +
+      Play pill lower-left, corner strip (Lucide search/settings/power +
+      pad battery chip), composed square game tiles (hero art + Steam
+      logo.png centred; tile.png override for PS4 dumps - Bloodborne).
+      NOT yet the real Home - the swap is still the next big step.
+- [x] Switcher restyled to the Stagelight tile rail + ALT-TAB THUMBNAILS
+      (live window captures via /api/art/winthumb, mapped-only, compositor
+      reads obscured windows; phone switcher gets them free).
+- [x] kodi-tv flock (twin-instance crash-race fixed, 8 Aug).
+- [ ] Phase 4: player OSD (lightbar = seek bar). Phase 5: dialog re-theme
+      sweep (tokens only, structure untouched). Games in search. Continue
+      progress bars.
 - [ ] Open: wrap-around ships behind a skin setting (Donnie feels both);
       nav sounds later, off switch mandatory.
 - Gotchas for the builder: C13 crash rules (no conditional nested blocks in
