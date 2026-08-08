@@ -95,9 +95,40 @@ export async function suspendGame() {
 
 // --- DualSense ---
 
+// A joystick node under /sys/devices/virtual/ was created through /dev/uinput
+// by something on this box, not plugged in by a person: `vpad` (the guard's
+// synthetic Xbox pad), the fake-pad and ps-button test rigs, and the mouse
+// passthrough Kodi's peripheral layer puts up. Counting those as "a
+// controller is connected" is what made the phone app claim a pad while the
+// DualSense was off - and the fake-pad rig deliberately calls itself
+// "DualSense Wireless Controller", so a name match alone would not have
+// caught it either. Where the device lives is the honest test: uinput cannot
+// forge a real bus path.
+const VIRTUAL_INPUT = `${path.sep}devices${path.sep}virtual${path.sep}`;
+
+export function realJoysticks() {
+  let nodes = [];
+  try {
+    nodes = fs.readdirSync('/dev/input').filter((f) => /^js\d+$/.test(f));
+  } catch { return []; }
+  const found = [];
+  for (const node of nodes) {
+    let where;
+    try { where = fs.realpathSync(`/sys/class/input/${node}`); } catch { continue; }
+    if (where.includes(VIRTUAL_INPUT)) continue;
+    found.push({ node, name: readIf(`/sys/class/input/${node}/device/name`) || node });
+  }
+  return found;
+}
+
 export function padState() {
-  let connected = false;
-  try { connected = fs.readdirSync('/dev/input').some((f) => f.startsWith('js')); } catch {}
+  // The DualSense presents two nodes (the 13-button pad and its motion
+  // sensors); either is proof the pad is here, so the answer stays a boolean
+  // and `name` reports the first real one for the app to show and for anyone
+  // debugging this again.
+  const real = realJoysticks();
+  const connected = real.length > 0;
+  const name = real.length ? real[0].name : null;
   let battery = null;
   let charging = false;
   const globs = fs.existsSync('/sys/class/power_supply') ? fs.readdirSync('/sys/class/power_supply') : [];
@@ -111,7 +142,7 @@ export function padState() {
       break;
     }
   }
-  return { connected, battery, charging };
+  return { connected, battery, charging, name };
 }
 
 function bluetooth(cmd) {

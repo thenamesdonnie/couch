@@ -1,7 +1,7 @@
 {
- "t": 1786216825.1976182,
+ "t": 1786217749.336716,
  "pid": 1103583,
- "uptime_s": 2340.8,
+ "uptime_s": 3265.0,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -24,7 +24,7 @@
   "session": "active",
   "enforcement": "none",
   "gesture": "idle",
-  "pad": "present"
+  "pad": "absent"
  },
  "games": {
   "/home/ds2000/games/ps4/CUSA00900/eboot.bin": "FROZEN"
@@ -38,8 +38,8 @@
   "pad": {
    "ok": true,
    "events": 0,
-   "detail": "1 node(s)",
-   "age_s": 0.4,
+   "detail": "0 node(s)",
+   "age_s": 1.8,
    "stale": false
   },
   "flags": {
@@ -58,9 +58,9 @@
   },
   "kodi": {
    "ok": true,
-   "events": 81,
+   "events": 112,
    "detail": "joystick=True window=10000",
-   "age_s": 0.1,
+   "age_s": 5.1,
    "stale": false
   },
   "steam": {
@@ -79,22 +79,23 @@
   },
   "x11": {
    "ok": true,
-   "events": 35,
-   "detail": "top='Kodi' ev=35",
+   "events": 83,
+   "detail": "top='Kodi' ev=83",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 99,
+  "obs": 132,
   "daemon": 2,
-  "transition": 12,
+  "transition": 13,
   "intent": 4,
-  "agreement": 449,
+  "agreement": 625,
   "invariant": 1,
-  "observer_blind": 1
+  "observer_blind": 1,
+  "latency": 1
  },
- "passes": 908,
+ "passes": 1284,
  "intents": 4,
  "invariant_violations": 0,
  "ps_presses": {
@@ -104,9 +105,9 @@
  },
  "last_trigger": "",
  "edges": {
-  "seen": 0,
+  "seen": 1,
   "coalesced": 0,
-  "last_latency_s": null
+  "last_latency_s": 0.0507
  },
  "resource_leaks": [],
  "bindings": {

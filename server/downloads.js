@@ -37,9 +37,23 @@ async function api(pathname, retry = true) {
   return res.json();
 }
 
+// qBittorrent's `active` filter means "moving bytes", in either direction, so
+// a finished torrent that is seeding is active - and the Downloads view was
+// showing exactly that: 100%-complete films with 0 B/s down, sitting above
+// anything real. `downloading` is the filter that means what this view means.
+//
+// The state check is ours and stays even though the filter should make it
+// redundant: trusting a filter name for this is precisely what went wrong,
+// the names are qBittorrent's to redefine, and one line here is cheaper than
+// noticing again. Every upload state ends in `UP`; the rest are the
+// not-yet-complete ones (metaDL is a magnet still fetching its metadata,
+// which has no size or progress yet but is very much a download).
+const UPLOAD_STATE = /UP$|^uploading$/;
+
 export async function activeDownloads() {
-  const torrents = await api('/torrents/info?filter=active');
+  const torrents = await api('/torrents/info?filter=downloading');
   return torrents
+    .filter((t) => !UPLOAD_STATE.test(t.state) && t.progress < 1)
     .map((t) => ({
       name: t.name,
       progress: t.progress,
