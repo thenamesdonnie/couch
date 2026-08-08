@@ -26,7 +26,8 @@ LOGO_DIR = os.path.join(HOME, '.local/share/game-tiles/logos')
 STEAMAPPS = os.path.join(HOME, '.steam/steam/steamapps')
 PS4_DIR = os.path.join(HOME, 'games/ps4')
 FONT_DIR = os.path.join(HOME, 'couch/kodi-addons/skin.couch/fonts/Figtree')
-OUT_TMPL = '/tmp/couch-loading-%dx%d.png'
+OUT_TMPL = '/tmp/couch-loading-%dx%d.png'   # legacy; cache below supersedes
+CACHE_DIR = os.path.join(HOME, 'couch/data/loading-cards')
 
 
 def steam_name(appid):
@@ -106,6 +107,37 @@ def main():
     appid = sys.argv[1]
     sw = int(sys.argv[2]) if len(sys.argv) > 2 else 3840
     sh = int(sys.argv[3]) if len(sys.argv) > 3 else 2160
+
+    # The cache: composing a 4K card + 24 spinner frames costs seconds of
+    # PIL work, which used to be a black screen at the head of every launch.
+    # Cards are keyed by appid+resolution and validated against the source
+    # art's mtimes, all with stat() calls before PIL is even imported - a
+    # warm hit answers in interpreter-startup time.
+    import json as _json
+    key = re.sub(r'[^A-Za-z0-9._-]', '_', str(appid))[:100] + '-%dx%d' % (sw, sh)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    out = os.path.join(CACHE_DIR, key + '.png')
+    strip_out = os.path.join(CACHE_DIR, key + '.spin.png')
+    meta_path = os.path.join(CACHE_DIR, key + '.json')
+
+    def _mtimes(paths):
+        got = {}
+        for sp in paths:
+            try:
+                got[sp] = os.stat(sp).st_mtime_ns
+            except OSError:
+                got[sp] = None      # recorded absence: appearing later busts it
+        return got
+
+    try:
+        meta = _json.load(open(meta_path))
+        if (os.path.isfile(out) and os.path.isfile(strip_out)
+                and meta.get('sources') == _mtimes(list(meta['sources']))):
+            print(out)
+            print('spinner %s %d %d %d %d %d' % (strip_out, *meta['spin']))
+            return
+    except Exception:
+        pass
 
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
     hero, logo, title = resolve(appid)
@@ -194,14 +226,18 @@ def main():
     # shows the spinner (the curtain starts animating a beat later)
     canvas.paste(frames[0], (sx, sy), frames[0])
 
-    out = OUT_TMPL % (sw, sh)
-    strip_out = out[:-len('.png')] + '.spin.png'
     tmp = out + '.part'
     canvas.save(tmp, 'PNG')
     os.replace(tmp, out)
     tmp = strip_out + '.part'
     strip.save(tmp, 'PNG')
     os.replace(tmp, strip_out)
+    meta = {'sources': _mtimes([p for p in (hero, logo) if p]),
+            'spin': [sx, sy, dia, n_frames, fps]}
+    tmp = meta_path + '.part'
+    with open(tmp, 'w') as fh:
+        _json.dump(meta, fh)
+    os.replace(tmp, meta_path)
     print(out)
     print('spinner %s %d %d %d %d %d' % (strip_out, sx, sy, dia, n_frames, fps))
 

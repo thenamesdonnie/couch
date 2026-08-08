@@ -330,6 +330,13 @@
 				</control>
 			</itemlayout>
 			<focusedlayout width="182" height="290">
+				<control type="group">
+					<!-- launch flourish: the whole focused tile expands and fades
+					     while the room cover darkens (CouchLaunching). Animations
+					     must sit on a CONTROL; on the layout element Kodi silently
+					     ignores them, which is why v1 of this never moved. -->
+					<animation effect="zoom" start="100" end="150" center="116,126" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
 					<left>0</left>
@@ -373,6 +380,7 @@
 					<textcolor>ffeceef1</textcolor>
 					<label>$INFO[ListItem.Label]</label>
 					<visible>Control.HasFocus(9000)</visible>
+				</control>
 				</control>
 			</focusedlayout>
 			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=8</content>

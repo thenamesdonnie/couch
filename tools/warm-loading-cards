@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Pre-compose every game's loading card so a launch never waits on PIL.
+
+Walks the same sources the games row does - Steam appmanifests and PS4 dumps
+with an eboot.bin - and runs tools/loading-card for each at the TV's
+resolution. The card tool's own mtime cache makes re-runs cheap: a warm pass
+with nothing changed is a handful of stat() calls per game. Spawned hourly by
+games.py's refresh block, alongside the achievement fetchers.
+"""
+import glob
+import os
+import re
+import subprocess
+import sys
+
+HOME = os.path.expanduser('~')
+CARD = os.path.join(HOME, 'couch/tools/loading-card')
+STEAMAPPS = os.path.join(HOME, '.steam/steam/steamapps')
+PS4_DIR = os.path.join(HOME, 'games/ps4')
+RES = ('3840', '2160')
+
+
+def targets():
+    for p in glob.glob(os.path.join(STEAMAPPS, 'appmanifest_*.acf')):
+        m = re.search(r'appmanifest_(\d+)\.acf$', p)
+        if m:
+            yield m.group(1)
+    for eboot in glob.glob(os.path.join(PS4_DIR, '*', 'eboot.bin')):
+        if not os.path.basename(os.path.dirname(eboot)).endswith('-patch'):
+            yield eboot
+
+
+def main():
+    done = warm = 0
+    for t in targets():
+        r = subprocess.run(['python3', CARD, t, *RES],
+                           capture_output=True, text=True, timeout=60)
+        done += 1
+        # compose vs cache-hit is invisible from here; count what succeeded
+        if r.returncode == 0:
+            warm += 1
+        else:
+            print('warm failed for %s: %s' % (t, r.stderr.strip()[-120:]),
+                  file=sys.stderr)
+    print('loading cards: %d/%d warm' % (warm, done))
+
+
+if __name__ == '__main__':
+    main()

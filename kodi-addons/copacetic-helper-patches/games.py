@@ -178,6 +178,11 @@ def _ach_refresh():
                                  start_new_session=True,
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
+            warmer = os.path.expanduser('~/couch/tools/warm-loading-cards')
+            if os.path.isfile(warmer):
+                subprocess.Popen(['python3', warmer], start_new_session=True,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
