@@ -129,7 +129,14 @@
 					<top>10</top>
 					<width>232</width>
 					<height>232</height>
-					<texture border="48" infill="false" colordiffuse="96ffffff">couch/halo.png</texture>
+					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+				</control>
+				<control type="image">
+					<left>0</left>
+					<top>10</top>
+					<width>232</width>
+					<height>232</height>
+					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
 				</control>
 				<control type="image">
 					<left>30</left>
