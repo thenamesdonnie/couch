@@ -783,6 +783,18 @@ def act_switcher(gname, reason):
         handoff_to_kodi(gname)
     else:
         focus_kodi(gname)
+        # ...and a guard window, exactly as handoff_to_kodi's last line opens
+        # one. focus_kodi is a single Xlib restack: one push, nothing holding
+        # it, so whatever owned the screen can take it straight back - Steam's
+        # window is documented in this repo as doing precisely that. Donnie
+        # reported the switcher "going to Kodi for a second then back", and
+        # the shadow log has the shape of it: five double-taps in 22 seconds
+        # at 14:22, every one on this branch, every one a lone restack.
+        #
+        # The suspend branch never had the problem because it ends in a guard.
+        # This is the same last line on the branch that was missing it.
+        subprocess.Popen(['/home/ds2000/.local/bin/steam-input-guard', 'kodi'],
+                         start_new_session=True)
     intent('show_switcher', 'tv', gesture=gname, reason=reason,
            via='kodi-addon:script.couch.switcher')
     show_switcher()

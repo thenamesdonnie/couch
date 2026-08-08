@@ -70,6 +70,11 @@ except Exception as _e:  # noqa: BLE001
             return None
 
 API = "http://localhost:8790"
+
+#: Not a window id. The switcher's rows are otherwise X window ids
+#: handed straight to the server, so the power row carries a sentinel
+#: that could never be mistaken for one.
+POWER_ID = "__power__"
 LIST_TIMEOUT = 3      # the server answers in ~100ms; anything slower is broken
 ACT_TIMEOUT = 20      # activating suspends a game first, which takes a moment
 
@@ -323,12 +328,49 @@ def main():
         notify("Nothing else is running")
         return
 
+    # The power screen, LAST, after every real destination.
+    #
+    # It is here because the switcher is the only surface reachable from
+    # inside a game: at home a hold already opens this same screen, but in a
+    # game the hold is Steam's menu, so powering off meant suspending first
+    # and then holding - two gestures, one of them a suspend nobody asked for.
+    #
+    # It ROUTES, it never acts. Opening shutdownmenu hands the decision to the
+    # screen that already owns it, including the quit-the-game-first save
+    # grace; a second power path with its own copy of that logic is how one of
+    # them ends up killing a game without the grace. So landing on this row by
+    # accident costs a screen you can back out of - strictly more friction
+    # than the single hold that opens it at home, which is why adding it here
+    # is not a new footgun.
+    #
+    # Last, and after everything: the stick starts at index 0 and this is the
+    # furthest thing from it.
+    rows = rows + [{"id": POWER_ID, "title": "Power", "power": True}]
+
     choice = select_window(rows)
     if choice < 0 or choice >= len(rows):
         xbmc.log("couch.switcher: cancelled", xbmc.LOGINFO)
         return
 
     target = rows[choice]
+    if target.get("power"):
+        # Kodi's own shutdown menu, restyled by skin.couch into the power
+        # screen. Same window the hold gesture opens at home, same window the
+        # server's power actions route through.
+        #
+        # Over JSON-RPC, not executebuiltin: the builtin ran (the log line
+        # below proved it) and the window never opened - it is dispatched
+        # against a GUI still tearing down this dialog and is simply lost.
+        # pad-home-watcher's act_power_menu has always used ActivateWindow
+        # over RPC for the same window, for the related reason that it works
+        # while Kodi's joystick input is off. One mechanism, both callers.
+        xbmc.log("couch.switcher: opening the power screen", xbmc.LOGINFO)
+        xbmc.executeJSONRPC(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "GUI.ActivateWindow",
+            "params": {"window": "shutdownmenu"},
+        }))
+        return
+
     xbmc.log("couch.switcher: activating %s (%s)"
              % (target.get("id"), target.get("title")), xbmc.LOGINFO)
     try:

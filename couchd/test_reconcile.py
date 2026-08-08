@@ -375,12 +375,31 @@ def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
     assert rig.machine.regions['gesture'] == 'idle'
 
 
-def test_double_tap_with_nothing_running_just_opens_the_switcher():
+def test_double_tap_with_nothing_running_guards_the_switcher_too():
+    """The no-session branch gets the same guard the suspend branch does.
+
+    It did not, and that was the bug behind "the switcher goes to Kodi for a
+    second then back". A bare `show kodi` is one restack: nothing holds the
+    screen, and whatever owned it - Steam's window is the documented offender
+    on this box - takes it straight back, burying the dialog. The shadow log
+    for 8 Aug has the shape of it: five double-taps in 22 seconds at 14:22,
+    every one of them suspended_first:false, every one a lone show.
+
+    The suspend branch above never had the problem because _handoff_intents
+    ends in a guard. So this is not a new mechanism, it is that same last line
+    on the branch that was missing it - which is why the assertion below is
+    the sequence above with the freeze half removed, and nothing else.
+    """
     rig = Rig(top_name='Thunar', top_class='Thunar').settle()
     k0 = 11500.0
     _tap(rig, k0)
     got = _tap(rig, k0 + 0.2, double_armed=True)
-    assert verbs(got) == [('show', 'kodi'), ('show_switcher', 'tv')]
+    assert verbs(got) == [('show', 'kodi'), ('spawn_guard', 'kodi'),
+                          ('show_switcher', 'tv')]
+    assert find(got, 'show_switcher')[0].args['suspended_first'] is False
+    # the guard it opens is the real one, same window as every other handoff
+    guard = find(got, 'spawn_guard')[0]
+    assert guard.args['via'] == 'steam-input-guard kodi'
     assert not find(got, 'freeze') and not find(got, 'set_flag')
     assert find(got, 'show_switcher')[0].args['suspended_first'] is False
 

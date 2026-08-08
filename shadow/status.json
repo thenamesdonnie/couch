@@ -1,7 +1,7 @@
 {
- "t": 1786221276.5017257,
- "pid": 1103583,
- "uptime_s": 6792.1,
+ "t": 1786224709.7101357,
+ "pid": 1339329,
+ "uptime_s": 230.5,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -11,8 +11,8 @@
  ],
  "owns_file": "/home/ds2000/couch/couchd/owns.conf",
  "owns_warnings": [],
- "model_version": "44d3542b8bba",
- "git": "6fa2eb58f60e",
+ "model_version": "134534b59118",
+ "git": "8fba05090b13",
  "acted": 0,
  "action_failures": 0,
  "action_skipped": 0,
@@ -26,41 +26,35 @@
   "gesture": "idle",
   "pad": "absent"
  },
- "games": {
-  "/home/ds2000/games/ps4/CUSA00900/eboot.bin": "STOPPED"
- },
- "last_would_do": [
-  "would clear_flag suspended [reconcile:stale-suspended-flag]",
-  "would show kodi [transition:session-ended]",
-  "would route_pad kodi [transition:session-ended]"
- ],
+ "games": {},
+ "last_would_do": [],
  "observers": {
   "pad": {
    "ok": true,
    "events": 0,
    "detail": "0 node(s)",
-   "age_s": 1.7,
+   "age_s": 0.0,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 9,
+   "events": 5,
    "detail": "0 present",
-   "age_s": 0.1,
+   "age_s": 0.0,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 9,
+   "events": 0,
    "detail": "0 pid(s)",
-   "age_s": 0.0,
+   "age_s": 5.0,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 255,
+   "events": 13,
    "detail": "joystick=True window=10000",
-   "age_s": 0.1,
+   "age_s": 5.0,
    "stale": false
   },
   "steam": {
@@ -72,42 +66,38 @@
   },
   "triggers": {
    "ok": true,
-   "events": 1,
-   "detail": "quit (save and close)",
+   "events": 0,
+   "detail": "quiet",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 147,
-   "detail": "top='Kodi' ev=147",
+   "events": 0,
+   "detail": "top='Kodi' ev=0",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 311,
+  "obs": 27,
   "daemon": 2,
-  "transition": 29,
-  "intent": 8,
-  "agreement": 1226,
-  "invariant": 3,
-  "observer_blind": 2,
-  "latency": 1
+  "transition": 6,
+  "invariant": 1
  },
- "passes": 2883,
- "intents": 8,
+ "passes": 223,
+ "intents": 0,
  "invariant_violations": 0,
  "ps_presses": {
   "evdev": 0,
   "steam_guide_lines": 0,
   "first_event_latency_s": null
  },
- "last_trigger": "quit (save and close)",
+ "last_trigger": "",
  "edges": {
-  "seen": 1,
+  "seen": 0,
   "coalesced": 0,
-  "last_latency_s": 0.0507
+  "last_latency_s": null
  },
  "resource_leaks": [],
  "bindings": {

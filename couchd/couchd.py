@@ -1601,6 +1601,23 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
                           {'via': 'xlib-restack', 'showing_desktop': 'off'},
                           switcher_reason, _pred('top window is Kodi', 2.0),
                           requires=('gesture', 'foreground'), cooldown=3.0))
+        # ...and a guard window, for the same reason the handoff above opens
+        # one. A bare restack is a single push: whatever held the screen can
+        # take it straight back, and Steam's window is documented in this repo
+        # as doing exactly that. Donnie reported the switcher "going to Kodi
+        # for a second then back", and the shadow log shows the shape of it -
+        # five double-taps in 22 seconds at 14:22, every one of them
+        # suspended_first:false, every one a lone `show kodi` with nothing
+        # holding it there.
+        #
+        # The suspend path never had this problem because _handoff_intents
+        # ends in a guard. This is that same last line, on the branch that was
+        # missing it - not a new mechanism, just the asymmetry closed.
+        out.append(Intent('spawn_guard', 'kodi',
+                          {'via': 'steam-input-guard kodi',
+                           'window_s': GUARD_WINDOW}, switcher_reason,
+                          _pred('guard window open (pidfile live)', 2.0),
+                          requires=('gesture',), cooldown=3.0))
     out.append(Intent('show_switcher', 'tv',
                       {'via': 'kodi-addon:script.couch.switcher',
                        'suspended_first': handed},

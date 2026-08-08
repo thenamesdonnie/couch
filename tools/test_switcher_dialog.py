@@ -125,6 +125,15 @@ def _install_stubs():
     xbmc = types.ModuleType('xbmc')
     xbmc.LOGDEBUG, xbmc.LOGINFO, xbmc.LOGWARNING, xbmc.LOGERROR = 0, 1, 2, 3
     xbmc.log = lambda _msg, _level=1: None
+    # What main() asked Kodi to do. The power row goes over JSON-RPC, not
+    # executebuiltin: the builtin is dispatched against a GUI still tearing
+    # down the dialog and is lost (observed live - the log line printed and
+    # the window never opened).
+    xbmc.builtins = []
+    xbmc.executebuiltin = lambda cmd: xbmc.builtins.append(cmd)
+    xbmc.rpc = []
+    xbmc.executeJSONRPC = lambda payload: (xbmc.rpc.append(payload) or
+                                           '{"result":"OK"}')
 
     xbmcgui = types.ModuleType('xbmcgui')
     xbmcgui.WindowXMLDialog = StubWindowXMLDialog
@@ -280,3 +289,87 @@ def test_unrelated_action_leaves_the_dialog_open():
     dlg.onInit()
     dlg.onAction(Action(7))     # ACTION_SELECT_ITEM: the base class's business
     assert dlg.closed == 0
+
+
+# -- the power row (added 8 Aug 2026) -----------------------------------------
+# The switcher is the only surface reachable from inside a game: at home a hold
+# already opens the power screen, but in a game the hold is Steam's menu, so
+# powering off meant suspending first and then holding. The row closes that
+# gap - and it ROUTES rather than acting, because a second power path with its
+# own copy of the quit-the-game-first save grace is how one of them ends up
+# killing a game without it.
+
+import json                                                     # noqa: E402
+import xbmc as _xbmc                                            # noqa: E402
+
+
+def _run_main(windows, pick):
+    """main() over a fake server and a fake user, capturing both outcomes."""
+    activated = []
+    _xbmc.builtins.clear()
+    _xbmc.rpc.clear()
+    orig = (dflt.get_windows, dflt.select_window, dflt.activate, dflt.notify)
+    dflt.get_windows = lambda: windows
+    dflt.select_window = lambda rows: (_run_main.rows.append(rows) or
+                                       pick(rows))
+    dflt.activate = lambda wid: activated.append(wid)
+    dflt.notify = lambda *_a, **_k: None
+    _run_main.rows = []
+    try:
+        dflt.main()
+    finally:
+        (dflt.get_windows, dflt.select_window, dflt.activate,
+         dflt.notify) = orig
+    return {'rows': _run_main.rows[0] if _run_main.rows else [],
+            'activated': activated, 'builtins': list(_xbmc.builtins),
+            'rpc': list(_xbmc.rpc)}
+
+
+WINS = [{'id': '0x1', 'title': 'Big Picture', 'kodi': False},
+        {'id': '0x2', 'title': 'Kodi', 'kodi': True}]
+
+
+def test_power_is_offered_last_after_every_real_destination():
+    """Index 0 is where the stick starts; power is the furthest thing from
+    it, and Cancel still sits beyond it as the dismiss."""
+    out = _run_main(WINS, pick=lambda rows: -1)
+    assert [r['title'] for r in out['rows']] == ['Big Picture', 'Power']
+
+
+def test_picking_power_opens_the_power_screen_and_switches_nothing():
+    out = _run_main(WINS, pick=lambda rows: len(rows) - 1)
+    assert len(out['rpc']) == 1
+    sent = json.loads(out['rpc'][0])
+    assert sent['method'] == 'GUI.ActivateWindow'
+    assert sent['params'] == {'window': 'shutdownmenu'}
+    assert out['activated'] == [], 'the switcher tried to switch to a sentinel'
+    # and NOT the builtin, which was tried first and silently did nothing
+    assert out['builtins'] == []
+
+
+def test_the_power_row_never_reaches_the_server():
+    """Every other row's id is an X window id posted straight to the couch
+    server. The sentinel must never get that far - it is not a window."""
+    out = _run_main(WINS, pick=lambda rows: 0)
+    assert out['activated'] == ['0x1']
+    assert dflt.POWER_ID not in out['activated']
+    assert out['builtins'] == []
+
+
+def test_power_does_not_appear_when_there_is_nothing_to_switch_to():
+    """With no destinations the sheet does not open at all, exactly as
+    before - and it should not start opening just to offer power, because a
+    hold at home already reaches the same screen in one gesture."""
+    out = _run_main([{'id': '0x2', 'title': 'Kodi', 'kodi': True}],
+                    pick=lambda rows: 0)
+    assert out['rows'] == []
+    assert out['builtins'] == [] and out['activated'] == []
+
+
+def test_the_power_row_is_not_mistaken_for_a_paused_game():
+    """session_appid() walks the same rows to find the freeze-frame's appid;
+    a row with no `paused` key must be invisible to it."""
+    rows = [{'id': '0x1', 'title': 'Bloodborne · paused', 'paused': True,
+             'cls': 'steam_app_367520'},
+            {'id': dflt.POWER_ID, 'title': 'Power', 'power': True}]
+    assert dflt.pausedframe.session_appid(rows, fallback='') == '367520'
