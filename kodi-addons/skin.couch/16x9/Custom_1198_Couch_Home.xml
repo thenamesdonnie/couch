@@ -347,7 +347,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=3</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=4</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
