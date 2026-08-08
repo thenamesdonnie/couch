@@ -42,26 +42,23 @@
 				<visible>Player.Muted</visible>
 			</control>
 
-			<!-- track -->
-			<control type="image">
-				<left>96</left>
-				<top>44</top>
-				<width>430</width>
-				<height>8</height>
-				<texture border="4" colordiffuse="33ffffff">couch/pill.png</texture>
-			</control>
-			<!-- fill: a progress control clipped to the same rounded track -->
+			<!-- track (the progress control's own background carries it) -->
+			<!-- fill: a FLAT texture stretching over a rounded track. The old
+			     9-sliced pill warped as it stretched (curve smeared, left edge
+			     seemed to wander); plain colour cannot warp, and the track's
+			     own rounding carries the pill look. Cap textures were tried
+			     and Kodi's progress control composes them wrong (8 Aug). -->
 			<control type="progress" id="63">
 				<left>96</left>
 				<top>44</top>
 				<width>430</width>
 				<height>8</height>
 				<info>Player.Volume</info>
-				<texturebg border="4" colordiffuse="00000000">couch/pill.png</texturebg>
+				<texturebg border="4" colordiffuse="33ffffff">couch/pill.png</texturebg>
 				<lefttexture>-</lefttexture>
 				<righttexture>-</righttexture>
 				<overlaytexture>-</overlaytexture>
-				<midtexture border="4" colordiffuse="$VAR[Couch_Live_Color]">couch/pill.png</midtexture>
+				<midtexture colordiffuse="$VAR[Couch_Live_Color]">couch/white.png</midtexture>
 			</control>
 		</control>
 	</controls>
