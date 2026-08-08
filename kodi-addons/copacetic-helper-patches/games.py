@@ -36,6 +36,10 @@ GAMEPAD_ICON = 'special://skin/media/icons/icon_gamepad_home.png'
 # instead of a square logo getting zoom-cropped.
 STEAM_TILE = os.path.expanduser('~/.local/share/game-tiles/steam.png')
 SHADPS4_TILE = os.path.expanduser('~/.local/share/game-tiles/shadps4.png')
+# Square variants for the home row: portrait art centre-cropped to a square
+# loses the skin's rounding mask along with the crop, so square thumbs only.
+STEAM_TILE_SQ = os.path.expanduser('~/.local/share/game-tiles/steam-sq.png')
+SHADPS4_TILE_SQ = os.path.expanduser('~/.local/share/game-tiles/shadps4-sq.png')
 
 # Freeze-frames of paused games, written at suspend time by
 # ~/.local/bin/pause-snap: the last frame the game rendered before it was
@@ -295,14 +299,16 @@ def games_route(info, params):
 
     bp = xbmcgui.ListItem('Big Picture', offscreen=True)
     bp_poster = STEAM_TILE if os.path.exists(STEAM_TILE) else STEAM_ICON
-    bp.setArt({'thumb': bp_poster, 'poster': bp_poster, 'icon': STEAM_ICON})
+    bp_thumb = STEAM_TILE_SQ if os.path.exists(STEAM_TILE_SQ) else bp_poster
+    bp.setArt({'thumb': bp_thumb, 'poster': bp_poster, 'icon': STEAM_ICON})
     li.append((f'{sys.argv[0]}?info=launch_game&id=bigpicture', bp, False))
 
     # The emulator itself: opens shadPS4's own controller-driven library.
     if os.path.exists(SHADPS4_APP):
         shad = xbmcgui.ListItem('shadPS4', offscreen=True)
         s_poster = SHADPS4_TILE if os.path.exists(SHADPS4_TILE) else GAMEPAD_ICON
-        shad.setArt({'thumb': s_poster, 'poster': s_poster, 'icon': GAMEPAD_ICON})
+        s_thumb = SHADPS4_TILE_SQ if os.path.exists(SHADPS4_TILE_SQ) else s_poster
+        shad.setArt({'thumb': s_thumb, 'poster': s_poster, 'icon': GAMEPAD_ICON})
         li.append((f'{sys.argv[0]}?info=launch_game&id=shadps4', shad, False))
 
     xbmcplugin.addDirectoryItems(handle, li)
