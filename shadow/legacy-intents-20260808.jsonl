@@ -1,0 +1,107 @@
+{"t": 1786164272.156674, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786164778.877, "src": "game-launch", "verb": "invoked", "subject": "steam", "args": {"argv":["steam","367520"],"appid":"367520"}}
+{"t": 1786164778.884, "src": "game-launch", "verb": "launch", "subject": "367520", "args": {"mode":"steam","app":"steam","source":"fresh-launch"}}
+{"t": 1786164778.892, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch steam"}}
+{"t": 1786164778.898, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"53212 steam 367520","launcher":"53212","reason":"launch"}}
+{"t": 1786164778.911, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1786164778.991, "src": "game-launch", "verb": "launch", "subject": "bigpicture", "args": {"reason":"ensure-bp-before-game","via":"steam-open-bigpicture","was":"7","mode":"steam","appid":"367520"}}
+{"t": 1786164787.6739376, "src": "game-launch", "verb": "iconify", "subject": "bigpicture", "args": {"count": 1, "want": "game", "via": "wm-change-state", "reason": "bp mapped fullscreen behind the game"}}
+{"t": 1786164787.695, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"steam","pids":[53829,53830,53831,53910,53942,53945,53947,53951,54019,54046,54051,54058,54120,54130,54141,54143,54153,54165],"resolver":"game-pids"}}
+{"t": 1786164866.3925521, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786164866.4796593, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1786164872.4796357, "target": "kodi"}}
+{"t": 1786164874.146, "src": "game-launch", "verb": "invoked", "subject": "resume", "args": {"argv":["resume"],"appid":""}}
+{"t": 1786164874.154, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"resume"}}
+{"t": 1786164875.336, "src": "game-launch", "verb": "curtain_show", "subject": "367520", "args": {"wm_class":"couch-curtain","via":"tools-curtain","image":"/home/ds2000/couch/data/paused/367520__1786164866580.jpg","reason":"resume","mode":"resume"}}
+{"t": 1786164875.342, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"367520"}}
+{"t": 1786164875.396, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[53829,53830,53831,53910,53942,53945,53947,53951,54019,54046,54051,54058,54120,54130,54141,54143,54153,54165],"resolver":"game-pids","signal":"SIGCONT","mode":"resume"}}
+{"t": 1786164875.707, "src": "game-launch", "verb": "show", "subject": "367520", "args": {"via":"activate","reason":"deiconify","window":"0x7800001","mode":"resume"}}
+{"t": 1786164875.732, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"resume"}}
+{"t": 1786164875.917, "src": "game-launch", "verb": "show", "subject": "game", "args": {"via":"xlib-restack","mode":"resume","pids":[53829,53830,53831,53910,53942,53945,53947,53951,54019,54046,54051,54058,54120,54130,54141,54143,54153,54165],"resolver":"game-pids"}}
+{"t": 1786164875.924, "src": "game-launch", "verb": "curtain_fade", "subject": "367520", "args": {"wm_class":"couch-curtain","via":"tools-curtain","mode":"resume"}}
+{"t": 1786164876.4174325, "src": "guard", "verb": "kill", "subject": "steam-input-guard", "args": {"pids": [55999], "resolver": "guard-pidfile", "signal": "SIGTERM", "reason": "superseded-by-newer-guard"}}
+{"t": 1786164876.4174926, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"reason": "superseded"}}
+{"t": 1786164876.4457433, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1786164882.4457197, "target": "game"}}
+{"t": 1786164882.9259198, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "game"}}
+{"t": 1786165034.876509, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [53829, 53830, 53831, 53910, 53942, 53945, 53947, 53951, 54019, 54046, 54051, 54058, 54120, 54130, 54141, 54143, 54153, 54165], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1786165035.9605782, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1786165041.960555, "target": "kodi"}}
+{"t": 1786165037.5925496, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [53829, 53830, 53831, 53910, 53942, 53945, 53947, 53951, 54019, 54046, 54051, 54058, 54120, 54130, 54141, 54143, 54153, 54165], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1786165042.0602026, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1786165043.088, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1786165043.398, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1786165043.495, "src": "game-launch", "verb": "thaw", "subject": "367520", "args": {"pids":[53829,53830,53831,53910,53942,53945,53947,53951,54019,54046,54051,54058,54120,54130,54141,54143,54153,54165],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1786165044.613, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[53829,53830,53831,53910,53942,53945,53947,53951,54019,54046,54051,54058,54120,54130,54141,54143,54153,54165],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1786165045.226603, "src": "watcher", "verb": "freeze", "subject": "367520", "args": {"pids": [53829, 53830, 53831, 53910, 53947, 54143], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1786165046.0536466, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1786165052.0536182, "target": "kodi"}}
+{"t": 1786165049.154, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1786165052.181434, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1786165055.966, "src": "game-launch", "verb": "kill", "subject": "all", "args": {"pids":[53829,53830,53831,53910,53947,54143],"resolver":"game-pids","signal":"SIGKILL","reason":"close-ignored","why":"power-menu-quit"}}
+{"t": 1786165058.186, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"53212"}}
+{"t": 1786165058.204, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"steam"}}
+{"t": 1786165058.212, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"steam"}}
+{"t": 1786165064.3503633, "src": "watcher", "verb": "clear_flag", "subject": "suspended", "args": {"reason": "stale-suspended-flag", "repair": "reconcile", "pids": [], "resolver": "game-pids"}}
+{"t": 1786166584.509326, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786166757.1972554, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786166763.7652657, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786166769.0482416, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786166822.440, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1786195351.534233, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786195364.6812253, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786195368.98324, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786195371.9102309, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786195373.9182281, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786195999.1772516, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786196152.283, "src": "game-launch", "verb": "invoked", "subject": "shadps4", "args": {"argv":["shadps4","/home/ds2000/games/ps4/CUSA00900/eboot.bin"],"appid":"/home/ds2000/games/ps4/CUSA00900/eboot.bin"}}
+{"t": 1786196156.294, "src": "game-launch", "verb": "launch", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"mode":"shadps4","app":"shadps4","source":"fresh-launch"}}
+{"t": 1786196156.301, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch shadps4"}}
+{"t": 1786196156.307, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"694481 shadps4 /home/ds2000/games/ps4/CUSA00900/eboot.bin","launcher":"694481","reason":"launch"}}
+{"t": 1786196156.320, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786196159.657, "src": "game-launch", "verb": "show", "subject": "emu", "args": {"via":"xlib-restack","mode":"shadps4","pids":[694665,694670],"resolver":"game-pids"}}
+{"t": 1786196188.4983125, "src": "watcher", "verb": "freeze", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids": [694665, 694670], "resolver": "game-pids", "gesture": "hold", "action": "suspend_to_kodi", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1786196191.1916401, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1786196197.1916027, "target": "kodi"}}
+{"t": 1786196196.602, "src": "game-launch", "verb": "invoked", "subject": "shadps4", "args": {"argv":["shadps4","/home/ds2000/games/ps4/CUSA00900/eboot.bin"],"appid":"/home/ds2000/games/ps4/CUSA00900/eboot.bin"}}
+{"t": 1786196196.610, "src": "game-launch", "verb": "launch", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"mode":"resume","source":"kodi-tile","app":"shadps4"}}
+{"t": 1786196197.285941, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1786196198.183, "src": "game-launch", "verb": "curtain_show", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"wm_class":"couch-curtain","via":"tools-curtain","image":"/home/ds2000/couch/data/paused/_home_ds2000_games_ps4_CUSA00900_eboot.bin__1786196188538.jpg","reason":"resume","mode":"shadps4"}}
+{"t": 1786196198.188, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"resume","was":"/home/ds2000/games/ps4/CUSA00900/eboot.bin"}}
+{"t": 1786196198.287, "src": "game-launch", "verb": "thaw", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids":[694665,694670],"resolver":"game-pids","signal":"SIGCONT","mode":"shadps4"}}
+{"t": 1786196198.830, "src": "game-launch", "verb": "show", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"via":"activate","reason":"deiconify","window":"0x540002f","mode":"shadps4"}}
+{"t": 1786196198.850, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786196199.123, "src": "game-launch", "verb": "show", "subject": "emu", "args": {"via":"xlib-restack","mode":"shadps4","pids":[694665,694670],"resolver":"game-pids"}}
+{"t": 1786196199.128, "src": "game-launch", "verb": "curtain_fade", "subject": "shadps4", "args": {"wm_class":"couch-curtain","via":"tools-curtain","mode":"shadps4"}}
+{"t": 1786196199.7972288, "src": "guard", "verb": "window_open", "subject": "game", "args": {"seconds": 6, "deadline": 1786196205.7972102, "target": "game"}}
+{"t": 1786196206.4711816, "src": "guard", "verb": "window_close", "subject": "game", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "game"}}
+{"t": 1786197220.197071, "src": "watcher", "verb": "route_pad", "subject": "game", "args": {"reason": "joystick-setting-drift", "repair": "reconcile", "was": true, "via": "kodi-jsonrpc"}}
+{"t": 1786198276.612, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1786198276.719, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1786198276.768, "src": "game-launch", "verb": "thaw", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids":[694665,694670],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1786198277.822, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[694665,694670],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1786198281.026, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"694481"}}
+{"t": 1786198281.040, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786198281.045, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"shadps4"}}
+{"t": 1786200004.5773182, "src": "watcher", "verb": "yield", "subject": "double-tap", "args": {"gesture": "double-tap", "action": "switcher", "reason": "ps-double-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786200092.190, "src": "game-launch", "verb": "invoked", "subject": "shadps4", "args": {"argv":["shadps4","/home/ds2000/games/ps4/CUSA00900/eboot.bin"],"appid":"/home/ds2000/games/ps4/CUSA00900/eboot.bin"}}
+{"t": 1786200096.314, "src": "game-launch", "verb": "launch", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"mode":"shadps4","app":"shadps4","source":"fresh-launch"}}
+{"t": 1786200096.323, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch shadps4"}}
+{"t": 1786200096.329, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"782750 shadps4 /home/ds2000/games/ps4/CUSA00900/eboot.bin","launcher":"782750","reason":"launch"}}
+{"t": 1786200096.343, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786200099.689, "src": "game-launch", "verb": "show", "subject": "emu", "args": {"via":"xlib-restack","mode":"shadps4","pids":[782963,782968],"resolver":"game-pids"}}
+{"t": 1786200172.7572365, "src": "watcher", "verb": "yield", "subject": "tap", "args": {"gesture": "tap", "action": "home", "reason": "ps-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786200177.5782428, "src": "watcher", "verb": "yield", "subject": "tap", "args": {"gesture": "tap", "action": "home", "reason": "ps-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786200180.1472487, "src": "watcher", "verb": "yield", "subject": "hold", "args": {"gesture": "hold", "action": "context_menu", "reason": "ps-hold", "yielded": true, "owner": "couchd"}}
+{"t": 1786200825.6062405, "src": "watcher", "verb": "yield", "subject": "tap", "args": {"gesture": "tap", "action": "home", "reason": "ps-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786200841.589, "src": "game-launch", "verb": "invoked", "subject": "quit", "args": {"argv":["quit"],"appid":""}}
+{"t": 1786200841.701, "src": "game-launch", "verb": "clear_flag", "subject": "suspended", "args": {"reason":"games-closed","why":"power-menu-quit"}}
+{"t": 1786200841.750, "src": "game-launch", "verb": "thaw", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids":[782963,782968],"resolver":"game-pids","signal":"SIGCONT","mode":"quit"}}
+{"t": 1786200842.803, "src": "game-launch", "verb": "quit", "subject": "all", "args": {"pids":[782963,782968],"resolver":"game-pids","scope":"games+bigpicture+shadps4","via":"WM_DELETE_WINDOW","reason":"power-menu-quit"}}
+{"t": 1786200844.718, "src": "game-launch", "verb": "clear_flag", "subject": "session", "args": {"reason":"launcher-exit","launcher":"782750"}}
+{"t": 1786200844.732, "src": "game-launch", "verb": "route_pad", "subject": "kodi", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786200844.737, "src": "game-launch", "verb": "show", "subject": "kodi", "args": {"via":"xlib-restack","mode":"shadps4"}}
+{"t": 1786200848.900, "src": "game-launch", "verb": "invoked", "subject": "shadps4", "args": {"argv":["shadps4","/home/ds2000/games/ps4/CUSA00900/eboot.bin"],"appid":"/home/ds2000/games/ps4/CUSA00900/eboot.bin"}}
+{"t": 1786200852.943, "src": "game-launch", "verb": "launch", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"mode":"shadps4","app":"shadps4","source":"fresh-launch"}}
+{"t": 1786200852.950, "src": "game-launch", "verb": "request_tv_wake", "subject": "tv", "args": {"via":"tv-wake-request-flag","reason":"launch shadps4"}}
+{"t": 1786200852.956, "src": "game-launch", "verb": "set_flag", "subject": "session", "args": {"value":"798837 shadps4 /home/ds2000/games/ps4/CUSA00900/eboot.bin","launcher":"798837","reason":"launch"}}
+{"t": 1786200852.969, "src": "game-launch", "verb": "route_pad", "subject": "game", "args": {"via":"kodi-jsonrpc","mode":"shadps4"}}
+{"t": 1786200856.304, "src": "game-launch", "verb": "show", "subject": "emu", "args": {"via":"xlib-restack","mode":"shadps4","pids":[798988,798993],"resolver":"game-pids"}}
+{"t": 1786201244.440779, "src": "watcher", "verb": "yield", "subject": "tap", "args": {"gesture": "tap", "action": "home", "reason": "ps-tap", "yielded": true, "owner": "couchd"}}
+{"t": 1786201244.6216443, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1786201250.621622, "target": "kodi"}}
+{"t": 1786201250.76957, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}

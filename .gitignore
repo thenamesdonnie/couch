@@ -41,3 +41,7 @@ couchd/.venv/
 kodi-addons/**/__pycache__/
 .serena/
 shadow/.intents-archive-state.json
+
+# Pre-baked game loading cards (tools/warm-loading-cards): derived art, several
+# MB per game, regenerated from the heroes/logos on demand.
+data/loading-cards/

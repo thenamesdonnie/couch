@@ -101,7 +101,70 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (updated 7 Aug 2026 ~16:00 — hardware settled, one live incident)
+## ▶ Resume here (updated 8 Aug 2026 ~17:15 — console polish day; NEXT = Kodi 21 Flatpak)
+
+**THE NEXT TRACK: migrate Kodi 20 -> Kodi 21 via Flatpak.** Ubuntu's repos stop
+at Kodi 20 (this is why Flatpak, not apt): Flathub ships current 21
+self-contained, no OS upgrade. Payoff = the Python 3.12 teardown segfaults and
+the whole crash-workaround layer (kodi-tv restart loop, reuselanguageinvoker
+flags, the never-live-switch-skins rule) can go, plus probably the wedged-Kodi
+episodes seen twice on 8 Aug (answers JSON-RPC ping, ignores everything else,
+needs SIGKILL + manual `~/.local/bin/kodi-tv` relaunch with session env
+harvested from /proc/$(pgrep -x xfce4-session)/environ).
+FIRST STEP (needs Donnie's sudo, flatpak is NOT installed):
+`sudo apt install flatpak && flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`
+Then: install tv.kodi.Kodi, migrate/symlink ~/.kodi into the sandbox data dir,
+rewire kodi-tv (keep flock + TearFree + the 4K120 modeline block), re-verify
+skin.couch + the patched helper/YouTube addons + JSON-RPC 8090 + kodi-send's
+UDP path + couchd's Kodi observations. apt-Kodi stays installed = rollback is
+"launch the old one".
+
+### What 8 Aug shipped (all committed on master, all verified live)
+- **Achievements/trophies shelf** on home: Down from a game opens a PS5-style
+  shelf (icons, name, description, Unlocked/Locked + global rarity). Steam via
+  the Web API key already in `.env`; PS4 via `tools/ps4-trophies` (TRP parser,
+  real icons; Bloodborne trophy TEXT decrypts now that the ESFM key is at
+  `~/.config/couch/ps4-trophy-key`, mode 600, NOT in git). Stats line reads
+  playtime · last played · achievements · install size.
+- **Launch cinematic**: tile expands + fades (a group control - animations on a
+  focusedlayout element are silently ignored, that was v1's bug), room fades to
+  black, then the loading card. Cards are PRE-BAKED to `data/loading-cards`
+  (mtime-validated; warm hit 22ms vs 1.7s compose) by `tools/warm-loading-cards`,
+  spawned hourly from games.py. Card = game art + logo + an animated WHITE
+  SPINNER (24-frame strip blitted by tools/curtain, `--spin strip,x,y,d,n,fps`).
+- **PS5 minimise**: pause-snap announces the suspend (CouchJustPaused*) and Home
+  flies the fullscreen freeze-frame into the paused card. Paused game shows the
+  screencap in the CARD only; the 4K hero owns the backdrop.
+- **PS button, PS5 grammar** (both stacks + 479 tests): tap = home (in-game it
+  IS the suspend escape), double-tap = switcher, hold = Steam menu in-game /
+  power screen at home. Tap now DEFERS by the double-tap window (Donnie accepted
+  the latency) - needed a new `tap-fired` state in couchd, the level-based
+  emission never ran. Power screen redone (dark takeover, circular glyph row).
+- **YouTube section** (window 1196): sidebar (Home/Subs/Watch Later/History/
+  Trending/Search/Couch Home) + 3-col grid, duration badge in-thumb, "views |
+  upload age". Addon patches in `kodi-addons/youtube-plugin-patches/README.md`
+  (reapply after addon updates): no comment count, no likes, no descriptions.
+- **Bloodborne**: full BB Reborne (minus the SFX overhaul - it BREAKS ATTACK
+  SOUNDS, keep it reverted), 84Resolutions patch pack at
+  `~/.local/share/shadPS4/patches/shadPS4/` with **2160p + Skip intro** enabled
+  (was 1440p: GPU 71%, VRAM 4.6/15.9 GB, so 4K was worth trying - REVERT TO
+  1440p IF DONNIE SAYS IT'S BAD), 4K hero + official wordmark.
+- **4K120 pinned** (couch-4k120.service enabled), soundbar on eARC (TV reports
+  `external_arc`), phone app got a TV/soundbar volume card, Kodi's volume bar
+  fill no longer warps.
+
+### Waiting on Donnie (first real-world test, nothing to build)
+Cold-launch Bloodborne (4K + skip intro + the whole cinematic), PS tap in-game
+(the fix + the minimise animation's live timing), hold-at-home power screen,
+first earned trophy (does shadPS4 record unlocks?), phone slider with the TV on.
+
+### Levers not yet flipped
+couchd `owns.conf` still only has `gestures` - transitions/guard/reconcile are
+next, one at a time, daytime, 5-min acceptance each (charter). Re-Size BAR is
+still OFF in BIOS. memtest still never run (the 5 Aug idle freeze is still
+unexplained).
+
+## ▶ Previous resume block (7 Aug 2026 ~16:00 — hardware settled, one live incident)
 
 **READ FIRST - THE INCIDENT (7 Aug 01:55): our synthetic Steam guide press
 SUSPENDED THE MACHINE mid-game.** couchd's close_steam_menu fired one vpad

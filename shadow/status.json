@@ -1,7 +1,7 @@
 {
- "t": 1786114564.1140544,
- "pid": 819829,
- "uptime_s": 49607.5,
+ "t": 1786209029.024117,
+ "pid": 806050,
+ "uptime_s": 7894.8,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -11,9 +11,9 @@
  ],
  "owns_file": "/home/ds2000/couch/couchd/owns.conf",
  "owns_warnings": [],
- "model_version": "90366b2bd84b",
- "git": "622d254b9c0f",
- "acted": 11,
+ "model_version": "d8ee5e6ba8ef",
+ "git": "5f9f3eaa4106",
+ "acted": 6,
  "action_failures": 0,
  "action_skipped": 0,
  "action_backoff": [],
@@ -21,102 +21,100 @@
  "regions": {
   "input_ownership": "kodi",
   "foreground": "kodi",
-  "session": "none",
+  "session": "active",
   "enforcement": "none",
   "gesture": "idle",
-  "pad": "absent"
+  "pad": "present"
  },
  "games": {
-  "1245620": "STOPPED",
-  "292030": "STOPPED"
+  "/home/ds2000/games/ps4/CUSA00900/eboot.bin": "FROZEN"
  },
  "last_would_do": [
-  "would show_switcher tv [gesture:double-tap-switcher]",
-  "would show kodi [gesture:double-tap-switcher]",
-  "would set_flag suspended [gesture:ps-hold-bigpicture]"
+  "would spawn_guard kodi [gesture:ps-tap]",
+  "would show kodi [gesture:ps-tap]",
+  "would route_pad kodi [gesture:ps-tap]"
  ],
  "observers": {
   "pad": {
    "ok": true,
-   "events": 1661934,
-   "detail": "0 node(s)",
-   "age_s": 1.8,
+   "events": 2093,
+   "detail": "1 node(s)",
+   "age_s": 1.2,
    "stale": false
   },
   "flags": {
    "ok": true,
-   "events": 16,
-   "detail": "1 present",
+   "events": 8,
+   "detail": "2 present",
    "age_s": 0.1,
    "stale": false
   },
   "pids": {
    "ok": true,
-   "events": 30,
-   "detail": "0 pid(s)",
+   "events": 4,
+   "detail": "2 pid(s)",
    "age_s": 0.0,
    "stale": false
   },
   "kodi": {
    "ok": true,
-   "events": 1709,
-   "detail": "joystick=True window=10106",
-   "age_s": 5.1,
+   "events": 278,
+   "detail": "joystick=True window=10000",
+   "age_s": 0.1,
    "stale": false
   },
   "steam": {
    "ok": true,
-   "events": 26,
+   "events": 2,
    "detail": "0 app(s) tracked",
    "age_s": 0.0,
    "stale": false
   },
   "triggers": {
    "ok": true,
-   "events": 3,
-   "detail": "launch steam 292030",
+   "events": 0,
+   "detail": "quiet",
    "age_s": 0.0,
    "stale": false
   },
   "x11": {
    "ok": true,
-   "events": 2812,
-   "detail": "top='Kodi' ev=2812",
+   "events": 122,
+   "detail": "top='Kodi' ev=122",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 2044,
+  "obs": 342,
   "daemon": 2,
-  "transition": 145,
-  "agreement": 44,
-  "invariant": 2,
-  "intent": 20,
-  "latency": 40,
-  "decision": 16,
-  "effect": 11,
-  "observer_blind": 1
+  "transition": 67,
+  "intent": 10,
+  "agreement": 1500,
+  "invariant": 1,
+  "latency": 2,
+  "effect": 6,
+  "observer_blind": 4
  },
- "passes": 20077,
- "intents": 20,
+ "passes": 3595,
+ "intents": 10,
  "invariant_violations": 0,
  "ps_presses": {
-  "evdev": 22,
-  "steam_guide_lines": 13,
-  "first_event_latency_s": 29.624
+  "evdev": 1,
+  "steam_guide_lines": 1,
+  "first_event_latency_s": 109.634
  },
- "last_trigger": "launch steam 292030",
+ "last_trigger": "",
  "edges": {
-  "seen": 46,
-  "coalesced": 6,
-  "last_latency_s": 0.1316
+  "seen": 2,
+  "coalesced": 0,
+  "last_latency_s": 0.0514
  },
  "resource_leaks": [],
  "bindings": {
-  "tap": "none",
+  "tap": "home",
   "double_tap": "switcher",
-  "hold": "suspend_to_kodi",
+  "hold": "context_menu",
   "hold_release": "none",
   "long_hold": "none"
  },
@@ -125,5 +123,5 @@
   "double_tap_seconds": 0.35,
   "long_hold_seconds": 3.0
  },
- "shadow_log": "/home/ds2000/couch/shadow/couchd-20260807.jsonl"
+ "shadow_log": "/home/ds2000/couch/shadow/couchd-20260808.jsonl"
 }
