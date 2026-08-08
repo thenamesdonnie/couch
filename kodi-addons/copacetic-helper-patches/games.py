@@ -63,6 +63,27 @@ PLUMBING = re.compile(r'proton|steam linux runtime|steamworks common', re.I)
 COMPOSED_DIR = os.path.expanduser('~/.local/share/game-tiles/composed')
 TILE_SIZE = 600
 
+# Steam's client caches heroes at 1920x620; the CDN has 3840x1240 versions
+# which ~/couch/tools/fetch-steam-heroes mirrors here. The listing prefers a
+# mirrored hero for fanart (the 4K home background) and quietly re-runs the
+# fetcher at most once a day so new installs pick theirs up.
+HERO_DIR = os.path.expanduser('~/.local/share/game-tiles/heroes')
+HERO_FETCHER = os.path.expanduser('~/couch/tools/fetch-steam-heroes')
+HERO_STAMP = os.path.join(HERO_DIR, '.last-fetch')
+
+
+def _hero_refresh():
+    try:
+        import time
+        if (not os.path.isfile(HERO_STAMP)
+                or time.time() - os.path.getmtime(HERO_STAMP) > 24 * 3600):
+            os.makedirs(HERO_DIR, exist_ok=True)
+            open(HERO_STAMP, 'w').close()
+            subprocess.Popen(['python3', HERO_FETCHER], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
 
 def _composed_tile(appid, art):
     src = art.get('fanart') or art.get('poster') or art.get('thumb')
@@ -149,6 +170,9 @@ def _art(appid):
     logo = os.path.join(base, 'logo.png')
     if os.path.exists(logo):
         art['clearlogo'] = logo
+    hero2x = os.path.join(HERO_DIR, '%s.jpg' % appid)
+    if os.path.isfile(hero2x):
+        art['fanart'] = hero2x
     return art
 
 
@@ -273,6 +297,7 @@ def games_route(info, params):
     except OSError:
         pass
 
+    _hero_refresh()
     li = []
     for name, appid in _games():
         label = f'{name} · paused' if appid == suspended else name

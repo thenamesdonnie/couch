@@ -310,6 +310,7 @@
 					<width>232</width>
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
 					<left>0</left>
@@ -317,6 +318,7 @@
 					<width>232</width>
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
 					<left>30</left>
@@ -333,6 +335,7 @@
 					<height>12</height>
 					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 					<aspectratio>stretch</aspectratio>
+					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="label">
 					<left>30</left>
@@ -342,6 +345,7 @@
 					<font>Couch_Label</font>
 					<textcolor>ffeceef1</textcolor>
 					<label>$INFO[ListItem.Label]</label>
+					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
 			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=2</content>

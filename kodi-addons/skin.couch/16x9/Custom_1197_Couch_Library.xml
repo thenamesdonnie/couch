@@ -18,30 +18,25 @@
 			<texture colordiffuse="ff0a0c10">couch/white.png</texture>
 		</control>
 
-		<!-- focused item's fanart, dimmed, as the backwash -->
+		<!-- The rows cover any art-follows-focus backdrop, so the page gets a
+		     designed still: quiet amber/cool washes on the ground (Donnie,
+		     8 Aug: "replace it with a default nice looking background"). -->
 		<control type="image">
 			<left>0</left>
 			<top>0</top>
 			<width>1920</width>
 			<height>1080</height>
-			<texture background="true">$INFO[ListItem.Art(fanart)]</texture>
-			<aspectratio>scale</aspectratio>
-			<fadetime>400</fadetime>
-			<colordiffuse>50ffffff</colordiffuse>
+			<texture>couch/bg-library.jpg</texture>
+			<aspectratio>stretch</aspectratio>
 		</control>
-		<include content="Couch_Scrim_Bottom">
-			<param name="y" value="0" />
-			<param name="height" value="1080" />
-		</include>
-		<include>Couch_GlowField</include>
 
 		<!-- the sliding stack: header + four sections. Each section is 340
 		     tall (46 label + 268 row + 26 air); focus below the first row
 		     slides the whole group up one section at a time. -->
 		<control type="group">
-			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000)">Conditional</animation>
-			<animation effect="slide" end="0,-680" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100)">Conditional</animation>
-			<animation effect="slide" end="0,-1020" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000) | Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200)">Conditional</animation>
 
 			<control type="label">
 				<left>96</left>
@@ -71,10 +66,10 @@
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<ondown>8000</ondown>
-				<itemlayout width="312" height="268">
+				<itemlayout width="312" height="328">
 					<control type="image">
-						<left>10</left>
-						<top>6</top>
+						<left>40</left>
+						<top>36</top>
 						<width>292</width>
 						<height>164</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
@@ -82,63 +77,89 @@
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
 					<control type="label">
-						<left>10</left>
-						<top>184</top>
+						<left>40</left>
+						<top>214</top>
 						<width>292</width>
-						<height>32</height>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>d2eceef1</textcolor>
 						<label>$INFO[ListItem.TVShowTitle]</label>
 					</control>
 					<control type="label">
-						<left>10</left>
-						<top>216</top>
+						<left>40</left>
+						<top>250</top>
 						<width>292</width>
-						<height>30</height>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>ff8a93a0</textcolor>
 						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
 					</control>
 				</itemlayout>
-				<focusedlayout width="312" height="268">
+				<focusedlayout width="312" height="328">
 					<control type="image">
 						<left>6</left>
 						<top>0</top>
+						<width>360</width>
+						<height>236</height>
+						<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+						<visible>Control.HasFocus(7900)</visible>
+					</control>
+					<control type="image">
+						<left>6</left>
+						<top>0</top>
+						<width>360</width>
+						<height>236</height>
+						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+						<visible>Control.HasFocus(7900)</visible>
+					</control>
+					<control type="image">
+						<left>36</left>
+						<top>30</top>
 						<width>300</width>
 						<height>176</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 						<aspectratio>scale</aspectratio>
-						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-						<bordersize>3</bordersize>
 					</control>
 					<control type="label">
-						<left>6</left>
-						<top>184</top>
+						<left>36</left>
+						<top>214</top>
 						<width>300</width>
-						<height>32</height>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>ffffffff</textcolor>
 						<label>$INFO[ListItem.TVShowTitle]</label>
+						<visible>Control.HasFocus(7900)</visible>
 					</control>
 					<control type="label">
-						<left>6</left>
-						<top>216</top>
+						<left>36</left>
+						<top>214</top>
 						<width>300</width>
-						<height>30</height>
+						<height>36</height>
+						<font>Couch_Caption</font>
+						<textcolor>d2eceef1</textcolor>
+						<label>$INFO[ListItem.TVShowTitle]</label>
+						<visible>!Control.HasFocus(7900)</visible>
+					</control>
+					<control type="label">
+						<left>36</left>
+						<top>250</top>
+						<width>300</width>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>ff8a93a0</textcolor>
 						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
 					</control>
 					<control type="image">
-						<left>0</left>
-						<top>248</top>
+						<left>30</left>
+						<top>278</top>
 						<width>312</width>
 						<height>18</height>
 						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 						<aspectratio>stretch</aspectratio>
+						<visible>Control.HasFocus(7900)</visible>
 					</control>
 				</focusedlayout>
-				<content target="videos">plugin://script.embuary.helper/?info=getnextup</content>
+				<content target="videos">plugin://script.copacetic.helper/?info=couch_nextup&amp;v=2</content>
 			</control>
 
 			<!-- CONTINUE -->
@@ -160,10 +181,10 @@
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<onup>7900</onup>
 				<ondown>8100</ondown>
-				<itemlayout width="312" height="268">
+				<itemlayout width="312" height="328">
 					<control type="image">
-						<left>10</left>
-						<top>6</top>
+						<left>40</left>
+						<top>36</top>
 						<width>292</width>
 						<height>164</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
@@ -171,63 +192,89 @@
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
 					<control type="label">
-						<left>10</left>
-						<top>184</top>
+						<left>40</left>
+						<top>214</top>
 						<width>292</width>
-						<height>32</height>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>d2eceef1</textcolor>
 						<label>$INFO[ListItem.TVShowTitle]</label>
 					</control>
 					<control type="label">
-						<left>10</left>
-						<top>216</top>
+						<left>40</left>
+						<top>250</top>
 						<width>292</width>
-						<height>30</height>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>ff8a93a0</textcolor>
 						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
 					</control>
 				</itemlayout>
-				<focusedlayout width="312" height="268">
+				<focusedlayout width="312" height="328">
 					<control type="image">
 						<left>6</left>
 						<top>0</top>
+						<width>360</width>
+						<height>236</height>
+						<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+						<visible>Control.HasFocus(8000)</visible>
+					</control>
+					<control type="image">
+						<left>6</left>
+						<top>0</top>
+						<width>360</width>
+						<height>236</height>
+						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+						<visible>Control.HasFocus(8000)</visible>
+					</control>
+					<control type="image">
+						<left>36</left>
+						<top>30</top>
 						<width>300</width>
 						<height>176</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 						<aspectratio>scale</aspectratio>
-						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-						<bordersize>3</bordersize>
 					</control>
 					<control type="label">
-						<left>6</left>
-						<top>184</top>
+						<left>36</left>
+						<top>214</top>
 						<width>300</width>
-						<height>32</height>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>ffffffff</textcolor>
 						<label>$INFO[ListItem.TVShowTitle]</label>
+						<visible>Control.HasFocus(8000)</visible>
 					</control>
 					<control type="label">
-						<left>6</left>
-						<top>216</top>
+						<left>36</left>
+						<top>214</top>
 						<width>300</width>
-						<height>30</height>
+						<height>36</height>
+						<font>Couch_Caption</font>
+						<textcolor>d2eceef1</textcolor>
+						<label>$INFO[ListItem.TVShowTitle]</label>
+						<visible>!Control.HasFocus(8000)</visible>
+					</control>
+					<control type="label">
+						<left>36</left>
+						<top>250</top>
+						<width>300</width>
+						<height>36</height>
 						<font>Couch_Caption</font>
 						<textcolor>ff8a93a0</textcolor>
 						<label>S$INFO[ListItem.Season] E$INFO[ListItem.Episode] · $INFO[ListItem.Title]</label>
 					</control>
 					<control type="image">
-						<left>0</left>
-						<top>248</top>
+						<left>30</left>
+						<top>278</top>
 						<width>312</width>
 						<height>18</height>
 						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 						<aspectratio>stretch</aspectratio>
+						<visible>Control.HasFocus(8000)</visible>
 					</control>
 				</focusedlayout>
-				<content target="videos">special://skin/extras/playlists/inprogress_episodes.xsp</content>
+				<content target="videos">plugin://script.copacetic.helper/?info=couch_continue&amp;v=2</content>
 			</control>
 
 			<!-- NEW -->
@@ -249,10 +296,10 @@
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<onup>8000</onup>
 				<ondown>8200</ondown>
-				<itemlayout width="172" height="268">
+				<itemlayout width="172" height="328">
 					<control type="image">
-						<left>10</left>
-						<top>6</top>
+						<left>40</left>
+						<top>36</top>
 						<width>152</width>
 						<height>228</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
@@ -260,24 +307,39 @@
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
 				</itemlayout>
-				<focusedlayout width="172" height="268">
+				<focusedlayout width="172" height="328">
 					<control type="image">
 						<left>6</left>
 						<top>0</top>
+						<width>220</width>
+						<height>300</height>
+						<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+						<visible>Control.HasFocus(8100)</visible>
+					</control>
+					<control type="image">
+						<left>6</left>
+						<top>0</top>
+						<width>220</width>
+						<height>300</height>
+						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+						<visible>Control.HasFocus(8100)</visible>
+					</control>
+					<control type="image">
+						<left>36</left>
+						<top>30</top>
 						<width>160</width>
 						<height>240</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
 						<aspectratio>scale</aspectratio>
-						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-						<bordersize>3</bordersize>
 					</control>
 					<control type="image">
-						<left>2</left>
-						<top>244</top>
+						<left>32</left>
+						<top>280</top>
 						<width>168</width>
-						<height>18</height>
+						<height>16</height>
 						<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 						<aspectratio>stretch</aspectratio>
+						<visible>Control.HasFocus(8100)</visible>
 					</control>
 				</focusedlayout>
 				<content target="videos">special://skin/extras/playlists/recent_movies.xsp</content>
@@ -332,14 +394,20 @@
 				</itemlayout>
 				<focusedlayout width="288" height="500">
 					<control type="image">
+						<left>0</left>
+						<top>-6</top>
+						<width>288</width>
+						<height>426</height>
+						<texture border="18" infill="false" colordiffuse="e6ffffff">couch/ring.png</texture>
+						<visible>Control.HasFocus(8200)</visible>
+					</control>
+					<control type="image">
 						<left>6</left>
 						<top>0</top>
 						<width>276</width>
 						<height>414</height>
 						<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(poster)]</texture>
 						<aspectratio>scale</aspectratio>
-						<bordertexture border="14" infill="false" colordiffuse="e6ffffff">couch/mask-round.png</bordertexture>
-						<bordersize>3</bordersize>
 					</control>
 					<control type="label">
 						<left>6</left>
@@ -349,6 +417,17 @@
 						<font>Couch_Caption</font>
 						<textcolor>ffffffff</textcolor>
 						<label>$INFO[ListItem.Label]</label>
+						<visible>Control.HasFocus(8200)</visible>
+					</control>
+					<control type="label">
+						<left>6</left>
+						<top>418</top>
+						<width>268</width>
+						<height>34</height>
+						<font>Couch_Caption</font>
+						<textcolor>d2eceef1</textcolor>
+						<label>$INFO[ListItem.Label]</label>
+						<visible>!Control.HasFocus(8200)</visible>
 					</control>
 					<control type="label">
 						<left>6</left>

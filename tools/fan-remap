@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Re-point /etc/fancontrol at wherever the kernel put the sensors this boot.
+
+fancontrol pins hwmon INDICES (hwmon1, hwmon3...) in its config and refuses
+to start when the kernel enumerates them differently - which this box does
+(8 Aug 2026: one reboot moved them, the service failed, and the case fan sat
+on the board's flat loud default all morning). This finds the nct6798
+(the board chip that owns the case fan) and amdgpu (the GPU temp the curve
+follows) by NAME, rewrites every hwmonN reference to match, and restarts the
+service. Curve values are preserved untouched.
+
+Run once:      sudo python3 ~/couch/tools/fan-remap
+Install as self-healing (drop-in runs it before every fancontrol start):
+               sudo python3 ~/couch/tools/fan-remap --install
+"""
+import glob
+import os
+import re
+import subprocess
+import sys
+
+CONF = '/etc/fancontrol'
+DROPIN_DIR = '/etc/systemd/system/fancontrol.service.d'
+DROPIN = os.path.join(DROPIN_DIR, 'remap.conf')
+SELF = os.path.abspath(__file__)
+
+
+def hwmon_by_name():
+    out = {}
+    for p in glob.glob('/sys/class/hwmon/hwmon*'):
+        try:
+            name = open(os.path.join(p, 'name')).read().strip()
+        except OSError:
+            continue
+        out.setdefault(name, os.path.basename(p))
+    return out
+
+
+def devpath_of(hwmon):
+    dev = os.path.realpath(os.path.join('/sys/class/hwmon', hwmon, 'device'))
+    return dev.removeprefix('/sys/')
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit('needs root: sudo python3 %s' % SELF)
+
+    names = hwmon_by_name()
+    board = names.get('nct6798')
+    gpu = names.get('amdgpu')
+    if not board or not gpu:
+        sys.exit('sensors not found (nct6798=%s amdgpu=%s) - nothing changed'
+                 % (board, gpu))
+
+    conf = open(CONF).read()
+    # Current indices in the config (board owns the pwm, gpu owns the temp)
+    m = re.search(r'FCFANS=(hwmon\d+)/pwm1', conf)
+    old_board = m.group(1)
+    m = re.search(r'FCTEMPS=hwmon\d+/pwm1=(hwmon\d+)/temp1_input', conf)
+    old_gpu = m.group(1)
+
+    if (old_board, old_gpu) == (board, gpu):
+        print('mapping already correct (%s=board, %s=gpu)' % (board, gpu))
+    else:
+        # Two-step rename so board/gpu swapping indices cannot collide.
+        conf = conf.replace(old_board + '/', '@BOARD@/').replace(old_board + '=', '@BOARD@=')
+        conf = conf.replace(old_gpu + '/', '@GPU@/').replace(old_gpu + '=', '@GPU@=')
+        conf = conf.replace('@BOARD@', board).replace('@GPU@', gpu)
+        conf = re.sub(r'DEVPATH=.*', 'DEVPATH=%s=%s %s=%s'
+                      % (board, devpath_of(board), gpu, devpath_of(gpu)), conf)
+        conf = re.sub(r'DEVNAME=.*', 'DEVNAME=%s=nct6798 %s=amdgpu'
+                      % (board, gpu), conf)
+        open(CONF, 'w').write(conf)
+        print('remapped: board %s -> %s, gpu %s -> %s'
+              % (old_board, board, old_gpu, gpu))
+
+    if '--install' in sys.argv:
+        os.makedirs(DROPIN_DIR, exist_ok=True)
+        open(DROPIN, 'w').write(
+            '[Service]\nExecStartPre=/usr/bin/python3 %s\n' % SELF)
+        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+        print('installed self-healing drop-in: %s' % DROPIN)
+
+    if '--no-restart' not in sys.argv:
+        subprocess.run(['systemctl', 'restart', 'fancontrol'], check=True)
+        print('fancontrol restarted')
+
+
+if __name__ == '__main__':
+    main()
