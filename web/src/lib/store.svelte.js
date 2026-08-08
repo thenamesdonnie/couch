@@ -72,6 +72,11 @@ export async function loadServices() {
 export async function loadGames() {
   const d = await api('/api/games');
   cache.games = d.games;
+  // Warm the tiles the way Library and Discover already warm theirs. Worth
+  // doing now that /api/art/game resizes for the phone: the whole row is
+  // ~316 KB, where the raw television art was 1.3 MB and preloading it would
+  // have been an act of vandalism.
+  preload(d.games.map((g) => g.poster).filter(Boolean));
   return d.games;
 }
 
@@ -125,6 +130,13 @@ export function prefetchAll() {
     loadLibrary('movies').catch(() => {});
     loadLibrary('shows').catch(() => {});
     loadDiscover().catch(() => {});
+    // Games and Services were the two tabs left cold. Both are cheap - the
+    // games list is ~1ms and 1.5 KB - and Games is the one tab that is
+    // reached in a hurry, because the person opening it wants to start a
+    // game. Steam's library is deliberately NOT warmed: it can be a slow
+    // upstream and nothing on the first screen needs it.
+    loadGames().catch(() => {});
+    loadServices().catch(() => {});
   }, 400);
 
   const onFocus = () => {
