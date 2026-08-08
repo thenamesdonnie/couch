@@ -1102,6 +1102,18 @@ curtain_show_loading() {
 curtain_fade() { "$CURTAIN" fade --duration 0.5 >>"$LOG" 2>&1 || true; }
 
 say "=== launch $MODE $APPID"
+# Recency stamp for the games row (games.py reads its mtime): steam appid, or
+# the PS4 dump's folder name. Best-effort; a missing stamp just means the row
+# falls back to Steam's own LastPlayed / alphabetical.
+_stamp_key=""
+case "$MODE" in
+  steam) _stamp_key="$APPID" ;;
+  shadps4) [ -n "$APPID" ] && _stamp_key="$(basename "$(dirname "$APPID")")" ;;
+esac
+if [ -n "$_stamp_key" ]; then
+  mkdir -p /home/ds2000/.local/share/game-tiles/lastplayed 2>/dev/null \
+    && touch "/home/ds2000/.local/share/game-tiles/lastplayed/$_stamp_key" 2>/dev/null || true
+fi
 # Raise the loading card now, before Big Picture and the game flip below.
 case "$MODE" in steam|shadps4) curtain_show_loading ;; esac
 intent launch "${APPID:-$MODE}" "mode=$MODE" "app=$MODE" source=fresh-launch

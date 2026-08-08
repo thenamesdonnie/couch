@@ -63,6 +63,20 @@ PLUMBING = re.compile(r'proton|steam linux runtime|steamworks common', re.I)
 COMPOSED_DIR = os.path.expanduser('~/.local/share/game-tiles/composed')
 TILE_SIZE = 600
 
+# Unified recency: game-launch touches ~/.local/share/game-tiles/lastplayed/<key>
+# on every fresh launch (key = steam appid, or a PS4 dump's folder name), so
+# Steam AND shadPS4 games share one "most recently played" order. Steam's own
+# manifest LastPlayed is still read and max()'d in, so a game played through
+# Steam directly (not via the couch) still floats up.
+LASTPLAYED_DIR = os.path.expanduser('~/.local/share/game-tiles/lastplayed')
+
+
+def _stamp(key):
+    try:
+        return int(os.path.getmtime(os.path.join(LASTPLAYED_DIR, str(key))))
+    except OSError:
+        return 0
+
 # Steam's client caches heroes at 1920x620; the CDN has 3840x1240 versions
 # which ~/couch/tools/fetch-steam-heroes mirrors here. The listing prefers a
 # mirrored hero for fanart (the 4K home background) and quietly re-runs the
@@ -146,11 +160,8 @@ def _games():
             last = int(_field('LastPlayed', txt) or 0)
         except ValueError:
             last = 0
-        out.append((name, appid, last))
-    # PS5-style: most-recently-played first; never-played (LastPlayed 0) fall
-    # to the end, alphabetical among themselves.
-    out.sort(key=lambda g: (-g[2], g[0].lower()))
-    return [(name, appid) for name, appid, _ in out]
+        out.append((name, appid, max(last, _stamp(appid))))
+    return out  # (name, appid, last); games_route sorts the merged row
 
 
 def _art(appid):
@@ -265,8 +276,8 @@ def _ps4_games():
         tile = os.path.join(gdir, 'tile.png')
         art = cover if os.path.isfile(cover) else (icon0 if os.path.isfile(icon0) else '')
         thumb = tile if os.path.isfile(tile) else art
-        out.append((title or entry, eboot, art, thumb))
-    return sorted(out, key=lambda g: g[0].lower())
+        out.append((title or entry, eboot, art, thumb, _stamp(entry)))
+    return out  # (title, eboot, art, thumb, last); merged + sorted in games_route
 
 
 def games_route(info, params):
@@ -305,29 +316,39 @@ def games_route(info, params):
         pass
 
     _hero_refresh()
-    li = []
-    for name, appid in _games():
-        label = f'{name} · paused' if appid == suspended else name
-        item = xbmcgui.ListItem(label, offscreen=True)
-        art = _art(appid)
-        tile = _composed_tile(appid, art)
-        if tile:
-            art['thumb'] = tile
-        if appid == suspended:
-            # ...wearing the frame it was frozen on. Clearlogo stays: the
-            # game's name over its own last frame is the point.
-            art.update(_paused_art(appid))
-        item.setArt(art)
-        li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
 
-    # Emulated PS4 dumps, each launching straight into its own game.
-    for title, eboot, icon, thumb in _ps4_games():
-        item = xbmcgui.ListItem(title, offscreen=True)
-        if icon or thumb:
-            item.setArt({'thumb': thumb or icon, 'poster': icon or thumb,
-                         'icon': icon or thumb})
-        gid = 'ps4:' + urllib.parse.quote(eboot, safe='')
-        li.append((f'{sys.argv[0]}?info=launch_game&id={gid}', item, False))
+    # One merged, recency-sorted list of every game (Steam + PS4), so the row
+    # leads with whatever was played last regardless of platform. Never-played
+    # (last 0) fall to the end, alphabetical. The app tiles come after.
+    entries = []  # (last, name_lower, kind, payload)
+    for name, appid, last in _games():
+        entries.append((last, name.lower(), 'steam', (name, appid)))
+    for title, eboot, icon, thumb, last in _ps4_games():
+        entries.append((last, title.lower(), 'ps4', (title, eboot, icon, thumb)))
+    entries.sort(key=lambda e: (-e[0], e[1]))
+
+    li = []
+    for last, _key, kind, payload in entries:
+        if kind == 'steam':
+            name, appid = payload
+            label = f'{name} · paused' if appid == suspended else name
+            item = xbmcgui.ListItem(label, offscreen=True)
+            art = _art(appid)
+            tile = _composed_tile(appid, art)
+            if tile:
+                art['thumb'] = tile
+            if appid == suspended:
+                art.update(_paused_art(appid))
+            item.setArt(art)
+            li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
+        else:
+            title, eboot, icon, thumb = payload
+            item = xbmcgui.ListItem(title, offscreen=True)
+            if icon or thumb:
+                item.setArt({'thumb': thumb or icon, 'poster': icon or thumb,
+                             'icon': icon or thumb})
+            gid = 'ps4:' + urllib.parse.quote(eboot, safe='')
+            li.append((f'{sys.argv[0]}?info=launch_game&id={gid}', item, False))
 
     bp = xbmcgui.ListItem('Big Picture', offscreen=True)
     bp_poster = STEAM_TILE if os.path.exists(STEAM_TILE) else STEAM_ICON
