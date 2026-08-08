@@ -37,7 +37,6 @@
 						<label>$LOCALIZE[31301]</label>
 						<onclick>PlayerControl(Stop)</onclick>
 						<onclick condition="Window.Is(home)">SetFocus(3000)</onclick>
-						<onclick condition="Window.Is(favourites)">SetFocus(450)</onclick>
 						<onclick condition="$EXP[ListView_IsVisible]">SetFocus(50)</onclick>
 						<onclick condition="$EXP[BillboardView_IsVisible]">SetFocus(501)</onclick>
 						<onclick condition="$EXP[ShowcaseView_IsVisible]">SetFocus(502)</onclick>

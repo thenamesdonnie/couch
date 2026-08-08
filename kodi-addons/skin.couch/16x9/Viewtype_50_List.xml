@@ -112,7 +112,7 @@
 					<param name="infolabel_visible" value="$EXP[ListView_Details_Info]" />
 					<param name="infolabelwidth" value="480" />
 				</include>
-				<include content="Common_List_Info_Label" condition="Window.Is(videos) | Window.Is(music) | Window.Is(musicplaylist)">
+				<include content="Common_List_Info_Label" condition="Window.Is(videos) | Window.Is(music) | Window.Is(musicplaylist) | Window.Is(favouritesbrowser)">
 					<param name="visible" value="$EXP[ListView_Display_IsThumbnails]" />
 					<param name="left" value="810" />
 					<param name="width" value="960" />

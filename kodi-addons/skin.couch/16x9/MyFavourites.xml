@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window>
+	<!-- favouritesbrowser -->
+	<!-- Replaces DialogFavourites.xml, which drew WINDOW_DIALOG_FAVOURITES
+	     (10134) - deleted from Kodi in 21. This is the surviving window,
+	     WINDOW_FAVOURITES (10060), which the translator has answered to
+	     `favouritesbrowser` since well before Omega, so this file is correct
+	     on both builds. -->
+	<onunload>ClearProperty(OptionsMenu,home)</onunload>
+	<onunload>ClearProperty(Scrollbars,home)</onunload>
+	<defaultcontrol always="true">50</defaultcontrol>
+	<menucontrol>3000</menucontrol>
+	<views>50</views>
+	<backgroundcolor>$VAR[Dark_Color]</backgroundcolor>
+	<controls>
+		<include content="Common_Controls" />
+		<include content="favourites_Controls" />
+		<include content="favourites_Views" />
+		<include content="MyViews_Menu_and_Scrollbars" />
+	</controls>
+</window>
