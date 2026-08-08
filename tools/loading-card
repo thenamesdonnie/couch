@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Compose a fullscreen game LOADING card for the curtain to show at launch.
+
+game-launch raises tools/curtain over the Kodi -> Big Picture -> game window
+shuffle so the room never sees the flip. The curtain shows one static frame;
+this builds that frame: the game's hero art, darkened, with the game's logo
+(or name) and a "LOADING" line with the Stagelight amber rule under it.
+
+    loading-card <appid|mode> [screen_w screen_h]
+
+Resolves art itself from the appid so game-launch only passes what it has.
+Prints the PNG path on stdout (under /tmp, one per screen size, overwritten).
+Every failure is a line on stderr + non-zero exit the caller throws away -
+the curtain is cosmetic and a launch must never wait on or break for a
+picture (tools/curtain's contract).
+"""
+import glob
+import os
+import re
+import sys
+
+HOME = os.path.expanduser('~')
+LIBCACHE = os.path.join(HOME, '.steam/debian-installation/appcache/librarycache')
+HERO_DIR = os.path.join(HOME, '.local/share/game-tiles/heroes')
+STEAMAPPS = os.path.join(HOME, '.steam/steam/steamapps')
+PS4_DIR = os.path.join(HOME, 'games/ps4')
+FONT_DIR = os.path.join(HOME, 'couch/kodi-addons/skin.couch/fonts/Figtree')
+OUT_TMPL = '/tmp/couch-loading-%dx%d.png'
+
+
+def steam_name(appid):
+    for path in glob.glob(os.path.join(STEAMAPPS, 'appmanifest_%s.acf' % appid)):
+        try:
+            txt = open(path, encoding='utf-8', errors='replace').read()
+        except OSError:
+            continue
+        m = re.search(r'"name"\s+"([^"]*)"', txt)
+        if m:
+            return m.group(1)
+    return ''
+
+
+def resolve(appid):
+    """(hero_art_path or '', logo_path or '', title) for a Steam appid,
+    a shadPS4 eboot path, or a bare mode string."""
+    # Steam appid: numeric
+    if str(appid).isdigit():
+        base = os.path.join(LIBCACHE, str(appid))
+        hero = os.path.join(HERO_DIR, '%s.jpg' % appid)
+        if not os.path.isfile(hero):
+            hits = glob.glob(os.path.join(base, '**', 'library_hero.jpg'),
+                             recursive=True)
+            hero = hits[0] if hits else ''
+        logo = os.path.join(base, 'logo.png')
+        return (hero, logo if os.path.isfile(logo) else '', steam_name(appid))
+    # shadPS4 eboot path -> its folder's art
+    if os.path.sep in str(appid):
+        gdir = os.path.dirname(appid)
+        for cand in ('cover.png', os.path.join('sce_sys', 'pic1.png'),
+                     os.path.join('sce_sys', 'icon0.png')):
+            p = os.path.join(gdir, cand)
+            if os.path.isfile(p):
+                return (p, '', os.path.basename(gdir))
+        return ('', '', os.path.basename(gdir))
+    return ('', '', str(appid).title())
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit('usage: loading-card <appid|mode> [w h]')
+    appid = sys.argv[1]
+    sw = int(sys.argv[2]) if len(sys.argv) > 2 else 3840
+    sh = int(sys.argv[3]) if len(sys.argv) > 3 else 2160
+
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    hero, logo, title = resolve(appid)
+
+    canvas = Image.new('RGB', (sw, sh), (8, 9, 12))
+    if hero and os.path.isfile(hero):
+        try:
+            with Image.open(hero) as im:
+                im.load()
+                art = im.convert('RGB')
+            # cover-fit (fill the screen, crop overflow), then darken
+            scale = max(sw / art.width, sh / art.height)
+            art = art.resize((max(1, int(art.width * scale)),
+                              max(1, int(art.height * scale))), Image.LANCZOS)
+            ax = (art.width - sw) // 2
+            ay = (art.height - sh) // 2
+            art = art.crop((ax, ay, ax + sw, ay + sh))
+            dark = Image.new('RGB', (sw, sh), (0, 0, 0))
+            canvas = Image.blend(art, dark, 0.62)
+        except Exception as e:
+            sys.stderr.write('art failed: %s\n' % e)
+
+    d = ImageDraw.Draw(canvas)
+
+    def font(px, weight='SemiBold'):
+        try:
+            return ImageFont.truetype(
+                os.path.join(FONT_DIR, 'Figtree-%s.ttf' % weight), px)
+        except Exception:
+            return ImageFont.load_default()
+
+    cx, base = sw // 2, int(sh * 0.62)
+
+    # the game's own logo, centred above the LOADING line, else its name
+    placed = False
+    if logo and os.path.isfile(logo):
+        try:
+            with Image.open(logo) as im:
+                im.load()
+                lg = im.convert('RGBA')
+            lw = int(sw * 0.34)
+            lh = int(lg.height * lw / lg.width)
+            maxh = int(sh * 0.22)
+            if lh > maxh:
+                lh = maxh
+                lw = int(lg.width * lh / lg.height)
+            lg = lg.resize((lw, lh), Image.LANCZOS)
+            canvas.paste(lg, (cx - lw // 2, base - lh - int(sh * 0.05)), lg)
+            placed = True
+        except Exception as e:
+            sys.stderr.write('logo failed: %s\n' % e)
+    if not placed and title:
+        f = font(int(sh * 0.052), 'SemiBold')
+        w = d.textlength(title, font=f)
+        d.text((cx - w / 2, base - int(sh * 0.11)), title, font=f,
+               fill=(236, 238, 241))
+
+    # LOADING line + amber rule (the "loading icon", static by design - the
+    # card is up only a few seconds; a frozen spinner reads as broken, a
+    # steady amber underline reads as "working").
+    lf = font(int(sh * 0.026), 'Medium')
+    label = 'LOADING'
+    lw = d.textlength(label, font=lf)
+    # letterspace it a touch by drawing char by char
+    x = cx - (lw + (len(label) - 1) * int(sh * 0.006)) / 2
+    for ch in label:
+        d.text((x, base), ch, font=lf, fill=(196, 201, 208))
+        x += d.textlength(ch, font=lf) + int(sh * 0.006)
+    ry = base + int(sh * 0.06)
+    rw = int(sw * 0.12)
+    d.rounded_rectangle([cx - rw // 2, ry, cx + rw // 2, ry + max(3, sh // 360)],
+                        radius=sh // 720, fill=(232, 168, 73))
+
+    out = OUT_TMPL % (sw, sh)
+    tmp = out + '.part'
+    canvas.save(tmp, 'PNG')
+    os.replace(tmp, out)
+    print(out)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        sys.stderr.write('loading-card: %s\n' % e)
+        sys.exit(1)

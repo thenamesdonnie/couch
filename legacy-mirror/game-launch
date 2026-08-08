@@ -1082,7 +1082,28 @@ case "$MODE" in
     ;;
 esac
 
+# CURTAIN (8 Aug 2026): hide the Kodi -> Big Picture -> game window shuffle
+# behind the game's own loading card (tools/loading-card: its hero art +
+# logo + a LOADING rule). Cosmetic and best-effort exactly like pause-snap -
+# a launch never waits on or breaks for a picture; the curtain's own watchdog
+# (60s) is the backstop and both stacks classify couch-curtain as transparent
+# so no guard fights it. Faded the instant the game window maps.
+CURTAIN=/home/ds2000/couch/tools/curtain
+LOADING_CARD=/home/ds2000/couch/tools/loading-card
+curtain_show_loading() {
+  local dims sw sh card
+  dims="$(xrandr 2>/dev/null | grep -oE 'current [0-9]+ x [0-9]+')"
+  sw="$(printf '%s' "$dims" | grep -oE '[0-9]+' | sed -n 1p)"
+  sh="$(printf '%s' "$dims" | grep -oE '[0-9]+' | sed -n 2p)"
+  [ -n "$sw" ] && [ -n "$sh" ] || { sw=3840; sh=2160; }
+  card="$(python3 "$LOADING_CARD" "${APPID:-$MODE}" "$sw" "$sh" 2>>"$LOG")" || return 0
+  [ -n "$card" ] && timeout 6 "$CURTAIN" show "$card" --timeout 60 >>"$LOG" 2>&1 || true
+}
+curtain_fade() { "$CURTAIN" fade --duration 0.5 >>"$LOG" 2>&1 || true; }
+
 say "=== launch $MODE $APPID"
+# Raise the loading card now, before Big Picture and the game flip below.
+case "$MODE" in steam|shadps4) curtain_show_loading ;; esac
 intent launch "${APPID:-$MODE}" "mode=$MODE" "app=$MODE" source=fresh-launch
 # Launching from the phone with the TV off should light the set up: tv-waker
 # consumes this flag within half a second and wakes only if it's in standby.
@@ -1109,6 +1130,7 @@ restore_on_exit() {
   }
   pad_to_kodi
   focus_kodi
+  curtain_fade
   say "restored (trap)"
 }
 trap '[ "$(cut -d" " -f1 "$SESSION" 2>/dev/null)" = "$$" ] && { rm -f "$SESSION"; intent clear_flag session reason=launcher-exit "launcher=$$"; }; restore_on_exit' EXIT
@@ -1144,6 +1166,8 @@ case "$MODE" in
       # spent in the BP-behind-game worst state.
       yield_to_couchd transitions show "${APPID:-game}" via=xlib-restack \
         "mode=$MODE" resolver=game-pids || focus_game_when_mapped
+      # Game is mapped and on top under the curtain now: dissolve to reveal it.
+      curtain_fade
       while game_running; do sleep 3; done
       say "ended"
     fi
@@ -1193,6 +1217,7 @@ case "$MODE" in
       sleep 3
       yield_to_couchd transitions show "${APPID:-shadps4}" via=xlib-restack \
         "mode=$MODE" || focus_game emu
+      curtain_fade
       while emu_running; do sleep 3; done
       say "shadps4 ended"
     fi
