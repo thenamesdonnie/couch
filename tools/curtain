@@ -175,10 +175,23 @@ def parse_args(argv):
 
     if cmd == 'show':
         timeout = option('--timeout', DEFAULT_TIMEOUT, MIN_TIMEOUT, MAX_TIMEOUT)
+        spin = None
+        out = []
+        i = 0
+        while i < len(rest):
+            if rest[i] == '--spin':
+                if i + 1 >= len(rest):
+                    raise Usage('--spin wants strip,x,y,d,n,fps')
+                spin = rest[i + 1]
+                i += 2
+                continue
+            out.append(rest[i])
+            i += 1
+        rest[:] = out
         if len(rest) != 1:
             raise Usage('show wants exactly one image path')
         return {'cmd': 'show', 'image': os.path.abspath(rest[0]),
-                'timeout': timeout}
+                'timeout': timeout, 'spin': spin}
     if cmd == 'fade':
         duration = option('--duration', DEFAULT_FADE, 0.0, 5.0)
         if rest:
@@ -189,10 +202,11 @@ def parse_args(argv):
             raise Usage(f'{cmd} takes no arguments (got {rest})')
         return {'cmd': cmd}
     if cmd == '__serve__':                     # internal: the daemon itself
-        if len(rest) != 3:
-            raise Usage('__serve__ is internal (image timeout ready_fd)')
+        if len(rest) not in (3, 4):
+            raise Usage('__serve__ is internal (image timeout ready_fd [spin])')
         return {'cmd': '__serve__', 'image': rest[0], 'timeout': float(rest[1]),
-                'ready_fd': int(rest[2])}
+                'ready_fd': int(rest[2]),
+                'spin': rest[3] if len(rest) == 4 else None}
     raise Usage(f'unknown command {cmd!r}')
 
 
@@ -361,7 +375,8 @@ class Overlay:
         self.image = ''
         self.shows = 0
 
-    # -- setup ----------------------------------------------------------
+    # -- setup ----------------------------------------------------------        self.spin = None
+
     def open(self):
         from Xlib import display, X
         self.X = X
@@ -480,6 +495,44 @@ class Overlay:
                     pass
         self.image = path
         self.shows += 1
+
+    def load_spinner(self, sp):
+        """Pre-split the strip into per-frame BGRA byte blocks. The frames
+        were composited over the card by loading-card, so a tick is one small
+        opaque PutImage into the background pixmap + a clear of that rect."""
+        from PIL import Image as _I
+        d = sp['d']
+        with _I.open(sp['path']) as im:
+            im.load()
+            strip = im.convert('RGBA')
+        frames = []
+        for i in range(sp['n']):
+            cell = strip.crop((i * d, 0, (i + 1) * d, d))
+            b, g, r, a = cell.split()[2], cell.split()[1], cell.split()[0], cell.split()[3]
+            frames.append(_I.merge('RGBA', (b, g, r, a)).tobytes())
+        self.spin = {'frames': frames, 'x': sp['x'], 'y': sp['y'],
+                     'd': d, 'period': 1.0 / sp['fps'], 'i': 0}
+
+    def spin_tick(self):
+        """Advance one frame. Failures kill the spinner, never the curtain."""
+        if not self.spin or self.pixmap is None:
+            return
+        try:
+            sp = self.spin
+            sp['i'] = (sp['i'] + 1) % len(sp['frames'])
+            gc = self.pixmap.create_gc()
+            try:
+                self.pixmap.put_image(gc, sp['x'], sp['y'], sp['d'], sp['d'],
+                                      self.X.ZPixmap, self.depth, 0,
+                                      sp['frames'][sp['i']])
+            finally:
+                gc.free()
+            self.win.clear_area(x=sp['x'], y=sp['y'],
+                                width=sp['d'], height=sp['d'])
+            self.d.flush()
+        except Exception as e:
+            say(f'spinner stopped ({e})')
+            self.spin = None
 
     def show(self):
         """Map (if needed) and raise. Raising is a one-shot, not a loop: a
@@ -628,7 +681,21 @@ def report(ready_fd, message):
         pass
 
 
-def serve(image, timeout, ready_fd=None):
+def parse_spin(spec):
+    """'strip.png,x,y,d,n,fps' -> dict, or None on any trouble. The spinner
+    is cosmetic-on-cosmetic: a bad spec degrades to the static card."""
+    try:
+        path, x, y, d, n, fps = spec.split(',')
+        x, y, d, n, fps = int(x), int(y), int(d), int(n), float(fps)
+        if not (os.path.isfile(path) and 8 <= d <= 512
+                and 2 <= n <= 96 and 1.0 <= fps <= 30.0):
+            return None
+        return {'path': path, 'x': x, 'y': y, 'd': d, 'n': n, 'fps': fps}
+    except (ValueError, OSError):
+        return None
+
+
+def serve(image, timeout, ready_fd=None, spin=None):
     """Claim, map, report, then serve the FIFO until the deadline.
 
     Order matters: the claim happens before any X resource exists, so two
@@ -657,6 +724,15 @@ def serve(image, timeout, ready_fd=None):
             report(ready_fd, f'ERR {type(e).__name__}: {e}')
             say(f'{type(e).__name__}: {e}')
             return 1
+        if spin:
+            sp = parse_spin(spin)
+            if sp:
+                try:
+                    overlay.load_spinner(sp)
+                except Exception as e:
+                    say(f'spinner unavailable ({e}); static card')
+            else:
+                say('spinner spec unusable; static card')
         arm_watchdog(timeout)
         write_status(overlay, deadline)
         report(ready_fd, 'READY')
@@ -693,14 +769,24 @@ def loop(overlay, deadline, timeout):
         poller.register(rfd, select.POLLIN)
     buf = b''
     faded = False
+    next_spin = time.monotonic()
     try:
         while not STOPPING['now']:
-            left = deadline - time.monotonic()
+            now = time.monotonic()
+            left = deadline - now
             if left <= 0:
                 say(f'watchdog: {timeout:.1f}s up, tearing the curtain down '
                     f'(nobody faded or cleared it)')
                 break
-            for _fd, _mask in poller.poll(min(POLL_MS, int(left * 1000) + 1)):
+            wait_ms = min(POLL_MS, int(left * 1000) + 1)
+            if overlay.spin:
+                if now >= next_spin:
+                    overlay.spin_tick()
+                    next_spin = now + overlay.spin['period'] \
+                        if overlay.spin else now + 3600
+                wait_ms = max(1, min(wait_ms,
+                                     int((next_spin - now) * 1000) + 1))
+            for _fd, _mask in poller.poll(wait_ms):
                 try:
                     chunk = os.read(rfd, 4096)
                 except OSError:
@@ -811,7 +897,7 @@ def wait_gone(pid, seconds):
     return False
 
 
-def spawn(image, timeout):
+def spawn(image, timeout, spin=None):
     """Start the daemon and wait for it to say the window is up.
 
     Detached (start_new_session) because it must outlive the shell that ran
@@ -821,6 +907,8 @@ def spawn(image, timeout):
     rfd, wfd = os.pipe()
     argv = [sys.executable, os.path.abspath(__file__), '__serve__', image,
             f'{timeout:.3f}', str(wfd)]
+    if spin:
+        argv.append(spin)
     try:
         log = open(LOG, 'a')
     except OSError:
@@ -883,7 +971,7 @@ def read_line(fd, seconds):
     return buf.decode('utf-8', 'replace').strip()
 
 
-def cmd_show(image, timeout):
+def cmd_show(image, timeout, spin=None):
     if not os.path.exists(image):
         say(f'no such image: {image}')
         return 1
@@ -902,7 +990,7 @@ def cmd_show(image, timeout):
         # It died between the liveness check and the write, or it is wedged.
         cmd_clear()
     clear_stale()
-    return spawn(image, timeout)
+    return spawn(image, timeout, spin)
 
 
 def cmd_fade(duration):
@@ -967,9 +1055,10 @@ def main(argv):
     os.environ.setdefault('XAUTHORITY', os.path.expanduser('~/.Xauthority'))
     cmd = opts['cmd']
     if cmd == '__serve__':
-        return serve(opts['image'], opts['timeout'], opts['ready_fd'])
+        return serve(opts['image'], opts['timeout'], opts['ready_fd'],
+                     opts.get('spin'))
     if cmd == 'show':
-        return cmd_show(opts['image'], opts['timeout'])
+        return cmd_show(opts['image'], opts['timeout'], opts.get('spin'))
     if cmd == 'fade':
         return cmd_fade(opts['duration'])
     if cmd == 'clear':

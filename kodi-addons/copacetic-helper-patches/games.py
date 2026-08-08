@@ -527,6 +527,11 @@ def games_route(info, params):
                 pic1 = os.path.join(os.path.dirname(eboot), 'sce_sys', 'pic1.png')
                 if os.path.isfile(pic1):
                     art['fanart'] = pic1
+            logo = os.path.expanduser(
+                '~/.local/share/game-tiles/logos/%s.png'
+                % os.path.basename(os.path.dirname(eboot)))
+            if os.path.isfile(logo):
+                art['clearlogo'] = logo
             if paused4:
                 pa = _paused_art(eboot)
                 if pa:

@@ -1096,8 +1096,17 @@ curtain_show_loading() {
   sw="$(printf '%s' "$dims" | grep -oE '[0-9]+' | sed -n 1p)"
   sh="$(printf '%s' "$dims" | grep -oE '[0-9]+' | sed -n 2p)"
   [ -n "$sw" ] && [ -n "$sh" ] || { sw=3840; sh=2160; }
-  card="$(python3 "$LOADING_CARD" "${APPID:-$MODE}" "$sw" "$sh" 2>>"$LOG")" || return 0
-  [ -n "$card" ] && timeout 6 "$CURTAIN" show "$card" --timeout 60 >>"$LOG" 2>&1 || true
+  local out spin
+  out="$(python3 "$LOADING_CARD" "${APPID:-$MODE}" "$sw" "$sh" 2>>"$LOG")" || return 0
+  card="$(printf '%s\n' "$out" | sed -n 1p)"
+  # line 2 (optional): "spinner <strip> <x> <y> <d> <n> <fps>" -> --spin csv
+  spin="$(printf '%s\n' "$out" | sed -n 's/^spinner \(.*\)/\1/p' | tr ' ' ',')"
+  [ -n "$card" ] || return 0
+  if [ -n "$spin" ]; then
+    timeout 6 "$CURTAIN" show "$card" --timeout 60 --spin "$spin" >>"$LOG" 2>&1 || true
+  else
+    timeout 6 "$CURTAIN" show "$card" --timeout 60 >>"$LOG" 2>&1 || true
+  fi
 }
 curtain_fade() { "$CURTAIN" fade --duration 0.5 >>"$LOG" 2>&1 || true; }
 

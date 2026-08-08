@@ -22,6 +22,7 @@ import sys
 HOME = os.path.expanduser('~')
 LIBCACHE = os.path.join(HOME, '.steam/debian-installation/appcache/librarycache')
 HERO_DIR = os.path.join(HOME, '.local/share/game-tiles/heroes')
+LOGO_DIR = os.path.join(HOME, '.local/share/game-tiles/logos')
 STEAMAPPS = os.path.join(HOME, '.steam/steam/steamapps')
 PS4_DIR = os.path.join(HOME, 'games/ps4')
 FONT_DIR = os.path.join(HOME, 'couch/kodi-addons/skin.couch/fonts/Figtree')
@@ -40,6 +41,27 @@ def steam_name(appid):
     return ''
 
 
+def sfo_title(gdir):
+    """TITLE from sce_sys/param.sfo - just enough of the binary format."""
+    path = os.path.join(gdir, 'sce_sys', 'param.sfo')
+    try:
+        import struct
+        data = open(path, 'rb').read()
+        if data[:4] != b'\x00PSF':
+            return ''
+        key_off, dat_off, n = struct.unpack_from('<III', data, 8)
+        for i in range(n):
+            ko, fmt, dlen, dmax, do = struct.unpack_from('<HHIII', data,
+                                                         20 + i * 16)
+            key = data[key_off + ko:data.index(b'\x00', key_off + ko)]
+            if key == b'TITLE':
+                return data[dat_off + do:dat_off + do + dlen].split(
+                    b'\x00')[0].decode('utf-8', 'replace')
+    except Exception:
+        pass
+    return ''
+
+
 def resolve(appid):
     """(hero_art_path or '', logo_path or '', title) for a Steam appid,
     a shadPS4 eboot path, or a bare mode string."""
@@ -53,15 +75,28 @@ def resolve(appid):
             hero = hits[0] if hits else ''
         logo = os.path.join(base, 'logo.png')
         return (hero, logo if os.path.isfile(logo) else '', steam_name(appid))
-    # shadPS4 eboot path -> its folder's art
+    # shadPS4 eboot path -> its folder's art; a hand-placed wordmark at
+    # logos/<serial>.png (SteamGridDB) beats drawing the title as plain text,
+    # and param.sfo's TITLE beats the serial when text is all we have.
     if os.path.sep in str(appid):
         gdir = os.path.dirname(appid)
-        for cand in ('cover.png', os.path.join('sce_sys', 'pic1.png'),
+        serial = os.path.basename(gdir)
+        logo = os.path.join(LOGO_DIR, '%s.png' % serial)
+        if not os.path.isfile(logo):
+            logo = ''
+        title = sfo_title(gdir) or serial
+        # a mirrored text-free hero beats the dump art (pic1 bakes the
+        # wordmark in, which doubles up under the logo overlay)
+        hero = os.path.join(HERO_DIR, '%s.jpg' % serial)
+        if os.path.isfile(hero):
+            return (hero, logo, title)
+        for cand in (os.path.join('sce_sys', 'pic1.png'), 'cover.png',
                      os.path.join('sce_sys', 'icon0.png')):
             p = os.path.join(gdir, cand)
             if os.path.isfile(p):
-                return (p, '', os.path.basename(gdir))
-        return ('', '', os.path.basename(gdir))
+                # dump art carries its own title - the logo would double it
+                return (p, '', title) if cand.endswith('pic1.png') else (p, logo, title)
+        return ('', logo, title)
     return ('', '', str(appid).title())
 
 
@@ -128,27 +163,47 @@ def main():
         d.text((cx - w / 2, base - int(sh * 0.11)), title, font=f,
                fill=(236, 238, 241))
 
-    # LOADING line + amber rule (the "loading icon", static by design - the
-    # card is up only a few seconds; a frozen spinner reads as broken, a
-    # steady amber underline reads as "working").
-    lf = font(int(sh * 0.026), 'Medium')
-    label = 'LOADING'
-    lw = d.textlength(label, font=lf)
-    # letterspace it a touch by drawing char by char
-    x = cx - (lw + (len(label) - 1) * int(sh * 0.006)) / 2
-    for ch in label:
-        d.text((x, base), ch, font=lf, fill=(196, 201, 208))
-        x += d.textlength(ch, font=lf) + int(sh * 0.006)
-    ry = base + int(sh * 0.06)
-    rw = int(sw * 0.12)
-    d.rounded_rectangle([cx - rw // 2, ry, cx + rw // 2, ry + max(3, sh // 360)],
-                        radius=sh // 720, fill=(232, 168, 73))
+    # Spinner (Donnie, 8 Aug 2026: "instead of LOADING text, I want a
+    # spinner"): an amber arc on a faint ring, pre-rendered as N frames
+    # composited over the card's own pixels at the spinner rect, so the
+    # curtain can animate it with plain opaque blits.
+    from PIL import Image as _I
+    n_frames, fps = 24, 12
+    dia = max(56, int(sh * 0.072))
+    sx, sy = cx - dia // 2, base + int(sh * 0.02)
+    ss = 4  # supersample for smooth arcs
+    big = dia * ss
+    stroke = max(3 * ss, big // 14)
+    pad = stroke
+    frames = []
+    for i in range(n_frames):
+        fr = _I.new('RGBA', (big, big), (0, 0, 0, 0))
+        fd = ImageDraw.Draw(fr)
+        box = [pad, pad, big - pad, big - pad]
+        fd.arc(box, 0, 360, fill=(236, 238, 241, 36), width=stroke)
+        a0 = (360.0 / n_frames) * i
+        fd.arc(box, a0, a0 + 100, fill=(255, 255, 255, 235), width=stroke)
+        frames.append(fr.resize((dia, dia), Image.LANCZOS))
+    strip = _I.new('RGB', (dia * n_frames, dia))
+    base_crop = canvas.crop((sx, sy, sx + dia, sy + dia))
+    for i, fr in enumerate(frames):
+        cell = base_crop.copy()
+        cell.paste(fr, (0, 0), fr)
+        strip.paste(cell, (i * dia, 0))
+    # frame 0 baked into the card so the very first blitted image already
+    # shows the spinner (the curtain starts animating a beat later)
+    canvas.paste(frames[0], (sx, sy), frames[0])
 
     out = OUT_TMPL % (sw, sh)
+    strip_out = out[:-len('.png')] + '.spin.png'
     tmp = out + '.part'
     canvas.save(tmp, 'PNG')
     os.replace(tmp, out)
+    tmp = strip_out + '.part'
+    strip.save(tmp, 'PNG')
+    os.replace(tmp, strip_out)
     print(out)
+    print('spinner %s %d %d %d %d %d' % (strip_out, sx, sy, dia, n_frames, fps))
 
 
 if __name__ == '__main__':
