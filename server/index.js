@@ -591,16 +591,38 @@ app.post('/api/tv/seek', wrap(async (req, res) => {
 // Neither of these can wake the TV - see sys.tvVolume. A sleeping set answers
 // {off:true} with a 200, because "the TV is in standby" is something the phone
 // should DRAW, not something it should show as a failed request.
+// Reading the volume off a sleeping set costs 3.2 SECONDS (measured:
+// `tv-volume get` alone is 3.15s - it is a network dial to hardware that is
+// not answering fast). Remote is the DEFAULT tab and remounts every time you
+// come back to it, so that dial was being paid on almost every app open. Same
+// shape of cache as tvCache/lightsCache below, and the same escape hatch:
+// ?fresh=1 forces the real read.
+//
+// The window is short because the number is a live thing a person is about to
+// turn: 15s is long enough to cover a tab bounce and short enough that the
+// slider is never wrong when you arrive to use it. Every write path drops it,
+// so the value you just set is never served back stale.
+let tvVolCache = { at: 0, value: null };
+const TV_VOL_TTL_MS = 15000;
+
 app.get('/api/tv/volume', wrap(async (req, res) => {
   res.set('cache-control', 'no-store');
   if (!sys.tvConfigured()) return { off: true, reason: 'no TV paired' };
-  return sys.tvVolume(['get']);
+  if (!req.query.fresh && tvVolCache.value && Date.now() - tvVolCache.at < TV_VOL_TTL_MS) {
+    return { ...tvVolCache.value, cached: true };
+  }
+  const value = await sys.tvVolume(['get']);
+  tvVolCache = { at: Date.now(), value };
+  return value;
 }));
 
 app.post('/api/tv/volume', wrap(async (req) => {
   const args = sys.tvVolumeArgs(req.body ?? {});
+  tvVolCache = { at: 0, value: null };   // we just changed it; never serve the old one
   if (!sys.tvConfigured()) return { off: true, reason: 'no TV paired' };
-  return sys.tvVolume(args);
+  const out = await sys.tvVolume(args);
+  tvVolCache = { at: 0, value: null };
+  return out;
 }));
 
 let tvCache = { at: 0, status: null };

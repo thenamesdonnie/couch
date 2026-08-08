@@ -205,6 +205,11 @@ def _ach_refresh():
                 host_popen(['python3', warmer], start_new_session=True,
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
+            sizer = os.path.expanduser('~/couch/tools/warm-game-sizes')
+            if os.path.isfile(sizer):
+                host_popen(['python3', sizer], start_new_session=True,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -306,32 +311,29 @@ def _fmt_size(nbytes):
 
 
 def _dir_size_cached(path):
+    """What ~/couch/tools/warm-game-sizes last measured, or 0.
+
+    A READER, deliberately. This used to key the cache on the game folder's
+    own mtime and walk the tree on a miss - and a directory's mtime does not
+    move when its CONTENTS grow, only when its own entries do, so a game that
+    gained 11 GB of mods three levels down kept its old number for ever
+    (measured: Bloodborne's tile said 29.3 GB for a 40.5 GB game). Meanwhile
+    the miss path was a 28,778-file walk, 267ms, with the player waiting on a
+    directory listing.
+
+    Invalidating harder would have made the stall more common, not less. The
+    walk lives in the hourly warmer now; a size up to an hour stale is worth
+    having, a listing that stalls to compute one is not. 0 renders as no size
+    at all, which is the honest answer before the first warm.
+    """
     try:
         cache = json.load(open(SIZE_CACHE))
     except Exception:
-        cache = {}
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
         return 0
     ent = cache.get(path)
-    if ent and ent[0] == mtime:
-        return ent[1]
-    total = 0
-    for root, _dirs, files in os.walk(path):
-        for f in files:
-            try:
-                total += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
-    cache[path] = [mtime, total]
-    try:
-        tmp = SIZE_CACHE + '.part'
-        json.dump(cache, open(tmp, 'w'))
-        os.replace(tmp, SIZE_CACHE)
-    except OSError:
-        pass
-    return total
+    if isinstance(ent, list) and len(ent) > 1:
+        return ent[1] or 0
+    return 0
 
 
 def _art(appid):

@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Measure how big each game is on disk, off the listing's critical path.
+
+The Games row shows an install size in its stats line. That number used to be
+computed inside the listing, cached in `sizes.json` under the game folder's own
+mtime - and a directory's mtime does not change when its CONTENTS grow, only
+when its own entries do. So a game that gained 11 GB of mod files three levels
+down kept its old number for ever. Measured on this box before this script
+existed: Bloodborne's tile said 29.3 GB for a 40.5 GB game.
+
+Invalidating harder would have been the wrong fix, because the miss path is
+the expensive one: a full `os.walk` of the game tree - 28,778 files and 267ms
+for Bloodborne - and it ran with the player waiting on a directory listing.
+
+So the walk moves here, to the same hourly slot that already warms
+achievements, hero art and loading cards, and `games.py` becomes a pure reader
+of what this left behind. A size that is at most an hour stale is worth having;
+a listing that stalls to compute one is not.
+
+Written atomically, and it only ever ADDS to what is there: a game that is
+temporarily unreadable (an unmounted disk, a dump being re-extracted) keeps
+its last known size rather than blinking to nothing.
+
+    tools/warm-game-sizes [--verbose]
+"""
+import json
+import os
+import sys
+import time
+
+CACHE = os.path.expanduser('~/.local/share/game-tiles/sizes.json')
+STEAMAPPS = os.path.expanduser('~/.steam/steam/steamapps')
+PS4_DIR = os.path.expanduser('~/games/ps4')
+
+
+def tree_bytes(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass          # a file that vanished mid-walk is not a failure
+    return total
+
+
+def game_dirs():
+    """Every directory whose size the row might want to show."""
+    seen = []
+    common = os.path.join(STEAMAPPS, 'common')
+    try:
+        for name in sorted(os.listdir(common)):
+            full = os.path.join(common, name)
+            if os.path.isdir(full):
+                seen.append(full)
+    except OSError:
+        pass
+    try:
+        for name in sorted(os.listdir(PS4_DIR)):
+            full = os.path.join(PS4_DIR, name)
+            # games.py skips the -patch / -UPDATE siblings; so do we.
+            if not os.path.isdir(full) or name.endswith(('-patch', '-UPDATE')):
+                continue
+            if os.path.isfile(os.path.join(full, 'eboot.bin')):
+                seen.append(full)
+    except OSError:
+        pass
+    return seen
+
+
+def main():
+    verbose = '--verbose' in sys.argv or '-v' in sys.argv
+    try:
+        cache = json.load(open(CACHE))
+    except Exception:
+        cache = {}
+    if not isinstance(cache, dict):
+        cache = {}
+
+    now = int(time.time())
+    for path in game_dirs():
+        size = tree_bytes(path)
+        if size <= 0:
+            continue          # keep whatever we knew; never blink to nothing
+        before = cache.get(path)
+        cache[path] = [now, size]
+        if verbose:
+            was = (before[1] if isinstance(before, list) and len(before) > 1
+                   else None)
+            moved = '' if was in (None, size) else '  (was %.1f GB)' % (
+                was / 1073741824.0)
+            print('%-58s %7.1f GB%s' % (os.path.basename(path)[:58],
+                                        size / 1073741824.0, moved))
+
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    tmp = CACHE + '.part'
+    with open(tmp, 'w') as handle:
+        json.dump(cache, handle)
+    os.replace(tmp, CACHE)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
