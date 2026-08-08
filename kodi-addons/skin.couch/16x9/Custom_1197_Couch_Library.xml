@@ -191,6 +191,27 @@
 						<aspectratio>scale</aspectratio>
 						<colordiffuse>c8ffffff</colordiffuse>
 					</control>
+					<control type="image">
+						<left>40</left>
+						<top>186</top>
+						<width>292</width>
+						<height>6</height>
+						<texture colordiffuse="66000000">couch/pill.png</texture>
+						<visible>!String.IsEmpty(ListItem.Property(CouchProgress))</visible>
+					</control>
+					<control type="progress">
+						<left>40</left>
+						<top>186</top>
+						<width>292</width>
+						<height>6</height>
+						<info>ListItem.Property(CouchProgress)</info>
+						<texturebg>-</texturebg>
+						<lefttexture>-</lefttexture>
+						<righttexture>-</righttexture>
+						<overlaytexture>-</overlaytexture>
+						<midtexture colordiffuse="ffe8a849">couch/pill.png</midtexture>
+						<visible>!String.IsEmpty(ListItem.Property(CouchProgress))</visible>
+					</control>
 					<control type="label">
 						<left>40</left>
 						<top>214</top>

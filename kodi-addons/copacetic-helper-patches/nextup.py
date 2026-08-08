@@ -145,6 +145,10 @@ def continue_route():
                        'fanart': art.get('tvshow.fanart', art.get('fanart', '')),
                        'clearlogo': art.get('tvshow.clearlogo', '')})
             li.setProperty('IsPlayable', 'true')
+            r = e.get('resume', {}) or {}
+            pos, tot = r.get('position', 0), r.get('total', 0)
+            pct = int(pos * 100 / tot) if tot else 0
+            li.setProperty('CouchProgress', str(max(2, min(100, pct))))
             items.append((e.get('file', ''), li, False))
 
     xbmcplugin.addDirectoryItems(handle, items)
