@@ -104,16 +104,16 @@
 
 		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
 		<control type="list" id="9000">
-			<left>211</left>
+			<left>186</left>
 			<top>76</top>
-			<width>1709</width>
+			<width>1794</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onleft>9001</onleft>
 			<itemlayout width="120" height="290">
 				<control type="image">
-					<left>5</left>
+					<left>30</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -125,14 +125,14 @@
 			<focusedlayout width="182" height="290">
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
-					<left>-25</left>
+					<left>0</left>
 					<top>10</top>
 					<width>232</width>
 					<height>232</height>
 					<texture border="48" infill="false" colordiffuse="96ffffff">couch/halo.png</texture>
 				</control>
 				<control type="image">
-					<left>5</left>
+					<left>30</left>
 					<top>40</top>
 					<width>172</width>
 					<height>172</height>
@@ -140,7 +140,7 @@
 					<aspectratio>scale</aspectratio>
 				</control>
 				<control type="image">
-					<left>5</left>
+					<left>30</left>
 					<top>222</top>
 					<width>172</width>
 					<height>12</height>
@@ -148,7 +148,7 @@
 					<aspectratio>stretch</aspectratio>
 				</control>
 				<control type="label">
-					<left>5</left>
+					<left>30</left>
 					<top>238</top>
 					<width>620</width>
 					<height>38</height>
