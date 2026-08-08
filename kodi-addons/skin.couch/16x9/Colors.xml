@@ -15,7 +15,11 @@
 		<value>d8d8d8</value>
 	</variable>
 	<variable name="Accent_Hex">
-		<value>ff5174</value>
+		<!-- Stagelight amber (8 Aug 2026): was Copacetic's pink ff5174. Every
+		     stock dialog draws its accent from here, so this one line makes
+		     select/confirm/context/keyboard/settings read as Stagelight. The
+		     hand-built Couch windows use literal colours and are unaffected. -->
+		<value>e8a849</value>
 	</variable>
 	<variable name="Dark_Grey_Hex">
 		<value>0f1415</value>
