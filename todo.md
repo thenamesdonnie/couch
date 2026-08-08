@@ -101,23 +101,66 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (updated 8 Aug 2026 ~17:15 — console polish day; NEXT = Kodi 21 Flatpak)
+## ▶ Resume here (updated 8 Aug 2026 ~20:00 — Kodi 21 staged, waiting on one sudo)
 
-**THE NEXT TRACK: migrate Kodi 20 -> Kodi 21 via Flatpak.** Ubuntu's repos stop
-at Kodi 20 (this is why Flatpak, not apt): Flathub ships current 21
-self-contained, no OS upgrade. Payoff = the Python 3.12 teardown segfaults and
-the whole crash-workaround layer (kodi-tv restart loop, reuselanguageinvoker
-flags, the never-live-switch-skins rule) can go, plus probably the wedged-Kodi
-episodes seen twice on 8 Aug (answers JSON-RPC ping, ignores everything else,
-needs SIGKILL + manual `~/.local/bin/kodi-tv` relaunch with session env
-harvested from /proc/$(pgrep -x xfce4-session)/environ).
-FIRST STEP (needs Donnie's sudo, flatpak is NOT installed):
-`sudo apt install flatpak && flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`
-Then: install tv.kodi.Kodi, migrate/symlink ~/.kodi into the sandbox data dir,
-rewire kodi-tv (keep flock + TearFree + the 4K120 modeline block), re-verify
-skin.couch + the patched helper/YouTube addons + JSON-RPC 8090 + kodi-send's
-UDP path + couchd's Kodi observations. apt-Kodi stays installed = rollback is
-"launch the old one".
+**THE KODI 21 MIGRATION IS BUILT AND TESTED. It needs one root command and one
+evening in front of the TV.** Everything that could be done without root is
+done and committed (2df8cf9, 74ed172, 5038b27, e18c1c5). Plan, reasoning,
+override table, retirement criteria: **`docs/kodi21-flatpak-migration.md`**.
+
+**DONNIE'S PART — one root command, then one script:**
+```
+sudo apt install -y flatpak
+```
+then (no root from here on):
+```
+cd ~/couch && couchd/.venv/bin/python tools/kodi21-migrate preflight
+couchd/.venv/bin/python tools/kodi21-migrate install     # ~2.5 GB, the runtime too
+couchd/.venv/bin/python tools/kodi21-migrate override
+```
+Then, WITH KODI STOPPED (the last two refuse otherwise — copying a live
+profile catches its sqlite mid-write):
+```
+couchd/.venv/bin/python tools/kodi21-migrate profile
+couchd/.venv/bin/python tools/kodi21-migrate freeze-skin
+couchd/.venv/bin/python tools/kodi21-migrate verify
+couchd/.venv/bin/python tools/kodi21-migrate switch    # then relaunch kodi-tv
+```
+`rollback` is the same thing backwards and uninstalls nothing.
+`freeze-skin` edits `kodi-addons/skin.couch/addon.xml` in the repo (5.16.0 ->
+5.17.0) — commit that afterwards.
+
+**THE THREE FACTS THAT DECIDED THE DESIGN** (all from primary sources, not
+memory — they are the ones a fresh session would get wrong):
+1. The Flathub build patches kodi.sh with `export KODI_DATA=$XDG_DATA_HOME`,
+   so the profile is **`~/.var/app/tv.kodi.Kodi/data`** — NOT `~/.kodi`, and
+   NOT `~/.var/app/tv.kodi.Kodi/.kodi` (what `--persist=.kodi` would give,
+   and what everyone guesses).
+2. Kodi 21 declares `xbmc.gui 5.17.0` with `backwards-compatibility
+   abi="5.17.0"`; Kodi 20 provides 5.16.0 with none. **No single value
+   satisfies both**, and `~/.kodi/addons/skin.couch` is a symlink to the repo.
+   Bumping it while apt-Kodi is the launcher drops the TV to Estuary at the
+   next restart. `tools/test_skin_omega.py` enforces this; `freeze-skin` is
+   what makes the bump safe.
+3. Inside the sandbox `~/.local/bin/game-launch` is **visible but unrunnable**
+   (it wants xdotool, wmctrl, steam, the host python3), and `/tmp` is a
+   private tmpfs so the session flags read empty — which would have the power
+   menu offering "turn off the TV" mid-game. `kodi-addons/couchhost/` is the
+   crossing, vendored into the three addons that need it, a literal
+   passthrough on the apt build.
+
+**WHAT NEEDS DONNIE'S EYES ON THE TV** (nothing else can settle these):
+picture + audio over eARC + 4K120 under the Flatpak; the DualSense (the
+button map travels in `addon_data/peripheral.joystick`, but verify); a film;
+a game launch and a suspend/resume cycle; and the first deliberate
+`ReloadSkin()` — that is the test that retires the never-live-switch-skins
+rule.
+
+**NOT RETIRED, deliberately.** The crash-restart loop, `reuselanguageinvoker`,
+the no-ReloadSkin rule and the jellyfin 45s `startupDelay` all still exist.
+Each has a written retirement criterion in the doc; none can be *proved* dead
+from a work-day session with the TV in standby, and the whole point of the
+loop is the cold boot nobody was watching.
 
 ### What 8 Aug shipped (all committed on master, all verified live)
 - **Achievements/trophies shelf** on home: Down from a game opens a PS5-style
