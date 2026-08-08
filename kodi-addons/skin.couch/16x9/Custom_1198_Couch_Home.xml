@@ -135,6 +135,32 @@
 				<texture colordiffuse="cceceef1">icons/couch_battv_100.png</texture>
 			</control>
 		</control>
+		<control type="button" id="9100">
+			<left>1412</left>
+			<top>40</top>
+			<width>64</width>
+			<height>64</height>
+			<label></label>
+			<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
+			<texturenofocus>-</texturenofocus>
+			<onclick>ActivateWindow(1196)</onclick>
+			<onleft>9100</onleft>
+			<onright>9101</onright>
+			<ondown>9000</ondown>
+		</control>
+		<control type="image">
+			<left>1426</left>
+			<top>54</top>
+			<width>36</width>
+			<height>36</height>
+			<texture colordiffuse="d2eceef1">couch/ic-youtube.png</texture>
+		</control>
+		<include content="Couch_Lightbar">
+			<param name="x" value="1416" />
+			<param name="y" value="108" />
+			<param name="width" value="56" />
+			<param name="visible" value="Control.HasFocus(9100)" />
+		</include>
 		<control type="button" id="9101">
 			<left>1482</left>
 			<top>40</top>
@@ -144,7 +170,7 @@
 			<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
 			<texturenofocus>-</texturenofocus>
 			<onclick>RunScript(script.globalsearch)</onclick>
-			<onleft>9101</onleft>
+			<onleft>9100</onleft>
 			<onright>9102</onright>
 			<ondown>9000</ondown>
 		</control>
