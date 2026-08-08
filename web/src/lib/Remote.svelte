@@ -16,7 +16,8 @@
   const tvOn = $derived(!!tvStatus && tvStatus.startsWith('on'));
 
   function loadTv() { api('/api/tv').then((d) => (tvStatus = d.status)).catch(() => {}); }
-  onMount(loadTv);
+  // No onMount twin: a $effect runs at mount too, so pairing them fetched
+  // everything twice on the way in.
   $effect(() => { ui.focusTick; loadTv(); });
 
   async function tvToggle() {

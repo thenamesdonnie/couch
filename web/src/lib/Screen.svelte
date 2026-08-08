@@ -31,10 +31,11 @@
     streamUrl = null;
   }
 
-  onMount(() => {
-    startStream();
-    return stopStream;
-  });
+  // The $effect below already runs once at mount and starts the stream, so
+  // onMount only registers the teardown. Starting it in both opened TWO
+  // MJPEG connections and abandoned the first - and a stale MJPEG socket
+  // held open by Safari is a bug this very file has been bitten by before.
+  onMount(() => stopStream);
 
   $effect(() => {
     src;

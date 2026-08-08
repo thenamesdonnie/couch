@@ -13,10 +13,10 @@
 
   function loadTv() { api('/api/tv').then((d) => (tvStatus = d.status)).catch(() => {}); }
   function loadLights() { api('/api/lights').then((d) => (bulbs = d.bulbs)).catch(() => {}); }
-  onMount(() => { loadTv(); loadLights(); });
-
   // On returning to the app, re-read the things that change outside it: TV
   // power (physical remote), bulbs (Alexa/wall switch), system health, services.
+  // This also IS the initial load - a $effect runs at mount, so the onMount
+  // that used to sit here just dialled the TV and the bulbs twice over.
   $effect(() => {
     ui.focusTick;
     loadTv();
