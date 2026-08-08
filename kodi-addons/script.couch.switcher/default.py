@@ -53,6 +53,22 @@ except Exception as _e:  # noqa: BLE001
         def session_appid(_rows, fallback=""):
             return ""
 
+# Same rule for the sandbox crossing (docs/kodi21-flatpak-migration.md): a
+# missing couchhost.py costs the paused backdrop on the Flatpak, never the
+# switcher, and on the apt build the fallback IS the old code.
+try:
+    from couchhost import host_read  # noqa: E402 - needs the sys.path line
+except Exception as _e:  # noqa: BLE001
+    xbmc.log("couch.switcher: couchhost unavailable (%s), reading host "
+             "paths directly" % _e, xbmc.LOGWARNING)
+
+    def host_read(path, timeout=3.0):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        except OSError:
+            return None
+
 API = "http://localhost:8790"
 LIST_TIMEOUT = 3      # the server answers in ~100ms; anything slower is broken
 ACT_TIMEOUT = 20      # activating suspends a game first, which takes a moment
@@ -266,11 +282,10 @@ def _suspended_appid():
     couch server reads. Only consulted when the rows carry no appid (a shadPS4
     session whose capture has not landed yet); absent file means no session,
     which correctly leaves the backdrop off."""
-    try:
-        with open("/tmp/game-suspended", encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+    # /tmp is a private tmpfs inside the Kodi 21 Flatpak, so this goes
+    # through couchhost - a plain open() there would read an empty sandbox
+    # and drop the backdrop on every shadPS4 pause.
+    return (host_read("/tmp/game-suspended") or "").strip()
 
 
 def get_windows():

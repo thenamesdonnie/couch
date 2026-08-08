@@ -23,6 +23,28 @@ import urllib.parse
 import xbmcgui
 import xbmcplugin
 
+# Everything this file spawns - game-launch and the three ~/couch/tools
+# fetchers - is a host program, and under the Kodi 21 Flatpak the sandbox has
+# neither them nor the host python3 they run under. couchhost carries the
+# argv out through flatpak-spawn there and changes nothing on the apt build.
+# It is vendored beside this file because an addon that imports from ~/couch
+# breaks the day ~/couch moves; the copies are pinned byte-identical by
+# tools/test_couchhost.py. See docs/kodi21-flatpak-migration.md.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from couchhost import host_popen, host_read
+except Exception:                                            # noqa: BLE001
+    # The Games row is the console's front door. A missing helper costs the
+    # sandbox crossing, never the row.
+    host_popen = subprocess.Popen
+
+    def host_read(path, timeout=3.0):
+        try:
+            with open(path, encoding='utf-8', errors='replace') as handle:
+                return handle.read()
+        except OSError:
+            return None
+
 STEAMAPPS = os.path.expanduser('~/.steam/steam/steamapps')
 LIBCACHE = os.path.expanduser('~/.steam/debian-installation/appcache/librarycache')
 STEAM_ICON = os.path.expanduser('~/.steam/debian-installation/deb-installer/steam-launcher/icons/256/steam.png')
@@ -170,19 +192,19 @@ def _ach_refresh():
         if (not os.path.isfile(ACH_STAMP)
                 or time.time() - os.path.getmtime(ACH_STAMP) > 3600):
             open(ACH_STAMP, 'w').close()
-            subprocess.Popen(['python3', ACH_FETCHER], start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            host_popen(['python3', ACH_FETCHER], start_new_session=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             trophies = os.path.expanduser('~/couch/tools/ps4-trophies')
             if os.path.isfile(trophies):
-                subprocess.Popen(['python3', trophies, '--placeholder'],
-                                 start_new_session=True,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                host_popen(['python3', trophies, '--placeholder'],
+                           start_new_session=True,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
             warmer = os.path.expanduser('~/couch/tools/warm-loading-cards')
             if os.path.isfile(warmer):
-                subprocess.Popen(['python3', warmer], start_new_session=True,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                host_popen(['python3', warmer], start_new_session=True,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -194,8 +216,8 @@ def _hero_refresh():
                 or time.time() - os.path.getmtime(HERO_STAMP) > 24 * 3600):
             os.makedirs(HERO_DIR, exist_ok=True)
             open(HERO_STAMP, 'w').close()
-            subprocess.Popen(['python3', HERO_FETCHER], start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            host_popen(['python3', HERO_FETCHER], start_new_session=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -456,7 +478,7 @@ def games_route(info, params):
             pass
         # Detached: the launcher outlives this interpreter and always hands
         # the controller back, however the game ends.
-        subprocess.Popen(cmd, start_new_session=True)
+        host_popen(cmd, start_new_session=True)
         if handle >= 0:
             xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
@@ -469,12 +491,7 @@ def games_route(info, params):
     xbmcplugin.setContent(handle, 'movies')
 
     # A frozen game keeps its place on the row, marked, and picking it thaws it.
-    suspended = ''
-    try:
-        with open('/tmp/game-suspended') as f:
-            suspended = f.read().strip()
-    except OSError:
-        pass
+    suspended = (host_read('/tmp/game-suspended') or '').strip()
 
     _hero_refresh()
     _ach_refresh()
