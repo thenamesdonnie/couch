@@ -56,11 +56,18 @@ print('downstream present: %s (raw 0x%02x)' % (bool(present & 1), present))
 dp_type = (down[0] & 0x07)
 types = {0: 'DisplayPort', 1: 'VGA', 2: 'DVI', 3: 'HDMI', 4: 'others/no-EDID', 5: 'DP++'}
 print('port type         : %s (raw 0x%02x)' % (types.get(dp_type, dp_type), down[0]))
+print('detailed caps raw : %02x %02x %02x %02x' % (down[0], down[1], down[2], down[3]))
 if down[1]:
-    print('max TMDS clock    : %d MHz  <-- 600 here means the adapter is'
-          ' announcing an HDMI 2.0 ceiling' % (down[1] * 2.5))
-else:
-    print('max TMDS clock    : not reported at 0x081')
+    print('max TMDS clock    : %d MHz (legacy field; FRL below is what'
+          ' matters for HDMI 2.1)' % (down[1] * 2.5))
+# FRL: kernel reads the max FRL bandwidth from detailed-cap byte 2
+# (drm_dp_get_pcon_max_frl_bw). Non-zero = the adapter announces HDMI 2.1
+# FRL conversion to the driver; 0 = the driver will never try FRL.
+frl_field = (down[2] >> 2) & 0x7
+frl_gbps = {0: 0, 1: 9, 2: 18, 3: 24, 4: 32, 5: 40, 6: 45}.get(frl_field, -1)
+print('PCON max FRL      : %s Gbps (byte2 raw 0x%02x)  <-- 0 here means'
+      ' the driver sees no HDMI 2.1 path' % (frl_gbps, down[2]))
+print('DSC pass-through  : %s (0x060 bit1)' % bool(rd(f, 0x060, 1)[0] & 2))
 
 dsc = rd(f, 0x060, 16)
 print('\n== DSC (compression over the DP hop) ==')
