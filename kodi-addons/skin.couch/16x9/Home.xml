@@ -375,7 +375,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=7</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=8</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -549,6 +549,54 @@
 			</control>
 		</control>
 
+
+		<!-- paused game: the freeze-frame as a lifted card in the middle
+		     space (the backdrop is the same frame, scrimmed; this is the
+		     bright, framed "live card" that says the game is waiting). -->
+		<control type="group">
+			<visible>!String.IsEmpty(Container(9000).ListItem.Property(CouchPausedSnap))</visible>
+			<animation effect="fade" start="0" end="100" time="260" tween="sine" easing="out">Visible</animation>
+			<control type="image">
+				<left>1026</left>
+				<top>346</top>
+				<width>808</width>
+				<height>467</height>
+				<texture border="48" infill="false" colordiffuse="8ce8a849">couch/halo-glow.png</texture>
+			</control>
+			<control type="image">
+				<left>1040</left>
+				<top>360</top>
+				<width>780</width>
+				<height>439</height>
+				<texture background="true" diffuse="couch/mask-round.png">$INFO[Container(9000).ListItem.Property(CouchPausedSnap)]</texture>
+				<aspectratio aligny="center">scale</aspectratio>
+			</control>
+			<control type="image">
+				<left>1040</left>
+				<top>360</top>
+				<width>780</width>
+				<height>439</height>
+				<texture border="18" infill="false" colordiffuse="64ffffff">couch/ring.png</texture>
+			</control>
+			<control type="image">
+				<left>1066</left>
+				<top>742</top>
+				<width>150</width>
+				<height>40</height>
+				<texture border="20" colordiffuse="d8161d28">couch/pill.png</texture>
+			</control>
+			<control type="label">
+				<left>1066</left>
+				<top>742</top>
+				<width>150</width>
+				<height>40</height>
+				<font>Couch_Caption</font>
+				<textcolor>ffe8a849</textcolor>
+				<align>center</align>
+				<aligny>center</aligny>
+				<label>Paused</label>
+			</control>
+		</control>
 
 		<!-- launch flourish: the screen fades to black while the focused tile
 		     zooms (CouchLaunching, set by the games plugin, self-clearing).

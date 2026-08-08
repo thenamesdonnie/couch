@@ -498,6 +498,8 @@ def games_route(info, params):
                 art['thumb'] = tile
             if appid == suspended:
                 art.update(_paused_art(appid))
+                if art.get('fanart', '').startswith(PAUSED_DIR):
+                    item.setProperty('CouchPausedSnap', art['fanart'])
             item.setArt(art)
             item.setProperty('CouchPlaytime', _fmt_playtime(steam_pt.get(appid, 0)))
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
@@ -508,7 +510,9 @@ def games_route(info, params):
             li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
         else:
             title, eboot, icon, thumb = payload
-            item = xbmcgui.ListItem(title, offscreen=True)
+            paused4 = suspended and suspended == eboot
+            item = xbmcgui.ListItem(
+                f'{title} · paused' if paused4 else title, offscreen=True)
             serial0 = os.path.basename(os.path.dirname(eboot))
             art = {}
             if icon or thumb:
@@ -523,6 +527,11 @@ def games_route(info, params):
                 pic1 = os.path.join(os.path.dirname(eboot), 'sce_sys', 'pic1.png')
                 if os.path.isfile(pic1):
                     art['fanart'] = pic1
+            if paused4:
+                pa = _paused_art(eboot)
+                if pa:
+                    art.update(pa)
+                    item.setProperty('CouchPausedSnap', pa['fanart'])
             if art:
                 item.setArt(art)
             serial = os.path.basename(os.path.dirname(eboot))
