@@ -52,7 +52,13 @@
 						<top>60</top>
 						<width>108</width>
 						<height>108</height>
-						<texture border="48" colordiffuse="ff141821">couch/glyph.png</texture>
+						<!-- libtile, NOT glyph: glyph.png is the Library tile's 36x36 dot, and a
+						     9-slice border="48" on a 36px texture makes the corner regions
+						     overlap and stretch - which drew these as dog-bones, two lobes
+						     pinched in the middle (Donnie, 8 Aug: "the glyph boxes look
+						     weird"). libtile is a 220px filled rounded square and is scaled
+						     whole, so there is no 9-slice to get wrong. -->
+						<texture colordiffuse="ff141821">couch/libtile.png</texture>
 					</control>
 					<control type="image">
 						<left>66</left>
@@ -75,7 +81,7 @@
 						<top>52</top>
 						<width>124</width>
 						<height>124</height>
-						<texture border="52" colordiffuse="ff1d2430">couch/glyph.png</texture>
+						<texture colordiffuse="ff1d2430">couch/libtile.png</texture>
 					</control>
 					<control type="image">
 						<left>26</left>

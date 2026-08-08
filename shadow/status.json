@@ -1,7 +1,7 @@
 {
- "t": 1786227150.3813238,
- "pid": 1339329,
- "uptime_s": 2671.2,
+ "t": 1786228654.7104237,
+ "pid": 1421132,
+ "uptime_s": 784.3,
  "mode": "acting",
  "owns": [
   "gestures"
@@ -12,7 +12,7 @@
  "owns_file": "/home/ds2000/couch/couchd/owns.conf",
  "owns_warnings": [],
  "model_version": "134534b59118",
- "git": "8fba05090b13",
+ "git": "b1f17af6a94c",
  "acted": 0,
  "action_failures": 0,
  "action_skipped": 0,
@@ -33,7 +33,7 @@
    "ok": true,
    "events": 0,
    "detail": "0 node(s)",
-   "age_s": 1.2,
+   "age_s": 0.7,
    "stale": false
   },
   "flags": {
@@ -52,9 +52,9 @@
   },
   "kodi": {
    "ok": true,
-   "events": 110,
+   "events": 28,
    "detail": "joystick=True window=10000",
-   "age_s": 5.1,
+   "age_s": 9.8,
    "stale": false
   },
   "steam": {
@@ -73,20 +73,20 @@
   },
   "x11": {
    "ok": true,
-   "events": 165,
-   "detail": "top='Kodi' ev=165",
+   "events": 33,
+   "detail": "top='Kodi' ev=33",
    "age_s": 0.0,
    "stale": false
   }
  },
  "counts": {
-  "obs": 156,
+  "obs": 44,
   "daemon": 2,
-  "transition": 26,
+  "transition": 10,
   "invariant": 1,
-  "observer_blind": 4
+  "observer_blind": 1
  },
- "passes": 1585,
+ "passes": 409,
  "intents": 0,
  "invariant_violations": 0,
  "ps_presses": {
