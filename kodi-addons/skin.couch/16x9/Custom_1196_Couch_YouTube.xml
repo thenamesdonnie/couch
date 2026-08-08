@@ -202,15 +202,28 @@
 					<visible>!String.IsEmpty(ListItem.Duration) + !String.IsEmpty(ListItem.Duration(hh)) + !String.IsEqual(ListItem.Duration(hh),00)</visible>
 				</control>
 				<control type="label">
-					<left>332</left>
-					<top>216</top>
-					<width>102</width>
+					<left>360</left>
+					<top>214</top>
+					<width>84</width>
 					<height>38</height>
 					<font>Couch_Caption</font>
 					<textcolor>ffeceef1</textcolor>
-					<align>right</align>
+					<align>center</align>
 					<aligny>center</aligny>
 					<label>$INFO[ListItem.Duration]</label>
+					<visible>String.IsEmpty(ListItem.Duration(hh)) | String.IsEqual(ListItem.Duration(hh),00)</visible>
+				</control>
+				<control type="label">
+					<left>318</left>
+					<top>214</top>
+					<width>126</width>
+					<height>38</height>
+					<font>Couch_Caption</font>
+					<textcolor>ffeceef1</textcolor>
+					<align>center</align>
+					<aligny>center</aligny>
+					<label>$INFO[ListItem.Duration]</label>
+					<visible>!String.IsEmpty(ListItem.Duration(hh)) + !String.IsEqual(ListItem.Duration(hh),00)</visible>
 				</control>
 				<control type="label">
 					<left>16</left>
@@ -271,15 +284,28 @@
 					<visible>!String.IsEmpty(ListItem.Duration) + !String.IsEmpty(ListItem.Duration(hh)) + !String.IsEqual(ListItem.Duration(hh),00)</visible>
 				</control>
 				<control type="label">
-					<left>332</left>
-					<top>216</top>
-					<width>102</width>
+					<left>360</left>
+					<top>214</top>
+					<width>84</width>
 					<height>38</height>
 					<font>Couch_Caption</font>
 					<textcolor>ffeceef1</textcolor>
-					<align>right</align>
+					<align>center</align>
 					<aligny>center</aligny>
 					<label>$INFO[ListItem.Duration]</label>
+					<visible>String.IsEmpty(ListItem.Duration(hh)) | String.IsEqual(ListItem.Duration(hh),00)</visible>
+				</control>
+				<control type="label">
+					<left>318</left>
+					<top>214</top>
+					<width>126</width>
+					<height>38</height>
+					<font>Couch_Caption</font>
+					<textcolor>ffeceef1</textcolor>
+					<align>center</align>
+					<aligny>center</aligny>
+					<label>$INFO[ListItem.Duration]</label>
+					<visible>!String.IsEmpty(ListItem.Duration(hh)) + !String.IsEqual(ListItem.Duration(hh),00)</visible>
 				</control>
 				<control type="label">
 					<left>16</left>
