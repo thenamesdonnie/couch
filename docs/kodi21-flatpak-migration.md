@@ -245,6 +245,64 @@ evening.
   they fail identically at `e222beb`, before any of this work - and unrelated
   to the migration. Worth its own look.
 
+## It ran — 8 Aug 2026, ~19:30
+
+Donnie ran the sudo; the rest was executed here. Kodi 21.3-Omega is live on
+`skin.couch`, the TV never left standby.
+
+**What was verified, not assumed** (JSON-RPC + Kodi's own `TakeScreenshot`,
+which writes to `~/couch/recordings/skin-shots/` and so needs no TV):
+
+- All 13 in-sandbox checks pass, including the one this doc had marked
+  UNVERIFIED: **`--filesystem=/tmp` really does export the host `/tmp`.**
+  `couchhost`'s `flatpak-spawn` fallback was proved working separately, so
+  that override stays an optimisation.
+- The **databases migrated**: `MyVideos131.db`, `MyMusic83.db` and `TV46.db`
+  were created beside the untouched 121/82/40 originals — exactly the reason
+  the profile is a copy. Library intact: **88 movies, 30 TV shows**.
+  jellyfin-for-kodi logged its own "Omega database migration is complete".
+- The **Games row renders 8 tiles** through the sandbox, art and all, with
+  Bloodborne labelled **"· paused"** — which is `/tmp/game-suspended` being
+  read across the boundary, i.e. couchhost end to end.
+- **Achievements/trophies**: Elden Ring 42, Bloodborne 40 (the PS4 TRP
+  trophies, real names), Hollow Knight 63.
+- **Library page (1197)** renders Next up / Continue / New with artwork.
+  **YouTube (1196)** returns the subscriptions feed and the plugin root; the
+  sign-in tokens survived the copy. Its grid is empty for a few seconds on
+  first open — that is API latency, not a fault.
+- The **DualSense button map travelled** (`addon_data/peripheral.joystick/…/
+  DualSense_Wireless_Controller_13b_8a.xml`), both keymaps travelled,
+  `input.enablejoystick` is true, and `peripheral.joystick` initialised the
+  pad with its 13 buttons against `game.controller.default`.
+
+**Three things worth knowing:**
+
+1. **Kodi 20 wedged on the way out.** `Application.Quit` saved settings, then
+   hung in `CPythonInvoker: waiting on thread` at 110% CPU and never exited —
+   the Python-teardown hang this migration exists to remove, on its way out
+   the door. SIGKILL, as the runbook says. Nothing was lost (settings had
+   already been written).
+2. **Kodi 21 offered to install `game.controller.ps.dualanalog` and it was
+   DECLINED, deliberately.** Our two joystick keymaps bind with
+   `profile="game.controller.default"`, and a keymap whose profile does not
+   match the pad's controller profile never attaches — that is a documented
+   trap on this box. The pad works on `game.controller.default` as before.
+   The install would have failed anyway: at +1s from a cold start the addon
+   DB still held the **nexus** repository index inherited from the old
+   profile, so it resolved a `…/addons/nexus/…` URL. The index refreshed
+   itself to Omega (3.4.0) a minute later; nothing to fix.
+3. **`Custom_1196_Couch_HaloPicker.xml` and `Custom_1196_Couch_YouTube.xml`
+   both claim window 1196.** Kodi logs `id already in use` at every startup
+   and loads the YouTube one; the halo picker is dead and its own comment
+   calls it "temporary". Pre-existing, harmless, one line of log noise —
+   deleting it is a one-liner whenever somebody wants to.
+
+The three long-running consumers (`couch`, `couchd`, `pad-home`) were
+restarted onto the new resolver and confirmed reading the new profile —
+couchd logs `bindings: tap=home, double_tap=switcher, hold=context_menu`.
+**couchd's model fingerprint moved to `44d3542b8bba`** (gestureconf changed
+shape), which matters to whoever reads the shadow differ next.
+
 ## Verification ladder
 
 `tools/kodi21-migrate` runs these in order and refuses to continue on a

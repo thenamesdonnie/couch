@@ -112,17 +112,27 @@ def test_the_apt_profile_is_still_exactly_where_it_was(js):
 # =========================================================================
 # the default: inert until the switch is thrown
 # =========================================================================
-def test_no_flavour_file_means_apt_on_both_sides(js, monkeypatch, tmp_path):
-    """The live box today: neither file written. Both halves must answer with
-    the Kodi that has actually been running, or adopting this module would
-    itself be the outage."""
+def test_no_flavour_file_means_apt_on_both_sides(monkeypatch, tmp_path):
+    """A box that has never launched through the flavour-aware kodi-tv: both
+    halves must answer with the Kodi that has actually been running, or
+    adopting this module would itself be the outage.
+
+    Both halves get an INJECTED home. The first cut of this test read the
+    live files for the JS side and asserted they were absent - true when it
+    was written and false an hour later, the moment the migration actually
+    ran. A test that passes because of what the box happens to be doing
+    stops meaning anything the day the box does something else.
+    """
     monkeypatch.setattr(py, 'ACTIVE_FILE', str(tmp_path / 'nope'))
     monkeypatch.setattr(py, 'FLAVOUR_FILE', str(tmp_path / 'nope-either'))
     assert py.flavour() == 'apt'
     assert py.profile_dir() == os.path.join(HOME, '.kodi')
-    # the JS half reads the real files; on this box they are absent too
-    assert js['flavour'] == 'apt'
-    assert js['resolvedProfile'] == os.path.join(HOME, '.kodi')
+
+    home = tmp_path / 'empty-home'
+    (home / 'couch' / 'data').mkdir(parents=True)
+    out = _node({'HOME': str(home)})
+    assert out['flavour'] == 'apt'
+    assert out['resolvedProfile'] == str(home / '.kodi')
 
 
 def test_the_record_beats_the_choice(py_files):

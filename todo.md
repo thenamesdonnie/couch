@@ -101,34 +101,51 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (updated 8 Aug 2026 ~20:00 — Kodi 21 staged, waiting on one sudo)
+## ▶ Resume here (updated 8 Aug 2026 ~19:50 — KODI 21 IS LIVE)
 
-**THE KODI 21 MIGRATION IS BUILT AND TESTED. It needs one root command and one
-evening in front of the TV.** Everything that could be done without root is
-done and committed (2df8cf9, 74ed172, 5038b27, e18c1c5). Plan, reasoning,
-override table, retirement criteria: **`docs/kodi21-flatpak-migration.md`**.
+**THE MIGRATION IS DONE. Kodi 21.3-Omega is running on skin.couch.** Donnie
+ran `sudo apt install flatpak`; everything else executed the same evening,
+with the TV in standby throughout. Full account, including what was verified
+and how: **`docs/kodi21-flatpak-migration.md`**.
 
-**DONNIE'S PART — one root command, then one script:**
+Verified live, not assumed: library intact (88 films, 30 shows, databases
+migrated to MyVideos131 beside the untouched 121); Games row renders 8 tiles
+with Bloodborne reading "· paused" (so `/tmp/game-suspended` crosses the
+sandbox); achievements/trophies (ER 42, Bloodborne 40, HK 63); Library page
+1197 and YouTube 1196; DualSense button map and both keymaps travelled.
+
+**ROLLBACK, if the evening goes wrong:**
 ```
-sudo apt install -y flatpak
+cd ~/couch && couchd/.venv/bin/python tools/kodi21-migrate rollback
 ```
-then (no root from here on):
-```
-cd ~/couch && couchd/.venv/bin/python tools/kodi21-migrate preflight
-couchd/.venv/bin/python tools/kodi21-migrate install     # ~2.5 GB, the runtime too
-couchd/.venv/bin/python tools/kodi21-migrate override
-```
-Then, WITH KODI STOPPED (the last two refuse otherwise — copying a live
-profile catches its sqlite mid-write):
-```
-couchd/.venv/bin/python tools/kodi21-migrate profile
-couchd/.venv/bin/python tools/kodi21-migrate freeze-skin
-couchd/.venv/bin/python tools/kodi21-migrate verify
-couchd/.venv/bin/python tools/kodi21-migrate switch    # then relaunch kodi-tv
-```
-`rollback` is the same thing backwards and uninstalls nothing.
-`freeze-skin` edits `kodi-addons/skin.couch/addon.xml` in the repo (5.16.0 ->
-5.17.0) — commit that afterwards.
+then restart Kodi. Nothing was uninstalled; `~/.kodi` is untouched and has its
+own frozen Nexus copy of the skin.
+
+**STILL NEEDS DONNIE'S EYES ON THE TV** — nothing else can settle these:
+picture, audio over eARC, 4K120; the DualSense actually driving the UI (the
+map travelled and the pad enumerates with its 13 buttons, but no synthetic
+press proves the feel); a film; a game launch and a suspend/resume cycle; and
+the first deliberate `ReloadSkin()`, which is the test that retires the
+never-live-switch-skins rule.
+
+**THREE THINGS TO KNOW:**
+1. Kodi 21 offered to install `game.controller.ps.dualanalog` and it was
+   **declined on purpose** — our keymaps bind `profile="game.controller.default"`
+   and a mismatched controller profile means the keymap never attaches. If the
+   prompt reappears, say no.
+2. `Custom_1196_Couch_HaloPicker.xml` and `Custom_1196_Couch_YouTube.xml` both
+   claim window 1196. YouTube wins, the halo picker is dead and its own comment
+   says "temporary". One error line per boot; deleting it is a one-liner.
+3. **couchd's model fingerprint is now `44d3542b8bba`** (gestureconf changed
+   shape) — the shadow differ compares against it.
+
+**NOT RETIRED, deliberately.** The kodi-tv crash-restart loop,
+`reuselanguageinvoker`, the never-ReloadSkin rule and jellyfin's 45s
+`startupDelay` all still stand, each with a written retirement criterion in
+the doc. Ironically Kodi **20** wedged on its way out during this very
+migration (`CPythonInvoker: waiting on thread`, 110% CPU, needed SIGKILL) —
+which is exactly the bug being escaped, and exactly why "we're on 21 now" is
+not evidence. Give it two weeks of cold boots first.
 
 **THE THREE FACTS THAT DECIDED THE DESIGN** (all from primary sources, not
 memory — they are the ones a fresh session would get wrong):
