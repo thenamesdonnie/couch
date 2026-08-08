@@ -45,3 +45,10 @@ shadow/.intents-archive-state.json
 # Pre-baked game loading cards (tools/warm-loading-cards): derived art, several
 # MB per game, regenerated from the heroes/logos on demand.
 data/loading-cards/
+
+# Which Kodi this particular box launches, and which one it last launched.
+# Machine state, not a project decision: kodi-flavour-active is rewritten on
+# every single launch, and a checkout on another box must not inherit either.
+data/kodi-flavour
+data/kodi-flavour-active
+shadow/couchd.lock
