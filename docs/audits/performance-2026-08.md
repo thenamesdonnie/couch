@@ -104,7 +104,7 @@ reason not to retire that flag by reflex).
   gesture sweep and a differ evening) and the game-pids/xinput round-trip
   consolidation.
 
-**[C] decided**
+**[C] decided — and one of them then shipped**
 
 - **The Games row still does not rebuild on Home.** The 5 Aug limitation in
   `tools/kodi-refresh-games` predates the Stagelight home, so it was re-tested
@@ -115,8 +115,17 @@ reason not to retire that flag by reflex).
   state and the "· paused" label wait until the player leaves the row and comes
   back. A `<content>` container **does** rebuild when its resolved URL string
   changes (proven live, ~1 s, while unfocused), so making `Home.xml:386`'s
-  hand-bumped `&v=8` dynamic would work — left as [C] because a rebuild may
-  reset row focus, which wants Donnie's eyes.
+  hand-bumped `&v=8` dynamic would work.
+
+  **SHIPPED the same evening**, once Donnie freed Bloodborne for testing.
+  Measured with a real quit: `game-launch quit` cleared the flag at **107 ms**
+  and deleted the freeze-frames at **164 ms**, while the row went on reading
+  "· paused" and drawing a card whose image file no longer existed — Kodi had
+  cached the texture. It was not lag: the row never corrected itself at all.
+  The content URL now carries `$INFO[Window(Home).Property(CouchGamesRev)]`
+  and `pause-snap` stamps it on every capture and every clear. The focus worry
+  was the only reason to hesitate and it was wrong — verified in both
+  directions with focus parked on item #4, which stayed on item #4.
 
 **[D] human**
 
