@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""Freeze-frame for a suspended game: grab the game window's LAST RENDERED
+frame and keep it as that game's artwork while it is paused, so the phone's
+switcher and the Kodi home row show where the player left off instead of a
+generic capsule.
+
+Usage:
+  pause-snap <appid> [reason]     capture the game window now
+  pause-snap --clear [appid]      drop the frame(s) for one appid, or all
+
+Why this works at all, and why the ORDER of the suspend does not matter:
+xfwm4 compositing is on, so every mapped window is redirected to an offscreen
+pixmap the X server owns. `import -window <id>` reads that pixmap, which means
+a window that is fully covered by Kodi - and whose client is already SIGSTOPped
+- still hands back its real last frame, not black. Verified on this box
+(4 Aug 2026): a covered, stopped window captured PIXEL-IDENTICAL to the same
+window unobscured and running. So callers may snap before or after the STOP
+and before or after raising Kodi; they snap after the STOP purely so the freeze
+itself stays instant.
+
+Purely cosmetic, and treated as such: every failure path here is a log line in
+/tmp/pause-snap.log and a non-zero exit that both callers throw away. A suspend
+must never wait on, or be broken by, a screenshot.
+
+Filenames carry the capture time (<appid>__<epoch_ms>.jpg) because Kodi's
+texture cache re-checks a local file's hash only about once a day: a stable
+filename would leave the Games row showing the frame from the LAST time that
+game was paused. A fresh name is a fresh url to every cache in the chain. Only
+the newest pair per appid is kept, so the directory stays bounded at two small
+jpgs per paused game (and in practice one game is paused at a time).
+
+Two files per capture:
+  <appid>__<ms>.jpg       960px-wide 16:9 frame - phone switcher row, Kodi fanart
+  <appid>__<ms>.tile.jpg  600x900 centre crop - the portrait poster grid tile
+
+Test seams (used by the synthetic end-to-end; unset in normal operation):
+  PAUSE_SNAP_WID   capture this window id instead of resolving a game window
+  PAUSE_SNAP_DIR   write here instead of ~/couch/data/paused
+  PAUSE_SNAP_PIDS  use this pid set instead of running game-pids
+"""
+import os
+import re
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser('~')
+DIR = os.environ.get('PAUSE_SNAP_DIR') or os.path.join(HOME, 'couch/data/paused')
+GAME_PIDS = os.path.join(HOME, '.local/bin/game-pids')
+# The window walk has ONE home - the couch server's X helper, which is also
+# where game-launch's pid->window matching is mirrored from. Not duplicated
+# here: if ~/couch ever moves, the right outcome is no freeze-frame, not a
+# second copy of the matcher drifting out of step with the real one.
+XINPUT = os.path.join(HOME, 'couch/server/xinput.py')
+# Kodi caches a plugin directory for as long as the container lives, so the
+# Games row keeps showing the old tile until the player leaves it and comes
+# back. This helper asks Kodi to rebuild the row, but only where that is free
+# (see its docstring for what it can and cannot reach). Purely cosmetic, like
+# everything else here: it is spawned detached and never waited on.
+REFRESH = os.path.join(HOME, 'couch/tools/kodi-refresh-games')
+LOG = '/tmp/pause-snap.log'
+
+IMPORT_TIMEOUT = 2      # seconds; the measured cost is ~0.05s
+RESOLVE_TIMEOUT = 2
+TILE = '600x900'        # the portrait poster grid Copacetic draws the row in
+WIDE = '960x960>'       # shrink-only: never upscale a small window
+
+# A frame is only worth keeping if there is something in it. xfwm4 redirects
+# every MANAGED window to an offscreen pixmap, which is why a covered, frozen
+# game still captures (verified on this box against a real Proton title). But
+# /general/unredirect_overlays is on, so a game that puts up an
+# OVERRIDE-REDIRECT fullscreen window instead is drawn straight to the front
+# buffer and could come back black once something covers it. Rather than hang
+# a black tile on the Games row, treat that as no frame at all: the game keeps
+# its normal artwork, which is exactly what an unpaused game shows.
+#
+# The bar is deliberately on the floor. A real dark frame clears it easily -
+# the darkest thing measured here, a game's black-background EULA screen, came
+# in at mean 0.031 / stddev 0.147, an order of magnitude above both numbers.
+BLACK_MEAN = 0.004
+BLACK_STDDEV = 0.004
+
+
+def say(msg):
+    try:
+        with open(LOG, 'a') as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
+
+
+def safe(appid):
+    """A filename that survives whatever /tmp/game-session holds - a Steam
+    appid, the word 'game', or a shadPS4 eboot.bin path."""
+    return re.sub(r'[^A-Za-z0-9._-]', '_', str(appid))[:100] or 'game'
+
+
+def env():
+    e = dict(os.environ)
+    e.setdefault('DISPLAY', ':0')
+    e.setdefault('XAUTHORITY', os.path.join(HOME, '.Xauthority'))
+    return e
+
+
+def run(argv, timeout):
+    return subprocess.run(argv, capture_output=True, text=True,
+                          timeout=timeout, env=env())
+
+
+def is_black(path):
+    """True when the capture carries no picture at all (see BLACK_MEAN)."""
+    try:
+        r = run(['identify', '-format', '%[fx:mean] %[fx:standard_deviation]',
+                 path], IMPORT_TIMEOUT)
+        mean, sd = (float(v) for v in r.stdout.split()[:2])
+    except (ValueError, IndexError, OSError, subprocess.SubprocessError):
+        return False        # cannot tell: keep the frame, it is only a picture
+    return mean < BLACK_MEAN and sd < BLACK_STDDEV
+
+
+KODI_SEND = '/usr/bin/kodi-send'
+
+
+def announce_pause(frame_path):
+    """Tell the skin a suspend JUST happened, with the frame to fly.
+
+    Home.xml animates this frame from fullscreen into the paused card (the
+    PS5 minimise, Donnie 8 Aug 2026). Self-clearing via AlarmClock so a
+    missed animation never leaves a stale overlay. Cosmetic: failures are a
+    log line, the suspend never waits."""
+    if os.environ.get('PAUSE_SNAP_DIR'):
+        return
+    try:
+        with open(os.devnull, 'wb') as null:
+            for action in (
+                    f'SetProperty(CouchJustPausedSnap,{frame_path},home)',
+                    'SetProperty(CouchJustPaused,1,home)',
+                    'AlarmClock(couchpauseclear,'
+                    'ClearProperty(CouchJustPaused,home),00:00:03,silent)'):
+                subprocess.Popen([KODI_SEND, '--action', action],
+                                 stdout=null, stderr=null, stdin=null,
+                                 start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'pause announce not sent: {e}')
+
+
+def nudge_kodi():
+    """Ask the Games row to rebuild, and do not care whether it can.
+
+    TWO routes, because one of them does not reach the home screen.
+
+    `kodi-refresh-games` issues Container.Refresh, which rebuilds the Games
+    LISTING (the full-window one) but is a no-op on Home - that window is
+    KEEP_IN_MEMORY, so there is no active container there for the builtin to
+    act on. Re-verified 8 Aug 2026 against the current home; the limitation is
+    real and is not going away.
+
+    So the home row is nudged the other way: a container DOES rebuild when its
+    resolved <content> string changes, and skin.couch's row ends in
+    `$INFO[Window(Home).Property(CouchGamesRev)]`. Stamping a new value here
+    changes the URL and the row re-lists itself, unfocused, in about a second.
+
+    Without this, quitting a game left the tile reading "- paused" and the card
+    drawing a freeze-frame whose file had been deleted 164ms earlier - measured,
+    on the television. The row simply never corrected itself until the player
+    left it and came back.
+
+    Detached and unwaited: the caller of this script has a frozen game and a
+    controller handoff to finish, and must never queue behind a screenshot's
+    idea of housekeeping.
+    """
+    if os.environ.get('PAUSE_SNAP_DIR'):
+        return              # a test rig's frames are not on anybody's TV
+    try:
+        with open(os.devnull, 'wb') as null:
+            subprocess.Popen([REFRESH], stdout=null, stderr=null,
+                             stdin=null, start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'kodi refresh not sent: {e}')
+    # A monotonic-enough revision: the row only cares THAT it changed.
+    try:
+        subprocess.Popen(
+            [KODI_SEND, '--action',
+             'SetProperty(CouchGamesRev,%d,home)' % int(time.time() * 1000)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'games-row revision not stamped: {e}')
+
+
+def prune(name, keep=()):
+    """Leave only `keep` for this appid: one capture per game, overwritten."""
+    prefix = name + '__'
+    try:
+        entries = os.listdir(DIR)
+    except OSError:
+        return
+    for entry in entries:
+        if entry.startswith(prefix) and entry not in keep:
+            try:
+                os.remove(os.path.join(DIR, entry))
+            except OSError:
+                pass
+
+
+def clear(appid=None):
+    """Resume, quit and the watcher's stale-flag repair all land here: a
+    freeze-frame outlives its pause by nothing."""
+    try:
+        entries = os.listdir(DIR)
+    except OSError:
+        return 0
+    prefix = (safe(appid) + '__') if appid else ''
+    gone = 0
+    for entry in entries:
+        if not entry.endswith('.jpg') or not entry.startswith(prefix):
+            continue
+        try:
+            os.remove(os.path.join(DIR, entry))
+            gone += 1
+        except OSError:
+            pass
+    if gone:
+        say(f'cleared {gone} frame(s) for {appid or "all"}')
+        nudge_kodi()        # the row should stop showing a frame that is gone
+    return gone
+
+
+def game_pids():
+    if os.environ.get('PAUSE_SNAP_PIDS'):
+        return os.environ['PAUSE_SNAP_PIDS'].split()
+    try:
+        return run([GAME_PIDS], RESOLVE_TIMEOUT).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def game_window():
+    """The game's own window id, resolved exactly the way game-launch's
+    focus_game resolves what to raise (_NET_WM_PID in the game's pid set, or
+    Proton's steam_app_<appid> class, biggest match wins)."""
+    if os.environ.get('PAUSE_SNAP_WID'):
+        return os.environ['PAUSE_SNAP_WID']
+    out = run(['python3', XINPUT, 'gamewin'] + game_pids(), RESOLVE_TIMEOUT)
+    wid = out.stdout.strip()
+    if out.returncode != 0 or not wid:
+        raise RuntimeError((out.stderr or 'no game window').strip())
+    return wid
+
+
+def capture(appid):
+    name = safe(appid)
+    os.makedirs(DIR, exist_ok=True)
+    wid = game_window()
+    stamp = int(time.time() * 1000)
+    wide, tile = f'{name}__{stamp}.jpg', f'{name}__{stamp}.tile.jpg'
+    # Written under a dot-name and renamed into place: readers (the phone, the
+    # Kodi row) glob this directory and must never pick up a half-written jpg.
+    tmp_wide = os.path.join(DIR, f'.snap-{os.getpid()}.jpg')
+    tmp_tile = os.path.join(DIR, f'.snap-{os.getpid()}.tile.jpg')
+    try:
+        r = run(['import', '-window', wid, '-resize', WIDE, '-quality', '80',
+                 tmp_wide], IMPORT_TIMEOUT)
+        if r.returncode != 0 or not os.path.getsize(tmp_wide):
+            raise RuntimeError((r.stderr or 'import produced nothing').strip())
+        if is_black(tmp_wide):
+            raise RuntimeError(f'frame is blank (window {wid} unredirected?)')
+        # The row is a portrait poster grid, so the landscape frame is centre
+        # cropped to 2:3 for the tile; the full frame stays for fanart and the
+        # phone. A convert failure costs the tile, never the frame.
+        t = run(['convert', tmp_wide, '-resize', TILE + '^', '-gravity',
+                 'center', '-extent', TILE, '-quality', '80', tmp_tile],
+                IMPORT_TIMEOUT)
+        keep = [wide]
+        os.replace(tmp_wide, os.path.join(DIR, wide))
+        if t.returncode == 0 and os.path.exists(tmp_tile):
+            os.replace(tmp_tile, os.path.join(DIR, tile))
+            keep.append(tile)
+        else:
+            say(f'tile crop failed for {appid} (frame kept)')
+        prune(name, keep=keep)
+        say(f'{appid}: captured {wid} -> {wide}')
+        announce_pause(os.path.join(DIR, wide))
+        nudge_kodi()        # frames are on disk; the row may now rebuild
+        return 0
+    finally:
+        for p in (tmp_wide, tmp_tile):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def main(argv):
+    if not argv:
+        print(__doc__.split('\n\n')[1].strip(), file=sys.stderr)
+        return 2
+    if argv[0] == '--clear':
+        clear(argv[1] if len(argv) > 1 else None)
+        return 0
+    appid, reason = argv[0], (argv[1] if len(argv) > 1 else 'suspend')
+    try:
+        return capture(appid)
+    except Exception as e:
+        # Cosmetic feature, load-bearing caller: the suspend that called this
+        # has already frozen the game and is on its way to handing Kodi the
+        # pad. Say what happened and get out of its way.
+        say(f'{appid} ({reason}): no frame - {e}')
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
