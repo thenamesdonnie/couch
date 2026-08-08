@@ -502,9 +502,13 @@ def games_route(info, params):
             if tile:
                 art['thumb'] = tile
             if appid == suspended:
-                art.update(_paused_art(appid))
-                if art.get('fanart', '').startswith(PAUSED_DIR):
-                    item.setProperty('CouchPausedSnap', art['fanart'])
+                pa = _paused_art(appid)
+                if pa:
+                    # the card owns the freeze-frame; the backdrop stays on
+                    # the hero art (two copies of the same frame said nothing)
+                    item.setProperty('CouchPausedSnap', pa['fanart'])
+                    pa.pop('fanart', None)
+                    art.update(pa)
             item.setArt(art)
             item.setProperty('CouchPlaytime', _fmt_playtime(steam_pt.get(appid, 0)))
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
@@ -540,8 +544,9 @@ def games_route(info, params):
             if paused4:
                 pa = _paused_art(eboot)
                 if pa:
-                    art.update(pa)
                     item.setProperty('CouchPausedSnap', pa['fanart'])
+                    pa.pop('fanart', None)
+                    art.update(pa)
             if art:
                 item.setArt(art)
             serial = os.path.basename(os.path.dirname(eboot))
