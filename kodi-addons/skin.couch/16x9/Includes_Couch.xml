@@ -89,4 +89,9 @@
 		</definition>
 	</include>
 
+
+	<variable name="Couch_Ach_Tint">
+		<value condition="!String.IsEmpty(ListItem.Property(unlocked))">ffffffff</value>
+		<value>50ffffff</value>
+	</variable>
 </includes>

@@ -291,6 +291,7 @@
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onleft>9001</onleft>
 			<onup>9101</onup>
+			<ondown>9500</ondown>
 			<itemlayout width="120" height="290">
 				<control type="image">
 					<left>30</left>
@@ -348,7 +349,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=4</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=5</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -425,6 +426,64 @@
 			<textcolor>b4eceef1</textcolor>
 			<label>Films · TV · YouTube · everything you have</label>
 			<visible>Control.HasFocus(9001)</visible>
+		</control>
+
+		<!-- achievements shelf: the focused game's Steam achievements as icon
+		     tiles (Down from the game row drops in). Unlocked bright, locked
+		     dimmed; focused one shows its name + description. -->
+		<control type="group">
+			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Property(CouchAchievements))</visible>
+			<control type="label">
+				<left>96</left>
+				<top>908</top>
+				<width>900</width>
+				<height>34</height>
+				<font>Couch_Caption</font>
+				<textcolor>ff8a93a0</textcolor>
+				<label>$INFO[Container(9000).ListItem.Property(CouchAchievements)]$INFO[Container(9500).ListItem.Label,   ·   ]</label>
+			</control>
+			<control type="label">
+				<left>96</left>
+				<top>942</top>
+				<width>1200</width>
+				<height>30</height>
+				<font>Couch_Caption</font>
+				<textcolor>b4eceef1</textcolor>
+				<label>$INFO[Container(9500).ListItem.Property(desc)]</label>
+				<visible>Control.HasFocus(9500)</visible>
+			</control>
+			<control type="list" id="9500">
+				<left>96</left>
+				<top>980</top>
+				<width>1740</width>
+				<height>92</height>
+				<orientation>horizontal</orientation>
+				<scrolltime tween="sine" easing="out">200</scrolltime>
+				<onup>9000</onup>
+				<ondown>9500</ondown>
+				<itemlayout width="80" height="92">
+					<control type="image">
+						<left>8</left>
+						<top>8</top>
+						<width>64</width>
+						<height>64</height>
+						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<colordiffuse>$VAR[Couch_Ach_Tint]</colordiffuse>
+					</control>
+				</itemlayout>
+				<focusedlayout width="80" height="92">
+					<control type="image">
+						<left>0</left>
+						<top>0</top>
+						<width>80</width>
+						<height>80</height>
+						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<bordertexture border="18" infill="false" colordiffuse="e6ffffff">couch/ring.png</bordertexture>
+						<bordersize>3</bordersize>
+					</control>
+				</focusedlayout>
+				<content target="videos">plugin://script.copacetic.helper/?info=couch_achievements&amp;appid=$INFO[Container(9000).ListItem.Property(appid)]</content>
+			</control>
 		</control>
 
 	</controls>

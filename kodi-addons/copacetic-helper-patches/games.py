@@ -437,6 +437,7 @@ def games_route(info, params):
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
             if ach.get(appid):
                 item.setProperty('CouchAchievements', ach[appid] + ' achievements')
+            item.setProperty('appid', appid)
             li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
         else:
             title, eboot, icon, thumb = payload

@@ -24,7 +24,53 @@ HOME = os.path.expanduser('~')
 ENV = os.path.join(HOME, 'couch/.env')
 STEAMAPPS = os.path.join(HOME, '.steam/steam/steamapps')
 CACHE = os.path.join(HOME, '.local/share/game-tiles/achievements.json')
+DETAIL_DIR = os.path.join(HOME, '.local/share/game-tiles/achievements')
 API = 'https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/'
+SCHEMA = 'https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/'
+
+
+def _get(url):
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def fetch_detail(appid, key, sid):
+    """Merge schema (names/icons/descriptions) with the player's unlock state
+    into a list the achievements window renders. Sorted unlocked-first, then
+    by name. Returns (got, total) for the count cache, or None if blocked."""
+    sch = _get('%s?key=%s&appid=%s' % (SCHEMA, key, appid))
+    ply = _get('%s?appid=%s&key=%s&steamid=%s' % (API, appid, key, sid))
+    if not sch or not ply:
+        return None
+    stats = (sch.get('game', {}).get('availableGameStats', {}) or {})
+    schema = stats.get('achievements', [])
+    pstats = ply.get('playerstats', {})
+    if not pstats.get('success') or not schema:
+        return None
+    state = {a['apiname']: a for a in pstats.get('achievements', [])}
+    rows, got = [], 0
+    for a in schema:
+        ps = state.get(a['name'], {})
+        unlocked = bool(ps.get('achieved'))
+        got += 1 if unlocked else 0
+        hidden = a.get('hidden') and not unlocked
+        rows.append({
+            'name': a.get('displayName', a['name']),
+            'desc': 'Hidden achievement' if hidden else a.get('description', ''),
+            'icon': a.get('icon') if unlocked else a.get('icongray'),
+            'unlocked': unlocked,
+            'unlocktime': ps.get('unlocktime', 0),
+        })
+    rows.sort(key=lambda r: (not r['unlocked'], -r['unlocktime'], r['name'].lower()))
+    os.makedirs(DETAIL_DIR, exist_ok=True)
+    tmp = os.path.join(DETAIL_DIR, '%s.json.part' % appid)
+    json.dump(rows, open(tmp, 'w'))
+    os.replace(tmp, os.path.join(DETAIL_DIR, '%s.json' % appid))
+    return '%d/%d' % (got, len(schema))
 
 
 def env():
@@ -77,7 +123,7 @@ def main():
         pass
     changed = 0
     for appid in installed_appids():
-        v = fetch(appid, key, sid)
+        v = fetch_detail(appid, key, sid)
         if v is not None and out.get(appid) != v:
             out[appid] = v
             changed += 1
