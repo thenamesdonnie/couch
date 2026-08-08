@@ -219,11 +219,14 @@ def test_an_unbound_hold_lets_the_long_hold_through():
     assert c.bindings['hold'] == 'none'
 
 
-def test_a_bound_double_tap_suppresses_the_tap():
+def test_a_bound_double_tap_no_longer_suppresses_the_tap():
+    """Since 8 Aug 2026 both may be bound: the dispatchers defer the tap by
+    double_tap_seconds instead of dropping it (Donnie accepted the latency),
+    so the config passes both through untouched and without warnings."""
     c = conf(**{'gesture.tap': 'power_menu'})       # double_tap defaults bound
-    assert c.bindings['tap'] == 'none'
-    assert c.requested['tap'] == 'power_menu'
-    assert any('tap' in w for w in c.warnings)
+    assert c.bindings['tap'] == 'power_menu'
+    assert c.bindings['double_tap'] == 'switcher'
+    assert not any('tap=' in w for w in c.warnings)
 
 
 def test_an_unbound_double_tap_lets_the_tap_through():

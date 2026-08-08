@@ -1328,6 +1328,10 @@ def watch(paths):
     last_tap_at = None      # monotonic release of a tap that did nothing on
     #                         its own: the only kind that can pair into a
     #                         double-tap (see gesture.py)
+    pending_tap = None      # monotonic deadline for a deferred BOUND tap: with
+    #                         the double-tap also bound, a tap waits out the
+    #                         window before firing (Donnie accepted the latency,
+    #                         8 Aug 2026); cleared by any stronger gesture.
     pending_resume = None   # monotonic deadline for a deferred tap-resume: set
     #                         only while a game is paused AND the double-tap is
     #                         bound, so a double-tap there opens the switcher
@@ -1401,6 +1405,7 @@ def watch(paths):
                                 pending_handoff = None
                                 last_tap_at = None
                                 pending_resume = None
+                                pending_tap = None
                                 act('hold_release', c)
                             elif fired or long_fired:
                                 # A bound hold (or long hold) already ran and
@@ -1409,6 +1414,7 @@ def watch(paths):
                                 # is the old do-nothing branch until bound.
                                 last_tap_at = None
                                 pending_resume = None
+                                pending_tap = None
                                 act('hold_release', c)
                             elif was_tap and os.path.exists(SUSPENDED):
                                 # A tap on a paused game resumes it - unless
@@ -1435,10 +1441,34 @@ def watch(paths):
                                 else:
                                     resume_game()
                                     last_tap_at = None
+                            elif was_tap and c.action_for('tap') != 'none':
+                                # A BOUND tap with the double-tap also bound
+                                # cannot yet know it is the whole gesture, so
+                                # it waits out the window - the same deferral
+                                # (and the same decision function) as the
+                                # paused resume above. Donnie accepted the
+                                # latency on 8 Aug 2026 to keep both.
+                                what = paused_tap_decision(
+                                    pending_tap is not None,
+                                    None if last_tap_at is None
+                                    else pressed_at - last_tap_at,
+                                    released_at - pressed_at,
+                                    c.action_for('double_tap') != 'none',
+                                    c.double_tap_seconds, hold_s)
+                                if what == 'double_tap':
+                                    pending_tap = None
+                                    last_tap_at = None
+                                    act('double_tap', c)
+                                elif what == 'defer':
+                                    pending_tap = (released_at
+                                                   + c.double_tap_seconds)
+                                    last_tap_at = released_at
+                                else:   # 'resume' = fire the tap now
+                                    last_tap_at = released_at
+                                    act('tap', c)
                             elif was_tap:
-                                # A tap that did nothing: either the opening
-                                # half of a double-tap, or the closing one.
-                                # The gap is measured release -> next press.
+                                # Tap unbound: the old branch - either half of
+                                # a double-tap, gap measured release -> press.
                                 if (c.action_for('double_tap') != 'none'
                                         and is_double_tap(
                                             None if last_tap_at is None
@@ -1449,11 +1479,6 @@ def watch(paths):
                                     act('double_tap', c)
                                 else:
                                     last_tap_at = released_at
-                                    # ...and whatever a plain tap is bound to.
-                                    # gestureconf only allows this with the
-                                    # double-tap unbound, so a real double can
-                                    # never fire it on its way through.
-                                    act('tap', c)
                             else:
                                 last_tap_at = None  # a hold is never half a double
                             pressed_at = None
@@ -1462,6 +1487,7 @@ def watch(paths):
                     and hold_ready(c.action_for('hold'))):
                 fired = True
                 last_tap_at = None  # a hold cancels any half-formed double
+                pending_tap = None
                 pending_resume = None   # ...and any deferred resume with it
                 if act('hold', c, defer_handoff=True):
                     pending_handoff = time.monotonic()
@@ -1478,6 +1504,11 @@ def watch(paths):
             # No second tap came inside the double-tap window, so the first one
             # meant what a tap on a paused game has always meant. The flag is
             # re-read: a reconcile (or the phone) may have resumed in between.
+            if (pending_tap is not None and pressed_at is None
+                    and time.monotonic() >= pending_tap):
+                pending_tap = None
+                last_tap_at = None
+                act('tap', c)
             if (pending_resume is not None
                     and time.monotonic() >= pending_resume):
                 pending_resume = None

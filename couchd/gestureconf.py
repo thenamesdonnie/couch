@@ -239,11 +239,11 @@ def suppress(bindings):
             f"long_hold={out['long_hold']} is ignored while hold is bound "
             f"({out['hold']}): the hold fires first and spends the press")
         out['long_hold'] = 'none'
-    if out.get('double_tap', 'none') != 'none' and out.get('tap', 'none') != 'none':
-        warnings.append(
-            f"tap={out['tap']} is ignored while double_tap is bound "
-            f"({out['double_tap']}): every double-tap would fire it on the way")
-        out['tap'] = 'none'
+    # tap + double_tap may BOTH be bound since 8 Aug 2026 (Donnie: "i don't
+    # mind pressing to have a bit of a delay to wait for a double tap"): the
+    # dispatchers defer a bound tap by double_tap_seconds and only fire it
+    # when no second press arrives, so a double can no longer fire the tap on
+    # its way through. The old suppression rule is gone with the hazard.
     return out, tuple(warnings)
 
 

@@ -41,7 +41,7 @@
 
 		<!-- top strip: pad battery, search, settings, power (PS5 corner) -->
 		<control type="group">
-			<left>1370</left>
+			<left>1290</left>
 			<top>52</top>
 			<width>75</width>
 			<height>40</height>

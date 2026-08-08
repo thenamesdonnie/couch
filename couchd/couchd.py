@@ -1732,12 +1732,16 @@ def reconcile(o):
     if g == 'double-tap':
         out += action_intents(o, 'double_tap', appid, running)
 
-    if g == 'tap-wait' and gesture.is_tap(o.press_duration, o.hold_seconds):
-        # A tap that did nothing else. gestureconf guarantees this is bound
-        # only when double_tap is not, so a real double-tap can never fire the
-        # tap action on its way through; with the default bindings (tap=none)
-        # nothing is emitted here at all. The tap that RESUMES a paused game
-        # is not this: it is state logic, in 'tap-resume' below.
+    if (g == 'tap-wait' and gesture.is_tap(o.press_duration, o.hold_seconds)
+            and (o.binding('double_tap') == 'none'
+                 or g_double_window_over(o))):
+        # A tap that did nothing else. With the double-tap unbound it fires at
+        # once; with both bound it fires only when the window shuts with no
+        # second press - the same deferral the watcher runs (Donnie accepted
+        # the latency, 8 Aug 2026), mirrored level-based here: while the
+        # window is open this guard is false, once it shuts the intent emits
+        # and its cooldown dedupes the repeat passes. The tap that RESUMES a
+        # paused game is not this: it is state logic, in 'tap-resume' below.
         #
         # The is_tap() re-check is not redundant. With `hold` bound to Nothing
         # a long press never leaves 'down' for 'hold-fired', so it releases
