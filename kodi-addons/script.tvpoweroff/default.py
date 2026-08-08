@@ -237,7 +237,26 @@ def main():
 HOME = xbmcgui.Window(10000)
 LATCH = "tvpoweroff.open"
 
-if HOME.getProperty(LATCH) == "1":
+# Named actions, callable without the menu:
+#     RunScript(script.tvpoweroff,quit|all_off|pad_off)
+# The couch switcher's power bar uses these so there is exactly ONE
+# implementation of "quit the game politely first, then turn things off". A
+# second copy of that is how one of them ends up killing a game without the
+# save grace - these are the same functions the menu's own entries call.
+#
+# No latch on this path: the latch exists to stop a held button opening a
+# second DIALOG, and there is no dialog here. Taking it would also mean a
+# spawned action could block the menu if it ever failed to clear.
+DIRECT = {"quit": quit_game, "all_off": all_off, "pad_off": pad_off}
+_arg = sys.argv[1] if len(sys.argv) > 1 else ""
+
+if _arg in DIRECT:
+    xbmc.log("tvpoweroff: direct action %r" % _arg, xbmc.LOGINFO)
+    DIRECT[_arg]()
+elif _arg:
+    xbmc.log("tvpoweroff: unknown action %r, doing nothing" % _arg,
+             xbmc.LOGWARNING)
+elif HOME.getProperty(LATCH) == "1":
     xbmc.log("tvpoweroff: already open, ignoring re-trigger", xbmc.LOGINFO)
 else:
     HOME.setProperty(LATCH, "1")

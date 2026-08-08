@@ -57,9 +57,9 @@
 
       <control type="image">
         <left>0</left>
-        <top>640</top>
+        <top>544</top>
         <width>1920</width>
-        <height>440</height>
+        <height>536</height>
         <texture>couch-fill.png</texture>
         <colordiffuse>F20A0C10</colordiffuse>
       </control>
@@ -67,18 +67,152 @@
       <!-- Amber pilot rule along the top edge. -->
       <control type="image">
         <left>0</left>
-        <top>640</top>
+        <top>544</top>
         <width>1920</width>
         <height>3</height>
         <texture>couch-fill.png</texture>
         <colordiffuse>FFE8A849</colordiffuse>
       </control>
 
+
+      <!-- POWER BAR. Text, not symbols: three console actions whose difference
+           is precisely which things get turned off, and a 44px glyph cannot
+           carry "controller" vs "controller and TV" without ambiguity.
+           default.py fills it and dispatches to script.tvpoweroff, so the
+           quit-the-game-politely-first logic has exactly one home.
+           NOT the default control - the sheet opens on the switch row below,
+           so nothing here is ever what the stick lands on first. -->
       <control type="label">
         <left>96</left>
-        <top>668</top>
+        <top>556</top>
         <width>1728</width>
-        <height>44</height>
+        <height>36</height>
+        <align>left</align>
+        <aligny>center</aligny>
+        <font>Couch_Label</font>
+        <textcolor>FF8A93A0</textcolor>
+        <label>Power</label>
+      </control>
+
+      <control type="list" id="9010">
+        <left>66</left>
+        <top>592</top>
+        <width>1788</width>
+        <!-- 88, not the pill's 76+8: the focus underline hangs below the pill
+             and a list clips to its own bounds, so the row has to be tall
+             enough to hold it. 88 puts the underline's last row at 680, four
+             clear of the "Switch to" label at 684. -->
+        <height>88</height>
+        <onleft>9010</onleft>
+        <onright>9010</onright>
+        <onup>9010</onup>
+        <ondown>9000</ondown>
+        <orientation>horizontal</orientation>
+        <scrolltime tween="sine" easing="out">180</scrolltime>
+
+        <itemlayout height="88" width="420">
+          <control type="image">
+            <left>30</left>
+            <top>8</top>
+            <width>390</width>
+            <height>68</height>
+            <texture diffuse="mask-round.png">couch-fill.png</texture>
+            <colordiffuse>FF161A22</colordiffuse>
+          </control>
+          <control type="label">
+            <left>30</left>
+            <top>8</top>
+            <width>390</width>
+            <height>68</height>
+            <align>center</align>
+            <aligny>center</aligny>
+            <font>Couch_Caption</font>
+            <textcolor>FF8A93A0</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+          </control>
+        </itemlayout>
+
+        <focusedlayout height="88" width="420">
+          <!-- Every distinguishing mark is gated on the BAR having focus.
+               Kodi keeps drawing focusedlayout for a list's current item even
+               when the list is not focused, so without these "Quit game" sat
+               lit up like a pre-selection while the stick was down on the
+               switch row - on the one bar that turns the television off. Same
+               defect the home row had, same fix. -->
+          <!-- An amber underline, not the halo the tiles use. A 40px 9-slice
+               border on an 88px-tall box leaves 8px of middle, so the ring
+               came out squeezed to nothing - the dog-bone problem in
+               miniature. The switch row's lightbar is the grammar that
+               already reads at TV distance, so the bar borrows it.
+
+               Height is 12 and not 4. lightbar.png is a soft glow whose alpha
+               peaks at its vertical CENTRE and fades to nothing at both edges,
+               so the box height is not the line's weight: at 4 the bright core
+               measured one skin pixel and the "underline" was a hairline. The
+               switch row draws the same texture at 16; 12 is as close as fits
+               above the "Switch to" label. Measure the lit core, not the
+               control, if this is ever retuned. -->
+          <control type="image">
+            <left>30</left>
+            <top>76</top>
+            <width>390</width>
+            <height>12</height>
+            <texture>lightbar.png</texture>
+            <colordiffuse>FFE8A849</colordiffuse>
+            <visible>Control.HasFocus(9010)</visible>
+          </control>
+          <control type="image">
+            <left>30</left>
+            <top>8</top>
+            <width>390</width>
+            <height>68</height>
+            <texture diffuse="mask-round.png">couch-fill.png</texture>
+            <colordiffuse>FF1B212C</colordiffuse>
+            <visible>Control.HasFocus(9010)</visible>
+          </control>
+          <!-- ...and the resting panel + grey label in its place, copied from
+               itemlayout, so an unfocused bar reads as three equal pills. -->
+          <control type="image">
+            <left>30</left>
+            <top>8</top>
+            <width>390</width>
+            <height>68</height>
+            <texture diffuse="mask-round.png">couch-fill.png</texture>
+            <colordiffuse>FF161A22</colordiffuse>
+            <visible>!Control.HasFocus(9010)</visible>
+          </control>
+          <control type="label">
+            <left>30</left>
+            <top>8</top>
+            <width>390</width>
+            <height>68</height>
+            <align>center</align>
+            <aligny>center</aligny>
+            <font>Couch_Caption</font>
+            <textcolor>FFECEEF1</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+            <visible>Control.HasFocus(9010)</visible>
+          </control>
+          <control type="label">
+            <left>30</left>
+            <top>8</top>
+            <width>390</width>
+            <height>68</height>
+            <align>center</align>
+            <aligny>center</aligny>
+            <font>Couch_Caption</font>
+            <textcolor>FF8A93A0</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+            <visible>!Control.HasFocus(9010)</visible>
+          </control>
+        </focusedlayout>
+      </control>
+
+      <control type="label">
+        <left>96</left>
+        <top>684</top>
+        <width>1728</width>
+        <height>40</height>
         <align>left</align>
         <aligny>center</aligny>
         <font>Couch_Label</font>
@@ -92,12 +226,12 @@
            a tile with no art shows its name centred on a panel. -->
       <control type="list" id="9000">
         <left>66</left>
-        <top>716</top>
+        <top>726</top>
         <width>1788</width>
         <height>330</height>
         <onleft>9000</onleft>
         <onright>9000</onright>
-        <onup>9000</onup>
+        <onup>9010</onup>
         <ondown>9000</ondown>
         <orientation>horizontal</orientation>
         <scrolltime tween="sine" easing="out">210</scrolltime>

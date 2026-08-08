@@ -71,10 +71,6 @@ except Exception as _e:  # noqa: BLE001
 
 API = "http://localhost:8790"
 
-#: Not a window id. The switcher's rows are otherwise X window ids
-#: handed straight to the server, so the power row carries a sentinel
-#: that could never be mistaken for one.
-POWER_ID = "__power__"
 LIST_TIMEOUT = 3      # the server answers in ~100ms; anything slower is broken
 ACT_TIMEOUT = 20      # activating suspends a game first, which takes a moment
 
@@ -100,6 +96,19 @@ DIALOG_RES = "1080i"
 # once and every select press died as "WindowXML: Internal sort button not
 # implemented" in the log.
 LIST_ID = 9000
+
+# The power bar above the switch row. Text rather than symbols (Donnie's call,
+# 8 Aug): the three actions differ only in WHICH things get turned off, and a
+# 44px glyph cannot carry "controller" against "controller and TV" without
+# ambiguity. Each entry names an action that script.tvpoweroff already
+# implements - the switcher holds no power logic of its own, exactly as it
+# holds no switching logic of its own, so "quit the game politely first" has
+# one home and cannot drift between the two menus.
+POWER_ID = 9010
+POWER_ADDON = "script.tvpoweroff"
+POWER_ACTIONS = [("Quit game", "quit"),
+                 ("Controller off", "pad_off"),
+                 ("Controller + TV off", "all_off")]
 
 # The freeze-frame backdrop. pause-snap drops the paused game's last rendered
 # frame in PAUSED_DIR at suspend time; the XML's bottom-most image control is
@@ -139,6 +148,7 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
     rows = ()
     choice = -1
     appid = ""              # the paused session's appid; "" = no live session
+    power = ""              # a POWER_ACTIONS key when the bar was used
     _filled = False
 
     def __init__(self, *args, **kwargs):
@@ -175,6 +185,24 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
             lst.reset()
             lst.addItems(items)
             lst.selectItem(0)
+
+            # The power bar. Filled here and not by the XML so the labels live
+            # beside the actions they fire.
+            try:
+                bar = self.getControl(POWER_ID)
+                bar.reset()
+                bar.addItems([xbmcgui.ListItem(label=lbl)
+                              for lbl, _ in POWER_ACTIONS])
+                bar.selectItem(0)
+            except Exception as e:  # noqa: BLE001
+                # No bar is a switcher without power options; a switcher that
+                # failed to open is the room stuck in a game. Never trade the
+                # second for the first.
+                xbmc.log("couch.switcher: power bar unavailable (%s)" % e,
+                         xbmc.LOGWARNING)
+
+            # Focus the SWITCH row, never the power bar: the stick must not
+            # start on anything that turns the television off.
             self.setFocusId(LIST_ID)
         except Exception as e:   # noqa: BLE001 - see below
             # A window that drew wrong must not strand the room in a modal it
@@ -187,6 +215,11 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
     def onClick(self, controlId):
         if controlId == LIST_ID:
             self.choice = self.getControl(LIST_ID).getSelectedPosition()
+            self.close()
+        elif controlId == POWER_ID:
+            idx = self.getControl(POWER_ID).getSelectedPosition()
+            if 0 <= idx < len(POWER_ACTIONS):
+                self.power = POWER_ACTIONS[idx][1]
             self.close()
 
     def onAction(self, action):
@@ -276,6 +309,11 @@ def select_window(rows):
         dlg.rows = rows
         dlg.appid = pausedframe.session_appid(rows, fallback=_suspended_appid())
         dlg.doModal()
+        if dlg.power:
+            # A power action was picked, so there is no window to switch to.
+            # Sentinel rather than an index: the caller must not be able to
+            # confuse "turn the TV off" with "row 2".
+            return ("power", dlg.power)
         return dlg.choice
     finally:
         dlg._frame_stop.set()   # doModal can raise; the poll must still die
@@ -328,49 +366,26 @@ def main():
         notify("Nothing else is running")
         return
 
-    # The power screen, LAST, after every real destination.
-    #
-    # It is here because the switcher is the only surface reachable from
-    # inside a game: at home a hold already opens this same screen, but in a
-    # game the hold is Steam's menu, so powering off meant suspending first
-    # and then holding - two gestures, one of them a suspend nobody asked for.
-    #
-    # It ROUTES, it never acts. Opening shutdownmenu hands the decision to the
-    # screen that already owns it, including the quit-the-game-first save
-    # grace; a second power path with its own copy of that logic is how one of
-    # them ends up killing a game without the grace. So landing on this row by
-    # accident costs a screen you can back out of - strictly more friction
-    # than the single hold that opens it at home, which is why adding it here
-    # is not a new footgun.
-    #
-    # Last, and after everything: the stick starts at index 0 and this is the
-    # furthest thing from it.
-    rows = rows + [{"id": POWER_ID, "title": "Power", "power": True}]
 
     choice = select_window(rows)
+    if isinstance(choice, tuple) and choice[0] == "power":
+        action = choice[1]
+        xbmc.log("couch.switcher: power action %r -> %s"
+                 % (action, POWER_ADDON), xbmc.LOGINFO)
+        # Over JSON-RPC, not executebuiltin: a builtin issued while this
+        # dialog is still tearing down is dispatched against a GUI that is
+        # mid-teardown and is silently lost (observed 8 Aug with
+        # ActivateWindow - the log line printed and nothing happened).
+        xbmc.executeJSONRPC(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "Addons.ExecuteAddon",
+            "params": {"addonid": POWER_ADDON, "params": [action]},
+        }))
+        return
     if choice < 0 or choice >= len(rows):
         xbmc.log("couch.switcher: cancelled", xbmc.LOGINFO)
         return
 
     target = rows[choice]
-    if target.get("power"):
-        # Kodi's own shutdown menu, restyled by skin.couch into the power
-        # screen. Same window the hold gesture opens at home, same window the
-        # server's power actions route through.
-        #
-        # Over JSON-RPC, not executebuiltin: the builtin ran (the log line
-        # below proved it) and the window never opened - it is dispatched
-        # against a GUI still tearing down this dialog and is simply lost.
-        # pad-home-watcher's act_power_menu has always used ActivateWindow
-        # over RPC for the same window, for the related reason that it works
-        # while Kodi's joystick input is off. One mechanism, both callers.
-        xbmc.log("couch.switcher: opening the power screen", xbmc.LOGINFO)
-        xbmc.executeJSONRPC(json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "GUI.ActivateWindow",
-            "params": {"window": "shutdownmenu"},
-        }))
-        return
-
     xbmc.log("couch.switcher: activating %s (%s)"
              % (target.get("id"), target.get("title")), xbmc.LOGINFO)
     try:

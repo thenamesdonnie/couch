@@ -66,6 +66,7 @@ class StubList:
 class StubWindowXMLDialog:
     def __init__(self, *_a, **_k):
         self.list = StubList()
+        self.bar = StubList()          # the power bar, control 9010
         self.fetched_ids = []
         self.focus_calls = []
         self.props = {}
@@ -73,7 +74,7 @@ class StubWindowXMLDialog:
 
     def getControl(self, control_id):
         self.fetched_ids.append(control_id)
-        return self.list
+        return self.bar if control_id == dflt.POWER_ID else self.list
 
     def setFocusId(self, control_id):
         self.focus_calls.append(control_id)
@@ -185,15 +186,25 @@ def _control_ids(dom):
         'control') if c.getAttribute('id')]
 
 
-def _list_control(dom):
-    lists = [c for c in dom.getElementsByTagName('control')
-             if c.getAttribute('type') == 'list']
-    assert len(lists) == 1
-    return lists[0]
+def _lists(dom):
+    return [c for c in dom.getElementsByTagName('control')
+            if c.getAttribute('type') == 'list']
 
 
-def test_xml_is_well_formed_and_has_one_list():
-    _list_control(_dom())    # minidom.parse raising IS the failure
+def _list_control(dom, want=None):
+    """The switch row by default; the power bar when asked for."""
+    want = dflt.LIST_ID if want is None else want
+    for c in _lists(dom):
+        if int(c.getAttribute('id')) == want:
+            return c
+    raise AssertionError('no list with id %d' % want)
+
+
+def test_xml_is_well_formed_and_has_exactly_the_two_lists():
+    # Two since 8 Aug: the switch row, and the power bar above it. Anything
+    # else appearing here is a control the python does not know about.
+    ids = sorted(int(c.getAttribute('id')) for c in _lists(_dom()))
+    assert ids == sorted([dflt.LIST_ID, dflt.POWER_ID])
 
 
 def test_no_control_id_is_reserved_by_windowxml():
@@ -212,14 +223,23 @@ def test_python_xml_and_defaultcontrol_agree_on_the_list_id():
     assert default[0].getAttribute('always') == 'true'
 
 
-def test_list_navigation_stays_on_the_list():
-    # onup/ondown/onleft/onright name the list itself: the stick can never
-    # walk focus onto a non-focusable control and go dead.
-    lst = _list_control(_dom())
-    for tag in ('onup', 'ondown', 'onleft', 'onright'):
-        nodes = lst.getElementsByTagName(tag)
-        assert nodes, 'list has no <%s>' % tag
-        assert int(nodes[0].firstChild.data) == dflt.LIST_ID
+def test_navigation_only_ever_lands_on_a_real_list():
+    # The stick must never walk focus onto a non-focusable control and go
+    # dead. Every direction on both lists names one of the two lists - and
+    # the only crossing between them is the switch row's UP and the power
+    # bar's DOWN, so the bar is never reachable sideways.
+    dom = _dom()
+    valid = {dflt.LIST_ID, dflt.POWER_ID}
+    expect = {(dflt.LIST_ID, 'onup'): dflt.POWER_ID,
+              (dflt.POWER_ID, 'ondown'): dflt.LIST_ID}
+    for which in (dflt.LIST_ID, dflt.POWER_ID):
+        lst = _list_control(dom, which)
+        for tag in ('onup', 'ondown', 'onleft', 'onright'):
+            nodes = lst.getElementsByTagName(tag)
+            assert nodes, 'list %d has no <%s>' % (which, tag)
+            target = int(nodes[0].firstChild.data)
+            assert target in valid, (which, tag, target)
+            assert target == expect.get((which, tag), which), (which, tag, target)
 
 
 def test_default_py_compiles(tmp_path):
@@ -235,9 +255,64 @@ def test_oninit_fills_the_list_and_focuses_it():
     assert [li.label for li in dlg.list.items] == \
         ['Hollow Knight · paused', 'Big Picture', 'Cancel']
     assert dlg.list.selected == 0
-    assert dlg.fetched_ids == [dflt.LIST_ID]
+    assert dlg.fetched_ids == [dflt.LIST_ID, dflt.POWER_ID]
+    assert dlg.closed == 0
+
+
+def test_oninit_fills_the_power_bar_from_the_action_table():
+    """The labels live beside the actions they fire, so the bar cannot drift
+    out of step with what selecting it does."""
+    dlg = make_dialog()
+    dlg.onInit()
+    assert [li.label for li in dlg.bar.items] == \
+        ['Quit game', 'Controller off', 'Controller + TV off']
+    assert [a for _, a in dflt.POWER_ACTIONS] == ['quit', 'pad_off', 'all_off']
+
+
+def test_focus_starts_on_the_switch_row_never_the_power_bar():
+    """The stick must not open sitting on something that turns the TV off."""
+    dlg = make_dialog()
+    dlg.onInit()
+    assert dlg.focus_calls == [dflt.LIST_ID]
+
+
+def test_a_broken_power_bar_never_costs_the_switcher():
+    """No bar is a switcher without power options; a switcher that failed to
+    open is the room stuck in a game. Never trade the second for the first."""
+    dlg = make_dialog()
+    real = dlg.getControl
+
+    def boom(control_id):
+        if control_id == dflt.POWER_ID:
+            raise RuntimeError('no such control')
+        return real(control_id)
+    dlg.getControl = boom
+    dlg.onInit()
+    assert [li.label for li in dlg.list.items][-1] == 'Cancel'
     assert dlg.focus_calls == [dflt.LIST_ID]
     assert dlg.closed == 0
+
+
+def test_clicking_the_power_bar_answers_with_an_action_not_an_index():
+    """A row index and a power action must never be confusable - "turn the TV
+    off" cannot be allowed to arrive looking like "switch to row 2"."""
+    dlg = make_dialog()
+    dlg.onInit()
+    dlg.bar.selected = 2
+    dlg.onClick(dflt.POWER_ID)
+    assert dlg.power == 'all_off'
+    assert dlg.choice == -1          # untouched: nothing was switched to
+    assert dlg.closed == 1
+
+
+def test_clicking_the_switch_row_leaves_power_empty(dlg=None):
+    dlg = make_dialog()
+    dlg.onInit()
+    dlg.list.selected = 1
+    dlg.onClick(dflt.LIST_ID)
+    assert dlg.choice == 1
+    assert dlg.power == ''
+
 
 
 def test_reinit_refocuses_without_duplicating_rows():
@@ -329,31 +404,39 @@ WINS = [{'id': '0x1', 'title': 'Big Picture', 'kodi': False},
         {'id': '0x2', 'title': 'Kodi', 'kodi': True}]
 
 
-def test_power_is_offered_last_after_every_real_destination():
-    """Index 0 is where the stick starts; power is the furthest thing from
-    it, and Cancel still sits beyond it as the dismiss."""
+def test_the_switch_row_holds_only_real_destinations():
+    """Power moved OUT of this row on 8 Aug and into its own bar above it, so
+    a destination list is destinations again. A power entry down here would
+    now be a second way to do the same thing, one keypress from the row the
+    stick opens on."""
     out = _run_main(WINS, pick=lambda rows: -1)
-    assert [r['title'] for r in out['rows']] == ['Big Picture', 'Power']
+    assert [r['title'] for r in out['rows']] == ['Big Picture']
+    assert not any(r.get('power') for r in out['rows'])
 
 
-def test_picking_power_opens_the_power_screen_and_switches_nothing():
-    out = _run_main(WINS, pick=lambda rows: len(rows) - 1)
+def test_a_power_action_dispatches_to_tvpoweroff_and_switches_nothing():
+    """The switcher holds no power logic: it names an action and hands it to
+    script.tvpoweroff, which is where "quit the game politely first" lives.
+    Over JSON-RPC, not executebuiltin - a builtin issued while this dialog is
+    tearing down is silently lost (observed 8 Aug)."""
+    out = _run_main(WINS, pick=lambda rows: ('power', 'all_off'))
     assert len(out['rpc']) == 1
     sent = json.loads(out['rpc'][0])
-    assert sent['method'] == 'GUI.ActivateWindow'
-    assert sent['params'] == {'window': 'shutdownmenu'}
-    assert out['activated'] == [], 'the switcher tried to switch to a sentinel'
-    # and NOT the builtin, which was tried first and silently did nothing
+    assert sent['method'] == 'Addons.ExecuteAddon'
+    assert sent['params'] == {'addonid': 'script.tvpoweroff',
+                              'params': ['all_off']}
+    assert out['activated'] == [], 'a power action switched a window'
     assert out['builtins'] == []
 
 
-def test_the_power_row_never_reaches_the_server():
-    """Every other row's id is an X window id posted straight to the couch
-    server. The sentinel must never get that far - it is not a window."""
-    out = _run_main(WINS, pick=lambda rows: 0)
-    assert out['activated'] == ['0x1']
-    assert dflt.POWER_ID not in out['activated']
-    assert out['builtins'] == []
+def test_every_bar_action_is_one_tvpoweroff_implements():
+    """The labels are ours; the actions must be its. A typo here would be a
+    silent no-op on the one menu that turns the television off."""
+    import os
+    src = open(os.path.join(os.path.expanduser('~'), 'couch', 'kodi-addons',
+                            'script.tvpoweroff', 'default.py')).read()
+    for _label, action in dflt.POWER_ACTIONS:
+        assert '"%s":' % action in src, action
 
 
 def test_power_does_not_appear_when_there_is_nothing_to_switch_to():
@@ -364,12 +447,3 @@ def test_power_does_not_appear_when_there_is_nothing_to_switch_to():
                     pick=lambda rows: 0)
     assert out['rows'] == []
     assert out['builtins'] == [] and out['activated'] == []
-
-
-def test_the_power_row_is_not_mistaken_for_a_paused_game():
-    """session_appid() walks the same rows to find the freeze-frame's appid;
-    a row with no `paused` key must be invisible to it."""
-    rows = [{'id': '0x1', 'title': 'Bloodborne · paused', 'paused': True,
-             'cls': 'steam_app_367520'},
-            {'id': dflt.POWER_ID, 'title': 'Power', 'power': True}]
-    assert dflt.pausedframe.session_appid(rows, fallback='') == '367520'
