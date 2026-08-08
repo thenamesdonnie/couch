@@ -142,8 +142,15 @@ def _games():
                 continue
         except ValueError:
             continue
-        out.append((name, appid))
-    return sorted(out, key=lambda g: g[0].lower())
+        try:
+            last = int(_field('LastPlayed', txt) or 0)
+        except ValueError:
+            last = 0
+        out.append((name, appid, last))
+    # PS5-style: most-recently-played first; never-played (LastPlayed 0) fall
+    # to the end, alphabetical among themselves.
+    out.sort(key=lambda g: (-g[2], g[0].lower()))
+    return [(name, appid) for name, appid, _ in out]
 
 
 def _art(appid):
