@@ -196,6 +196,55 @@ time, not as a batch.
 | never live-switch skins / never `ReloadSkin()` | one deliberate `ReloadSkin()` on Kodi 21 with the TV on and Donnie watching. This is the one that would change day-to-day work the most. |
 | jellyfin `startupDelay=45` | after the above, since it exists purely to thin the boot churn window. |
 
+## Checked, and cheaper than it looked
+
+Things that read like they must break and do not. Each was checked against a
+primary source rather than reasoned about, because each would have cost an
+evening.
+
+- **`XBMC.GetInfoBooleans` / `XBMC.GetInfoLabels` still exist in 21.3.** The
+  legacy JSON-RPC namespace is right there in
+  `xbmc/interfaces/json-rpc/JSONServiceDescription.cpp`. So `kodi-tv`'s
+  boot-unmute wait and `tools/kodi-refresh-games`'s guard are safe. Had it
+  gone, both would have failed *soft* - a two-minute timeout and a refresh
+  that always says "leave it alone".
+- **Pillow is inside the Flatpak** (`python-pillow`, 12.3.0, in the manifest).
+  It reaches Kodi on the apt build only by accident, via the host's user
+  site-packages, and `script.module.pil` is not installed - so this could
+  have silently un-composed every home-row tile. `verify` imports it.
+- **`kodi-send` comes from a separate package**, `kodi-eventclients-kodi-send`,
+  not from `kodi`. Four host callers use it (`pause-snap`'s minimise
+  animation, `pad-battery`, the server's `PlayerControl(tempo)`,
+  `jellyseerr-watchnow`). Nothing is being purged, so this only matters the
+  day apt-Kodi goes: keep that one package.
+- **The media disks need no override.** `sources.xml` reads `/mnt/media/...`
+  directly and the manifest already grants `--filesystem=/mnt`.
+- **Nothing reads Kodi's log or crash logs**, and **nothing uses
+  `TakeScreenshot`** - the only screenshots on the box are host-side X grabs
+  (`pause-snap`, `server/screen.js`). So `CRASHLOG_DIR` moving into the app
+  data dir costs nothing, and there is no screenshot path to redirect.
+- **`~/.config/autostart/kodi.desktop` already runs `kodi-tv`**, so the launch
+  path needed no change at all - the flavour switch inside kodi-tv is the
+  whole of it.
+- **Window identity is unchanged.** Every focus/raise path matches WM
+  name/class `Kodi`, and Flatpak does not rewrite those. `pgrep -x kodi.bin`
+  still matches, so `server/sys.js`'s hardened restart still works.
+
+## Known, not fixed
+
+- `16x9/MusicVisualisation.xml` references an include, `Like_focused`, that
+  nothing defines. Inherited from Copacetic 1.6.1, unrelated to Omega, in a
+  screen this box never opens. Pinned as a known exception in
+  `tools/test_skin_omega.py` so the integrity check can be strict about
+  everything else.
+- `16x9/Custom_1196_Couch_HaloPicker.xml` hardcodes an absolute path to one
+  game's composed tile (`.../game-tiles/composed/291550.png`). Works, because
+  `--filesystem=home` covers it. Still a hardcoded appid in shipped skin XML.
+- Seven tests in `tools/test_curtain.py` fail on this box: the curtain daemon
+  does not write its pidfile under the test's private Xvfb. **Pre-existing** -
+  they fail identically at `e222beb`, before any of this work - and unrelated
+  to the migration. Worth its own look.
+
 ## Verification ladder
 
 `tools/kodi21-migrate` runs these in order and refuses to continue on a

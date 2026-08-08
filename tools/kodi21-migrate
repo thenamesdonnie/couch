@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""Move the living-room Kodi from the apt 20 to the Flathub 21, in steps.
+
+Ubuntu stops at Kodi 20 and the team-xbmc PPA has no noble build, so Flathub
+is the route. Plan, reasoning and the override table:
+docs/kodi21-flatpak-migration.md.
+
+Everything here is idempotent and everything is reversible. apt-Kodi is never
+touched, never purged, and its profile is left alone apart from one deliberate
+change (`freeze-skin`, which is what keeps the rollback's skin working).
+
+    tools/kodi21-migrate preflight     what is true right now
+    tools/kodi21-migrate install       the Flathub remote + the app (--user)
+    tools/kodi21-migrate override      the three permission grants
+    tools/kodi21-migrate profile       copy ~/.kodi -> the Flatpak's data dir
+    tools/kodi21-migrate freeze-skin   pin a Nexus skin copy for the rollback
+    tools/kodi21-migrate verify        prove the sandbox can see what it needs
+    tools/kodi21-migrate switch        point kodi-tv at the Flatpak
+    tools/kodi21-migrate rollback      point it back at apt
+
+    tools/kodi21-migrate all           preflight..verify, stopping on failure
+                                       (does NOT switch - that is a decision)
+
+ONE THING NEEDS ROOT and it is not this script:
+
+    sudo apt install -y flatpak
+
+Everything below that is `--user` and needs none.
+"""
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'couchd'))
+import kodiprofile                                              # noqa: E402
+
+APP = kodiprofile.FLATPAK_APP_ID
+HOME = os.path.expanduser('~')
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     '..'))
+SKIN_SRC = os.path.join(REPO, 'kodi-addons', 'skin.couch')
+
+APT_PROFILE = kodiprofile.profile_dir('apt')
+NEW_PROFILE = kodiprofile.profile_dir('flatpak')
+
+FLATHUB = 'https://dl.flathub.org/repo/flathub.flatpakrepo'
+
+NEXUS_GUI = '5.16.0'
+OMEGA_GUI = '5.17.0'
+
+# The three grants, each with the reason it exists. Printed with the command
+# so the permission set is never a mystery six months from now.
+OVERRIDES = [
+    ('--filesystem=home',
+     'the Games row is built out of $HOME - ~/.steam manifests and library '
+     'art, ~/games/ps4, ~/.local/share/game-tiles, ~/couch/data - and the '
+     'skin itself is a symlink into ~/couch'),
+    ('--filesystem=/tmp',
+     'game-session and game-suspended live there and a Flatpak gets a '
+     'private tmpfs; without this the power menu offers to switch the TV off '
+     'mid-game. couchhost falls back to flatpak-spawn if this ever fails'),
+    ('--talk-name=org.freedesktop.Flatpak',
+     'flatpak-spawn --host, so Kodi can still run game-launch, tv and the '
+     'couch tools - none of which exist inside the runtime'),
+]
+
+# Not carried into the new profile, each for a reason.
+PROFILE_SKIP = {
+    'addons/packages': 'a 212 MB cache of addon zips, rebuilt on demand',
+    'temp': 'logs and thumbnails-in-progress',
+    'addons/inputstream.adaptive':
+        'the hand-assembled Debian binary addon; the Flatpak compiles its '
+        'own (addon-list.txt in the Flathub manifest) and ours is the wrong '
+        'ABI against the wrong libc',
+    'addons/skin.copacetic':
+        'asks for xbmc.gui 5.16.0, which Kodi 21 refuses',
+    'addons/skin.arctic.zephyr.mod':
+        'asks for xbmc.gui 5.15.0, which Kodi 21 refuses',
+    'addons/temp': 'the addon downloader scratch dir, rebuilt on demand',
+}
+
+
+# =========================================================================
+# plumbing
+# =========================================================================
+class Fail(Exception):
+    pass
+
+
+def run(argv, check=True, quiet=False):
+    if not quiet:
+        print('  $ ' + ' '.join(argv))
+    done = subprocess.run(argv, capture_output=True, text=True)
+    if check and done.returncode != 0:
+        raise Fail('%s failed (%d)\n%s%s'
+                   % (argv[0], done.returncode, done.stdout, done.stderr))
+    return done
+
+
+def has_flatpak():
+    return shutil.which('flatpak') is not None
+
+
+def need_flatpak():
+    if not has_flatpak():
+        raise Fail('flatpak is not installed. This is the one root step:\n'
+                   '    sudo apt install -y flatpak')
+
+
+def app_installed():
+    if not has_flatpak():
+        return False
+    return run(['flatpak', 'info', APP], check=False, quiet=True).returncode == 0
+
+
+def ok(msg):
+    print('  ok   ' + msg)
+
+
+def bad(msg):
+    print('  FAIL ' + msg)
+
+
+def warn(msg):
+    print('  ..   ' + msg)
+
+
+# =========================================================================
+# steps
+# =========================================================================
+def preflight(args):
+    """What is true right now. Changes nothing."""
+    print('\n== preflight ==')
+    good = True
+
+    if has_flatpak():
+        version = run(['flatpak', '--version'], quiet=True).stdout.strip()
+        ok(version)
+    else:
+        bad('flatpak is not installed  ->  sudo apt install -y flatpak')
+        good = False
+
+    if app_installed():
+        info = run(['flatpak', 'info', APP], quiet=True).stdout
+        version = re.search(r'Version:\s*(\S+)', info)
+        ok('%s installed, version %s' % (APP, version.group(1) if version
+                                         else 'unknown'))
+    else:
+        warn('%s is not installed yet (kodi21-migrate install)' % APP)
+
+    if os.path.isdir(APT_PROFILE):
+        ok('the apt profile is where it should be: %s' % APT_PROFILE)
+    else:
+        bad('no apt profile at %s - nothing to migrate' % APT_PROFILE)
+        good = False
+
+    if shutil.which('kodi'):
+        ok('apt Kodi is still installed, so rollback stays "launch the old '
+           'one"')
+    else:
+        bad('apt Kodi is gone - there is no rollback')
+        good = False
+
+    if shutil.which('kodi-send'):
+        ok('kodi-send is present (a separate package, '
+           'kodi-eventclients-kodi-send - four host callers depend on it)')
+    else:
+        bad('kodi-send is missing: pause-snap, pad-battery, the couch '
+            "server's PlayerControl(tempo) and watch-now all use it")
+        good = False
+
+    running = run(['pgrep', '-x', 'kodi.bin'], check=False, quiet=True)
+    if running.returncode == 0:
+        warn('Kodi is running (pid %s). profile/freeze-skin want it DOWN.'
+             % running.stdout.split()[0])
+    else:
+        ok('Kodi is not running')
+
+    print('  flavour files: choice=%s active=%s'
+          % (kodiprofile.flavour(active=False), kodiprofile.flavour()))
+    return 0 if good else 1
+
+
+def install(args):
+    """The Flathub remote and the app, both --user, neither needing root."""
+    print('\n== install ==')
+    need_flatpak()
+    run(['flatpak', 'remote-add', '--user', '--if-not-exists', 'flathub',
+         FLATHUB])
+    if app_installed():
+        ok('%s is already installed' % APP)
+    else:
+        print('  this pulls the Freedesktop 24.08 runtime too, a couple of GB')
+        run(['flatpak', 'install', '--user', '-y', 'flathub', APP])
+    ok(run(['flatpak', 'info', APP], quiet=True).stdout.strip().split('\n')[0])
+    return 0
+
+
+def override(args):
+    """The three grants. Documented in OVERRIDES, printed as they go on."""
+    print('\n== override ==')
+    need_flatpak()
+    for flag, why in OVERRIDES:
+        print('  %s\n      %s' % (flag, why))
+        run(['flatpak', 'override', '--user', flag, APP], quiet=True)
+    print('\n  in effect now:')
+    for line in run(['flatpak', 'override', '--user', '--show', APP],
+                    quiet=True).stdout.splitlines():
+        print('    ' + line)
+    return 0
+
+
+def _skip(relative):
+    for prefix in PROFILE_SKIP:
+        if relative == prefix or relative.startswith(prefix + os.sep):
+            return prefix
+    return None
+
+
+def profile(args):
+    """Copy ~/.kodi to the Flatpak's data dir.
+
+    A copy, not a symlink or a bind: Kodi 21 upgrades the databases in place
+    and rewrites guisettings.xml in its own format, and a Kodi 20 asked to
+    read that afterwards has no code path for it. The duplication is the
+    price of the parachute and goes away with the parachute.
+    """
+    print('\n== profile ==')
+    if not os.path.isdir(APT_PROFILE):
+        raise Fail('no apt profile at %s' % APT_PROFILE)
+    if run(['pgrep', '-x', 'kodi.bin'], check=False, quiet=True).returncode == 0 \
+            and not args.force:
+        raise Fail('Kodi is running - copying a live profile catches its '
+                   'databases mid-write. Stop it first, or --force if you '
+                   'know it is idle.')
+
+    print('  %s  ->  %s' % (APT_PROFILE, NEW_PROFILE))
+    for prefix, why in sorted(PROFILE_SKIP.items()):
+        print('  not copied: %-32s %s' % (prefix, why))
+
+    copied = skipped = 0
+    for root, dirs, files in os.walk(APT_PROFILE):
+        relative_root = os.path.relpath(root, APT_PROFILE)
+        relative_root = '' if relative_root == '.' else relative_root
+        dirs[:] = [d for d in dirs
+                   if not _skip(os.path.join(relative_root, d))
+                   and d != '__pycache__']
+        for name in files:
+            source = os.path.join(root, name)
+            relative = os.path.relpath(source, APT_PROFILE)
+            if _skip(relative):
+                skipped += 1
+                continue
+            target = os.path.join(NEW_PROFILE, relative)
+            if os.path.islink(source):
+                # skin.couch is the one of these, and it is re-made by
+                # freeze-skin rather than copied blind.
+                continue
+            if os.path.exists(target) \
+                    and os.path.getmtime(target) >= os.path.getmtime(source) \
+                    and os.path.getsize(target) == os.path.getsize(source):
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(source, target)
+            copied += 1
+    print('  copied %d file(s), skipped %d' % (copied, skipped))
+
+    # The settings the whole console rides on. Checked rather than assumed:
+    # a profile that arrived without the webserver is a console with no
+    # controller handoff, no phone app and no way in.
+    gui = os.path.join(NEW_PROFILE, 'userdata', 'guisettings.xml')
+    text = open(gui, encoding='utf-8').read() if os.path.exists(gui) else ''
+    for setting, expected in [('services.webserver', 'true'),
+                              ('services.webserverport', '8090'),
+                              ('services.esenabled', 'true')]:
+        match = re.search(r'id="%s"[^>]*>([^<]*)<' % re.escape(setting), text)
+        if match and match.group(1) == expected:
+            ok('%s = %s' % (setting, expected))
+        else:
+            bad('%s is %r, wanted %r - the console talks to Kodi over this'
+                % (setting, match.group(1) if match else None, expected))
+    return 0
+
+
+def freeze_skin(args):
+    """Give apt-Kodi its own copy of the skin, and hand the repo to Kodi 21.
+
+    Kodi 21 declares xbmc.gui 5.17.0 with backwards-compatibility abi
+    5.17.0, and Kodi 20 provides 5.16.0 - no single value satisfies both, and
+    addon.xml has no conditionals. So the rollback gets a frozen Nexus copy
+    of the skin as it stands today, and the living, git-tracked one moves to
+    Omega and is symlinked into the new profile.
+    """
+    print('\n== freeze-skin ==')
+    if run(['pgrep', '-x', 'kodi.bin'], check=False, quiet=True).returncode == 0 \
+            and not args.force:
+        raise Fail('Kodi is running - swapping the skin directory under a '
+                   'live instance is asking for it. Stop it first.')
+
+    apt_link = os.path.join(kodiprofile.addons_dir('apt'), 'skin.couch')
+    if os.path.islink(apt_link):
+        print('  freezing a Nexus copy for the rollback: %s' % apt_link)
+        staging = apt_link + '.freezing'
+        if os.path.exists(staging):
+            shutil.rmtree(staging)
+        shutil.copytree(SKIN_SRC, staging, symlinks=True,
+                        ignore=shutil.ignore_patterns('.git', '__pycache__'))
+        os.remove(apt_link)
+        os.rename(staging, apt_link)
+        ok('%s is now a real directory, pinned at xbmc.gui %s'
+           % (apt_link, NEXUS_GUI))
+    elif os.path.isdir(apt_link):
+        ok('the rollback already has its own copy')
+    else:
+        warn('no skin.couch in the apt profile at all')
+
+    # Now the live one can move to Omega.
+    addon_xml = os.path.join(SKIN_SRC, 'addon.xml')
+    text = open(addon_xml, encoding='utf-8').read()
+    old = '<import addon="xbmc.gui" version="%s" />' % NEXUS_GUI
+    new = '<import addon="xbmc.gui" version="%s" />' % OMEGA_GUI
+    if old in text:
+        open(addon_xml, 'w', encoding='utf-8').write(text.replace(old, new))
+        ok('skin.couch now asks for xbmc.gui %s (a repo change - commit it)'
+           % OMEGA_GUI)
+    elif new in text:
+        ok('skin.couch already asks for xbmc.gui %s' % OMEGA_GUI)
+    else:
+        bad('could not find the xbmc.gui import in %s' % addon_xml)
+
+    new_link = os.path.join(kodiprofile.addons_dir('flatpak'), 'skin.couch')
+    os.makedirs(os.path.dirname(new_link), exist_ok=True)
+    if os.path.islink(new_link):
+        os.remove(new_link)
+    elif os.path.isdir(new_link):
+        shutil.rmtree(new_link)
+    os.symlink(SKIN_SRC, new_link)
+    ok('%s -> %s' % (new_link, SKIN_SRC))
+    return 0
+
+
+def verify(args):
+    """Prove, from inside the sandbox, that it can see what it needs.
+
+    Everything here is a question the migration doc answers with a claim; this
+    is where the claims get tested rather than believed. `--filesystem=/tmp`
+    in particular is marked UNVERIFIED there because flatpak treats /tmp
+    specially, and this is the check that settles it.
+    """
+    print('\n== verify ==')
+    need_flatpak()
+    if not app_installed():
+        raise Fail('%s is not installed' % APP)
+    good = True
+
+    def inside(script):
+        return run(['flatpak', 'run', '--command=sh', APP, '-c', script],
+                   check=False, quiet=True)
+
+    checks = [
+        ('the sandbox is a sandbox', 'test -f /.flatpak-info'),
+        ('$HOME is readable (the Games row, the skin symlink target)',
+         'test -d "$HOME/couch/kodi-addons/skin.couch/16x9"'),
+        ('the Steam manifests are readable (the Games row itself)',
+         'test -d "$HOME/.steam/steam/steamapps"'),
+        ('the media disks are readable (sources.xml reads /mnt/media direct)',
+         'test -d /mnt/media/movies'),
+        ('/tmp is the HOST /tmp (the console coordination flags)',
+         'test -e /tmp/kodi-tv.lock'),
+        ('flatpak-spawn reaches the host (game-launch, tv, the tools)',
+         '/usr/bin/flatpak-spawn --host true'),
+        ('...and the host really is the host',
+         '/usr/bin/flatpak-spawn --host test -x "$HOME/.local/bin/game-launch"'),
+        ('the profile is where kodiprofile says it is',
+         'test -f "$XDG_DATA_HOME/userdata/guisettings.xml"'),
+        ('the skin resolves through the symlink',
+         'test -f "$XDG_DATA_HOME/addons/skin.couch/addon.xml"'),
+        ('the bundled inputstream.adaptive is there (YouTube needs it)',
+         'test -d /app/share/kodi/addons/inputstream.adaptive'),
+        ('ours is NOT (wrong ABI, would shadow it)',
+         '! test -d "$XDG_DATA_HOME/addons/inputstream.adaptive"'),
+        ('Pillow is importable (the composed home-row tiles)',
+         'python3 -c "import PIL"'),
+    ]
+    for label, script in checks:
+        if inside(script).returncode == 0:
+            ok(label)
+        else:
+            bad(label)
+            good = False
+
+    # couchhost is the fallback if /tmp ever stops being exported; prove the
+    # fallback works too, not just the fast path.
+    probe = inside('/usr/bin/flatpak-spawn --host cat /tmp/kodi-tv.lock '
+                   '>/dev/null 2>&1')
+    if probe.returncode == 0:
+        ok("couchhost's flatpak-spawn fallback can read a host file")
+    else:
+        bad("couchhost's fallback cannot read host files - the /tmp override "
+            'is then load-bearing rather than an optimisation')
+        good = False
+
+    return 0 if good else 1
+
+
+def _set_flavour(word):
+    path = os.path.join(HOME, 'couch', 'data', 'kodi-flavour')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write(word + '\n')
+    print('  %s now says %s' % (path, word))
+    print('  kodi-tv reads it at launch and records the result in '
+          'kodi-flavour-active, which is what the server and couchd read.')
+
+
+def switch(args):
+    print('\n== switch ==')
+    if not app_installed():
+        raise Fail('%s is not installed - kodi-tv would fall back to apt '
+                   'anyway' % APP)
+    _set_flavour('flatpak')
+    print('  Kodi must be restarted for this to take effect. It is NOT '
+          'restarted here:\n'
+          '  a game may be suspended, and that is your call, not mine.')
+    return 0
+
+
+def rollback(args):
+    print('\n== rollback ==')
+    _set_flavour('apt')
+    print('  Nothing was uninstalled. ~/.kodi is untouched apart from its own '
+          'frozen skin copy.')
+    return 0
+
+
+STEPS = {
+    'preflight': preflight,
+    'install': install,
+    'override': override,
+    'profile': profile,
+    'freeze-skin': freeze_skin,
+    'verify': verify,
+    'switch': switch,
+    'rollback': rollback,
+}
+
+ALL = ['preflight', 'install', 'override', 'profile', 'freeze-skin', 'verify']
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__)
+    ap.add_argument('step', choices=list(STEPS) + ['all'])
+    ap.add_argument('--force', action='store_true',
+                    help='proceed with a step that wants Kodi stopped')
+    args = ap.parse_args()
+
+    steps = ALL if args.step == 'all' else [args.step]
+    for name in steps:
+        try:
+            code = STEPS[name](args)
+        except Fail as e:
+            print('\n== %s ==\n  STOPPED: %s' % (name, e))
+            return 1
+        if code:
+            print('\n  %s did not pass - stopping here rather than building '
+                  'on it.' % name)
+            return code
+    if args.step == 'all':
+        print('\nReady. Nothing has switched yet - that is '
+              '`tools/kodi21-migrate switch`, then restart Kodi.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
