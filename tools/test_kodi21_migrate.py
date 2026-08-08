@@ -60,6 +60,15 @@ def mig(tmp_path, monkeypatch):
     # absolute, so kodiprofile's expanduser leaves them exactly as given
     monkeypatch.setattr(module.kodiprofile, 'FLAVOURS',
                         {'apt': str(apt), 'flatpak': str(new)})
+    # ...and the flavour FILES too, or these tests read what the real box
+    # happens to be running. They now do read it: `profile` refuses to write
+    # over a live Flatpak profile, so the live box's own kodi-flavour-active
+    # would fail every copy test here. Injected, so the tests describe the
+    # code and not the living room.
+    monkeypatch.setattr(module.kodiprofile, 'ACTIVE_FILE',
+                        str(tmp_path / 'flavour-active'))
+    monkeypatch.setattr(module.kodiprofile, 'FLAVOUR_FILE',
+                        str(tmp_path / 'flavour-choice'))
 
     class NoRun:
         returncode = 1
@@ -70,7 +79,7 @@ def mig(tmp_path, monkeypatch):
 
     return types.SimpleNamespace(
         mod=module, apt=apt, new=new, skin=skin,
-        args=types.SimpleNamespace(force=False))
+        args=types.SimpleNamespace(force=False, overwrite_live=False))
 
 
 def build_profile(root, gui_version='5.16.0'):
@@ -173,6 +182,39 @@ def test_what_should_not_travel_does_not(mig, unwanted):
     assert not (mig.new / unwanted).exists()
 
 
+def test_a_second_profile_run_never_writes_back_into_the_repo(mig):
+    """AUDIT [A]. The order of the steps sets a trap for the next person who
+    re-runs `profile` to pick up a late settings change:
+
+      * before freeze-skin, ~/.kodi/addons/skin.couch is a SYMLINK, and the
+        copy loop skips symlinks - fine.
+      * after freeze-skin it is a real, frozen xbmc.gui 5.16.0 DIRECTORY,
+        while the target under the Flatpak profile is a symlink into the git
+        checkout. So copying source->target follows that symlink and writes
+        the frozen Nexus skin straight back into the repo, silently
+        un-bumping it to 5.16.0 - which is then the version Kodi 21 refuses.
+
+    On the live box it happened to be skipped only because the two addon.xml
+    files are the same SIZE (5.16.0 and 5.17.0 are the same length) and the
+    repo copy was newer. That is luck, not a guard. skin.couch is owned by
+    freeze-skin and the copy must not consider it at all.
+    """
+    build_skin(mig.skin, '5.16.0')
+    build_profile(mig.apt)
+    apt_addons = mig.apt / 'addons'
+    os.symlink(str(mig.skin), str(apt_addons / 'skin.couch'))
+    mig.mod.freeze_skin(mig.args)                 # repo -> 5.17.0, apt frozen
+
+    # a real edit lands in the repo afterwards, of a different size
+    (mig.skin / '16x9' / 'Home.xml').write_text('<window><!-- new --></window>')
+
+    mig.mod.profile(mig.args)                     # the second run
+
+    assert 'version="5.17.0"' in (mig.skin / 'addon.xml').read_text()
+    assert '<!-- new -->' in (mig.skin / '16x9' / 'Home.xml').read_text()
+    assert 'addons/skin.couch' in mig.mod.PROFILE_SKIP
+
+
 def test_the_copy_checks_the_settings_the_console_rides_on(mig, capsys):
     """A profile that arrives without the webserver is a console with no
     controller handoff, no phone app and no way in - and it would look like
@@ -220,6 +262,49 @@ def test_a_live_kodi_stops_the_copy(mig, monkeypatch):
         mig.mod.profile(mig.args)
     mig.args.force = True
     assert mig.mod.profile(mig.args) == 0          # ...unless you insist
+
+
+def test_a_newer_target_always_wins_whatever_its_size(mig):
+    """AUDIT [A], and it bit for real. The skip test was `target newer AND
+    same size`, which inverts the rule for precisely the files that matter:
+    anything Kodi 21 rewrote to a DIFFERENT length - guisettings.xml gaining
+    a setting, Addons33.db gaining the Omega repository index - failed the
+    size half and was overwritten with the older apt copy. On the live box
+    that reverted the repo index to Nexus. A size difference is evidence the
+    target moved on, not evidence that it is stale."""
+    build_profile(mig.apt)
+    mig.mod.profile(mig.args)
+
+    moved_on = mig.new / 'userdata' / 'guisettings.xml'
+    moved_on.write_text('<settings version="2">much longer, Kodi 21 wrote '
+                        'this and it is a different size entirely</settings>')
+    grown = mig.new / 'userdata' / 'Database' / 'MyVideos121.db'
+    grown.write_bytes(b'sqlite-with-an-omega-index-appended')
+
+    mig.mod.profile(mig.args)
+
+    assert 'Kodi 21 wrote this' in moved_on.read_text()
+    assert grown.read_bytes() == b'sqlite-with-an-omega-index-appended'
+
+
+def test_the_copy_refuses_to_run_over_the_LIVE_profile(mig, monkeypatch):
+    """AUDIT [A]. Once kodi-tv has actually launched the Flatpak, the apt
+    profile is a frozen parachute and copying it forward reverts whatever
+    Kodi 21 has written since. --force is NOT the opt-out for this - it means
+    'Kodi may be running', which is a different and much smaller claim."""
+    build_profile(mig.apt)
+    monkeypatch.setattr(mig.mod.kodiprofile, 'flavour', lambda *a, **k: 'flatpak')
+    mig.args.force = True
+    with pytest.raises(mig.mod.Fail, match='already the LIVE one'):
+        mig.mod.profile(mig.args)
+
+    mig.args.overwrite_live = True
+    assert mig.mod.profile(mig.args) == 0
+
+    # ...and before the cutover it is simply not in the way
+    monkeypatch.setattr(mig.mod.kodiprofile, 'flavour', lambda *a, **k: 'apt')
+    mig.args.overwrite_live = False
+    assert mig.mod.profile(mig.args) == 0
 
 
 # =========================================================================

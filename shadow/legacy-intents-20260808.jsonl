@@ -105,3 +105,7 @@
 {"t": 1786201244.440779, "src": "watcher", "verb": "yield", "subject": "tap", "args": {"gesture": "tap", "action": "home", "reason": "ps-tap", "yielded": true, "owner": "couchd"}}
 {"t": 1786201244.6216443, "src": "guard", "verb": "window_open", "subject": "kodi", "args": {"seconds": 6, "deadline": 1786201250.621622, "target": "kodi"}}
 {"t": 1786201250.76957, "src": "guard", "verb": "window_close", "subject": "kodi", "args": {"fixes": [], "fix_count": 0, "reason": "deadline reached", "target": "kodi"}}
+{"t": 1786215961.3434365, "src": "watcher", "verb": "freeze", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids": [798988, 798993, 1137546], "resolver": "game-pids", "signal": "SIGSTOP", "repair": "reconcile", "reason": "reconcile:refreeze-lost-suspend", "topcls": "Kodi"}}
+{"t": 1786215965.537301, "src": "watcher", "verb": "iconify", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"via": "wm-change-state", "reason": "reconcile:refreeze-lost-suspend", "window": "0x560002f"}}
+{"t": 1786216182.9138472, "src": "watcher", "verb": "freeze", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"pids": [798988, 798993, 1142347], "resolver": "game-pids", "signal": "SIGSTOP", "repair": "reconcile", "reason": "reconcile:refreeze-lost-suspend", "topcls": "Kodi"}}
+{"t": 1786216187.0973248, "src": "watcher", "verb": "iconify", "subject": "/home/ds2000/games/ps4/CUSA00900/eboot.bin", "args": {"via": "wm-change-state", "reason": "reconcile:refreeze-lost-suspend", "window": "0x540000b"}}

@@ -81,6 +81,11 @@ PROFILE_SKIP = {
     'addons/skin.arctic.zephyr.mod':
         'asks for xbmc.gui 5.15.0, which Kodi 21 refuses',
     'addons/temp': 'the addon downloader scratch dir, rebuilt on demand',
+    'addons/skin.couch':
+        'owned by freeze-skin, and DANGEROUS to copy: after freeze-skin the '
+        'source is a real frozen 5.16.0 directory while the target is a '
+        'symlink into the git checkout, so a second `profile` run would write '
+        'the frozen Nexus skin straight through it and back into the repo',
 }
 
 
@@ -238,6 +243,25 @@ def profile(args):
                    'databases mid-write. Stop it first, or --force if you '
                    'know it is idle.')
 
+    # A SECOND, LOUDER GUARD, and --force does not open it.
+    #
+    # Found by the 8 Aug audit, the hard way: `profile --force` was re-run
+    # after the cutover and copied the OLD profile forward onto the LIVE one,
+    # reverting Addons33.db - and with it the Omega repository index that had
+    # taken a minute to correct itself. Nothing was corrupted (the db was
+    # replaced whole, integrity checked ok) but it undid real state under a
+    # running Kodi, which is a thing this step should simply refuse to do.
+    #
+    # Once the Flatpak is the flavour that actually launched, the apt profile
+    # is a frozen parachute and copying it forward is almost never the
+    # intent. Re-running to pick up a late settings change is - hence the
+    # explicit opt-out rather than a flat ban.
+    if kodiprofile.flavour() == 'flatpak' and not args.overwrite_live:
+        raise Fail('the Flatpak profile is already the LIVE one (kodi-tv last '
+                   'launched it), so this would copy the old profile forward '
+                   'over whatever Kodi 21 has written since the cutover.\n'
+                   'If that is genuinely what you want: --overwrite-live')
+
     print('  %s  ->  %s' % (APT_PROFILE, NEW_PROFILE))
     for prefix, why in sorted(PROFILE_SKIP.items()):
         print('  not copied: %-32s %s' % (prefix, why))
@@ -260,9 +284,15 @@ def profile(args):
                 # skin.couch is the one of these, and it is re-made by
                 # freeze-skin rather than copied blind.
                 continue
+            # A NEWER TARGET ALWAYS WINS, whatever its size. The first cut
+            # also required the sizes to match, which inverted the rule for
+            # exactly the files that matter: anything Kodi 21 had rewritten
+            # to a different length - guisettings.xml gaining a setting,
+            # Addons33.db gaining a repo index - failed the size test and was
+            # overwritten with the older apt copy. A size difference is
+            # evidence the target moved on, not evidence it is stale.
             if os.path.exists(target) \
-                    and os.path.getmtime(target) >= os.path.getmtime(source) \
-                    and os.path.getsize(target) == os.path.getsize(source):
+                    and os.path.getmtime(target) >= os.path.getmtime(source):
                 continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copy2(source, target)
@@ -459,6 +489,9 @@ def main():
     ap.add_argument('step', choices=list(STEPS) + ['all'])
     ap.add_argument('--force', action='store_true',
                     help='proceed with a step that wants Kodi stopped')
+    ap.add_argument('--overwrite-live', action='store_true',
+                    help='let `profile` copy the old profile forward even '
+                         'though the Flatpak is the one that launched')
     args = ap.parse_args()
 
     steps = ALL if args.step == 'all' else [args.step]
@@ -466,7 +499,9 @@ def main():
         try:
             code = STEPS[name](args)
         except Fail as e:
-            print('\n== %s ==\n  STOPPED: %s' % (name, e))
+            # The step has usually printed its own header already; don't
+            # print a second one and make it look like two attempts.
+            print('  STOPPED (%s): %s' % (name, e))
             return 1
         if code:
             print('\n  %s did not pass - stopping here rather than building '

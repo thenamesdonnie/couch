@@ -140,14 +140,26 @@ def deploy_link(name, target, addons_dir, report):
     if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(target):
         report.same += 1
         return
+
+    # A REAL DIRECTORY IS NEVER REPLACED. That directory is deliberate: after
+    # `kodi21-migrate freeze-skin`, ~/.kodi/addons/skin.couch is a frozen
+    # xbmc.gui 5.16.0 copy, and it is the only reason a rollback to apt-Kodi
+    # gets a skin at all - the repo has moved to 5.17.0, which Kodi 20
+    # refuses. Symlinking over it would quietly turn the parachute into
+    # Estuary, and the first anyone would know is a Kodi 21 that would not
+    # start. (This function used to move it aside, which is destruction with
+    # extra steps and would have shipped the moment anyone ran
+    # `--profile both`, which the patch-set README now tells them to.)
+    if os.path.isdir(link) and not os.path.islink(link):
+        report.note('%s is a real directory here, left alone - a frozen copy '
+                    'is the point of this profile, not drift' % link)
+        return
+
     report.did('link %s -> %s' % (link, target))
     if report.check:
         return
     if os.path.islink(link) or os.path.exists(link):
-        # A real directory here is somebody's install of the same addon; move
-        # it aside rather than deleting, this script never destroys.
-        shutil.move(link, link + '.replaced')
-        report.note('moved the previous %s aside to %s.replaced' % (name, name))
+        os.remove(link)                       # a stale or wrong symlink only
     os.symlink(target, link)
 
 

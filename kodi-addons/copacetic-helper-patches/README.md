@@ -21,4 +21,7 @@ The helper addon lives only in the Kodi profile and updates would revert:
    /tmp session flags, and a no-op outside a Flatpak. Byte-identical to
    ../couchhost/couchhost.py - tools/test_couchhost.py fails if it drifts.
 Bump the addon version + kodi-send UpdateLocalAddons after re-applying.
-Current local version: 1.1.6.6.
+Current local version: 1.1.8.8 (check the deployed addon.xml, not this line - it
+ has drifted before). Kodi addon updates are set to NOTIFY-ONLY precisely so
+ an upstream release cannot silently overwrite these patches; see
+ docs/audits/kodi21-migration-2026-08.md.
