@@ -496,9 +496,22 @@ def games_route(info, params):
         else:
             title, eboot, icon, thumb = payload
             item = xbmcgui.ListItem(title, offscreen=True)
+            serial0 = os.path.basename(os.path.dirname(eboot))
+            art = {}
             if icon or thumb:
-                item.setArt({'thumb': thumb or icon, 'poster': icon or thumb,
-                             'icon': icon or thumb})
+                art = {'thumb': thumb or icon, 'poster': icon or thumb,
+                       'icon': icon or thumb}
+            # PS4 games have no Steam CDN hero; use a hand-placed 4K hero at
+            # heroes/<serial>.jpg for the home backdrop, else the 1080p pic1.
+            hero = os.path.join(HERO_DIR, '%s.jpg' % serial0)
+            if os.path.isfile(hero):
+                art['fanart'] = hero
+            else:
+                pic1 = os.path.join(os.path.dirname(eboot), 'sce_sys', 'pic1.png')
+                if os.path.isfile(pic1):
+                    art['fanart'] = pic1
+            if art:
+                item.setArt(art)
             serial = os.path.basename(os.path.dirname(eboot))
             item.setProperty('CouchPlaytime', _fmt_playtime(_ps4_playtime_min(serial)))
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
