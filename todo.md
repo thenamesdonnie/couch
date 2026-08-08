@@ -121,6 +121,25 @@ cd ~/couch && couchd/.venv/bin/python tools/kodi21-migrate rollback
 then restart Kodi. Nothing was uninstalled; `~/.kodi` is untouched and has its
 own frozen Nexus copy of the skin.
 
+**AUDITED the same evening** (`docs/audits/kodi21-migration-2026-08.md`).
+Four [A]s, all in the migration's own code and three of them in
+`tools/kodi21-migrate`, whose whole job is to be safe to re-run: deploy-addons
+would have replaced the frozen rollback skin with a symlink to the 5.17.0 repo;
+a second `profile` run could write the frozen Nexus skin back into the git
+checkout; the copy's skip test was `newer AND same size`, so anything Kodi 21
+rewrote to a different LENGTH got reverted (this one fired for real and took
+the Omega repo index with it - repaired); and `profile` had no guard against
+copying forward over the live profile. All fixed, all with tests.
+Decided rather than escalated: **addon updates are now NOTIFY-ONLY** (five
+addons carry hand-applied patches whose only protection is out-ranking the
+repo version); the dead `Custom_1196_Couch_HaloPicker.xml` deleted.
+
+**ONE [B] LEFT FROM THE AUDIT:** `kodi-tv`'s crash-relaunch has never been
+observed through `flatpak run`. The loop keys on exit 131-136/139, the
+in-sandbox `kodi.sh` does `exit $RET`, and `server/sys.js`'s hardened restart
+depends on the same path - but nobody has watched it happen. Next time Kodi is
+being restarted anyway, crash it once and confirm the watchdog brings it back.
+
 **STILL NEEDS DONNIE'S EYES ON THE TV** — nothing else can settle these:
 picture, audio over eARC, 4K120; the DualSense actually driving the UI (the
 map travelled and the pad enumerates with its 13 buttons, but no synthetic
