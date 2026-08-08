@@ -143,6 +143,34 @@ So the hardened restart the phone app offers still works on Kodi 21.
 art now; only the dedicated card shows the screencap (Donnie: "we now have a
 dedicated space"). `tools/test_games_paused_tile.py`.
 
+**EFFICIENCY AUDIT, 8 Aug** (`docs/audits/performance-2026-08.md`). Ten wins
+shipped and measured: /api/windows 215ms -> 0.7ms warm and 210 -> 159ms cold,
+HTTP compression (there was none - library 48.6 -> 17.9 KB), game art resized
+for the phone (1.30 MB -> 316 KB per Games tab; the Bloodborne tile 947 -> 45
+KB), TV volume cached (3.18s -> 0.001s on the DEFAULT tab), three components
+that fetched everything twice at mount (Screen was opening two MJPEG streams),
+Games/Services prefetched, and install sizes moved off the listing - which
+also fixed a real wrong number (Bloodborne read 29.3 GB for a 40.5 GB game;
+the TV now says 41 GB).
+
+TOP REMAINING [A]: composed row tiles are the only art asset with no
+background warmer - 96-181ms per game, 706ms for all five, paid in front of
+the player. `tools/warm-loading-cards` is the precedent. Then Jellyfin poster
+quality 90 -> 80 (-29%), a Sonarr series cache (186 KB per lookup, uncached,
+while Radarr already avoids it twice over), and Cache-Control on JSON.
+
+[D] FOR DONNIE: **the Kodi YouTube plugin is signed out.** Both default feeds
+502, it costs ~3.5s on every YouTube tab open, and the app retries forever.
+Needs the Google device-code sign-in again.
+
+ANSWERED, the paused-card question: the Games row does NOT rebuild on Home -
+Container.Refresh is still a no-op there because Home.xml is KEEP_IN_MEMORY,
+re-tested properly on the Stagelight home. So the minimise ANIMATION is
+instant (~0.2s, a window property) but the card's steady state and the
+"- paused" label wait until you leave the row and come back. A dynamic URL
+string on Home.xml:386 would fix it and is proven to work; it is [C] because a
+rebuild may reset row focus and that wants your eyes.
+
 **STILL NEEDS DONNIE'S EYES ON THE TV** — nothing else can settle these:
 picture, audio over eARC, 4K120; the DualSense actually driving the UI (the
 map travelled and the pad enumerates with its 13 buttons, but no synthetic
