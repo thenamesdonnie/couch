@@ -11,9 +11,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { JELLYFIN_URL } from './config.js';
+import { addonData, userdata } from './kodiprofile.js';
 
-const DATA_JSON = path.join(os.homedir(), '.kodi/userdata/addon_data/plugin.video.jellyfin/data.json');
-const MAP_DB = path.join(os.homedir(), '.kodi/userdata/Database/jellyfin.db');
+// Resolved per call, not once at import: the Kodi 21 Flatpak keeps its profile
+// somewhere else entirely (~/.var/app/tv.kodi.Kodi/data), and this server
+// outlives a flavour flip. A stale path here reads as "Jellyfin credentials
+// unavailable", which looks like Jellyfin being down.
+const dataJson = () => path.join(addonData('plugin.video.jellyfin'), 'data.json');
+const mapDb = () => path.join(userdata(), 'Database', 'jellyfin.db');
 const BASE = JELLYFIN_URL;
 
 let creds = null;
@@ -24,7 +29,7 @@ let views = null;
 // addon's data.json since browsing is scoped to that user's watch state; if the
 // key is not set, fall back to borrowing the addon's token at runtime.
 function readCreds() {
-  const server = JSON.parse(fs.readFileSync(DATA_JSON, 'utf8')).Servers?.[0];
+  const server = JSON.parse(fs.readFileSync(dataJson(), 'utf8')).Servers?.[0];
   if (!server?.UserId) throw new Error('jellyfin credentials unavailable');
   let token = process.env.JELLYFIN_API_KEY || null;
   if (!token) token = server.AccessToken;
@@ -303,7 +308,7 @@ export function kodiIdFor(jellyfinId) {
   if (!/^[0-9a-f]{32}$/.test(jellyfinId)) return Promise.reject(new Error('bad jellyfin id'));
   return new Promise((resolve, reject) => {
     execFile(
-      'sqlite3', ['-readonly', '-json', MAP_DB,
+      'sqlite3', ['-readonly', '-json', mapDb(),
         `select media_type, kodi_id from jellyfin where jellyfin_id='${jellyfinId}'`],
       { timeout: 5000 },
       (err, out) => {

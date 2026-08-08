@@ -36,6 +36,8 @@
               <option label="32025">quit_game</option>
               <option label="32026">tv_toggle</option>
               <option label="32027">desktop</option>
+              <option label="32028">home</option>
+              <option label="32029">context_menu</option>
             </options>
           </constraints>
           <control type="list" format="string">
@@ -64,6 +66,8 @@
               <option label="32025">quit_game</option>
               <option label="32026">tv_toggle</option>
               <option label="32027">desktop</option>
+              <option label="32028">home</option>
+              <option label="32029">context_menu</option>
             </options>
           </constraints>
           <control type="list" format="string">
@@ -84,6 +88,8 @@
               <option label="32025">quit_game</option>
               <option label="32026">tv_toggle</option>
               <option label="32027">desktop</option>
+              <option label="32028">home</option>
+              <option label="32029">context_menu</option>
             </options>
           </constraints>
           <control type="list" format="string">
@@ -104,6 +110,8 @@
               <option label="32025">quit_game</option>
               <option label="32026">tv_toggle</option>
               <option label="32027">desktop</option>
+              <option label="32028">home</option>
+              <option label="32029">context_menu</option>
             </options>
           </constraints>
           <control type="list" format="string">
@@ -124,6 +132,8 @@
               <option label="32025">quit_game</option>
               <option label="32026">tv_toggle</option>
               <option label="32027">desktop</option>
+              <option label="32028">home</option>
+              <option label="32029">context_menu</option>
             </options>
           </constraints>
           <control type="list" format="string">

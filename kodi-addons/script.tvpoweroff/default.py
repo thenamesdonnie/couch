@@ -14,6 +14,8 @@
 import os
 import re
 import struct
+import subprocess
+import sys
 import time
 
 import xbmc
@@ -24,7 +26,25 @@ import xbmcgui
 # decide whether there is a game to quit. couchhost is the crossing; on the
 # apt build every call through it is a plain passthrough.
 # See docs/kodi21-flatpak-migration.md.
-from couchhost import host_popen, host_read
+#
+# Kodi runs this file by path and does not promise the addon dir is on
+# sys.path, and this menu is the room's only way out of a stuck game and its
+# only way to turn the TV off - so the import is bootstrapped AND caught. A
+# half-copied deploy costs the sandbox crossing, never the menu.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from couchhost import host_popen, host_read
+except Exception as _e:  # noqa: BLE001
+    xbmc.log("tvpoweroff: couchhost unavailable (%s), host access direct"
+             % _e, xbmc.LOGWARNING)
+    host_popen = subprocess.Popen
+
+    def host_read(path, timeout=3.0):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        except OSError:
+            return None
 
 MAC = "AA:BB:CC:DD:EE:FF"
 TV = "/home/ds2000/.local/bin/tv"

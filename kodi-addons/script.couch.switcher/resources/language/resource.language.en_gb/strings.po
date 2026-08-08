@@ -101,6 +101,14 @@ msgid "Show the desktop"
 msgstr ""
 
 #: /resources/settings.xml
+msgctxt "#32028"
+msgid "Go home (suspends a running game)"
+msgstr ""
+
+msgctxt "#32029"
+msgid "Steam menu in game / power menu at home"
+msgstr ""
+
 msgctxt "#32030"
 msgid "Timing"
 msgstr ""

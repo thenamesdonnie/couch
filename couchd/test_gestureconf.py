@@ -24,8 +24,14 @@ import gestureconf
 from gestureconf import (ACTIONS, DEFAULT_BINDINGS, DEFAULT_TIMINGS, GESTURES,
                          GestureConfig, build, load, parse, suppress, validate)
 
+# The REPO copy, not the deployed one. Two reasons, both learned on 8 Aug
+# 2026: the deployed copy moves (the Kodi 21 Flatpak keeps its addons under
+# ~/.var/app/tv.kodi.Kodi/data/addons), and a path that moves under a
+# `skipif(not exists)` takes the test with it - the contract would stop being
+# checked and the run would still be green. The repo copy is also what
+# tools/deploy-addons installs, so pinning it pins what actually ships.
 ADDON_SETTINGS = os.path.expanduser(
-    '~/.kodi/addons/script.couch.switcher/resources/settings.xml')
+    '~/couch/kodi-addons/script.couch.switcher/resources/settings.xml')
 
 
 def written(**values):

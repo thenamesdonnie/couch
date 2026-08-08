@@ -4,7 +4,10 @@
 `script.couch.switcher` grows a settings page (Kodi > Add-ons > Program
 add-ons > Couch Switcher > Configure). Kodi writes the chosen values to
 
-    ~/.kodi/userdata/addon_data/script.couch.switcher/settings.xml
+    <kodi profile>/userdata/addon_data/script.couch.switcher/settings.xml
+
+(the profile being ~/.kodi under apt-Kodi and ~/.var/app/tv.kodi.Kodi/data
+under the Kodi 21 Flatpak - see kodiprofile.py)
 
 and this module is the ONE reader of that file. Both stacks import it - the
 live watcher (~/.local/bin/pad-home-watcher) and couchd's shadow model - so a
@@ -102,8 +105,31 @@ TIMING_LIMITS = {
 }
 
 ADDON_ID = 'script.couch.switcher'
-SETTINGS_PATH = os.path.expanduser(
-    f'~/.kodi/userdata/addon_data/{ADDON_ID}/settings.xml')
+
+# Kodi's profile directory stopped being one place on 8 Aug 2026: the Kodi 21
+# Flatpak keeps it at ~/.var/app/tv.kodi.Kodi/data. kodiprofile resolves which
+# build is actually running and answers ~/.kodi until the switch is thrown, so
+# nothing here moves today. Resolved per load() rather than at import, because
+# the watcher outlives a flavour flip and load()'s cache is keyed by path.
+#
+# The import is defensive for the same reason everything else in this file is:
+# reading the bindings is how the room gets out of a game, and a deploy that
+# lands gestureconf.py without kodiprofile.py must cost nothing at all.
+try:
+    from kodiprofile import addon_data as _addon_data
+except ImportError:                                        # pragma: no cover
+    def _addon_data(addon_id, name=None):
+        return os.path.expanduser(f'~/.kodi/userdata/addon_data/{addon_id}')
+
+
+def settings_path():
+    """Where Kodi writes this addon's settings, for the running build."""
+    return os.path.join(_addon_data(ADDON_ID), 'settings.xml')
+
+
+#: Kept as a module attribute because tests and humans reach for it, but it is
+#: the apt answer frozen at import - callers wanting the truth call load().
+SETTINGS_PATH = settings_path()
 
 #: setting ids in resources/settings.xml -> our field names
 BINDING_SETTING = {f'gesture.{g}': g for g in GESTURES}
@@ -312,7 +338,7 @@ def load(path=None, force=False, previous=None):
     file that has never been written (the user has not opened the settings
     page yet) is not an error - it is the default console.
     """
-    path = path or SETTINGS_PATH
+    path = path or settings_path()
     stamp = _stamp(path)
     cached = _CACHE.get(path)
     if not force and cached is not None and cached.stamp == stamp:

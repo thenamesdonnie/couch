@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Put our Kodi addons where the running Kodi will find them.
+
+Until now this was five hand-run `cp -r`s, and it showed: by 8 Aug 2026 the
+deployed `script.couch.switcher` had two gesture actions (`home`,
+`context_menu`) that the repo copy did not, so the repo was quietly the stale
+one and `couchd/gestureconf.py`'s contract test was pinning the wrong file.
+
+The Kodi 21 migration makes hand-copying untenable rather than merely
+unwise, because there are now two profiles:
+
+    apt      ~/.kodi
+    flatpak  ~/.var/app/tv.kodi.Kodi/data
+
+so every deploy is two deploys for as long as apt-Kodi is the rollback.
+
+WHAT IS COPIED AND WHAT IS LINKED, and why:
+
+  * our own addons are COPIED. Kodi rewrites files inside an addon directory
+    (settings, __pycache__), and a symlinked addon means Kodi writing into the
+    git checkout.
+  * `skin.couch` is SYMLINKED, and has been since 7 Aug. It is 43 MB, it is
+    edited constantly, and edit-in-repo/reload-on-TV is the entire working
+    method. NOTE the symlink is only correct while the target is visible to
+    Kodi: inside the Flatpak that means `--filesystem=home` is load-bearing
+    for the skin itself, not just for its artwork.
+  * the `script.copacetic.helper` patches are FILE DROPS into a third-party
+    addon, so they are listed explicitly rather than copied as a tree. The two
+    patches that are edits rather than replacements - the `skin.couch` gate in
+    monitor.py and the `reuselanguageinvoker` metadata - are NOT applied here;
+    they are checked and reported, because silently rewriting somebody else's
+    source is how you lose track of what you have changed.
+
+Nothing here ever deletes. A file that exists in the profile and not in the
+repo is reported, never removed: the profile is also where Kodi puts things
+that are none of our business.
+
+Usage:
+    tools/deploy-addons --check                 what differs, touch nothing
+    tools/deploy-addons                         deploy to the running flavour
+    tools/deploy-addons --profile flatpak       deploy to the other one
+    tools/deploy-addons --profile both
+"""
+import argparse
+import filecmp
+import os
+import shutil
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'couchd'))
+import kodiprofile                                              # noqa: E402
+
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     '..'))
+ADDON_SRC = os.path.join(REPO, 'kodi-addons')
+
+#: copied wholesale, repo -> profile/addons/<same name>
+OWN_ADDONS = [
+    'script.couch.switcher',
+    'script.couch.refresh',
+    'service.couch.autoroute',
+    'context.couch.playontv',
+    'script.tvpoweroff',
+]
+
+#: symlinked, not copied
+LINKED_ADDONS = {
+    'skin.couch': os.path.join(ADDON_SRC, 'skin.couch'),
+}
+
+#: file drops into third-party addons: (addon id, source, path inside addon)
+FILE_DROPS = [
+    ('script.copacetic.helper',
+     'copacetic-helper-patches/games.py', 'resources/lib/plugin/games.py'),
+    ('script.copacetic.helper',
+     'copacetic-helper-patches/achievements.py',
+     'resources/lib/plugin/achievements.py'),
+    ('script.copacetic.helper',
+     'copacetic-helper-patches/nextup.py', 'resources/lib/plugin/nextup.py'),
+    ('script.copacetic.helper',
+     'copacetic-helper-patches/plugin-main.py',
+     'resources/lib/plugin/main.py'),
+    # games.py imports this from beside itself, so it lands in the same dir.
+    ('script.copacetic.helper',
+     'couchhost/couchhost.py', 'resources/lib/plugin/couchhost.py'),
+]
+
+#: edits we make to other people's files - reported, never applied
+HAND_PATCHES = [
+    ('script.copacetic.helper', 'resources/lib/service/monitor.py',
+     'skin.couch', "the _get_skindir gate that lets the helper serve our skin"),
+    ('script.copacetic.helper', 'addon.xml',
+     'reuselanguageinvoker',
+     'the Py3.12 teardown mitigation - RE-DECIDE on Kodi 21 rather than '
+     're-applying by reflex (docs/kodi21-flatpak-migration.md)'),
+]
+
+IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store')
+
+
+class Report:
+    def __init__(self, check):
+        self.check = check
+        self.changed = []
+        self.same = 0
+        self.notes = []
+
+    def did(self, what):
+        self.changed.append(what)
+        print(('would ' if self.check else '') + what)
+
+    def note(self, what):
+        self.notes.append(what)
+        print('  note: ' + what)
+
+
+def deploy_tree(src, dst, report):
+    """Copy src over dst, file by file, reporting only what actually moves."""
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        for name in files:
+            if name.endswith('.pyc'):
+                continue
+            source = os.path.join(root, name)
+            target = os.path.join(dst, os.path.relpath(source, src))
+            if os.path.exists(target) and filecmp.cmp(source, target,
+                                                      shallow=False):
+                report.same += 1
+                continue
+            report.did('copy %s -> %s' % (os.path.relpath(source, REPO),
+                                          target))
+            if not report.check:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(source, target)
+
+
+def deploy_link(name, target, addons_dir, report):
+    link = os.path.join(addons_dir, name)
+    if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(target):
+        report.same += 1
+        return
+    report.did('link %s -> %s' % (link, target))
+    if report.check:
+        return
+    if os.path.islink(link) or os.path.exists(link):
+        # A real directory here is somebody's install of the same addon; move
+        # it aside rather than deleting, this script never destroys.
+        shutil.move(link, link + '.replaced')
+        report.note('moved the previous %s aside to %s.replaced' % (name, name))
+    os.symlink(target, link)
+
+
+def deploy(flavour, check):
+    root = kodiprofile.profile_dir(flavour)
+    addons = kodiprofile.addons_dir(flavour)
+    print('\n== %s profile: %s ==' % (flavour, root))
+    report = Report(check)
+    if not os.path.isdir(root):
+        print('  the profile does not exist yet - nothing to deploy into')
+        return report
+    os.makedirs(addons, exist_ok=True)
+
+    for name in OWN_ADDONS:
+        src = os.path.join(ADDON_SRC, name)
+        if not os.path.isdir(src):
+            report.note('%s is not in the repo' % name)
+            continue
+        deploy_tree(src, os.path.join(addons, name), report)
+
+    for name, target in LINKED_ADDONS.items():
+        deploy_link(name, target, addons, report)
+
+    for addon, source, inside in FILE_DROPS:
+        addon_dir = os.path.join(addons, addon)
+        if not os.path.isdir(addon_dir):
+            report.note('%s is not installed here, skipping its patches'
+                        % addon)
+            continue
+        src = os.path.join(ADDON_SRC, source)
+        target = os.path.join(addon_dir, inside)
+        if os.path.exists(target) and filecmp.cmp(src, target, shallow=False):
+            report.same += 1
+            continue
+        report.did('drop %s -> %s' % (source, target))
+        if not check:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(src, target)
+
+    for addon, inside, needle, why in HAND_PATCHES:
+        path = os.path.join(addons, addon, inside)
+        try:
+            with open(path, encoding='utf-8', errors='replace') as handle:
+                present = needle in handle.read()
+        except OSError:
+            report.note('%s/%s is missing - cannot check for %r (%s)'
+                        % (addon, inside, needle, why))
+            continue
+        if not present:
+            report.note('HAND PATCH ABSENT in %s/%s: %r - %s'
+                        % (addon, inside, needle, why))
+
+    print('  %d file(s) already current' % report.same)
+    return report
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--profile', default=None,
+                    choices=list(kodiprofile.FLAVOURS) + ['both'],
+                    help='default: whichever flavour kodi-tv last launched')
+    ap.add_argument('--check', action='store_true',
+                    help='report what would change and write nothing')
+    args = ap.parse_args()
+
+    which = args.profile or kodiprofile.flavour()
+    flavours = list(kodiprofile.FLAVOURS) if which == 'both' else [which]
+    changed = 0
+    for flavour in flavours:
+        changed += len(deploy(flavour, args.check).changed)
+
+    if changed and not args.check:
+        print('\nA deployed python change does not take effect until Kodi '
+              'restarts - the helper parks its interpreter.')
+    return 1 if (changed and args.check) else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

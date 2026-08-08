@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Launches Kodi the way a television wants it, rather than the way a desk does.
+#
+# A monitor going dark after ten minutes is a screensaver; a television going
+# dark in the middle of a film is a fault. X blanking is off here rather than in
+# Kodi's own settings because it's the X server that does it, and it does it to
+# whatever is on screen — including the desktop you drop out to when you quit.
+set -euo pipefail
+
+# Never two consoles. Crash-relaunch races produced TWIN Kodi instances twice
+# on 7-8 Aug 2026 (both bound UDP 9777 and one owned the JSON-RPC port while
+# the other owned the screen - a split brain that ate commands and served
+# stale plugin listings). One wrapper per box, enforced, silently.
+#
+# This lock is also what stops the two FLAVOURS below running at once, which
+# would be the same split brain with two different profiles behind it.
+exec 200>/tmp/kodi-tv.lock
+flock -n 200 || exit 0
+
+# ---------------------------------------------------------------------------
+# Which Kodi
+# ---------------------------------------------------------------------------
+# Ubuntu stops at Kodi 20, so 21 arrives as a Flatpak and both stay installed:
+# apt-Kodi is the rollback for as long as it needs to be, and switching back is
+# meant to be one word in one file, not an uninstall.
+#
+#   $KODI_FLAVOUR            - for a one-off ("try the other one, once")
+#   ~/couch/data/kodi-flavour - the standing choice
+#   apt                       - what a box with neither has been running all along
+#
+# The resolved answer is written to kodi-flavour-active before launch, and that
+# file is what couchd/kodiprofile.py and server/kodiprofile.js read to find
+# userdata - because the Flatpak keeps its profile at
+# ~/.var/app/tv.kodi.Kodi/data, not ~/.kodi.
+FLAVOUR_FILE="$HOME/couch/data/kodi-flavour"
+ACTIVE_FILE="$HOME/couch/data/kodi-flavour-active"
+FLATPAK_APP_ID="tv.kodi.Kodi"
+
+flavour="${KODI_FLAVOUR:-}"
+if [ -z "$flavour" ] && [ -r "$FLAVOUR_FILE" ]; then
+  flavour=$(tr -d '[:space:]' < "$FLAVOUR_FILE")
+fi
+case "$flavour" in
+  apt|flatpak) ;;
+  *) flavour=apt ;;
+esac
+
+# A chosen flavour that is not actually installed must not strand the TV on a
+# desktop: say so and fall back to the one that is certainly there.
+if [ "$flavour" = flatpak ] && ! flatpak info "$FLATPAK_APP_ID" >/dev/null 2>&1; then
+  echo "kodi-tv: $FLATPAK_APP_ID is not installed, falling back to apt Kodi" >&2
+  flavour=apt
+fi
+
+mkdir -p "$(dirname "$ACTIVE_FILE")"
+printf '%s\n' "$flavour" > "$ACTIVE_FILE"
+
+if [ "$flavour" = apt ]; then
+  # inputstream.adaptive (for YouTube etc.) was installed into the user addon
+  # dir from the Debian package rather than system-wide, and its .so needs
+  # libwebm, which was placed in ~/.local/lib. No rpath points there, so put it
+  # on the library path before Kodi dlopen()s the addon.
+  #
+  # The Flatpak build compiles inputstream.adaptive into the app itself
+  # (addon-list.txt in the Flathub manifest), so it neither needs this nor
+  # wants it - flatpak clears the environment anyway, but leaving a
+  # /usr/lib-flavoured LD_LIBRARY_PATH lying around near a sandbox is asking
+  # for a confusing hour.
+  export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# The screen, the sound, the room. All host-side, both flavours.
+# ---------------------------------------------------------------------------
+xset s off
+xset s noblank
+xset -dpms
+
+# ForceFullCompositionPipeline REMOVED 6 Aug 2026 (Donnie's call): stacked under
+# xfwm4's compositor it double-composited games ("Steam says 60fps, feels 20" -
+# root cause + evidence in couch/docs/acceptance-20260806.md). The xfwm4
+# compositor alone covers tearing; if Kodi playback ever tears again, prefer a
+# session-conditional reapply over restoring the unconditional line.
+# The AMD twin of the line above (for after the 9070 XT swap): TearFree on the
+# amdgpu DDX does the same job. Errors harmlessly while the NVIDIA card is in.
+xrandr --output "$(xrandr 2>/dev/null | awk '/ connected/{print $1; exit}')" --set TearFree on >/dev/null 2>&1 || true
+
+# 4K120 through the DP->HDMI adapter (8 Aug 2026): the TV takes this mode in
+# 4:2:0 only (couch-4k120.service flips the driver switch at boot); the mode
+# itself is not in the EDID list so it is created by hand each session and
+# applied. Every step tolerates absence - a different TV or kernel just
+# leaves the desktop at its default mode.
+OUT=$(xrandr 2>/dev/null | awk '/ connected/{print $1; exit}')
+xrandr --newmode "4k120" 1188.00 3840 4016 4104 4400 2160 2168 2178 2250 +hsync +vsync >/dev/null 2>&1 || true
+xrandr --addmode "$OUT" 4k120 >/dev/null 2>&1 || true
+xrandr --output "$OUT" --mode 4k120 >/dev/null 2>&1 || true
+
+# Wait for sound before starting. Kodi builds its audio engine once, at startup; if
+# PipeWire is not answering yet — which this early in the session it often is not —
+# that engine comes up dead and never recovers, and every film freezes every couple
+# of seconds waiting on a sink that will not open. So hold until the sound server
+# actually replies, up to fifteen seconds, then go regardless rather than hang.
+for _ in $(seq 30); do
+  if pactl info >/dev/null 2>&1; then break; fi
+  sleep 0.5
+done
+
+# Kodi sometimes comes up MUTED (volume left at 0 / mute flag), which on a TV
+# reads as "the sound is broken". The old autoexec.py fix never ran (Kodi 20
+# dropped autoexec). Volume is now controlled with the pad's bumpers, so this
+# only UNMUTES at boot and leaves the level alone — whatever you set last
+# sticks. The audio engine (PipeWire/ActiveAE) can re-mute a beat after home
+# appears, so unmute is re-asserted across that settle.
+#
+# Flavour-independent: the webserver settings travel with the profile, so the
+# Flatpak answers on the same :8090 with the same credentials.
+(
+  unmute() {
+    curl -s -m 3 -u kodi:$KODI_PASSWORD -H 'content-type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"Application.SetMute","params":{"mute":false}}' \
+      http://localhost:8090/jsonrpc >/dev/null
+  }
+  for _ in $(seq 60); do
+    curl -s -m 2 -u kodi:$KODI_PASSWORD -H 'content-type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"XBMC.GetInfoBooleans","params":{"booleans":["Window.IsVisible(home)"]}}' \
+      http://localhost:8090/jsonrpc 2>/dev/null | grep -q 'true' && break
+    sleep 2
+  done
+  unmute
+  for _ in $(seq 12); do
+    sleep 3
+    curl -s -m 2 -u kodi:$KODI_PASSWORD -H 'content-type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"Application.GetProperties","params":{"properties":["muted"]}}' \
+      http://localhost:8090/jsonrpc 2>/dev/null | grep -q '"muted":false' || unmute
+  done
+) &
+
+# ---------------------------------------------------------------------------
+# Run it, and come back up if it segfaults
+# ---------------------------------------------------------------------------
+# Kodi 20 built against Python 3.12 can still, rarely, crash while an addon
+# interpreter shuts down during the startup library sync; the Debian wrapper
+# writes a crash log but does not relaunch, which would strand the TV on the
+# desktop. Three tries is plenty. A box that crashes three times in a row has a
+# real problem that a loop would only paper over.
+#
+# The loop is kept for the Flatpak too, on purpose. Getting rid of it is one of
+# the reasons for moving to 21 - but "the Python teardown bug is gone" is a
+# claim about a crash that happens on a third to a half of COLD BOOTS, and it
+# cannot be retired from a work-day session with the TV in standby. The
+# retirement criterion is written down in docs/kodi21-flatpak-migration.md:
+# fourteen days with no kodi_crashlog-* under the Flatpak's data dir.
+#
+# The exit codes still mean the same thing on the new path: the kodi.sh inside
+# the sandbox `exit $RET`s its child's status, and flatpak run passes that back.
+launch() {
+  if [ "$flavour" = flatpak ]; then
+    flatpak run "$FLATPAK_APP_ID" "$@"
+  else
+    kodi "$@"
+  fi
+}
+
+tries=0
+while :; do
+  ret=0
+  began=$(date +%s)
+  launch "$@" || ret=$?
+  case $ret in
+    131|132|133|134|135|136|139) ;;
+    *) exit $ret ;;
+  esac
+  # A crash after a good long run is a fresh incident, not attempt two.
+  if [ $(($(date +%s) - began)) -ge 120 ]; then tries=0; fi
+  tries=$((tries + 1))
+  if [ $tries -ge 3 ]; then exit $ret; fi
+  sleep 2
+done
