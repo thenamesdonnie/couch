@@ -1616,6 +1616,27 @@ def action_intents(o, gesture_name, appid, running, defer_handoff=False):
                        {'via': 'kodi-jsonrpc:GUI.ActivateWindow shutdownmenu'},
                        reason, _pred('currentwindow == 10106', 3.0),
                        requires=('gesture',), cooldown=3.0)]
+    if action == 'home':
+        # In a game this IS the suspend escape; on the home screen it is just
+        # a window activation. Mirrors act()'s SESSION check via the model's
+        # session_present.
+        if o.session_present:
+            return _suspend_intents(o, appid, running, reason, defer_handoff)
+        return [Intent('show', 'home',
+                       {'via': 'kodi-jsonrpc:GUI.ActivateWindow home'},
+                       reason, _pred('currentwindow == 10000', 3.0),
+                       requires=('gesture',), cooldown=3.0)]
+    if action == 'context_menu':
+        # PS5 hold: Steam's menu over a running game, power menu otherwise.
+        if o.session_present:
+            return [Intent('show', 'steam-menu', {'via': 'vpad-guide'},
+                           reason, _pred('steam menu routed', 3.0),
+                           requires=('gesture',),
+                           cooldown=MENU_TOGGLE_COOLDOWN)]
+        return [Intent('show', 'power-menu',
+                       {'via': 'kodi-jsonrpc:GUI.ActivateWindow shutdownmenu'},
+                       reason, _pred('currentwindow == 10106', 3.0),
+                       requires=('gesture',), cooldown=3.0)]
     if action == 'quit_game':
         if not o.session_present:
             return []       # nothing to quit; game-launch would no-op too

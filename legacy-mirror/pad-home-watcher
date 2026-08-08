@@ -875,7 +875,32 @@ def act_desktop(gname, reason):
     background(_activate, 'desktop')
 
 
+def act_home(gname, reason):
+    """`home` with no game running: land on Couch Home. (With a game
+    running act() routes this through act_suspend instead - same escape as
+    the original hold, so the PS5-style tap keeps the safety rail.)"""
+    say(f'{LABELS.get(gname, gname)}: home')
+    intent('show', 'home', gesture=gname, reason=reason,
+           via='kodi-jsonrpc:GUI.ActivateWindow home')
+    try:
+        focus_kodi(gname)
+        jrpc('GUI.ActivateWindow', {'window': 'home'})
+    except (OSError, ValueError) as e:
+        say(f'home failed: {e}')
+
+
+def act_context_menu(gname, reason):
+    """`context_menu`, the PS5 hold: Steam's menu over a running game,
+    Kodi's power menu anywhere else."""
+    if os.path.exists(SESSION):
+        act_steam_menu(gname, reason)
+    else:
+        act_power_menu(gname, reason)
+
+
 ACTIONS = {
+    'home': act_home,
+    'context_menu': act_context_menu,
     'switcher': act_switcher,
     'steam_menu': act_steam_menu,
     'power_menu': act_power_menu,
@@ -936,6 +961,8 @@ def act(gesture, c, defer_handoff=False):
         return False
     try:
         if action == 'suspend_to_kodi':
+            return act_suspend(gname, reason, defer_handoff)
+        if action == 'home' and os.path.exists(SESSION):
             return act_suspend(gname, reason, defer_handoff)
         fn = ACTIONS.get(action)
         if fn is None:

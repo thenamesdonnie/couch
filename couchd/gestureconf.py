@@ -67,7 +67,12 @@ GESTURES = ('tap', 'double_tap', 'hold', 'hold_release', 'long_hold')
 #: the watcher (as an effect) and couchd (as an intent); adding one here
 #: without adding it to both is a bug the tests catch.
 ACTIONS = ('none', 'suspend_to_kodi', 'switcher', 'steam_menu', 'power_menu',
-           'quit_game', 'tv_toggle', 'desktop')
+           'quit_game', 'tv_toggle', 'desktop', 'home', 'context_menu')
+
+#: actions that also get you out of a running game (the rail accepts them):
+#: `home` IS suspend_to_kodi whenever a game session exists - it only differs
+#: on the home screen, where there is nothing to escape from.
+ESCAPE_EQUIVALENT = ('suspend_to_kodi', 'home')
 
 #: the action that must always be reachable (the safety rail)
 ESCAPE_ACTION = 'suspend_to_kodi'
@@ -256,7 +261,7 @@ def validate(bindings, previous=None):
     after the rail forces `hold`, because forcing it may now shadow something.
     """
     effective, warnings = suppress(bindings)
-    if ESCAPE_ACTION in effective.values():
+    if any(a in effective.values() for a in ESCAPE_EQUIVALENT):
         return effective, warnings
     forced = DEFAULT_BINDINGS['hold']
     if previous is not None and previous.bindings.get('hold') == ESCAPE_ACTION:

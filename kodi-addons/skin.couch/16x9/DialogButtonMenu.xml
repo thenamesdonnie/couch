@@ -1,124 +1,102 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- shutdownmenu, Stagelight (8 Aug 2026). The power menu the PS-hold and the
-     corner power icon open. Replaces Copacetic's DialogButtonMenu with the
-     same bottom-sheet + tile-rail grammar as the switcher: a scrim, a sheet
-     that slides up, and a row of rounded tiles with the amber halo on focus.
-     Self-contained: explicit power items rather than skinshortcuts, so it
-     needs no per-user config and cannot inherit Copacetic styling. -->
+<!-- shutdownmenu, Stagelight v2 (8 Aug 2026, "that screen needs redone").
+     PS5's power screen shape: the whole room goes dark and a compact centered
+     row of circular glyph buttons floats mid-screen, the focused one lifting
+     with the amber halo and naming itself beneath. Opened by the PS-hold on
+     the home screen (context_menu) and the corner power icon.
+     Self-contained: explicit power items, no skinshortcuts. -->
 <window>
 	<defaultcontrol always="true">3001</defaultcontrol>
-	<animation effect="fade" start="0" end="100" time="180" tween="sine" easing="out">WindowOpen</animation>
+	<animation effect="fade" start="0" end="100" time="200" tween="sine" easing="out">WindowOpen</animation>
 	<animation effect="fade" start="100" end="0" time="160" tween="sine" easing="in">WindowClose</animation>
 	<zorder>3</zorder>
 	<controls>
 
-		<!-- scrim -->
+		<!-- the room goes dark -->
 		<control type="image">
 			<left>0</left>
 			<top>0</top>
 			<width>1920</width>
 			<height>1080</height>
-			<texture colordiffuse="b3000000">couch/white.png</texture>
+			<texture colordiffuse="ee06080c">couch/white.png</texture>
+		</control>
+
+		<!-- clock, top right, same seat as home -->
+		<control type="label">
+			<left>1544</left>
+			<top>40</top>
+			<width>280</width>
+			<height>44</height>
+			<font>Couch_Label</font>
+			<textcolor>b4eceef1</textcolor>
+			<align>right</align>
+			<label>$INFO[System.Time]</label>
 		</control>
 
 		<control type="group">
-			<animation effect="slide" start="0,140" end="0,0" time="260" tween="cubic" easing="out">WindowOpen</animation>
-			<animation effect="slide" start="0,0" end="0,140" time="180" tween="cubic" easing="in">WindowClose</animation>
+			<animation effect="slide" start="0,60" end="0,0" time="260" tween="cubic" easing="out">WindowOpen</animation>
 
-			<!-- sheet -->
-			<control type="image">
-				<left>0</left>
-				<top>720</top>
-				<width>1920</width>
-				<height>360</height>
-				<texture colordiffuse="f20a0c10">couch/white.png</texture>
-			</control>
-			<control type="image">
-				<left>0</left>
-				<top>720</top>
-				<width>1920</width>
-				<height>3</height>
-				<texture colordiffuse="ffe8a849">couch/white.png</texture>
-			</control>
-			<control type="label">
-				<left>96</left>
-				<top>748</top>
-				<width>1728</width>
-				<height>44</height>
-				<font>Couch_Label</font>
-				<textcolor>ff8a93a0</textcolor>
-				<label>Power</label>
-			</control>
-
+			<!-- the row: five 176px seats, centred as a block -->
 			<control type="list" id="3001">
-				<left>96</left>
-				<top>812</top>
-				<width>1730</width>
-				<height>210</height>
+				<left>520</left>
+				<top>420</top>
+				<width>880</width>
+				<height>280</height>
 				<orientation>horizontal</orientation>
-				<scrolltime tween="sine" easing="out">210</scrolltime>
+				<scrolltime tween="sine" easing="out">180</scrolltime>
 				<onup>Close</onup>
-				<itemlayout width="300" height="210">
+				<ondown>Close</ondown>
+				<itemlayout width="176" height="280">
 					<control type="image">
-						<left>20</left>
-						<top>10</top>
-						<width>260</width>
-						<height>150</height>
-						<texture border="24" colordiffuse="ff161a22">couch/libtile.png</texture>
+						<left>34</left>
+						<top>60</top>
+						<width>108</width>
+						<height>108</height>
+						<texture border="48" colordiffuse="ff141821">couch/glyph.png</texture>
 					</control>
 					<control type="image">
-						<left>130</left>
-						<top>44</top>
-						<width>40</width>
-						<height>40</height>
-						<texture colordiffuse="d2eceef1">$INFO[ListItem.Icon]</texture>
-					</control>
-					<control type="label">
-						<left>20</left>
-						<top>104</top>
-						<width>260</width>
-						<height>40</height>
-						<font>Couch_Caption</font>
-						<textcolor>d2eceef1</textcolor>
-						<align>center</align>
-						<label>$INFO[ListItem.Label]</label>
+						<left>66</left>
+						<top>92</top>
+						<width>44</width>
+						<height>44</height>
+						<texture colordiffuse="a0eceef1">$INFO[ListItem.Icon]</texture>
 					</control>
 				</itemlayout>
-				<focusedlayout width="300" height="210">
+				<focusedlayout width="176" height="280">
 					<control type="image">
-						<left>4</left>
-						<top>-6</top>
-						<width>292</width>
-						<height>182</height>
-						<texture border="48" infill="false" colordiffuse="c8e8a849">couch/halo-glow.png</texture>
+						<left>16</left>
+						<top>42</top>
+						<width>144</width>
+						<height>144</height>
+						<texture border="60" infill="false" colordiffuse="c8e8a849">couch/halo-glow.png</texture>
 					</control>
 					<control type="image">
-						<left>4</left>
-						<top>-6</top>
-						<width>292</width>
-						<height>182</height>
-						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+						<left>26</left>
+						<top>52</top>
+						<width>124</width>
+						<height>124</height>
+						<texture border="52" colordiffuse="ff1d2430">couch/glyph.png</texture>
 					</control>
 					<control type="image">
-						<left>20</left>
-						<top>10</top>
-						<width>260</width>
-						<height>150</height>
-						<texture border="24" colordiffuse="ff1b212c">couch/libtile.png</texture>
+						<left>26</left>
+						<top>52</top>
+						<width>124</width>
+						<height>124</height>
+						<texture border="52" infill="false" colordiffuse="e6ffffff">couch/ring.png</texture>
 					</control>
 					<control type="image">
-						<left>130</left>
-						<top>44</top>
-						<width>40</width>
-						<height>40</height>
+						<left>62</left>
+						<top>88</top>
+						<width>52</width>
+						<height>52</height>
 						<texture colordiffuse="ffeceef1">$INFO[ListItem.Icon]</texture>
 					</control>
 					<control type="label">
-						<left>20</left>
-						<top>104</top>
-						<width>260</width>
+						<left>-62</left>
+						<top>216</top>
+						<width>300</width>
 						<height>40</height>
-						<font>Couch_Caption</font>
+						<font>Couch_Label</font>
 						<textcolor>ffeceef1</textcolor>
 						<align>center</align>
 						<label>$INFO[ListItem.Label]</label>

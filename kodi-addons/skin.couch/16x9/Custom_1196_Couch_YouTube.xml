@@ -62,7 +62,7 @@
 			<left>24</left>
 			<top>140</top>
 			<width>312</width>
-			<height>560</height>
+			<height>648</height>
 			<onright>6200</onright>
 			<onback>Action(Close)</onback>
 			<scrolltime tween="sine" easing="out">160</scrolltime>
@@ -151,6 +151,11 @@
 					<label>Search</label>
 					<icon>couch/ic-search.png</icon>
 					<onclick>ActivateWindow(videos,plugin://plugin.video.youtube/kodion/search/list/?category_label=Search,return)</onclick>
+				</item>
+				<item>
+					<label>Couch Home</label>
+					<icon>couch/ic-home.png</icon>
+					<onclick>ActivateWindow(home)</onclick>
 				</item>
 			</content>
 		</control>
