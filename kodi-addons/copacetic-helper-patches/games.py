@@ -172,6 +172,12 @@ def _ach_refresh():
             open(ACH_STAMP, 'w').close()
             subprocess.Popen(['python3', ACH_FETCHER], start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            trophies = os.path.expanduser('~/couch/tools/ps4-trophies')
+            if os.path.isfile(trophies):
+                subprocess.Popen(['python3', trophies, '--placeholder'],
+                                 start_new_session=True,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
