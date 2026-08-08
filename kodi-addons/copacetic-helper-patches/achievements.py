@@ -27,6 +27,7 @@ def achievements_route(params):
         icon = a.get('icon', '')
         li.setArt({'thumb': icon, 'icon': icon})
         li.setProperty('desc', a.get('desc', ''))
+        li.setProperty('rarity', a.get('rarity', ''))
         li.setProperty('unlocked', '1' if a.get('unlocked') else '')
         li.setInfo('game', {'title': a.get('name', ''),
                             'plot': a.get('desc', '')})

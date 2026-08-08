@@ -250,8 +250,55 @@ def _games():
             last = int(_field('LastPlayed', txt) or 0)
         except ValueError:
             last = 0
-        out.append((name, appid, max(last, _stamp(appid))))
-    return out  # (name, appid, last); games_route sorts the merged row
+        try:
+            size = int(_field('SizeOnDisk', txt) or 0)
+        except ValueError:
+            size = 0
+        out.append((name, appid, max(last, _stamp(appid)), size))
+    return out  # (name, appid, last, size); games_route sorts the merged row
+
+
+SIZE_CACHE = os.path.expanduser('~/.local/share/game-tiles/sizes.json')
+
+
+def _fmt_size(nbytes):
+    if nbytes <= 0:
+        return ''
+    gb = nbytes / 1073741824.0
+    if gb >= 10:
+        return '%d GB' % round(gb)
+    if gb >= 1:
+        return '%.1f GB' % gb
+    return '%d MB' % max(1, round(nbytes / 1048576.0))
+
+
+def _dir_size_cached(path):
+    try:
+        cache = json.load(open(SIZE_CACHE))
+    except Exception:
+        cache = {}
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return 0
+    ent = cache.get(path)
+    if ent and ent[0] == mtime:
+        return ent[1]
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    cache[path] = [mtime, total]
+    try:
+        tmp = SIZE_CACHE + '.part'
+        json.dump(cache, open(tmp, 'w'))
+        os.replace(tmp, SIZE_CACHE)
+    except OSError:
+        pass
+    return total
 
 
 def _art(appid):
@@ -414,8 +461,8 @@ def games_route(info, params):
     # leads with whatever was played last regardless of platform. Never-played
     # (last 0) fall to the end, alphabetical. The app tiles come after.
     entries = []  # (last, name_lower, kind, payload)
-    for name, appid, last in _games():
-        entries.append((last, name.lower(), 'steam', (name, appid)))
+    for name, appid, last, size in _games():
+        entries.append((last, name.lower(), 'steam', (name, appid, size)))
     for title, eboot, icon, thumb, last in _ps4_games():
         entries.append((last, title.lower(), 'ps4', (title, eboot, icon, thumb)))
     entries.sort(key=lambda e: (-e[0], e[1]))
@@ -423,7 +470,7 @@ def games_route(info, params):
     li = []
     for last, _key, kind, payload in entries:
         if kind == 'steam':
-            name, appid = payload
+            name, appid, size = payload
             label = f'{name} · paused' if appid == suspended else name
             item = xbmcgui.ListItem(label, offscreen=True)
             art = _art(appid)
@@ -437,6 +484,7 @@ def games_route(info, params):
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
             if ach.get(appid):
                 item.setProperty('CouchAchievements', ach[appid] + ' achievements')
+            item.setProperty('CouchSize', _fmt_size(size))
             item.setProperty('appid', appid)
             li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
         else:
@@ -448,6 +496,10 @@ def games_route(info, params):
             serial = os.path.basename(os.path.dirname(eboot))
             item.setProperty('CouchPlaytime', _fmt_playtime(_ps4_playtime_min(serial)))
             item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
+            if ach.get(serial):
+                item.setProperty('CouchAchievements', ach[serial] + ' trophies')
+            item.setProperty('CouchSize', _fmt_size(_dir_size_cached(os.path.dirname(eboot))))
+            item.setProperty('appid', serial)
             gid = 'ps4:' + urllib.parse.quote(eboot, safe='')
             li.append((f'{sys.argv[0]}?info=launch_game&id={gid}', item, False))
 

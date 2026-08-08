@@ -348,7 +348,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=5</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=6</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -380,7 +380,7 @@
 			<height>40</height>
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
-			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]$INFO[Container(9000).ListItem.Property(CouchAchievements),   ·   ]</label>
+			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]$INFO[Container(9000).ListItem.Property(CouchAchievements),   ·   ]$INFO[Container(9000).ListItem.Property(CouchSize),   ·   ]</label>
 			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
 		</control>
 		<!-- the Play pill -->
@@ -462,7 +462,7 @@
 				<height>34</height>
 				<font>Couch_Caption</font>
 				<textcolor>ffe8a849</textcolor>
-				<label>Unlocked</label>
+				<label>Unlocked$INFO[Container(9500).ListItem.Property(rarity),   ·   ]</label>
 				<visible>Control.HasFocus(9500) + !String.IsEmpty(Container(9500).ListItem.Property(unlocked))</visible>
 			</control>
 			<control type="label">
@@ -472,7 +472,7 @@
 				<height>34</height>
 				<font>Couch_Caption</font>
 				<textcolor>ff8a93a0</textcolor>
-				<label>Locked</label>
+				<label>Locked$INFO[Container(9500).ListItem.Property(rarity),   ·   ]</label>
 				<visible>Control.HasFocus(9500) + String.IsEmpty(Container(9500).ListItem.Property(unlocked))</visible>
 			</control>
 

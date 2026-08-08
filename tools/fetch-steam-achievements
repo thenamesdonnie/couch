@@ -27,6 +27,7 @@ CACHE = os.path.join(HOME, '.local/share/game-tiles/achievements.json')
 DETAIL_DIR = os.path.join(HOME, '.local/share/game-tiles/achievements')
 API = 'https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/'
 SCHEMA = 'https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/'
+GLOBAL = 'https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/'
 
 
 def _get(url):
@@ -46,6 +47,9 @@ def fetch_detail(appid, key, sid):
     ply = _get('%s?appid=%s&key=%s&steamid=%s' % (API, appid, key, sid))
     if not sch or not ply:
         return None
+    gl = _get('%s?gameid=%s' % (GLOBAL, appid)) or {}
+    pct = {a['name']: a['percent'] for a in
+           gl.get('achievementpercentages', {}).get('achievements', [])}
     stats = (sch.get('game', {}).get('availableGameStats', {}) or {})
     schema = stats.get('achievements', [])
     pstats = ply.get('playerstats', {})
@@ -64,6 +68,8 @@ def fetch_detail(appid, key, sid):
             'icon': a.get('icon') if unlocked else a.get('icongray'),
             'unlocked': unlocked,
             'unlocktime': ps.get('unlocktime', 0),
+            'rarity': ('%.1f%% of players' % float(pct[a['name']]))
+                      if a['name'] in pct else '',
         })
     rows.sort(key=lambda r: (not r['unlocked'], -r['unlocktime'], r['name'].lower()))
     os.makedirs(DETAIL_DIR, exist_ok=True)
