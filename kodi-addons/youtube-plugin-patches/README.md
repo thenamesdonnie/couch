@@ -19,7 +19,7 @@ Re-apply after any YouTube addon update.
 
 2. `helper/utils.py`, video plot assembly (~line 1002): the plot is
    rendered on the Couch YouTube cards, so it's cut to channel, then
-   "views | <relative upload age>" ("2 days ago", from publishedAt via
+   "views | <relative upload age>" ("34 minutes ago" / "5 hours ago" / "2 days ago", from publishedAt via
    parse_to_dt) - likes, description, '--------' and youtu.be URL all
    removed (Donnie, 8 Aug 2026: "can we not have descriptions in it
    please" / "instead of like count can i get upload date or like x days
