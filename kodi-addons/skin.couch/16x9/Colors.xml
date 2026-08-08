@@ -928,9 +928,10 @@
 		<value>$VAR[Alpha_15]$VAR[Light_Hex]</value>
 	</variable>
 	<variable name="Seekbar_Focused_Color">
-		<value condition="Control.HasFocus(60)">$VAR[Accent_Color]</value>
+		<value condition="Control.HasFocus(60)">FFE8A849</value>
 		<value condition="Skin.String(Theme,Light) + $EXP[visualisation_Background_IsEmpty] + Skin.String(visualisation_Layout,Large)">$VAR[Dark_Color]</value>
-		<value>$VAR[Light_Color]</value>
+		<!-- Stagelight: the film seek fill is the amber pilot (8 Aug 2026) -->
+		<value>FFE8A849</value>
 	</variable>
 	<variable name="visualisation_Label_Color">
 		<value condition="$EXP[visualisation_Background_IsEmpty] + Skin.String(visualisation_Layout,Large)">$VAR[Primary_Color]</value>
