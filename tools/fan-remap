@@ -59,25 +59,30 @@ def main():
     m = re.search(r'FCTEMPS=hwmon\d+/pwm1=(hwmon\d+)/temp1_input', conf)
     old_gpu = m.group(1)
 
-    if (old_board, old_gpu) == (board, gpu):
-        print('mapping already correct (%s=board, %s=gpu)' % (board, gpu))
-    else:
+    if (old_board, old_gpu) != (board, gpu):
         # Two-step rename so board/gpu swapping indices cannot collide.
         conf = conf.replace(old_board + '/', '@BOARD@/').replace(old_board + '=', '@BOARD@=')
         conf = conf.replace(old_gpu + '/', '@GPU@/').replace(old_gpu + '=', '@GPU@=')
         conf = conf.replace('@BOARD@', board).replace('@GPU@', gpu)
-        conf = re.sub(r'DEVPATH=.*', 'DEVPATH=%s=%s %s=%s'
-                      % (board, devpath_of(board), gpu, devpath_of(gpu)), conf)
-        conf = re.sub(r'DEVNAME=.*', 'DEVNAME=%s=nct6798 %s=amdgpu'
-                      % (board, gpu), conf)
-        open(CONF, 'w').write(conf)
-        print('remapped: board %s -> %s, gpu %s -> %s'
+        print('remapped indices: board %s -> %s, gpu %s -> %s'
               % (old_board, board, old_gpu, gpu))
+    # DEVPATH/DEVNAME refresh unconditionally: the PATH moving while the
+    # indices stay put is exactly what broke the 8 Aug boot, and the first
+    # version of this script skipped it in that case.
+    conf = re.sub(r'DEVPATH=.*', 'DEVPATH=%s=%s %s=%s'
+                  % (board, devpath_of(board), gpu, devpath_of(gpu)), conf)
+    conf = re.sub(r'DEVNAME=.*', 'DEVNAME=%s=nct6798 %s=amdgpu'
+                  % (board, gpu), conf)
+    open(CONF, 'w').write(conf)
+    print('device paths refreshed (%s=board, %s=gpu)' % (board, gpu))
 
     if '--install' in sys.argv:
         os.makedirs(DROPIN_DIR, exist_ok=True)
+        # --no-restart is load-bearing: ExecStartPre runs INSIDE the start
+        # job, and restarting the service from there deadlocks it (systemd
+        # kills the control process - seen live, 8 Aug).
         open(DROPIN, 'w').write(
-            '[Service]\nExecStartPre=/usr/bin/python3 %s\n' % SELF)
+            '[Service]\nExecStartPre=/usr/bin/python3 %s --no-restart\n' % SELF)
         subprocess.run(['systemctl', 'daemon-reload'], check=True)
         print('installed self-healing drop-in: %s' % DROPIN)
 
