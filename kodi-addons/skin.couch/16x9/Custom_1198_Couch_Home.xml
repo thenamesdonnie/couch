@@ -347,7 +347,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 			</focusedlayout>
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=2</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=3</content>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -379,7 +379,7 @@
 			<height>40</height>
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
-			<label>$INFO[Container(9000).ListItem.Genre]</label>
+			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]</label>
 			<visible>!Control.HasFocus(9001)</visible>
 		</control>
 		<!-- the Play pill -->

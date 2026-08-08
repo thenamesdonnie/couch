@@ -77,6 +77,69 @@ def _stamp(key):
     except OSError:
         return 0
 
+
+# Playtime + last-played for the stats line under the focused game (PS5-style).
+# Steam keeps per-app playtime (minutes) and LastPlayed in localconfig.vdf;
+# shadPS4 keeps H:M:S per serial in play_time.txt. All local, no network.
+_STEAM_USERDATA = os.path.expanduser('~/.steam/steam/userdata')
+_PS4_PLAYTIME = os.path.expanduser('~/.local/share/shadPS4/play_time.txt')
+
+
+def _steam_playtimes():
+    out = {}
+    try:
+        for sid in os.listdir(_STEAM_USERDATA):
+            cfg = os.path.join(_STEAM_USERDATA, sid, 'config', 'localconfig.vdf')
+            if not os.path.isfile(cfg):
+                continue
+            txt = open(cfg, encoding='utf-8', errors='replace').read()
+            m = re.search(r'"apps"\s*\{', txt)
+            body = txt[m.end():] if m else txt
+            for am in re.finditer(
+                    r'"(\d+)"\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*?)\}', body):
+                pt = re.search(r'"Playtime"\s*"(\d+)"', am.group(2))
+                if pt:
+                    out[am.group(1)] = int(pt.group(1))
+    except OSError:
+        pass
+    return out
+
+
+def _ps4_playtime_min(serial):
+    try:
+        for line in open(_PS4_PLAYTIME, encoding='utf-8', errors='replace'):
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == serial:
+                h, m, s = (parts[1].split(':') + ['0', '0'])[:3]
+                return int(h) * 60 + int(m)
+    except OSError:
+        pass
+    return 0
+
+
+def _fmt_playtime(minutes):
+    if minutes <= 0:
+        return ''
+    if minutes < 60:
+        return '%d min played' % minutes
+    h = minutes / 60.0
+    return '%.0f hours played' % h if h >= 10 else '%.1f hours played' % h
+
+
+def _fmt_lastplayed(ts):
+    if not ts:
+        return ''
+    import time
+    d = max(0, int(time.time()) - ts)
+    if d < 3600:
+        return 'Played just now'
+    if d < 86400:
+        return 'Played %dh ago' % (d // 3600)
+    if d < 86400 * 14:
+        n = d // 86400
+        return 'Played %d day%s ago' % (n, '' if n == 1 else 's')
+    return 'Played %d weeks ago' % (d // (86400 * 7))
+
 # Steam's client caches heroes at 1920x620; the CDN has 3840x1240 versions
 # which ~/couch/tools/fetch-steam-heroes mirrors here. The listing prefers a
 # mirrored hero for fanart (the 4K home background) and quietly re-runs the
@@ -316,6 +379,7 @@ def games_route(info, params):
         pass
 
     _hero_refresh()
+    steam_pt = _steam_playtimes()
 
     # One merged, recency-sorted list of every game (Steam + PS4), so the row
     # leads with whatever was played last regardless of platform. Never-played
@@ -340,6 +404,8 @@ def games_route(info, params):
             if appid == suspended:
                 art.update(_paused_art(appid))
             item.setArt(art)
+            item.setProperty('CouchPlaytime', _fmt_playtime(steam_pt.get(appid, 0)))
+            item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
             li.append((f'{sys.argv[0]}?info=launch_game&id={appid}', item, False))
         else:
             title, eboot, icon, thumb = payload
@@ -347,6 +413,9 @@ def games_route(info, params):
             if icon or thumb:
                 item.setArt({'thumb': thumb or icon, 'poster': icon or thumb,
                              'icon': icon or thumb})
+            serial = os.path.basename(os.path.dirname(eboot))
+            item.setProperty('CouchPlaytime', _fmt_playtime(_ps4_playtime_min(serial)))
+            item.setProperty('CouchLastPlayed', _fmt_lastplayed(last))
             gid = 'ps4:' + urllib.parse.quote(eboot, safe='')
             li.append((f'{sys.argv[0]}?info=launch_game&id={gid}', item, False))
 
