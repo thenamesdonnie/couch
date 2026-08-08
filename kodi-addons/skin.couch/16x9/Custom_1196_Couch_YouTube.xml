@@ -43,7 +43,7 @@
 			<top>52</top>
 			<width>44</width>
 			<height>44</height>
-			<texture>couch/ic-youtube.png</texture>
+			<texture>couch/ic-youtube-brand.png</texture>
 		</control>
 		<control type="label">
 			<left>112</left>
@@ -91,7 +91,7 @@
 					<top>8</top>
 					<width>312</width>
 					<height>72</height>
-					<texture border="24" colordiffuse="3cffffff">couch/pill.png</texture>
+					<texture border="24" colordiffuse="3cffffff">couch/libtile.png</texture>
 				</control>
 				<control type="image">
 					<left>28</left>
@@ -185,6 +185,33 @@
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio aligny="center">scale</aspectratio>
 				</control>
+				<control type="image">
+					<left>360</left>
+					<top>216</top>
+					<width>84</width>
+					<height>38</height>
+					<texture border="12" colordiffuse="c8000000">couch/libtile.png</texture>
+					<visible>!String.IsEmpty(ListItem.Duration) + [String.IsEmpty(ListItem.Duration(hh)) | String.IsEqual(ListItem.Duration(hh),00)]</visible>
+				</control>
+				<control type="image">
+					<left>318</left>
+					<top>216</top>
+					<width>126</width>
+					<height>38</height>
+					<texture border="12" colordiffuse="c8000000">couch/libtile.png</texture>
+					<visible>!String.IsEmpty(ListItem.Duration) + !String.IsEmpty(ListItem.Duration(hh)) + !String.IsEqual(ListItem.Duration(hh),00)</visible>
+				</control>
+				<control type="label">
+					<left>332</left>
+					<top>216</top>
+					<width>102</width>
+					<height>38</height>
+					<font>Couch_Caption</font>
+					<textcolor>ffeceef1</textcolor>
+					<align>right</align>
+					<aligny>center</aligny>
+					<label>$INFO[ListItem.Duration]</label>
+				</control>
 				<control type="label">
 					<left>16</left>
 					<top>272</top>
@@ -194,14 +221,14 @@
 					<textcolor>e6eceef1</textcolor>
 					<label>$INFO[ListItem.Label]</label>
 				</control>
-				<control type="label">
+				<control type="textbox">
 					<left>16</left>
-					<top>308</top>
+					<top>304</top>
 					<width>436</width>
-					<height>30</height>
+					<height>76</height>
 					<font>Couch_Caption</font>
 					<textcolor>ff8a93a0</textcolor>
-					<label>$INFO[ListItem.Artist]$INFO[ListItem.Duration,  ·  ]</label>
+					<label>$INFO[ListItem.Plot]</label>
 				</control>
 			</itemlayout>
 			<focusedlayout width="484" height="392">
@@ -227,6 +254,33 @@
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio aligny="center">scale</aspectratio>
 				</control>
+				<control type="image">
+					<left>360</left>
+					<top>216</top>
+					<width>84</width>
+					<height>38</height>
+					<texture border="12" colordiffuse="c8000000">couch/libtile.png</texture>
+					<visible>!String.IsEmpty(ListItem.Duration) + [String.IsEmpty(ListItem.Duration(hh)) | String.IsEqual(ListItem.Duration(hh),00)]</visible>
+				</control>
+				<control type="image">
+					<left>318</left>
+					<top>216</top>
+					<width>126</width>
+					<height>38</height>
+					<texture border="12" colordiffuse="c8000000">couch/libtile.png</texture>
+					<visible>!String.IsEmpty(ListItem.Duration) + !String.IsEmpty(ListItem.Duration(hh)) + !String.IsEqual(ListItem.Duration(hh),00)</visible>
+				</control>
+				<control type="label">
+					<left>332</left>
+					<top>216</top>
+					<width>102</width>
+					<height>38</height>
+					<font>Couch_Caption</font>
+					<textcolor>ffeceef1</textcolor>
+					<align>right</align>
+					<aligny>center</aligny>
+					<label>$INFO[ListItem.Duration]</label>
+				</control>
 				<control type="label">
 					<left>16</left>
 					<top>272</top>
@@ -236,14 +290,14 @@
 					<textcolor>ffeceef1</textcolor>
 					<label>$INFO[ListItem.Label]</label>
 				</control>
-				<control type="label">
+				<control type="textbox">
 					<left>16</left>
-					<top>308</top>
+					<top>304</top>
 					<width>436</width>
-					<height>30</height>
+					<height>76</height>
 					<font>Couch_Caption</font>
 					<textcolor>ffb4bcc8</textcolor>
-					<label>$INFO[ListItem.Artist]$INFO[ListItem.Duration,  ·  ]</label>
+					<label>$INFO[ListItem.Plot]</label>
 				</control>
 			</focusedlayout>
 			<content target="videos">$INFO[Window.Property(yt_path)]</content>
