@@ -105,16 +105,16 @@
 		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
 		<control type="list" id="9000">
 			<left>211</left>
-			<top>96</top>
+			<top>76</top>
 			<width>1709</width>
-			<height>270</height>
+			<height>290</height>
 			<orientation>horizontal</orientation>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onleft>9001</onleft>
-			<itemlayout width="120" height="270">
+			<itemlayout width="120" height="290">
 				<control type="image">
 					<left>5</left>
-					<top>28</top>
+					<top>48</top>
 					<width>110</width>
 					<height>110</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
@@ -122,18 +122,18 @@
 					<colordiffuse>c8ffffff</colordiffuse>
 				</control>
 			</itemlayout>
-			<focusedlayout width="182" height="270">
+			<focusedlayout width="182" height="290">
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
-					<left>-9</left>
-					<top>6</top>
-					<width>200</width>
-					<height>200</height>
-					<texture border="30" infill="false" colordiffuse="96ffffff">couch/halo.png</texture>
+					<left>-25</left>
+					<top>10</top>
+					<width>232</width>
+					<height>232</height>
+					<texture border="48" infill="false" colordiffuse="96ffffff">couch/halo.png</texture>
 				</control>
 				<control type="image">
 					<left>5</left>
-					<top>20</top>
+					<top>40</top>
 					<width>172</width>
 					<height>172</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
@@ -141,7 +141,7 @@
 				</control>
 				<control type="image">
 					<left>5</left>
-					<top>202</top>
+					<top>222</top>
 					<width>172</width>
 					<height>12</height>
 					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
@@ -149,7 +149,7 @@
 				</control>
 				<control type="label">
 					<left>5</left>
-					<top>218</top>
+					<top>238</top>
 					<width>620</width>
 					<height>38</height>
 					<font>Couch_Label</font>
