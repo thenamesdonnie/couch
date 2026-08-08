@@ -255,12 +255,16 @@
 
 		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
 		<control type="list" id="9000">
-			<!-- left 96, where the standalone Library button used to sit: the
-			     Library entry is the row's first ITEM now, so the row simply
-			     starts further left. -->
-			<left>96</left>
+			<!-- left 65, not 96, and every x inside the layouts below is +31 to
+			     compensate - so no tile moves on screen. The 31px is HEADROOM: a
+			     list clips to its own bounds, and the focused item's halo is drawn
+			     31px left of its tile. At left 96 the first item's halo was sliced
+			     flat against the edge and its caption cut with it (Donnie, 8 Aug:
+			     "it's clipping on the left side"). Width grows by the same 31 so
+			     the right edge is where it always was. -->
+			<left>65</left>
 			<top>76</top>
-			<width>1794</width>
+			<width>1825</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
@@ -268,7 +272,7 @@
 			<ondown>9500</ondown>
 			<itemlayout width="120" height="290">
 				<control type="image">
-					<left>30</left>
+					<left>61</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -292,11 +296,11 @@
 					     while the room cover darkens (CouchLaunching). Animations
 					     must sit on a CONTROL; on the layout element Kodi silently
 					     ignores them, which is why v1 of this never moved. -->
-					<animation effect="zoom" start="100" end="150" center="85,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+					<animation effect="zoom" start="100" end="150" center="116,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
-					<left>-31</left>
+					<left>0</left>
 					<top>-13</top>
 					<width>232</width>
 					<height>232</height>
@@ -304,7 +308,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>-31</left>
+					<left>0</left>
 					<top>-13</top>
 					<width>232</width>
 					<height>232</height>
@@ -320,7 +324,7 @@
 				     The halo, lightbar and label were already gated this way;
 				     the tile itself was not. -->
 				<control type="image">
-					<left>-1</left>
+					<left>30</left>
 					<top>17</top>
 					<width>172</width>
 					<height>172</height>
@@ -337,7 +341,7 @@
 					     conditional - so the resting tile is centred in the slot
 					     it inherited and the extra 62px falls evenly either side
 					     instead of piling up after it. -->
-					<left>30</left>
+					<left>61</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -347,7 +351,7 @@
 					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>-1</left>
+					<left>30</left>
 					<top>199</top>
 					<width>172</width>
 					<height>12</height>
@@ -356,7 +360,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="label">
-					<left>-1</left>
+					<left>30</left>
 					<top>215</top>
 					<width>620</width>
 					<height>38</height>
