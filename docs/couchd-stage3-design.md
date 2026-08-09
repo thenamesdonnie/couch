@@ -37,6 +37,18 @@ a Kodi-first gamescope setup anywhere. Bad trade against the prime rule.
    only partway (a scalable window, no PiP composition). If that appetite
    grows, it strengthens the case for stage 4, not for un-parking stage 3.
 
+   **CORRECTED 9 Aug 2026: the "no PiP composition" half of that is wrong.**
+   gamescope has a dedicated external-overlay PLANE - a window that sets the
+   `GAMESCOPE_EXTERNAL_OVERLAY` property is composited above the game,
+   unscaled, at its own size and position, which is picture-in-picture by
+   construction. Verified in our own checkout, not inferred: see
+   `docs/research/pip-over-a-game-20260809.md` for the source lines. So PiP
+   is reachable from stage 3 and this trigger now cuts the other way - the
+   appetite argues for un-parking stage 3, not only for stage 4. It does NOT
+   change the gate: the Steam-overlay stripping in §6 is still what decides
+   whether stage 3 is adoptable at all, and PiP rides on that being settled
+   first.
+
 ## If resuming: the preserved recipe
 
 - Pin **3.16.19** (predates the SDL-backend lifecycle regressions #2133 /
