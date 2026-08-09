@@ -276,6 +276,24 @@ underline read from the couch, and does "Controller + TV off" do the right
 thing for real? Its parameter crossing is proved, its side effects are not
 (deliberately: testing it meant driving the television).
 
+### Disk1 link resets + 2 corrupt files from 5 Aug (9 Aug 02:43)
+Four `usb 4-4: reset SuperSpeed` on disk1 in 33 min, then quiet. NOT the 5 Aug
+failure: zero writes, transport errors (DID_ERROR, no medium error), link
+recovered every time, ext4 never faulted. disk2 on an identical RTL9210 at the
+next port was clean all boot, which rules out controller/PSU/driver/ambient.
+No job explains it - qBittorrent isn't seeding (0.04GB/21h), Sonarr's retry
+loop has run constantly since 23:01 through hours with no resets, and
+Jellyfin's scan started 2s AFTER the last reset. Both ports are configured
+identically, so it points at disk1's physical enclosure/cable/drive.
+Temperature during an event has still never been measured:
+`sudo ~/couch/tools/disk-triage -o /tmp/t.txt`.
+
+SEPARATE and confirmed: the 5 Aug outage DID lose data, recorded as "nothing
+lost". Header sweep = 335 good, 2 all-zero: Simpsons S03E11 and S06E06 (both
+5 Aug 16:57). They read fine, the bytes are just zeros - fsck cannot see this.
+Sonarr has retried them ~4x/90s ever since (700 failures in one night); that
+import queue is stuck until the two files are deleted and re-grabbed.
+
 ### Headphones: built and armed-by-config, waiting on the pairing (9 Aug)
 `headphone_watch` in `~/.local/bin/tv-waker-webos` (already run by
 tv-waker.service). It ships DISARMED and logs "watcher idle" until a MAC
