@@ -294,6 +294,32 @@ lost". Header sweep = 335 good, 2 all-zero: Simpsons S03E11 and S06E06 (both
 Sonarr has retried them ~4x/90s ever since (700 failures in one night); that
 import queue is stuck until the two files are deleted and re-grabbed.
 
+### disk-monitor.sh had 4 bugs - fixed copy staged, needs a sudo cp (9 Aug)
+It alerted TWICE for the single 05:06 reset, which is what exposed it. The
+corrected script is at `~/diskhealth/disk-monitor.sh`; the live one root runs
+is `/usr/local/bin/disk-monitor.sh` (5-min timer), so deploying is:
+    sudo cp ~/diskhealth/disk-monitor.sh /usr/local/bin/disk-monitor.sh
+Until then it will keep re-sending the same alert every 5 minutes.
+
+  1. Duplicate alerts: cursor was a dmesg LINE COUNT read with
+     `tail -n "+$LAST_POS"` - 1-indexed and inclusive, so it always re-emitted
+     the line at the cursor. When an error is the NEWEST line (the interesting
+     case) it re-fired every run. A line count is also meaningless once the
+     ring buffer wraps. Now cursors on the kernel timestamp.
+  2. SMART was checked on /dev/sdc and /dev/sdd. The USB disks are sda/sdb
+     this boot and the letters swap by design, so the loop ran ZERO times -
+     "no SMART alert" has never meant anything. Now discovers USB disks.
+  3. The reset check grepped 'reset high-speed USB' AND required sdc|sdd|disk
+     in the line. Real events are 'reset SuperSpeed' (USB3) and the kernel
+     names the PORT, never a disk - so it could never match. This is why five
+     link resets produced only I/O-error alerts and never a reset alert.
+  4. smartctl used -d sat / -d nvme; RTL9210 bridges need -d sntrealtek.
+
+Verified with shimmed dmesg/smartctl/curl: alerts once then stays silent on
+the same input, reports a genuinely new error, fires the reset check with the
+port, and survives the kernel clock rewinding on reboot. NOT committed - the
+file carries the Discord webhook.
+
 ### Headphones: built and armed-by-config, waiting on the pairing (9 Aug)
 `headphone_watch` in `~/.local/bin/tv-waker-webos` (already run by
 tv-waker.service). It ships DISARMED and logs "watcher idle" until a MAC
