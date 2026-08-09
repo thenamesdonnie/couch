@@ -49,15 +49,23 @@ wholesale-rewrite proposals. Concrete and surgical.
 - Never write `couchd/owns.conf`, `/tmp/game-*`, `/tmp/tv-wake-request`,
   anything under `shadow/` or `recordings/`.
 - You MAY run the suites read-only
-  (`couchd/.venv/bin/python -m pytest couchd/ tools/ -q`; 654 pass) and
-  `git log`/`git show`. `couchd/gesture.py` is pure - you may exercise
-  it standalone with synthetic timestamps.
+  (`couchd/.venv/bin/python -m pytest couchd/ tools/ -q`; today 1039
+  pass, 7 fail - all 7 in `tools/test_curtain.py`, which covers a
+  built-but-deliberately-unwired overlay tool; those 7 are known, do
+  not spend your budget on them) and `git log`/`git show`.
+  `couchd/gesture.py` is pure - you may exercise it standalone with
+  synthetic timestamps. NOTE: codex's read-only sandbox exposes no
+  writable temp dir, so pytest cannot actually start under it - do not
+  burn turns retrying.
 - READ THE LIVE STATE before grading severity:
   `couchd/owns.conf` (what couchd currently executes; today:
   `gestures`), `shadow/status.json` (mode/owns/failures), and
-  `~/.kodi/userdata/addon_data/script.couch.switcher/settings.xml`
-  (gesture bindings; absent = defaults). Howff's reviews mis-graded
-  severity by assuming config instead of reading it.
+  the switcher addon's `settings.xml` under Kodi's profile (gesture
+  bindings; absent = defaults; NOTE Kodi is a Flatpak since 8 Aug, so
+  the profile is `~/.var/app/tv.kodi.Kodi/data/userdata/`, NOT `~/.kodi`
+  - resolve it via the `kodiprofile` helper rather than assuming).
+  Howff's reviews mis-graded severity by assuming config instead of
+  reading it.
 
 **System in one page:** a Linux TV box runs Kodi, Steam, and a phone
 web remote. A legacy layer of scripts (`legacy-mirror/`, live copies in
@@ -90,6 +98,27 @@ backpressure / CSRF, fake-pad signal safety, big-picture stale-flag
 fight, phantom gestures after BT drops, escape-verb backoff, the
 stale-heartbeat dual-acting window.
 
+**CHANGED SINCE 5 AUG - the preamble above was written on the 5th and
+the console has moved. `git log --since=2026-08-06` before assuming any
+of it:**
+- `gestures` was FLIPPED and accepted 6 Aug. couchd EXECUTES the whole
+  PS-button vocabulary live; legacy shadows it. Anything touching
+  gesture timing is therefore real, not latent.
+- The resume-ordering protocol (flag-first thaws, persistence-gated
+  repairs) landed 6 Aug (`7d7da3a` and follow-ups).
+- The synthetic Steam guide press was DISABLED in both stacks 7 Aug
+  (`1ac3ab0`) after it reached Steam's power menu and suspended the
+  machine mid-game. Do not propose reviving it.
+- 8 Aug: tap and double-tap coexist via DEFERRED DISPATCH (`45b980b`,
+  fixed by `ddab8a4`) - a change to the shared gesture mathematics that
+  postdates the 5 Aug consumable markers.
+- 8 Aug: Kodi 20 (distro) -> Kodi 21.3 (Flatpak), on our own forked
+  skin `kodi-addons/skin.couch`. Profile paths and anything crossing
+  the sandbox changed (`74ed172`, `6fa2eb5`).
+- 6 Aug hardware: RX 9070 XT (AMD/Mesa, NVIDIA purged) and an LG C5
+  OLED at 4K120. Stage 3 (gamescope) is open; only a wrapper is
+  committed.
+
 **Known and deliberately open - not findings:** legacy bugs 1/2/4
 (big-picture flag lifecycle, "bigpicture" appid literal, guard pidfile
 on normal exit; whitelisted in the differ); the 1.2s settle window
@@ -97,7 +126,7 @@ unmodeled in stage 1 (owner ruling pending); phone suspend/quit not
 yielding to couchd (ruling pending); `hold=switcher` handing off
 mid-press (pinned decision, challenged, ruling pending); couchd not
 autostarting on boot; Kodi's own PS-hold poweroff menu (console-level,
-known).
+known); the 7 failing `tools/test_curtain.py` tests (unwired tool).
 
 **Output format (strict):** numbered findings, most severe first. Each:
 real `file:line`; one-sentence defect; a CONCRETE failure scenario
@@ -112,9 +141,25 @@ one line per region you actually attacked and found sound, then a
 
 ---
 
+## RUN LOG
+
+| lens | sol | claude | synthesis |
+|---|---|---|---|
+| 1 stage 2 input process | ✅ 9 Aug, `docs/audits/stage2-inputproc-review-20260809-sol.md` (10 findings, 2 CRITICAL, 73k tokens) | ❌ not run | ❌ not run |
+| 2 daemon core | ❌ | ❌ | ❌ |
+| 3 legacy + seam | ❌ | ❌ | ❌ |
+| 4 phone arm | ❌ | ❌ | ❌ |
+| 5 evidence machinery | ❌ | ❌ | ❌ |
+
+Lens 1's two CRITICALs were spot-checked against the code the same day
+(notes at the foot of that file) but NOT adjudicated - no blind Claude
+half exists yet, so nothing has been fixed on their authority.
+
+---
+
 ## LENS MISSIONS (pick one per review)
 
-### Lens 1 — stage 2 input process (highest value: never reviewed)
+### Lens 1 — stage 2 input process (RUN 9 Aug, sol half only)
 
 MISSION: `couchd/inputproc.py`, `couchd/stage2/` (INSTALL.md, runbooks,
 udev rules), `couchd/test_inputproc.py`. This process will one day sit
