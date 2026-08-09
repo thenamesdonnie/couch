@@ -1,0 +1,140 @@
+#!/home/ds2000/tv-remote/bin/python
+"""Ask the C5, over the API we already have, whether Multi View is drivable.
+
+Read-only. It launches nothing, switches nothing and changes nothing on
+screen - it asks the TV what it exposes and prints the answer. Run it with
+the TV ON (SSAP is a websocket to a live set; a standby TV does not answer)
+and with Donnie in front of it, per the standing rule about the television.
+
+    tools/tv-multiview-probe
+
+WHY THIS EXISTS. We want a show in a corner while a game runs fullscreen on
+HDMI 3. Compositing that on the PC means putting a window over a live
+fullscreen game, which is the exact move that has already wrecked this box
+twice (Big Picture left mapped behind a game = "Steam says 60, feels 20";
+toggling xfwm4 compositing under a game black-screened it). Letting the
+TELEVISION composite it costs the PC nothing and the game never knows.
+
+The plumbing on our side is already done: lgssap.LGTV.request() sends any
+ssap:// URI, and .button() drives the pointer socket. The open question is
+purely whether webOS exposes Multi View at all, and SSAP is largely
+undocumented, so the honest move is to ask rather than to guess a URI.
+
+Three answers are possible, in descending order of how nice they are:
+
+  1. Multi View is a LAUNCH POINT with an id. Then `tv app <id>` starts it
+     today, and the follow-up question is whether launch params can pick the
+     two sources or whether that still needs the menu.
+  2. Multi View is a SERVICE with its own ssap:// category. Then it is fully
+     drivable and we can set both sources from a script.
+  3. Neither. Then it is menu-only, and driving it means a button() sequence
+     through the on-screen UI - fragile, order-dependent, and it would need
+     re-checking after every webOS update. Workable, not lovely.
+
+Whatever it prints, note that Multi View usually constrains the main image.
+Check what happens to 4K120 and VRR with it on BEFORE building anything on
+top of this - if it drops the game to 60 it is not worth having.
+"""
+import asyncio
+import json
+import re
+import sys
+from pathlib import Path
+
+# lgssap lives next to tv-webos in ~/.local/bin, which is on PATH but not on
+# sys.path for a script that lives here. tv-webos gets it for free by being a
+# sibling; this does not.
+sys.path.insert(0, str(Path.home() / '.local' / 'bin'))
+
+from lgssap import LGTV, probe          # noqa: E402
+
+CONF = Path.home() / ".config" / "tv-remote" / "tv.json"
+
+# Anything worth a second look in a launch-point or service listing. Kept
+# broad on purpose: LG has shipped this feature under several names
+# (Multi View, Multiview, Twin View, PIP) across model years, and a probe
+# that only matches today's marketing name tells us nothing on next year's
+# firmware.
+INTERESTING = re.compile(r'multi.?view|twin.?view|\bpip\b|picture.?in.?picture'
+                         r'|dual.?view|split.?screen', re.I)
+
+
+def load_conf():
+    conf = json.loads(CONF.read_text())
+    if not conf.get("host") or not conf.get("key"):
+        sys.exit(f'{CONF} has no paired host/key - run tv-setup-lg first')
+    return conf
+
+
+async def ask(tv, uri, payload=None):
+    """One request, where a failure is DATA rather than an error: 'the TV
+    refused this URI' is exactly what we are here to find out."""
+    try:
+        return await tv.request(uri, payload)
+    except Exception as e:
+        return {'__error__': f'{type(e).__name__}: {e}'}
+
+
+async def main():
+    conf = load_conf()
+    state, app = await probe(conf["host"], conf["key"])
+    if state is None:
+        sys.exit('The TV is in standby. This probe needs it ON, and waking it '
+                 'is your call, not a script\'s: `tv on`, then run this again.')
+    print(f'TV is {state.lower()}, showing {app or "nothing"}\n')
+
+    tv = LGTV(conf["host"], conf["key"])
+    await tv.connect()
+    try:
+        # 1. Every launch point the TV knows about. This is the listing the
+        #    home row is built from, so if Multi View is an app it is here.
+        print('=== launch points matching a multi-view-ish name ===')
+        lp = await ask(tv, 'com.webos.applicationManager/listLaunchPoints')
+        if '__error__' in lp:
+            print(f'  could not list: {lp["__error__"]}')
+        else:
+            points = lp.get('launchPoints', [])
+            hits = [p for p in points
+                    if INTERESTING.search(f'{p.get("id","")} {p.get("title","")}')]
+            for p in hits:
+                print(f'  {p.get("id")}   {p.get("title")!r}')
+            print(f'  ({len(hits)} of {len(points)} launch points matched)')
+
+        # 2. Every service. A feature with its own ssap:// category shows up
+        #    here even when it has no app and no tile.
+        print('\n=== services matching a multi-view-ish name ===')
+        sl = await ask(tv, 'api/getServiceList')
+        if '__error__' in sl:
+            print(f'  could not list: {sl["__error__"]}')
+        else:
+            services = sl.get('services', [])
+            hits = [s for s in services
+                    if INTERESTING.search(str(s.get('name', '')))]
+            for s in hits:
+                print(f'  {s.get("name")}  (version {s.get("version")})')
+            print(f'  ({len(hits)} of {len(services)} services matched)')
+            print('\n  full service list, for the record:')
+            for s in services:
+                print(f'    {s.get("name")}')
+
+        # 3. What the set says it can do with its inputs. If Multi View is
+        #    modelled as an input arrangement rather than an app, the shape
+        #    of it turns up here.
+        print('\n=== external inputs ===')
+        inp = await ask(tv, 'tv/getExternalInputList')
+        if '__error__' in inp:
+            print(f'  could not list: {inp["__error__"]}')
+        else:
+            for d in inp.get('devices', []):
+                print(f'  {d.get("id"):<12} {d.get("label")}'
+                      f'{"  (connected)" if d.get("connected") else ""}')
+    finally:
+        await tv.close()
+
+    print('\nNothing was launched or switched. If a launch point turned up, '
+          'the next step is `tv app <id>` WITH YOU WATCHING, then checking '
+          'what Multi View does to 4K120 and VRR before anyone builds on it.')
+
+
+if __name__ == '__main__':
+    sys.exit(asyncio.run(main()) or 0)
