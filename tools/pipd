@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""A movable picture-in-picture window over a game, composited by gamescope.
+
+    pipd --display :1 --player mpv -- <media url or path>
+    echo '{"cmd":"place","nx":0.62,"ny":0.06,"nw":0.32}' | nc -U /tmp/couch-pip.sock
+
+STATUS: the overlay and its control surface are built and tested. Nothing has
+run against a real gamescope session yet, because that needs a game running
+nested, which needs Donnie and the TV. See
+`docs/research/pip-over-a-game-20260809.md`.
+
+WHY IT IS SHAPED LIKE THIS - read before changing the window layout, because
+the obvious shape does not work.
+
+gamescope composites any window carrying the `GAMESCOPE_EXTERNAL_OVERLAY`
+property as its own plane above the game. The tempting design is therefore
+"make a small window, put it in the corner, move it when asked". That does
+NOT work, and the reason is in gamescope's own source (verified against
+~/src/gamescope at 17baf4a, steamcompmgr.cpp):
+
+  * the external overlay is painted by `paint_window(w, w, ...)` - the window
+    is its OWN scale reference, so `w != scaleW` is false everywhere;
+  * with `PaintWindowFlag::NoScale` the source size is forced to the output
+    size, so the "do we need to offset or scale this" branch is skipped
+    entirely and `drawXOffset`/`drawYOffset` stay 0;
+  * both arms of the `if ( w != scaleW )` that assigns `layer->offset` set it
+    to the same `-drawXOffset` / `-drawYOffset`.
+
+Net effect: the overlay's buffer is blitted at 0,0 at 1:1 and **the X window's
+own x/y is ignored**. Moving the window moves nothing on screen.
+
+So the overlay window is FULLSCREEN and TRANSPARENT, and the video is a CHILD
+window inside it. X puts a child's pixels into its parent's buffer, so moving
+the child moves the picture within the plane - which is the thing gamescope
+actually shows. That is what "drag it around from the phone" moves.
+
+Consequences worth knowing:
+  * the plane is output-sized every frame whether the picture is 10% of the
+    screen or 90%. Whether that costs anything real on the 9070 XT (hardware
+    overlay plane) or forces composition is UNMEASURED. Measure it before
+    trusting this in a game that matters.
+  * the overlay needs a 32-bit visual and a genuinely transparent background,
+    or it is a fullscreen black rectangle over the game. This is the single
+    most likely way for the first live test to look broken.
+
+COORDINATES. The phone drags a rectangle around a picture of the TV, so the
+control surface speaks NORMALISED coordinates (0..1 of the output) as well as
+pixels. The phone never has to know the output is 3840x2160 today and
+something else after a mode change, and a drag that ends at the same place on
+the phone lands at the same place on the TV at any resolution.
+"""
+import argparse
+import json
+import os
+import shlex
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+SOCKET_PATH = '/tmp/couch-pip.sock'
+OVERLAY_PROP = 'GAMESCOPE_EXTERNAL_OVERLAY'
+
+# Smallest picture worth having, and the largest before you may as well not be
+# playing the game. Both in fractions of the output's short edge.
+MIN_FRACTION = 0.08
+MAX_FRACTION = 0.75
+
+# A drag that ends this close to an edge snaps flush to it. Fraction of the
+# output. Generous, because this is a thumb on a phone aiming at a
+# television across the room, not a mouse.
+SNAP_FRACTION = 0.04
+
+DEFAULT_ASPECT = 16 / 9
+
+
+# =========================================================================
+# geometry - pure, and every bit of it tested
+# =========================================================================
+def clamp_size(w, h, out_w, out_h):
+    """Keep the picture between MIN_FRACTION and MAX_FRACTION of the output.
+
+    Measured against the SHORT edge so the limit means the same thing on a
+    21:9 output as on a 16:9 one, and the aspect ratio the caller asked for
+    is preserved - scaling a video to fit a box it does not fit is the
+    player's job, not ours.
+    """
+    if w <= 0 or h <= 0 or out_w <= 0 or out_h <= 0:
+        raise ValueError('sizes must be positive')
+    short = min(out_w, out_h)
+    aspect = w / h
+    lo, hi = MIN_FRACTION * short, MAX_FRACTION * short
+    # Constrain on the dimension that matters: for a wide picture the height
+    # is the short one, and clamping the width would let a 21:9 clip grow
+    # past the cap.
+    if h < lo:
+        h, w = lo, lo * aspect
+    elif h > hi:
+        h, w = hi, hi * aspect
+    if w > out_w:
+        w, h = out_w, out_w / aspect
+    if h > out_h:
+        h, w = out_h, out_h * aspect
+    return int(round(w)), int(round(h))
+
+
+def clamp_position(x, y, w, h, out_w, out_h):
+    """Never let the picture leave the screen. Off-screen is not a position a
+    user can drag back from - they would be reaching for something they
+    cannot see."""
+    x = max(0, min(int(round(x)), out_w - w))
+    y = max(0, min(int(round(y)), out_h - h))
+    return x, y
+
+
+def snap(x, y, w, h, out_w, out_h, fraction=SNAP_FRACTION):
+    """Pull a near-edge drag flush to that edge.
+
+    Corners are where this thing actually lives, and a two-pixel gap between
+    the picture and the edge of the screen looks like a mistake rather than a
+    choice. Each axis snaps independently, so an edge-but-not-corner drop
+    still tidies up on the axis it was close on.
+    """
+    margin = fraction * min(out_w, out_h)
+    if x < margin:
+        x = 0
+    elif x > out_w - w - margin:
+        x = out_w - w
+    if y < margin:
+        y = 0
+    elif y > out_h - h - margin:
+        y = out_h - h
+    return int(x), int(y)
+
+
+def from_normalised(geom, out_w, out_h, aspect=DEFAULT_ASPECT):
+    """{nx, ny, nw[, nh]} in 0..1 of the output -> pixel (x, y, w, h).
+
+    `nh` is optional: the phone drags a box whose aspect it does not want to
+    think about, so a width alone means "this wide, and however tall that
+    makes it".
+    """
+    nw = float(geom['nw'])
+    w = nw * out_w
+    if geom.get('nh') is not None:
+        h = float(geom['nh']) * out_h
+    else:
+        h = w / aspect
+    w, h = clamp_size(w, h, out_w, out_h)
+    x, y = clamp_position(float(geom['nx']) * out_w, float(geom['ny']) * out_h,
+                          w, h, out_w, out_h)
+    return x, y, w, h
+
+
+def to_normalised(x, y, w, h, out_w, out_h):
+    """The inverse, for reporting back to the phone so its rectangle agrees
+    with the television after a clamp or a snap moved it."""
+    return {'nx': round(x / out_w, 5), 'ny': round(y / out_h, 5),
+            'nw': round(w / out_w, 5), 'nh': round(h / out_h, 5)}
+
+
+def parse_command(line):
+    """One control line -> a dict, or a ValueError with something a human can
+    read. The control surface is a socket a phone talks to over a LAN with no
+    auth (by design, same as the rest of the remote), so it must never be
+    possible to crash the daemon with a malformed line."""
+    try:
+        msg = json.loads(line)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f'not JSON: {e}')
+    if not isinstance(msg, dict):
+        raise ValueError('expected a JSON object')
+    cmd = msg.get('cmd')
+    if not isinstance(cmd, str) or not cmd:
+        raise ValueError('missing "cmd"')
+    return msg
+
+
+# =========================================================================
+# the X side
+# =========================================================================
+class Overlay:
+    """The fullscreen transparent plane, and the child window the video
+    lives in. See the module docstring for why it is two windows and not one.
+    """
+
+    def __init__(self, display_name=None):
+        from Xlib import X, Xatom, display as xdisplay
+        self.X, self.Xatom, self._xdisplay = X, Xatom, xdisplay
+        self.dpy = xdisplay.Display(display_name)
+        self.screen = self.dpy.screen()
+        self.root = self.screen.root
+        geom = self.root.get_geometry()
+        self.out_w, self.out_h = geom.width, geom.height
+        self.parent = None
+        self.child = None
+        self.geometry = (0, 0, 0, 0)
+
+    def _argb_visual(self):
+        """A 32-bit visual, or None. Without one the overlay cannot be
+        transparent, and an opaque fullscreen overlay is a black screen with
+        a video in the corner - which looks exactly like a bug and is the
+        most likely way the first live test goes wrong. So this is checked
+        loudly rather than discovered on the TV."""
+        for depth in self.screen.allowed_depths:
+            if depth.depth == 32 and depth.visuals:
+                return depth.visuals[0].visual_id
+        return None
+
+    def create(self, x, y, w, h):
+        X = self.X
+        visual = self._argb_visual()
+        if visual is None:
+            raise RuntimeError(
+                'no 32-bit visual on this display, so the overlay cannot be '
+                'transparent - it would cover the game with a black screen. '
+                'Refusing to map it.')
+        colormap = self.root.create_colormap(visual, X.AllocNone)
+        # background_pixel 0 on an ARGB visual is fully transparent black.
+        self.parent = self.root.create_window(
+            0, 0, self.out_w, self.out_h, 0, 32, X.InputOutput, visual,
+            background_pixel=0, border_pixel=0, colormap=colormap,
+            override_redirect=1, event_mask=X.StructureNotifyMask)
+        self.child = self.parent.create_window(
+            x, y, w, h, 0, 32, X.InputOutput, visual,
+            background_pixel=0, border_pixel=0,
+            colormap=self.root.create_colormap(visual, X.AllocNone))
+        self._set_card(self.parent, OVERLAY_PROP, 1)
+        self._set_card(self.parent, '_NET_WM_WINDOW_OPACITY', 0xffffffff)
+        self.parent.set_wm_name('couch-pip')
+        self.parent.set_wm_class('couch-pip', 'couch-pip')
+        self.child.map()
+        self.parent.map()
+        self.dpy.sync()
+        self.geometry = (x, y, w, h)
+
+    def _set_card(self, window, name, value):
+        atom = self.dpy.get_atom(name)
+        window.change_property(atom, self.Xatom.CARDINAL, 32, [value])
+
+    def place(self, x, y, w, h):
+        self.child.configure(x=x, y=y, width=w, height=h)
+        self.dpy.sync()
+        self.geometry = (x, y, w, h)
+
+    def set_opacity(self, fraction):
+        self._set_card(self.parent, '_NET_WM_WINDOW_OPACITY',
+                       int(max(0.0, min(1.0, fraction)) * 0xffffffff))
+        self.dpy.sync()
+
+    def set_visible(self, visible):
+        # Unmapping the PARENT is what hides it: gamescope stops seeing an
+        # external overlay at all, so the plane goes away rather than being
+        # composited transparent every frame.
+        (self.parent.map if visible else self.parent.unmap)()
+        self.dpy.sync()
+
+    def child_id(self):
+        return self.child.id
+
+    def close(self):
+        for win in (self.child, self.parent):
+            if win is not None:
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+        try:
+            self.dpy.close()
+        except Exception:
+            pass
+
+
+class Player:
+    """Whatever draws the video into the child window.
+
+    mpv is the target because `--wid` embedding is a first-class feature
+    there. `none` draws nothing and exists so the geometry and the control
+    surface can be exercised end to end without a player installed, which is
+    how this was developed - mpv is not on this box yet.
+    """
+
+    def __init__(self, kind, media, window_id, extra=()):
+        self.kind, self.media, self.window_id = kind, media, window_id
+        self.extra = list(extra)
+        self.proc = None
+
+    def start(self):
+        if self.kind == 'none' or not self.media:
+            return
+        if self.kind != 'mpv':
+            raise ValueError(f'unknown player {self.kind!r}')
+        cmd = ['mpv', f'--wid={self.window_id}', '--no-osc', '--no-input-default-bindings',
+               '--loop', '--really-quiet', *self.extra, self.media]
+        try:
+            self.proc = subprocess.Popen(cmd)
+        except FileNotFoundError:
+            raise RuntimeError(
+                'mpv is not installed. Donnie: `sudo apt install mpv`, then '
+                'run this again. Until then --player none exercises '
+                'everything except the picture itself.')
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self):
+        if self.alive():
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+# =========================================================================
+# the daemon
+# =========================================================================
+class PipDaemon:
+    def __init__(self, args):
+        self.args = args
+        self.overlay = None
+        self.player = None
+        self.visible = True
+        self.opacity = 1.0
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+
+    # -- state ------------------------------------------------------------
+    def status(self):
+        x, y, w, h = self.overlay.geometry
+        ow, oh = self.overlay.out_w, self.overlay.out_h
+        return {'ok': True, 'output': {'w': ow, 'h': oh},
+                'pixels': {'x': x, 'y': y, 'w': w, 'h': h},
+                'normalised': to_normalised(x, y, w, h, ow, oh),
+                'visible': self.visible, 'opacity': round(self.opacity, 4),
+                'player': self.args.player,
+                'playing': bool(self.player and self.player.alive()),
+                'media': self.args.media}
+
+    def apply(self, x, y, w, h, do_snap=True):
+        ow, oh = self.overlay.out_w, self.overlay.out_h
+        w, h = clamp_size(w, h, ow, oh)
+        x, y = clamp_position(x, y, w, h, ow, oh)
+        if do_snap:
+            x, y = snap(x, y, w, h, ow, oh)
+        self.overlay.place(x, y, w, h)
+        return self.status()
+
+    # -- commands ---------------------------------------------------------
+    def handle(self, msg):
+        cmd = msg['cmd']
+        ow, oh = self.overlay.out_w, self.overlay.out_h
+        x, y, w, h = self.overlay.geometry
+
+        if cmd == 'status':
+            return self.status()
+
+        if cmd == 'place':
+            # Normalised is the phone's language; pixels are for scripts and
+            # for anyone debugging with nc.
+            if 'nx' in msg or 'nw' in msg:
+                geom = {'nx': msg.get('nx', x / ow), 'ny': msg.get('ny', y / oh),
+                        'nw': msg.get('nw', w / ow), 'nh': msg.get('nh')}
+                nx, ny, nw, nh = from_normalised(geom, ow, oh, w / h)
+                return self.apply(nx, ny, nw, nh,
+                                  do_snap=bool(msg.get('snap', True)))
+            return self.apply(msg.get('x', x), msg.get('y', y),
+                              msg.get('w', w), msg.get('h', h),
+                              do_snap=bool(msg.get('snap', True)))
+
+        if cmd == 'nudge':
+            return self.apply(x + msg.get('dx', 0), y + msg.get('dy', 0), w, h)
+
+        if cmd == 'corner':
+            where = msg.get('where', 'ne')
+            if where not in CORNERS:
+                raise ValueError(f'corner must be one of {sorted(CORNERS)}')
+            fx, fy = CORNERS[where]
+            return self.apply(fx * (ow - w), fy * (oh - h), w, h, do_snap=False)
+
+        if cmd == 'scale':
+            factor = float(msg.get('factor', 1.0))
+            if factor <= 0:
+                raise ValueError('factor must be positive')
+            # Grow about the picture's own centre, so resizing does not walk
+            # it across the screen.
+            nw2, nh2 = clamp_size(w * factor, h * factor, ow, oh)
+            return self.apply(x + (w - nw2) / 2, y + (h - nh2) / 2, nw2, nh2)
+
+        if cmd == 'opacity':
+            self.opacity = float(msg.get('value', 1.0))
+            self.overlay.set_opacity(self.opacity)
+            return self.status()
+
+        if cmd in ('show', 'hide'):
+            self.visible = (cmd == 'show')
+            self.overlay.set_visible(self.visible)
+            return self.status()
+
+        if cmd == 'quit':
+            self.stop.set()
+            return {'ok': True, 'stopping': True}
+
+        raise ValueError(f'unknown command {cmd!r}')
+
+    # -- the control socket -----------------------------------------------
+    def serve(self, sock):
+        while not self.stop.is_set():
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    data = conn.recv(65536).decode('utf-8', 'replace')
+                except OSError:
+                    continue
+                for line in data.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        with self.lock:
+                            reply = self.handle(parse_command(line))
+                    except Exception as e:
+                        reply = {'ok': False,
+                                 'error': f'{type(e).__name__}: {e}'}
+                    try:
+                        conn.sendall((json.dumps(reply) + '\n').encode())
+                    except OSError:
+                        break
+
+    def run(self):
+        self.overlay = Overlay(self.args.display)
+        ow, oh = self.overlay.out_w, self.overlay.out_h
+        x, y, w, h = from_normalised(
+            {'nx': self.args.nx, 'ny': self.args.ny, 'nw': self.args.nw,
+             'nh': None}, ow, oh)
+        x, y = snap(x, y, w, h, ow, oh)
+        self.overlay.create(x, y, w, h)
+        print(f'overlay up on {self.args.display or os.environ.get("DISPLAY")} '
+              f'({ow}x{oh}), picture {w}x{h} at {x},{y}', flush=True)
+
+        self.player = Player(self.args.player, self.args.media,
+                             self.overlay.child_id(),
+                             shlex.split(self.args.player_args or ''))
+        self.player.start()
+
+        if os.path.exists(self.args.socket):
+            os.unlink(self.args.socket)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(self.args.socket)
+        # The couch server runs as ds2000 and so does this; the socket is
+        # deliberately not world-writable even on a trusted LAN, because a
+        # unix socket is the one part of this that is NOT reachable from the
+        # network and it costs nothing to keep it that way.
+        os.chmod(self.args.socket, 0o600)
+        sock.listen(8)
+        print(f'control socket {self.args.socket}', flush=True)
+
+        thread = threading.Thread(target=self.serve, args=(sock,), daemon=True)
+        thread.start()
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: self.stop.set())
+        try:
+            while not self.stop.is_set():
+                if self.player.kind != 'none' and not self.player.alive():
+                    print('player exited; stopping', flush=True)
+                    break
+                time.sleep(0.2)
+        finally:
+            self.shutdown(sock)
+
+    def shutdown(self, sock):
+        print('pipd stopping', flush=True)
+        if self.player:
+            self.player.stop()
+        try:
+            sock.close()
+        except OSError:
+            pass
+        if os.path.exists(self.args.socket):
+            os.unlink(self.args.socket)
+        if self.overlay:
+            self.overlay.close()
+
+
+CORNERS = {'nw': (0.0, 0.0), 'ne': (1.0, 0.0),
+           'sw': (0.0, 1.0), 'se': (1.0, 1.0)}
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument('--display', help="X display to put the overlay on - "
+                                     "gamescope's nested one, NOT :0")
+    p.add_argument('--socket', default=SOCKET_PATH)
+    p.add_argument('--player', default='mpv', choices=('mpv', 'none'))
+    p.add_argument('--player-args', default='')
+    p.add_argument('--nx', type=float, default=0.66)
+    p.add_argument('--ny', type=float, default=0.05)
+    p.add_argument('--nw', type=float, default=0.30)
+    p.add_argument('media', nargs='?', help='url or path for the player')
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    PipDaemon(args).run()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
