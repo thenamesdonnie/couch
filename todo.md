@@ -39,6 +39,16 @@ overlay composites above the game plane, at the exact rectangle asked for,
 and moving it moves the picture. So the mechanism works on this box. What is
 left needs a display, not a debugger.
 
+**FREEZE/THAW SURVIVES THE WRAPPER** (9 Aug, `tools/stage3-freeze-rig`,
+headless, passes twice): gamescope-wrap reports the child's exit status not
+gamescope's, game-pids finds the whole wrapped tree, SIGSTOP puts every
+process in state T and a counter stops dead, SIGCONT resumes it and
+gamescope comes back. So stage 3 does not die on the mechanism the console
+is built on. One thing it raises rather than settles: the freeze included
+GAMESCOPE ITSELF (faithful to a real Steam launch, where Steam's reaper sits
+above it), so suspending a game also suspends the compositor drawing it.
+That is the §6 freeze-shape ruling, still yours.
+
 **STAGE 3 IS RE-OPENED.** The 4 Aug parking decision rested on a 1080p60
 no-VRR TV, an NVIDIA 4070, and noble packaging - all three are gone, and the
 guard's dependency on the Steam overlay turns out to be largely theoretical

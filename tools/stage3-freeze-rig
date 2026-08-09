@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Does suspend/resume survive being wrapped in gamescope? Answered offline.
+
+    tools/stage3-freeze-rig
+
+Zero-cost pause is what the whole console is built on: SIGSTOP the game's
+process tree, capture the last frame, thaw in about a second. Stage 3 puts
+gamescope between Steam and the game, which changes the shape of that tree.
+If freeze/thaw does not survive the wrapper, stage 3 dies here and nobody
+needs to spend an evening at the television finding that out.
+
+So this runs gamescope on its HEADLESS backend with a stand-in for the game,
+and checks the four things that matter:
+
+  A. gamescope-wrap still reports the CHILD's exit status, not gamescope's
+     (the laundering exists because gamescope discards it - and on top of
+     that 3.16.25 segfaults in teardown, so its own rc is pure noise);
+  B. game-pids finds the wrapped session at all;
+  C. SIGSTOP actually stops it - proved by a counter the stand-in writes,
+     not by process state alone, because "state is T" and "the game is
+     really not running" are different claims;
+  D. SIGCONT brings it back, and gamescope itself survives the freeze.
+
+SAFETY. game-pids scans every process on the box for `reaper SteamLaunch`
+and shadPS4's names. This rig sends signals, so it NEVER trusts that output
+directly: it computes its own gamescope subtree and refuses to signal
+anything outside it. If game-pids returns a pid this rig did not start, that
+is reported and nothing is signalled. A real game frozen by a test would be
+a genuinely bad outcome.
+
+RESULT, 9 Aug 2026: all four PASS, twice running. The tree it exercises is
+
+    gamescope-wrap -> gamescope -> gamescopereaper -> gswrap-shim -> the game
+
+game-pids sees all five, SIGSTOP puts every one of them in state T and the
+counter stops dead, SIGCONT resumes it, and gamescope comes back with it.
+
+READ THIS BEFORE TREATING THAT AS THE WHOLE ANSWER. The freeze here included
+GAMESCOPE ITSELF, because game-pids collected it. That is faithful to a real
+Steam launch - the launch option shape is `scopebuddy -- %command%`, so
+Steam's own `reaper SteamLaunch` sits ABOVE gamescope and gamescope is a
+descendant, exactly as here - but it means suspending a game also suspends
+the compositor drawing it. Frozen is frozen, so that may be exactly right,
+and it may also interact with pause-snap's capture and with the curtain.
+That is the §6 freeze-shape ruling and this rig does not settle it.
+
+WHAT IT DOES NOT PROVE. Headless has no display, and the stand-in is a shell
+loop rather than a game: nothing here says the last frame captures, that a
+thaw takes ~1s under real memory pressure, or anything about shadPS4, whose
+tree shape differs - gamescope would be its PARENT rather than a descendant,
+so game-pids would not collect it and the compositor would keep running
+through the freeze. Different shape, different ruling, still open.
+"""
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+WRAP = os.path.join(HERE, 'gamescope-wrap')
+GAME_PIDS = os.path.expanduser('~/.local/bin/game-pids')
+GAMESCOPE_DIR = os.path.expanduser('~/src/gamescope/build/src')
+
+# game-pids matches this literal in a cmdline. The stand-in carries it as
+# argv so the rig exercises the REAL matcher rather than a copy of it.
+REAPER_MARK = 'reaper SteamLaunch AppId=999999'
+
+
+def ppid_map():
+    out = {}
+    for d in os.listdir('/proc'):
+        if not d.isdigit():
+            continue
+        try:
+            stat = open(f'/proc/{d}/stat').read()
+            out[int(d)] = int(stat.rsplit(') ', 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    return out
+
+
+def descendants(root):
+    """Every pid under `root`, inclusive. This is the fence the rig will not
+    signal outside of."""
+    ppid = ppid_map()
+    kids = {}
+    for pid, pp in ppid.items():
+        kids.setdefault(pp, []).append(pid)
+    seen, stack = set(), [root]
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        stack.extend(kids.get(p, []))
+    return seen
+
+
+def proc_state(pid):
+    try:
+        return open(f'/proc/{pid}/stat').read().rsplit(') ', 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def game_pids():
+    r = subprocess.run([GAME_PIDS], capture_output=True, text=True)
+    return {int(x) for x in r.stdout.split()} if r.returncode == 0 else set()
+
+
+def counter(path):
+    try:
+        return int(open(path).read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def wait_until(pred, timeout, what):
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.1)
+    print(f'  timed out waiting for {what}')
+    return False
+
+
+def check_a(env):
+    """Exit status: the child's, never gamescope's."""
+    print('A. exit-code laundering')
+    r = subprocess.run([WRAP, '--backend', 'headless', '--',
+                        'sh', '-c', 'exit 7'],
+                       capture_output=True, text=True, env=env, timeout=120)
+    ok = r.returncode == 7
+    print(f'   child exited 7, wrapper returned {r.returncode} '
+          f'-> {"PASS" if ok else "FAIL"}')
+    if not ok:
+        print('   (gamescope discards the child status; if this fails the '
+              'session logic cannot tell a crash from a clean exit)')
+    return ok
+
+
+def main():
+    for path, what in ((WRAP, 'gamescope-wrap'), (GAME_PIDS, 'game-pids')):
+        if not os.path.exists(path):
+            raise SystemExit(f'missing {what} at {path}')
+
+    # gamescope execs gamescopereaper by NAME; in a source build it sits
+    # beside the binary rather than on PATH.
+    env = dict(os.environ, PATH=GAMESCOPE_DIR + os.pathsep + os.environ['PATH'])
+
+    pre_existing = game_pids()
+    if pre_existing:
+        raise SystemExit(
+            f'game-pids already reports a running session {sorted(pre_existing)} '
+            '- refusing to run, a freeze test must not be able to touch a real '
+            'game. Close it and try again.')
+
+    results = [check_a(env)]
+
+    tmp = tempfile.mkdtemp(prefix='stage3-freeze-')
+    tick = os.path.join(tmp, 'tick')
+    proc = None
+    try:
+        print('\nB. game-pids finds a wrapped session')
+        # The stand-in: carries the reaper marker in its cmdline and counts,
+        # so "is it running" is measurable rather than inferred.
+        script = (f'i=0; while true; do i=$((i+1)); '
+                  f'printf %s "$i" > {tick}; sleep 0.05; done')
+        proc = subprocess.Popen(
+            [WRAP, '--backend', 'headless', '--',
+             'bash', '-c', script, REAPER_MARK],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+
+        if not wait_until(lambda: counter(tick) > 2, 60, 'the stand-in to start counting'):
+            raise SystemExit('the stand-in never ran; gamescope may have failed')
+
+        found = game_pids()
+        mine = descendants(proc.pid)
+        # The stand-in spawns a `sleep` every 50ms, so pids appear and vanish
+        # between game-pids' scan and ours. A pid that no longer exists cannot
+        # be signalled and is not a safety question; recompute the fence and
+        # discard anything already gone before calling it a stray.
+        stray = {p for p in found - mine if os.path.exists(f'/proc/{p}')}
+        if stray:
+            mine = descendants(proc.pid)
+            stray = {p for p in stray
+                     if p not in mine and os.path.exists(f'/proc/{p}')}
+        inside = found & mine
+        print(f'   game-pids returned {len(found)} pid(s), {len(inside)} inside '
+              f'our gamescope tree')
+        if stray:
+            print(f'   FAIL(SAFETY): {sorted(stray)} are outside our tree - '
+                  'not signalling anything. What they are:')
+            for pid in sorted(stray):
+                try:
+                    cmd = (open(f'/proc/{pid}/cmdline', 'rb').read()
+                           .replace(b'\0', b' ').decode('utf-8', 'replace').strip())
+                except OSError:
+                    cmd = '(gone)'
+                print(f'     {pid} ppid={ppid_map().get(pid)} :: {cmd[:160]}')
+            return 1
+        ok_b = bool(inside)
+        print(f'   -> {"PASS" if ok_b else "FAIL"}')
+        results.append(ok_b)
+        if not ok_b:
+            print('   (nothing to freeze: game-pids does not see a wrapped '
+                  'session, which is the freeze-shape ruling in §6)')
+            return 1
+
+        print('\nC. SIGSTOP actually stops it')
+        before = counter(tick)
+        for pid in sorted(inside):
+            try:
+                cmd = (open(f'/proc/{pid}/cmdline', 'rb').read()
+                       .replace(b'\0', b' ').decode('utf-8', 'replace').strip())
+            except OSError:
+                cmd = '(gone)'
+            print(f'     stopping {pid} [{proc_state(pid)}] :: {cmd[:110]}')
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                print(f'       (already gone - a transient child)')
+        time.sleep(1.0)
+        frozen_at = counter(tick)
+        time.sleep(1.0)
+        still = counter(tick)
+        states = {proc_state(p) for p in inside}
+        ok_c = (still == frozen_at) and still >= before
+        print(f'   counter {before} -> {frozen_at} -> {still} (must stop moving), '
+              f'proc states {sorted(s for s in states if s)}')
+        print(f'   -> {"PASS" if ok_c else "FAIL"}')
+        results.append(ok_c)
+
+        print('\nD. SIGCONT brings it back, and gamescope survives')
+        for pid in inside:
+            os.kill(pid, signal.SIGCONT)
+        ok_d = wait_until(lambda: counter(tick) > still + 2, 10,
+                          'the counter to resume')
+        alive = proc.poll() is None
+        print(f'   counter resumed to {counter(tick)}; wrapper still alive: {alive}')
+        ok_d = ok_d and alive
+        print(f'   -> {"PASS" if ok_d else "FAIL"}')
+        results.append(ok_d)
+    finally:
+        if proc and proc.poll() is None:
+            for pid in sorted(descendants(proc.pid)):
+                try:
+                    os.kill(pid, signal.SIGCONT)   # never leave anything stopped
+                except OSError:
+                    pass
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        for f in (tick,):
+            if os.path.exists(f):
+                os.unlink(f)
+        os.rmdir(tmp) if os.path.isdir(tmp) else None
+
+    print()
+    if all(results):
+        print('PASS: suspend/resume survives the gamescope wrapper. Stage 3 '
+              'does not die here.')
+        return 0
+    print('FAIL: see above. If C or D failed, stage 3 breaks the one mechanism '
+          'the console is built on.')
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
