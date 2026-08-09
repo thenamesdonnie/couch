@@ -276,6 +276,32 @@ underline read from the couch, and does "Controller + TV off" do the right
 thing for real? Its parameter crossing is proved, its side effects are not
 (deliberately: testing it meant driving the television).
 
+### Headphones: built and armed-by-config, waiting on the pairing (9 Aug)
+`headphone_watch` in `~/.local/bin/tv-waker-webos` (already run by
+tv-waker.service). It ships DISARMED and logs "watcher idle" until a MAC
+exists. When home:
+
+1. Pair the headphones (`bluetoothctl` scan/pair/trust).
+2. Add the MAC to `~/.config/tv-remote/tv.json` as `"headphones_mac"`.
+3. `systemctl --user restart tv-waker.service`, then check
+   `journalctl --user -u tv-waker.service` says `headphones: watching <MAC>`.
+
+The rule, per the ask: never connect while the TV is off, and disconnect them
+if they come up while it is off. The second half is a POLL, not a TV-off
+event, because the headphones initiate - powering them on dials the box with
+the television doing nothing. Escape hatch for using them with the PC while
+the TV is off: `touch ~/.config/couch/headphones-anytime` and the watcher
+leaves them alone entirely.
+
+NOT verified live (needs the set on and the headphones in the room): the
+actual connect on TV-on, and a real disconnect - nothing was BT-connected to
+test the enforcement against. The decision rule has 33 tests
+(`tools/test_headphone_watch.py`); the loop was confirmed armed, reading the
+TV, and correctly doing nothing with the set in standby.
+
+`~/.local/bin/tv-power-watcher` is the DEAD Toshiba version - headed off with
+a warning so its `HEADPHONES_MAC = ""` is not mistaken for the switch.
+
 ### Open: the power bar is unreachable when nothing else is running
 `script.couch.switcher`'s main() returns early with "Nothing else is running"
 when the window list has no non-Kodi rows, which was right when the dialog was

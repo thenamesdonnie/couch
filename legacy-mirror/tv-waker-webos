@@ -1,0 +1,351 @@
+#!/home/ds2000/tv-remote/bin/python
+"""tv-waker for the LG webOS TV: same triggers as the Toshiba version (pad
+connect, /tmp/tv-wake-request flag, Kodi video starting), different wake.
+
+The Toshiba needed a permanently-held connection because dialling it cold from
+standby took 15-46s. The LG needs no such trick: standby wake is a
+connectionless Wake-on-LAN packet (a few seconds to picture), so this daemon
+just watches its triggers and fires magic packets. "Is it on" is a quick
+socket probe. Everything Kodi-related (the pad-repair for missed BT
+reconnects included) is carried over verbatim from the Toshiba waker.
+
+Activated via tv.json backend "webos": tv-waker execs into this at startup, so
+the systemd unit needs no change on switch day.
+"""
+import asyncio
+import glob
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from lgssap import LGTV, probe
+
+CONF = Path.home() / ".config" / "tv-remote" / "tv.json"
+
+WAKE_WAIT = 25               # seconds to wait for picture after magic packets
+POLL = 0.4
+COOLDOWN = 20.0              # ignore re-triggers within this window
+FLAG = Path('/tmp/tv-wake-request')
+
+# --- headphones ------------------------------------------------------------
+# Set "headphones_mac" in tv.json once the pair is bonded; absent means this
+# whole watcher stays asleep, which is the state it ships in.
+#
+# The rule, in Donnie's words: "if my tv is off it disconnects and / or does
+# not try to connect". Note that those are two different guarantees and only
+# one of them is an event:
+#
+#   - Never connect while the set is off. Easy: the connect only ever fires on
+#     a real off->on transition, and re-probes the TV immediately before
+#     acting so a stale reading cannot authorise it.
+#   - Disconnect if they are on while the set is off. This one CANNOT be
+#     event-driven, because the headphones are the party that initiates:
+#     press their power button and they dial the box themselves, with the
+#     television having done nothing at all. So it is enforced on a poll for
+#     as long as the TV is off, not just at the moment it turns off.
+#
+# Deliberately NOT "connect whenever the TV is on and they are not": that
+# would retry every poll forever while you watch on the soundbar, and each
+# failed bluetoothctl connect blocks for its whole timeout.
+HP_POLL = 10.0               # seconds between TV-state checks for this watcher
+HP_TIMEOUT = 25              # bluetoothctl can sit on a connect for a while
+# Escape hatch: touch this and the headphones are left entirely alone, for
+# using them with the PC while the television is off. Without it, a daemon
+# that silently keeps hanging up on your headphones is maddening and its
+# cause is not guessable from the couch.
+HP_FREE = Path.home() / ".config" / "couch" / "headphones-anytime"
+
+
+def say(msg):
+    print(msg, flush=True)
+
+
+def load_conf():
+    try:
+        c = json.loads(CONF.read_text())
+    except OSError:
+        say("no tv.json - run tv-setup-lg first")
+        raise SystemExit(2)
+    if not c.get("key") or not c.get("mac"):
+        say("tv.json incomplete (key/mac) - run tv-setup-lg")
+        raise SystemExit(2)
+    return c
+
+
+def pad_present():
+    """A REAL DualSense joystick node only (any-js* was legacy bug 3:
+    Sunshine's virtual devices hold js0 from boot)."""
+    for p in glob.glob('/sys/class/input/js*/device/name'):
+        try:
+            name = Path(p).read_text().strip()
+        except OSError:
+            continue
+        low = name.lower()
+        if 'dualsense' in low and 'virtual' not in low and 'sunshine' not in low:
+            return True
+    return False
+
+
+async def is_on(conf):
+    state, _app = await probe(conf["host"], conf["key"], timeout=2)
+    return state == "Active"
+
+
+async def do_wake(conf):
+    """Magic packets, wait for the socket, then land on the PC's input."""
+    tv = LGTV(conf["host"], conf["key"], conf["mac"])
+    state, _app = await probe(conf["host"], conf["key"], timeout=2)
+    if state != "Active":
+        say("TV asleep -> magic packet to wake")
+        tv.wol()
+        for _ in range(WAKE_WAIT):
+            await asyncio.sleep(1)
+            state, _app = await probe(conf["host"], conf["key"], timeout=2)
+            if state is not None:
+                break
+        else:
+            say("TV never answered the wake - check 'Turn on via Wi-Fi'")
+            return
+    else:
+        say("TV already on -> just selecting the input")
+    try:
+        await tv.connect(timeout=4)
+        if state != "Active":
+            try:
+                await tv.request("com.webos.service.tvpower/power/turnOnScreen")
+            except Exception:
+                pass
+        await tv.request("tv/switchInput", {"inputId": conf.get("pc_input", "HDMI_2")})
+        say("done")
+    except Exception as e:
+        say(f"input switch failed: {e}")
+    finally:
+        await tv.close()
+
+
+async def wake_if_off(conf, why, state):
+    """Only touches the TV when it is in standby, so starting a video while
+    already watching never flashes an input OSD."""
+    if await is_on(conf):
+        say(f"{why}: TV already on - nothing to do")
+        return
+    t = time.monotonic()
+    if t - state['last'] < COOLDOWN:
+        say(f"{why}: within cooldown - ignoring")
+        return
+    state['last'] = t
+    say(f"{why} -> waking TV")
+    try:
+        await do_wake(conf)
+    except Exception as e:
+        say(f"wake failed: {e}")
+
+
+async def kodi_video_watch(conf, state):
+    """Wake the set when video playback starts in Kodi (any source)."""
+    dec = json.JSONDecoder()
+    while True:
+        try:
+            reader, _writer = await asyncio.open_connection('localhost', 9090)
+            say('kodi notification socket connected')
+            buf = ''
+            while True:
+                chunk = (await reader.read(65536)).decode('utf-8', 'replace')
+                if not chunk:
+                    raise ConnectionError('kodi closed the socket')
+                buf += chunk
+                while buf:
+                    buf = buf.lstrip()
+                    try:
+                        msg, end = dec.raw_decode(buf)
+                    except ValueError:
+                        break  # partial message, wait for more
+                    buf = buf[end:]
+                    if msg.get('method') == 'Player.OnPlay':
+                        item = (msg.get('params', {}).get('data', {})
+                                or {}).get('item', {})
+                        if item.get('type') != 'song':
+                            await wake_if_off(
+                                conf, f"video started ({item.get('type', '?')})",
+                                state)
+        except OSError as e:
+            say(f'kodi socket lost ({e}); retrying in 10s')
+            await asyncio.sleep(10)
+
+
+def kodi_holds_a_pad_js():
+    """Does kodi.bin have a real DualSense js node open? (Kodi can miss the
+    BT-disconnect udev event and keep deleted fds - seen live 5 Aug 2026.)"""
+    try:
+        pids = subprocess.run(['pgrep', '-x', 'kodi.bin'], capture_output=True,
+                              text=True, timeout=5).stdout.split()
+    except Exception:
+        return None
+    real = set()
+    for p in glob.glob('/sys/class/input/js*/device/name'):
+        try:
+            name = Path(p).read_text().strip().lower()
+        except OSError:
+            continue
+        if 'dualsense' in name and 'virtual' not in name and 'sunshine' not in name:
+            real.add('/dev/input/' + p.split('/')[4])
+    if not real:
+        return None
+    for pid in pids:
+        try:
+            for fd in Path(f'/proc/{pid}/fd').iterdir():
+                try:
+                    if str(fd.resolve()) in real:
+                        return True
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return False
+
+
+async def kodi_pad_repair():
+    """Toggle peripheral.joystick over the 9090 socket to force Kodi to
+    re-enumerate. Same repair as the manual fix that worked on 5 Aug."""
+    for enabled in (False, True):
+        _reader, writer = await asyncio.open_connection('localhost', 9090)
+        writer.write(json.dumps({
+            'jsonrpc': '2.0', 'id': 1, 'method': 'Addons.SetAddonEnabled',
+            'params': {'addonid': 'peripheral.joystick',
+                       'enabled': enabled}}).encode())
+        await writer.drain()
+        writer.close()
+        await asyncio.sleep(2)
+
+
+async def pad_and_flag_watch(conf, state):
+    prev = pad_present()
+    while True:
+        await asyncio.sleep(POLL)
+        if FLAG.exists():
+            try:
+                FLAG.unlink()
+            except OSError:
+                pass
+            await wake_if_off(conf, 'wake requested (game launch)', state)
+        now = pad_present()
+        if now and not prev:
+            t = time.monotonic()
+            if t - state['last'] >= COOLDOWN:
+                state['last'] = t
+                say("pad connected -> waking TV")
+                try:
+                    await do_wake(conf)
+                except Exception as e:
+                    say(f"wake failed: {e}")
+            else:
+                say("pad reconnect within cooldown - ignoring")
+            await asyncio.sleep(4)
+            if kodi_holds_a_pad_js() is False:
+                say("kodi did not pick up the pad - toggling "
+                    "peripheral.joystick to force a rescan")
+                try:
+                    await kodi_pad_repair()
+                    say("kodi pad repair done"
+                        if kodi_holds_a_pad_js() else
+                        "kodi pad repair ran but the pad is still not held")
+                except Exception as e:
+                    say(f"kodi pad repair failed: {e}")
+        prev = now
+
+
+def bt(action, mac):
+    """One bluetoothctl verb. Blocking - always call via asyncio.to_thread."""
+    try:
+        r = subprocess.run(["/usr/bin/bluetoothctl", action, mac],
+                           capture_output=True, text=True, timeout=HP_TIMEOUT)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f"bluetoothctl {action} failed: {e}")
+        return False
+
+
+def hp_connected(mac):
+    """True / False, or None when bluetoothctl cannot say.
+
+    None matters: an unknown state must never be treated as 'disconnected'
+    and answered with a connect, nor as 'connected' and answered with a
+    disconnect. Both would act on a guess about a device we cannot see.
+    """
+    try:
+        r = subprocess.run(["/usr/bin/bluetoothctl", "info", mac],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("Connected:"):
+            return line.split(":", 1)[1].strip().lower() == "yes"
+    return None          # not paired / not known to bluez yet
+
+
+def headphone_decision(tv_on, connected, just_turned_on, override):
+    """'connect' | 'disconnect' | None. Pure, so the rule can be tested
+    without a television, a bluetooth stack, or a pair of headphones."""
+    if override or connected is None or tv_on is None:
+        return None
+    if not tv_on:
+        return "disconnect" if connected else None
+    return "connect" if (just_turned_on and not connected) else None
+
+
+async def headphone_watch(conf):
+    mac = (conf.get("headphones_mac") or "").strip()
+    if not mac:
+        say("headphones: no headphones_mac in tv.json - watcher idle")
+        return
+    say(f"headphones: watching {mac} (TV off => disconnected)")
+    prev_on = None
+    complained = False       # keep a stuck disconnect from filling the journal
+    while True:
+        try:
+            tv_on = await is_on(conf)
+        except Exception as e:                              # noqa: BLE001
+            if not complained:
+                say(f"headphones: cannot read TV state ({e}) - doing nothing")
+                complained = True
+            await asyncio.sleep(HP_POLL)
+            continue
+        connected = await asyncio.to_thread(hp_connected, mac)
+        just_on = bool(tv_on) and prev_on is False
+        action = headphone_decision(tv_on, connected, just_on,
+                                    HP_FREE.exists())
+        if action == "connect":
+            # Re-probe rather than trust the reading above: connecting the
+            # headphones to a set that went back to standby in the meantime
+            # is the exact thing this must never do.
+            if await is_on(conf):
+                say("headphones: TV on -> connecting")
+                await asyncio.to_thread(bt, "connect", mac)
+            else:
+                say("headphones: TV went off again before connect - skipped")
+        elif action == "disconnect":
+            if not complained:
+                say("headphones: TV off but they are connected -> disconnecting")
+            ok = await asyncio.to_thread(bt, "disconnect", mac)
+            complained = not ok      # only nag again once it works
+        else:
+            complained = False
+        prev_on = tv_on
+        await asyncio.sleep(HP_POLL)
+
+
+async def main():
+    conf = load_conf()
+    say(f"webos waker up (TV {'on' if await is_on(conf) else 'standby'}); "
+        f"watching pad + wake flag + kodi playback")
+    state = {'last': 0.0}
+    await asyncio.gather(pad_and_flag_watch(conf, state),
+                         kodi_video_watch(conf, state),
+                         headphone_watch(conf))
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
