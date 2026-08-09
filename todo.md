@@ -101,7 +101,83 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (updated 8 Aug 2026 ~19:50 — KODI 21 IS LIVE)
+## ▶ Resume here (9 Aug 2026 ~13:40 — overnight build, then a live disk incident)
+
+All work committed on master. **This repo has NO git remote**, so "committed"
+is the only backup that exists — a standing risk worth naming.
+
+Live state at handoff: Kodi 21.3 up on Home, TV in **standby** (never woken all
+session), couchd / couch / tv-waker / disk-reset-watch all active,
+tv-power-watcher finally **disabled**, no disk reset since 05:06:51, Sonarr's
+four-day error loop at zero.
+
+**What shipped (each verified, see the commit bodies for the evidence):**
+- **Switcher power bar** — "Quit game / Controller off / Controller + TV off"
+  as a top row on the switcher, dispatching to `script.tvpoweroff` so the
+  quit-politely-first logic has one home. Text not glyphs (we A/B'd; glyphs
+  could not carry "controller" vs "controller and TV").
+- **Home tiles grow and shrink** instead of snapping. Kodi does NOT reverse a
+  Focus animation on a list item, so the shrink needs an explicit `Unfocus` —
+  and even then Kodi truncates its tail, hence 120ms easing-out down against
+  170ms up.
+- **`tools/kodi-restart`** — quit over JSON-RPC, no crashlog, verifies the new
+  process answers before claiming success. Replaces hand-rolled `pkill -9`,
+  which forged 13 fake crashlogs and caused an outage when one kill wasn't
+  followed by a relaunch.
+- **Headphone watcher** in `tv-waker-webos` — armed by config, ships disarmed.
+- **Disk tooling** — `tools/disk-triage` (one sudo, everything) and
+  `tools/disk-reset-watch` (running now; captures whether the disk was busy
+  when the next link reset happens).
+
+**► THE EXACT NEXT STEP** is nothing in code — it is waiting for evidence:
+`disk-reset-watch` is running and will write `recordings/disk-resets.log` when
+disk1's USB link next drops. Read that file first next session. If it shows
+low/zero throughput at the moment of the reset, the load theory is dead and
+the answer is a marginal cable/enclosure on disk1 (reseat it). Detail in the
+"Disk1 link resets" section below.
+
+**Open decisions (no action taken, deliberately):**
+- The switcher's power bar is unreachable when nothing else is running — see
+  its section below. Two routes exist (PS-button hold covers it), so this was
+  left as Donnie's call rather than guessed at.
+- Whether the hero-backdrop "sometimes instant, sometimes fades" is real: ten
+  measured transitions at a stretched 3000ms fade ALL faded cleanly (slow,
+  fast-scroll, cold cache, no-art, window re-entry). Could not reproduce. Not
+  a Kodi 20-vs-21 thing. Three of nine row items have no fanart at all
+  (Library, Big Picture, shadPS4), which is the one real inconsistency found.
+
+**Needs Donnie's eyes, with the TV actually ON** (stills cannot answer these):
+- Does the 12px amber underline on the power bar read from the couch, and does
+  170/120ms on the tile grow/shrink feel right at speed? If the shrink pops,
+  the lever is dropping it to ~90ms.
+- `all_off` ("Controller + TV off") — its parameter crossing is proved with a
+  sentinel, its side effects are NOT tested, because testing meant driving the
+  television.
+
+### ▶ Donnie's to-do (needs sudo, hands, or the TV on)
+
+DONE this session: `disk-monitor.sh` deployed; `tv-power-watcher.service`
+disabled (it had crash-looped 9,948 times against the dead Toshiba's address,
+burying the journal the disk problem had to be read from).
+
+Still open:
+1. **Temperature during a disk event** — the one measurement never taken, and
+   the thing that would settle thermal vs cable:
+   `sudo ~/couch/tools/disk-triage -o /tmp/t.txt`
+   Worth running once cold anyway for the SMART lifetime counters (Media and
+   Data Integrity Errors, Warning Comp. Temperature Time) — never read on this
+   disk. smartctl says NOTHING about these bridges without `-d sntrealtek`.
+2. **Reseat disk1's USB cable/enclosure.** Cheapest fix for the leading theory.
+   Evidence: disk2 is an identical RTL9210 on the adjacent port with identical
+   config and zero errors all boot, which rules out controller/PSU/driver/
+   ambient. And 55GB of sustained 400MB/s reads during the torrent rechecks
+   produced ZERO resets, which argues hard against load being the trigger.
+3. **Pair the headphones**, then put the MAC in `~/.config/tv-remote/tv.json`
+   as `"headphones_mac"` and `systemctl --user restart tv-waker.service`.
+4. **Re-Size BAR still OFF** in BIOS; **memtest still never run** (the 5 Aug
+   idle freeze remains unexplained).
+
+## ▶ Previous resume block (8 Aug 2026 ~19:50 — KODI 21 IS LIVE)
 
 **THE MIGRATION IS DONE. Kodi 21.3-Omega is running on skin.couch.** Donnie
 ran `sudo apt install flatpak`; everything else executed the same evening,
@@ -295,12 +371,13 @@ thought them complete, so the recheck found the bad pieces and re-pulled only
 those. Sweep is now 337/337 valid, both episodes imported to /mnt/media/tv,
 and Sonarr's retry loop went from 4 failures a minute to zero.
 
-### disk-monitor.sh had 4 bugs - fixed copy staged, needs a sudo cp (9 Aug)
-It alerted TWICE for the single 05:06 reset, which is what exposed it. The
-corrected script is at `~/diskhealth/disk-monitor.sh`; the live one root runs
-is `/usr/local/bin/disk-monitor.sh` (5-min timer), so deploying is:
-    sudo cp ~/diskhealth/disk-monitor.sh /usr/local/bin/disk-monitor.sh
-Until then it will keep re-sending the same alert every 5 minutes.
+### disk-monitor.sh had 4 bugs - FIXED AND DEPLOYED (9 Aug)
+It alerted TWICE for the single 05:06 reset, which is what exposed it. Donnie
+deployed the fix (`/usr/local/bin/disk-monitor.sh`, 5-min timer) and the two
+copies are now identical. Its first run replayed the whole ring buffer once (a
+new cursor filename with nothing seeded - my miss); it has been correctly quiet
+since. Source of truth for edits is `~/diskhealth/disk-monitor.sh`; NOT in git,
+because the file carries the Discord webhook.
 
   1. Duplicate alerts: cursor was a dmesg LINE COUNT read with
      `tail -n "+$LAST_POS"` - 1-indexed and inclusive, so it always re-emitted
