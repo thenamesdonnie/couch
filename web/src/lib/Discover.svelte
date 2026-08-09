@@ -310,7 +310,12 @@
               Request {detail.mediaType === 'tv' ? 'series' : 'film'}
             </button>
           {/if}
-          {#if detail.inArr && detail.uhd && !requested.has(detail.tmdbId)}
+          <!-- Deliberately NOT gated on `requested`. Hiding these the moment
+               something is requested is what made "I forgot to tick 4K and
+               now I cannot change it" a dead end: the request has already
+               reached Radarr, so the profile is exactly the thing that is
+               still changeable. -->
+          {#if detail.inArr && detail.uhd}
             <div class="uprow center">
               <span class="uhdchip">4K</span>
               {#if upgraded4k.get(detail.tmdbId) === 'all'}
@@ -322,12 +327,18 @@
               {/if}
               <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'off')}>Turn off 4K</button>
             </div>
-          {:else if detail.inArr && !detail.uhd && !requested.has(detail.tmdbId)}
+          {:else if detail.inArr && !detail.uhd}
             {#if detail.mediaType === 'tv'}
               <div class="uprow">
                 <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'future')}>4K new episodes</button>
                 <button class="up4k" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'all')}>Upgrade all to 4K</button>
               </div>
+            {:else if detail.releaseNote}
+              <!-- No home release yet, so 'future': flip the profile and stop.
+                   'all' would fire a search for a film that does not exist as
+                   a release, and the UHD profile falls back to 1080p, so a
+                   search now is how a cinema rip gets grabbed. -->
+              <button class="up4k wide" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'future')}>Get it in 4K when it lands</button>
             {:else}
               <button class="up4k wide" disabled={upgradeBusy} onclick={() => upgrade4k(detail, 'all')}>Upgrade to 4K</button>
             {/if}
