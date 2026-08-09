@@ -186,9 +186,10 @@ class Overlay:
     lives in. See the module docstring for why it is two windows and not one.
     """
 
-    def __init__(self, display_name=None):
+    def __init__(self, display_name=None, fill=None):
         from Xlib import X, Xatom, display as xdisplay
         self.X, self.Xatom, self._xdisplay = X, Xatom, xdisplay
+        self.fill = fill
         self.dpy = xdisplay.Display(display_name)
         self.screen = self.dpy.screen()
         self.root = self.screen.root
@@ -223,9 +224,23 @@ class Overlay:
             0, 0, self.out_w, self.out_h, 0, 32, X.InputOutput, visual,
             background_pixel=0, border_pixel=0, colormap=colormap,
             override_redirect=1, event_mask=X.StructureNotifyMask)
+        # An opaque fill instead of a player, so the overlay can be PROVED to
+        # composite without a video decoder in the picture: capture the
+        # compositor's own output and look for this colour. It is how the
+        # gamescope rig checks the plane actually lands (tools/pip-gamescope-rig).
+        child_bg = (0xff000000 | (self.fill & 0xffffff)) if self.fill else 0
+        # Created at the ORIGIN and moved into place after mapping, on purpose.
+        # Created directly at its target position, the first composited frame
+        # showed the picture at 0,0 - measured, in the headless gamescope rig:
+        # the geometry was right in X the whole time (the child reports
+        # 768,72 immediately) but gamescope's first commit of the parent
+        # surface did not carry it. A configure AFTER the map produces the
+        # damage that fixes it, and every subsequent move was always correct.
+        # Root cause not pinned down; this is a deliberate workaround, and the
+        # rig is what will notice if a gamescope update makes it unnecessary.
         self.child = self.parent.create_window(
-            x, y, w, h, 0, 32, X.InputOutput, visual,
-            background_pixel=0, border_pixel=0,
+            0, 0, w, h, 0, 32, X.InputOutput, visual,
+            background_pixel=child_bg, border_pixel=0,
             colormap=self.root.create_colormap(visual, X.AllocNone))
         self._set_card(self.parent, OVERLAY_PROP, 1)
         self._set_card(self.parent, '_NET_WM_WINDOW_OPACITY', 0xffffffff)
@@ -234,7 +249,7 @@ class Overlay:
         self.child.map()
         self.parent.map()
         self.dpy.sync()
-        self.geometry = (x, y, w, h)
+        self.place(x, y, w, h)
 
     def _set_card(self, window, name, value):
         atom = self.dpy.get_atom(name)
@@ -432,7 +447,8 @@ class PipDaemon:
                         break
 
     def run(self):
-        self.overlay = Overlay(self.args.display)
+        self.overlay = Overlay(self.args.display,
+                               fill=parse_fill(self.args.test_fill))
         ow, oh = self.overlay.out_w, self.overlay.out_h
         x, y, w, h = from_normalised(
             {'nx': self.args.nx, 'ny': self.args.ny, 'nw': self.args.nw,
@@ -464,12 +480,27 @@ class PipDaemon:
 
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: self.stop.set())
+        # The startup race, measured in tools/pip-gamescope-rig: the very
+        # first composited frame puts the picture at 0,0 no matter where the
+        # child window actually is (X reports the right geometry throughout,
+        # and every LATER move composites exactly right). One configure at
+        # create time is not enough - gamescope has not taken the window on
+        # yet. So re-assert the placement for the first couple of seconds.
+        # place() is idempotent and this costs nothing; the rig is what will
+        # notice if a gamescope update makes it unnecessary.
+        settle_until = time.monotonic() + 2.0
+        next_reassert = 0.0
         try:
             while not self.stop.is_set():
+                now = time.monotonic()
+                if now < settle_until and now >= next_reassert:
+                    next_reassert = now + 0.25
+                    with self.lock:
+                        self.overlay.place(*self.overlay.geometry)
                 if self.player.kind != 'none' and not self.player.alive():
                     print('player exited; stopping', flush=True)
                     break
-                time.sleep(0.2)
+                time.sleep(0.1)
         finally:
             self.shutdown(sock)
 
@@ -491,6 +522,15 @@ CORNERS = {'nw': (0.0, 0.0), 'ne': (1.0, 0.0),
            'sw': (0.0, 1.0), 'se': (1.0, 1.0)}
 
 
+def parse_fill(value):
+    if not value:
+        return None
+    try:
+        return int(value.lstrip('#'), 16) & 0xffffff
+    except ValueError:
+        raise SystemExit(f'--test-fill wants RRGGBB hex, got {value!r}')
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--display', help="X display to put the overlay on - "
@@ -498,6 +538,10 @@ def parse_args(argv=None):
     p.add_argument('--socket', default=SOCKET_PATH)
     p.add_argument('--player', default='mpv', choices=('mpv', 'none'))
     p.add_argument('--player-args', default='')
+    p.add_argument('--test-fill', default=None,
+                   help='RRGGBB: fill the picture with a flat opaque colour '
+                        'instead of video, so a capture can prove the overlay '
+                        'composites. Rig use, with --player none.')
     p.add_argument('--nx', type=float, default=0.66)
     p.add_argument('--ny', type=float, default=0.05)
     p.add_argument('--nw', type=float, default=0.30)
