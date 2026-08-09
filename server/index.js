@@ -26,6 +26,7 @@ import * as youtube from './youtube.js';
 import { activeDownloads } from './downloads.js';
 import * as ytprogress from './ytprogress.js';
 import { createTvCast, createHdrRouter } from './tvcast.js';
+import { routes as pipRoutes } from './pip.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
@@ -975,6 +976,14 @@ app.post('/api/windows/activate', wrap(async (req) => {
   await screen.activateWindow(String(req.body?.id || ''));
   scheduleReassess(1500);
 }));
+
+// --- picture in picture over a game ---
+
+// The whole surface lives in pip.js because all of it is one conversation with
+// one socket, and because the daemon is normally absent: every route there
+// answers {running:false} with a 200 rather than failing, so the phone can draw
+// "not running" as the ordinary state it is.
+app.use('/api/pip', pipRoutes);
 
 // --- art proxies ---
 

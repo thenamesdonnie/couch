@@ -26,6 +26,39 @@ the user target) so couchd does NOT autostart on boot - started by hand
 15:41, unit fix belongs to the couchd session. Full detail in
 auto-memory `homelab-usb-disk-dropout.md`.
 
+## ▶ PICTURE-IN-PICTURE - a show over a game (added 9 Aug, NEEDS DONNIE)
+
+Built: `tools/pipd` (the overlay + control socket, 31 tests), `server/pip.js`
++ `/api/pip`, and the phone control in `web/src/lib/Pip.svelte` - a TV
+rectangle with a draggable picture inside it, live on the Games tab now.
+Research and the gamescope source reading: `docs/research/pip-over-a-game-20260809.md`.
+
+NOTHING has run against a real gamescope session. These are yours:
+
+- [ ] `sudo apt install mpv` - not installed, so pipd currently draws no
+      picture (`--player none` exercises everything else).
+- [ ] The first live test, an evening, no Steam and no couchd involved:
+      run something under `tools/gamescope-wrap`, start
+      `tools/pipd --display <gamescope's nested display> <a video>`, and see
+      whether a picture lands over the game and whether the phone drags it.
+- [ ] Measure what the overlay plane costs. It is output-sized every frame
+      whatever size the picture is. On the 9070 XT it may be a free hardware
+      plane or it may force composition - unmeasured, and it decides whether
+      this is usable in a game that matters.
+- [ ] The drag on real iOS Safari. Verified in headless Chromium only, which
+      proves the pointer path but nothing about iOS scroll hijacking.
+- [ ] THE GATE, and it is not a PiP question: gamescope strips the Steam
+      overlay under the nested Vulkan backend, and `steam-input-guard`
+      depends on that overlay. Whether stage 3 is adoptable at all rests on
+      this, and PiP rides on it.
+- [ ] Audio. Two sources, one soundbar. Probably the show to the headphones
+      and the game keeps the room, but it is undecided.
+
+Also open, unrelated to gamescope: `tools/tv-multiview-probe` (run at the TV,
+five minutes) for whether the C5 can do this itself. Dual HDMI is G5/M5 only,
+but HDMI + YouTube or HDMI + phone screen share are on LG's whitelist, and
+the TV route costs the PC nothing.
+
 ## ▶ STAGELIGHT - the console skin build (added 7 Aug ~23:00, phase 1 LIVE)
 
 The evening session: skin.couch forked (a43c5fa, ACTIVE on the TV, symlinked

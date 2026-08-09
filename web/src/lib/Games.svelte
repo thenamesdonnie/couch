@@ -3,6 +3,7 @@
   import { ui, cache, loadGames, loadSteamLib } from './store.svelte.js';
   import { fadeimg } from './img.js';
   import Icon from './Icon.svelte';
+  import Pip from './Pip.svelte';
 
   let view = $state('box'); // box | library
   // Both lists live in the shared cache: the tab paints instantly from the
@@ -100,6 +101,10 @@
     {/each}
   </div>
 {/if}
+
+<!-- The picture that floats over a game lives with the games, and says so
+     plainly when there is no picture (which is most of the time). -->
+<Pip />
 
 {#if view === 'box'}
   {#if live.game.active || pausedId}

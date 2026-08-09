@@ -55,6 +55,12 @@ export const QBITTORRENT_URL = e.QBITTORRENT_URL || `http://${LAN_HOST}:8080`;
 // as well; either one being off is enough to stop it.
 export const AUTOROUTE_OFF = e.COUCH_AUTOROUTE_OFF || path.join(ROOT, 'data', 'tv-autoroute-off');
 
+// pipd's control socket (tools/pipd): the picture-in-picture window over a
+// game. Mode 0600, same user as this server. Its ABSENCE is the normal state -
+// the daemon only lives as long as a game session with a video over it - so
+// nothing here may treat a missing socket as a fault. See server/pip.js.
+export const PIP_SOCKET = e.COUCH_PIP_SOCKET || '/tmp/couch-pip.sock';
+
 // couchd's status file, rewritten atomically every few seconds. Reading it is
 // the only contact this server has with the shadow daemon; its absence is a
 // normal state, never an error.
