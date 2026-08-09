@@ -33,7 +33,21 @@ Built: `tools/pipd` (the overlay + control socket, 31 tests), `server/pip.js`
 rectangle with a draggable picture inside it, live on the Games tab now.
 Research and the gamescope source reading: `docs/research/pip-over-a-game-20260809.md`.
 
-NOTHING has run against a real gamescope session. These are yours:
+**PROVED 9 Aug, headless, TV asleep:** `tools/pip-gamescope-rig` runs
+gamescope on its headless backend and screenshots its own composition. The
+overlay composites above the game plane, at the exact rectangle asked for,
+and moving it moves the picture. So the mechanism works on this box. What is
+left needs a display, not a debugger.
+
+**STAGE 3 IS RE-OPENED.** The 4 Aug parking decision rested on a 1080p60
+no-VRR TV, an NVIDIA 4070, and noble packaging - all three are gone, and the
+guard's dependency on the Steam overlay turns out to be largely theoretical
+(its actuator has been disabled since 7 Aug and never worked). Reassessment
+is at the top of `docs/couchd-stage3-design.md`. The one thing still gating
+everything is §6 experiment 5: Steam Input and the overlay inside nested
+gamescope for a real Steam title.
+
+These are yours:
 
 - [ ] `sudo apt install mpv` - not installed, so pipd currently draws no
       picture (`--player none` exercises everything else).

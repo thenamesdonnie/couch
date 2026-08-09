@@ -4,6 +4,62 @@ Status: /build research complete; decision is PARK, not GO. This file
 exists so the next session doesn't re-derive it. Full findings in the
 session's research pass; essentials below.
 
+## REASSESSED 9 Aug 2026 — the park is stale, re-open it
+
+The verdict below is sound reasoning about a box that no longer exists.
+Three of its four pillars have gone, and the fourth is smaller than it
+looked. Nothing here says ADOPT; it says the parking decision cannot carry
+its own weight any more and the evidence gate in §6 should be run.
+
+**Gone: the display.** "The TV is 1080p60 SDR with no VRR (its 4K modes are
+30Hz and below)" is now an LG C5 OLED at 4K120 with VRR and HDR. That is
+revisit trigger 1 verbatim, and trigger 1 says it "flips the gains column
+immediately".
+
+**Gone: the driver family.** The 4070 is out and an RX 9070 XT is in.
+gamescope's home platform is AMD. And bug #2171, cited as "open and
+unowned", is NVIDIA-only - alpha blending on overlay layers, reported on an
+RTX 4090 - so it does not reach us. Worth noting it is exactly the failure
+we would have hit: transparent overlay planes rendering as solid black.
+
+**Gone: the packaging risk.** "Noble has no gamescope package... a source
+build needs wayland >= 1.23.1 and pixman >= 0.43.0" was solved by the 6 Aug
+spike. 3.16.25+ is built at `~/src/gamescope/build/src/gamescope` and I ran
+it today, headless, on the 9070 XT.
+
+**Smaller than documented: the guard.** The verdict says "Steam Input +
+overlay are broken by default in nested mode... and our guard depends on
+both". Reading `legacy-mirror/steam-input-guard` rather than the summary:
+
+  * its DETECTION reads `~/.steam/.../logs/controller_ui.txt`, a log the
+    Steam CLIENT writes about controller UI routing. What gamescope strips
+    is `gameoverlayrenderer.so` from the GAME's LD_PRELOAD. Those are not
+    the same thing, and the log should survive;
+  * its ACTUATOR - the synthetic guide press - has been disabled since
+    7 Aug (`1ac3ab0`) after it walked into Steam's power menu and suspended
+    the machine mid-game, and the code's own note says "the mechanism also
+    has never demonstrably worked: every close_steam_menu effect check
+    tonight verdicted MISSED".
+
+So the guard's dependency on the in-game overlay is largely theoretical
+today. **Steam INPUT in nested mode is still a real unknown** and is
+separate from the overlay question; do not let this paragraph blur them.
+
+**Still standing, unchanged:** the three sites keying on `steam_app_*` (§2
+enumerates every one, and they are small), no prior art for a Kodi-first
+gamescope setup, and every experiment in §6.
+
+**Also new since the park:** picture-in-picture over a game is proved
+working on this box - `tools/pip-gamescope-rig` composites an overlay plane
+above the game at an arbitrary rectangle and moves it, headless, and it
+passes. That was the thing this document said gamescope could not do (see
+the correction under trigger 4). It is a gain in the column that was empty.
+
+Recommendation: run §6's experiments 4, 5 and 7 with Donnie - they are
+brief - and let the answers decide. Experiment 5 (Steam Input and the
+overlay in nested mode for a real Steam title) is the one that still gates
+everything.
+
 ## The verdict in one paragraph
 
 On this hardware there is nothing to win. The TV is 1080p60 SDR with no
