@@ -703,3 +703,85 @@ def test_percentiles_for_the_latency_budget():
     assert inputproc.percentile(values, 99) == pytest.approx(0.099, abs=0.002)
     assert inputproc.percentile([], 50) is None
     assert inputproc.percentile([0.5], 99) == 0.5
+
+
+# =========================================================================
+# SR4 for real: one event sequence, both stacks, same answer
+#
+# The old test above pins three constants and calls it SR4. It passes while
+# the two stacks disagree, which is how a real divergence survived to 9 Aug:
+# inputproc drove its hold off PressTracker.poll(), poll() LATCHES hold_fired,
+# and the shared feed() then classifies the release as a hold regardless of
+# that release's real kernel duration. couchd never polls. Same timestamps in,
+# two different gestures out.
+#
+# These tests feed identical timestamps to two trackers and assert the
+# classification matches. Anything that makes stage 2 decide differently from
+# stage 1 fails here, whatever the mechanism.
+# =========================================================================
+def test_a_press_just_under_the_hold_threshold_is_a_tap_in_both_stacks():
+    """0.85s is a tap by the shared arithmetic. It must be a tap in both.
+
+    The historic failure: inputproc's loop woke at a wall time that had
+    already crossed 0.9s while the release was still unread, poll() latched
+    hold_fired, and the release below came back HOLD_RELEASE.
+    """
+    # Kernel timestamps: pressed at k=1000.000, released at k=1000.850. The
+    # wall clock is when each event was READ, and the release is read late -
+    # the loop was busy for 250ms. 0.85s is under the 0.9s threshold, so both
+    # stacks must call it a tap.
+    press, release = (1000.000, 1), (1000.850, 0)
+
+    stage1 = gesture.PressTracker()
+    stage1.feed(*press, wall=500.00)
+    assert stage1.feed(*release, wall=501.10) == gesture.TAP
+
+    stage2 = gesture.PressTracker()
+    stage2.feed(*press, wall=500.00)
+    # The loop wakes at wall 500.95 with the release still unread. Extrapolated
+    # kernel time is 1000.95, which is over the threshold. This is the exact
+    # call that used to latch hold_fired.
+    stage2.poll(wall=500.95)
+    assert stage2.feed(*release, wall=501.10) == gesture.HOLD_RELEASE, (
+        'the divergence this test exists for is gone from gesture.py - if '
+        'poll() no longer latches, simplify inputproc.poll_hold()')
+
+    # ...which is why inputproc must not poll the tracker. Its own tier
+    # detection has to reach stage 1's answer.
+    proc = gesture.PressTracker()
+    proc.feed(*press, wall=500.00)
+    gesture.hold_reached(proc.button_down, proc.down_since_k,
+                         proc.kernel_now(wall=500.95), proc.hold_seconds)
+    assert proc.feed(*release, wall=501.10) == gesture.TAP, (
+        'inputproc\'s non-latching hold check changed what feed() decides; '
+        'stage 1 calls this 0.85s press a tap and stage 2 must agree')
+
+
+def test_inputproc_does_not_poll_the_shared_tracker():
+    """The structural guarantee behind the test above.
+
+    poll() is the only thing that can latch hold_fired, and inputproc must
+    reach the same verdict as a stack that never calls it. If a future edit
+    reintroduces tracker.poll() in the input path, this fails and the SR4
+    argument has to be made again from scratch.
+    """
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'inputproc.py')).read()
+    code = '\n'.join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith('#'))
+    assert 'tracker.poll(' not in code, (
+        'inputproc calls PressTracker.poll() again - read poll_hold()\'s '
+        'docstring before proceeding')
+
+
+def test_hold_tiers_are_binding_gated_the_way_couchd_gates_them():
+    """With hold unbound, stage 1 keeps a long press in 'down' and releases
+    it as a tap. feed() alone does not know that, so inputproc must."""
+    import couchd
+    o = couchd.make_obs(button_down=True, down_since_k=1000.0,
+                        kernel_now=1002.0,
+                        bindings={'hold': 'none', 'long_hold': 'none'})
+    assert couchd.g_hold_reached(o) is True
+    assert couchd.g_hold_fires(o) is False, (
+        'couchd only fires a hold when one is bound - inputproc.poll_hold '
+        'mirrors this, and on_guide re-injects the press when no tier fired')

@@ -160,9 +160,14 @@ budget?
 | gate | number | where it comes from |
 |---|---|---|
 | forwarding latency | **p99 < 10 ms**, p50 reported | stage-2 budget |
-| FF suite | 20 uploads, updates, erases — **no -ENOSPC, no stall** | SR7 |
+| FF suite | 20 upload attempts → **`created 16 refused 4`**, then updates, erases and 16 re-creates — **no stall** | SR7 |
 | Kodi map | `Microsoft_X-Box_360_pad_11b_8a.xml` **resolves** | SR2 |
 | repeats | **k = 3** consecutive clean runs | SR9 |
+
+Sixteen is the whole slot count, so four refusals is the PASS, not a fault:
+E1.6 spells out why. **Read "What E1 does NOT prove" at the bottom before
+you read a green run as a green stage** — three of these four gates are
+narrower than they look.
 
 **Timebox: 2 hours per run.**
 
@@ -297,9 +302,9 @@ the environment (without it the process forwards BTN_MODE by design).
 
 ### E1.6 — the FF suite (SR7)  *(terminal C)*
 
-Twenty creates, twenty updates, twenty erases, then twenty more creates.
-The second batch is the real test: if erase did not free the slots, it
-returns ENOSPC.
+Twenty create *attempts* — only sixteen slots exist, so four must be
+refused — then updates, erases, and sixteen more creates. That last batch
+is the real test: if erase did not free the slots, it returns ENOSPC.
 
     $PY - <<'EOF'
     import time
@@ -352,6 +357,17 @@ returns ENOSPC.
   means UI_FF_ERASE is not being answered** — that is the exact stall SR7
   exists to prevent, and it would freeze a real game on exit.
 
+> **What the four refusals are, and are not, evidence of.** `create_virtual`
+> passes `max_effects=FF_SLOTS`, so the *kernel's* uinput side counts the
+> slots and returns -ENOSPC on the seventeenth upload itself. The request
+> never reaches inputproc, and inputproc's own exhaustion branch — the one
+> that answers UI_FF_UPLOAD with -ENOSPC when its slot map is full — does
+> not run in this step at all. So `created 16 refused 4` proves the slot
+> count agrees end to end and that a refusal is clean rather than a
+> wrap-around or a crash. It does **not** prove our exhaustion handling.
+> That invariant is covered only by `test_inputproc.py`; do not report this
+> step as having exercised it.
+
 Then confirm the map in inputproc's own log:
 
     grep '"kind": "ff"' ~/couch/shadow/inputproc-$(date +%Y%m%d).jsonl \
@@ -383,10 +399,25 @@ one run is weather.
 
 Kodi's peripheral.joystick resolves a buttonmap by
 `<sanitised name>_<buttons>b_<axes>a.xml`. This computes the filename from
-the **live virtual pad** and looks for it where Kodi actually looks:
+the **live virtual pad** and looks for it where Kodi actually looks.
+
+**Do not hardcode a Kodi path here.** Since 8 Aug 2026 the running Kodi is
+the 21.3 Flatpak, whose profile is `~/.var/app/tv.kodi.Kodi/data` — not
+`~/.kodi`, and not `~/.var/app/tv.kodi.Kodi/.kodi`. `couchd/kodiprofile.py`
+is the one place that knows this, and it answers with the flavour that was
+last *launched* rather than the one that is merely chosen. An earlier
+version of this step checked `~/.kodi` and `/usr/share/kodi` and so could
+fail against a perfectly good virtual pad, or — worse — pass off the
+leftover apt-Kodi tree that is still installed as the rollback.
+
+The apt build ships its buttonmaps under `/usr/share/kodi`; the Flatpak
+ships them **inside the app image**, under the deploy directory, so that
+root has to be built from the flavour rather than assumed:
 
     $PY - <<'EOF'
-    import os, re
+    import os, re, sys
+    sys.path.insert(0, '/home/ds2000/couch/couchd')
+    import kodiprofile
     from evdev import InputDevice, ecodes, list_devices
     v = [InputDevice(p) for p in list_devices()]
     v = [x for x in v if x.name == 'Microsoft X-Box 360 pad'][0]
@@ -394,12 +425,26 @@ the **live virtual pad** and looks for it where Kodi actually looks:
     b = len(caps.get(ecodes.EV_KEY, []))
     a = len(caps.get(ecodes.EV_ABS, []))
     fn = '%s_%db_%da.xml' % (re.sub(r'[^A-Za-z0-9_.-]', '_', v.name), b, a)
+    flav = kodiprofile.flavour()
     print('virtual pad:', v.path, v.name, f'{b}b {a}a')
+    print('Kodi flavour (last LAUNCHED):', flav)
+    print('profile:', kodiprofile.profile_dir())
     print('Kodi would look for:', fn)
-    roots = ['/home/ds2000/.kodi/userdata/addon_data/peripheral.joystick/'
-             'resources/buttonmaps/xml/linux',
-             '/usr/share/kodi/addons/peripheral.joystick/resources/'
-             'buttonmaps/xml/linux']
+    sub = 'resources/buttonmaps/xml/linux'
+    # 1. the user's own overrides, written by the addon into the profile;
+    # 2. the addon if Kodi has updated it into the profile's addons dir,
+    #    which shadows the shipped copy;
+    # 3. the shipped copy: /usr/share/kodi for apt, inside the app image
+    #    for the Flatpak (user install first, then a system-wide one).
+    roots = [os.path.join(kodiprofile.addon_data('peripheral.joystick'), sub),
+             os.path.join(kodiprofile.addons_dir(), 'peripheral.joystick', sub)]
+    if flav == 'flatpak':
+        deploy = 'files/share/kodi/addons/peripheral.joystick'
+        roots += [os.path.join(os.path.expanduser(d), deploy, sub) for d in (
+            '~/.local/share/flatpak/app/tv.kodi.Kodi/current/active',
+            '/var/lib/flatpak/app/tv.kodi.Kodi/current/active')]
+    else:
+        roots.append('/usr/share/kodi/addons/peripheral.joystick/' + sub)
     hit = False
     for r in roots:
         p = os.path.join(r, fn)
@@ -409,9 +454,18 @@ the **live virtual pad** and looks for it where Kodi actually looks:
     print('RESULT:', 'RESOLVES' if hit else 'DOES NOT RESOLVE')
     EOF
 
-**Success:** `Kodi would look for: Microsoft_X-Box_360_pad_11b_8a.xml` and
-`RESULT: RESOLVES` — it is shipped by the addon at
-`/usr/share/kodi/addons/peripheral.joystick/resources/buttonmaps/xml/linux/`.
+**Success:** `Kodi flavour (last LAUNCHED): flatpak`,
+`Kodi would look for: Microsoft_X-Box_360_pad_11b_8a.xml`, and
+`RESULT: RESOLVES` off the app-image root, i.e. a `FOUND` line under
+`~/.local/share/flatpak/app/tv.kodi.Kodi/current/active/files/share/kodi/`.
+That file is shipped, so the first two roots are *expected* to say
+`missing` — only the RESULT line is the gate.
+
+**Read the flavour line before you read the result.** If it says `apt` when
+Kodi 21 is what actually runs, the gate has resolved against the wrong tree
+and its answer means nothing; fix `~/couch/data/kodi-flavour-active` (it is
+written by `kodi-tv` at every launch, so launching Kodi once repairs it)
+and re-run.
 
 **Failure:** if the counts are not `11b 8a`, the virtual pad has drifted
 from vpad's shape and `test_inputproc.py`'s table-equality tests should have
@@ -419,12 +473,26 @@ caught it — run them before doing anything else:
 
     $PY -m pytest ~/couch/couchd/test_inputproc.py -q
 
-(Sanity note: the box already has a hand-made
-`linux/DualSense_Wireless_Controller_13b_8a.xml` override in Kodi's
-userdata, which is proof that this box uses the `linux` provider and this
-naming scheme.)
+(Sanity note: the hand-made `linux/DualSense_Wireless_Controller_13b_8a.xml`
+override came across the Flatpak migration and is present under **both**
+profiles: below `userdata/addon_data/peripheral.joystick/` in
+`~/.var/app/tv.kodi.Kodi/data` for the running Kodi, and still in `~/.kodi`
+for the apt rollback. Checked 9 Aug 2026. It
+is proof that this box uses the `linux` provider and this naming scheme —
+but note it is proof about the *pad's own* map, which stage 2 hides; it is
+not a substitute for the RESULT line above.)
 
-### E1.9 — persistence  *(optional but cheap; do it once)*
+### E1.9 — persistence  *(MANDATORY, and part of k=3)*
+
+This step was written as "optional, do it once". It is not optional, and
+the reason is worth spelling out: destroy → reattach is the *only* path in
+the whole ladder that re-runs the poller's fd bookkeeping. Everything
+E1.2–E1.8 touches runs on fds opened once at startup, so a wrong fd role
+after a reattach — the physical node's fd left registered where the virtual
+node's belongs, or a stale fd still in the poll set — is invisible to every
+earlier step and shows up in real life as a pad that goes dead the first
+time Bluetooth blinks. SR6 exists for exactly this path. A run that skips
+E1.9 has tested the easy half.
 
 With inputproc still running, kill the rig from terminal A (Ctrl-C), watch
 `/tmp/inputproc.log`, then bring the rig back with `fake-pad up`.
@@ -439,7 +507,9 @@ With inputproc still running, kill the rig from terminal A (Ctrl-C), watch
   0 failed`, and re-running E1.6's play/stop still rumbles.
 
 `--persist-secs 30` is used here only so this step takes half a minute; the
-unit ships 120.
+unit ships 120. Do the reconnect-inside-the-window case every run — the
+expiry case can be done once per k=3, since it is a timer rather than a
+reattach.
 
 ### E1.10 — tear down, in this order
 
@@ -451,23 +521,70 @@ Then confirm the box is exactly as it was:
 
     systemctl --user is-active tv-waker pad-record pad-battery
     ls ~/couch/recordings | wc -l          # unchanged from E0.1's count
-    ls /dev/input/by-id | grep -i x-box    # nothing left over
+    grep 'Microsoft X-Box 360 pad' /proc/bus/input/devices   # expect NO output
+
+> The last line used to be `ls /dev/input/by-id | grep -i x-box`, which was
+> worthless: `by-id` symlinks come from
+> `/usr/lib/udev/rules.d/60-persistent-input.rules`, and every `SYMLINK+=`
+> line there is gated on `ENV{ID_BUS}=="?*"`, which udev only sets for a
+> usb/bluetooth/serio/rmi ancestry. A uinput device has none of those, so a
+> leftover virtual pad gets no `by-id` entry at all and the check passed
+> whether or not one was there. `/proc/bus/input/devices` is the kernel's
+> own list and always names the device. If it *does* print an
+> `N: Name="Microsoft X-Box 360 pad"` line, an inputproc is still running
+> somewhere — find it
+> (`pgrep -af inputproc.py`) before starting the next run, or the next run
+> grabs nothing and every number it produces is fiction.
 
 ---
 
 ## The k=3 rule
 
-E1 passes when **E1.2 through E1.8 are green three times in a row**, on
+E1 passes when **E1.2 through E1.9 are green three times in a row**, on
 three separate rig starts. Record for each run: p50/p99, the FF suite's four
-lines, and the Kodi RESULT line. One green run proves the code can work;
-three prove it does.
+lines, the Kodi flavour + RESULT lines, and E1.9's reconnect line. One green
+run proves the code can work; three prove it does.
+
+E1.9 is inside the k=3 window deliberately. It is the reattach path, so it
+is the one step whose bug is a *state* bug rather than a logic bug — the
+kind that shows up on the second or third go and not the first, which is the
+whole reason k=3 is three and not one.
 
 Keep the three runs' numbers somewhere durable — the flag-day checklist in
 `docs/couchd-stage2-design.md` compares against them, and E2's
 double-virtualisation latency is only meaningful next to E1's baseline.
 
-## What E1 deliberately does NOT prove
+## What E1 does NOT prove
 
+The first three items here are not scope decisions like the ones after
+them. They are gaps *inside* the gates E1 does run — places where a green
+run is compatible with the thing being broken. Read them before quoting a
+green E1 at anyone, including yourself.
+
+* **That anything downstream receives a gesture.** E1.5 checks that a tap
+  and a hold are classified correctly and that BTN_MODE is withheld, and it
+  reads the answer out of `/tmp/inputproc.log` and the JSONL. That is the
+  whole loop. `InputProc.report()` is an explicit stub — its docstring says
+  so — because the couchd supervisor socket is a later wire-up, and nothing
+  in this repo reads `~/couch/shadow/inputproc-*.jsonl` (checked 9 Aug
+  2026: `inputproc.py` is the only file that mentions it). So E1 proves the
+  gesture was *detected*, and proves nothing at all about it being *acted
+  on*. On the day the PS button is supposed to open the couch switcher, the
+  wire that makes it do so has never been tested by this ladder.
+* **That the latency figure covers the slow path.** The p99 gate is honest
+  about what it measures but not about what it samples. `latencies.append`
+  sits at the end of the forward loop and is only reached on `EV_SYN` of a
+  forwarded event; a `BTN_MODE` event hits `continue` and returns before it,
+  so guide presses contribute no samples. And BTN_MODE is precisely the path
+  that calls `report()`, which does a **blocking JSONL write**. The one code
+  path doing file I/O in the fast path is therefore the one path excluded
+  from the latency gate. E1.7 makes this worse by driving stick traffic only
+  (`axis lx`), so even the pad's *other* buttons are barely represented.
+  Treat `p99 < 10 ms` as "stick forwarding is fast", not "inputproc is
+  fast".
+* **That inputproc refuses a 17th effect correctly.** See E1.6's note: the
+  kernel refuses it first, so our own -ENOSPC branch never runs on the rig.
+  Unit tests only.
 * **Steam.** E1 never starts Steam. Whether Steam adopts the virtual pad as
   first-class is E2, which is a daytime, Donnie-aware experiment with the
   Steam config backed up (`cp -a ~/.steam/steam/config ...`).

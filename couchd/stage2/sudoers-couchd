@@ -7,9 +7,31 @@
 #   sudo visudo -c
 #
 # SR3: rollback must not need a password at 11pm. The scope is one
-# root-owned, root-only-writable script that takes NO arguments, so this
-# grants exactly "put the pad back" and nothing else. If the script were
-# writable by ds2000 this line would be a root shell - INSTALL.md's
-# verification step checks that.
+# root-owned, root-only-writable script, so this grants exactly "put the pad
+# back" and nothing else. If the script were writable by ds2000 this line
+# would be a root shell - INSTALL.md's verification step checks that.
 #
-ds2000 ALL=(root) NOPASSWD: /usr/local/sbin/couchd-input-release
+# The trailing "" is load-bearing and is NOT an empty placeholder. An
+# earlier version of this file omitted it and claimed the script "takes no
+# arguments on purpose, so there is no way to turn it into a general-purpose
+# root shell". That reasoning was wrong twice over. First, a command spec
+# with no argument list permits ANY arguments - sudo only restricts
+# arguments when you write them down, so the old line would have run
+# `couchd-input-release --anything` just as happily. Second, the safety was
+# never coming from the argument list anyway: it comes from the script being
+# root-owned and root-only-writable at a fixed absolute path, so ds2000
+# cannot change what runs. `""` is sudo's way of spelling "no arguments at
+# all", and it is here so that the file's stated scope and its actual
+# grant are the same thing - if the script ever grows an argument, this
+# line must be edited deliberately rather than silently permitting it.
+#
+# One more dependency worth writing down: the script's root-privileged body
+# resolves systemctl, mv, udevadm and sed. It sets its own PATH for that
+# reason, but sudo's `secure_path` (Defaults secure_path=... in
+# /etc/sudoers, on by default on Debian/Ubuntu) is the outer guarantee that
+# a caller-controlled PATH never reaches root here. If secure_path is ever
+# removed from this box's sudoers, the script's own PATH line becomes the
+# only thing standing between ds2000's environment and a root shell -
+# do not delete it.
+#
+ds2000 ALL=(root) NOPASSWD: /usr/local/sbin/couchd-input-release ""

@@ -31,7 +31,17 @@ Group=couchd-input
 # /dev/uinput is root:input 0660 on this box; this is why the group is here
 # and it is the only reason.
 SupplementaryGroups=input
-Environment=COUCHD_OWNS=input
+# NO Environment=COUCHD_OWNS here, deliberately. Pinning it in the unit made
+# `systemctl enable --now inputproc` the flip - which bypassed the declared
+# combined cutover with `gestures`, and broke the charter's one-step rollback,
+# because emptying couchd/owns.conf then did not release the pad. inputproc
+# reads owns.conf itself now, exactly as that file's header always claimed.
+# COUCHD_OWNS still overrides WHEN SET, for the fake-pad rig only.
+#
+# $HOME for this system user is /nonexistent (INSTALL.md step 1), and
+# inputproc derives its evidence directory from it, so every JSONL record
+# would go nowhere while journalctl looked perfectly healthy. Name it.
+Environment=COUCHD_SHADOW_DIR=/home/ds2000/couch/shadow
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/ds2000/couch/couchd/.venv/bin/python /home/ds2000/couch/couchd/inputproc.py --uniq aa:bb:cc:dd:ee:ff --persist-secs 120
 WorkingDirectory=/home/ds2000/couch/couchd
@@ -42,7 +52,7 @@ KillMode=mixed
 
 # It writes exactly two places, and couchd-input must be able to write both.
 # ~/couch/shadow is ds2000-owned, so it is granted by ACL at install time
-# (INSTALL.md step 6) rather than by loosening this unit.
+# (INSTALL.md step 5) rather than by loosening this unit.
 ReadWritePaths=/home/ds2000/couch/shadow /tmp
 PrivateTmp=no
 

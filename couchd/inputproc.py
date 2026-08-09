@@ -38,6 +38,7 @@ import fcntl
 import grp
 import json
 import os
+import pwd
 import re
 import select
 import signal
@@ -50,6 +51,8 @@ from collections import deque
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gesture
+import gestureconf
+import owns as ownsconf
 from gesture import EVENT_FORMAT, EVENT_SIZE
 
 try:
@@ -192,21 +195,34 @@ def assert_writable(flags, path='<device>'):
 
 
 def evaluate_ownership(gid_name, mode, acl_text, group=OWNER_GROUP,
-                       user=DESKTOP_USER):
+                       user=DESKTOP_USER, owner_name=None):
     """SR5: on every pad appearance, assert we really are the only owner.
 
     Returns (ok, [problems]). Never uses `udevadm info TAGS` - TAG-= clears
     only CURRENT_TAGS, so TAGS still lists uaccess forever and would make
     this check pass while ds2000 still has an ACL. getfacl is the truth.
+
+    This FAILS CLOSED. `acl_text is None` means getfacl could not be run, and
+    that is a problem, not a pass - the check exists precisely to catch a
+    lingering uaccess ACL, so being unable to look is the same as not knowing.
+    `owner_name` is the device's owning UID: getfacl renders the owner as
+    `user::rw-`, never `user:ds2000:rw-`, so a node owned BY ds2000 sails past
+    the named-entry regex while Steam can still open it.
     """
     problems = []
+    if owner_name is not None and owner_name == user:
+        problems.append(f'{user} OWNS the node (want root; getfacl renders '
+                        f'the owner as user::, so no ACL entry shows this)')
     if gid_name != group:
         problems.append(f'group is {gid_name!r}, want {group!r}')
     if (mode & 0o060) != 0o060:
         problems.append(f'group lacks rw (mode {mode & 0o777:04o}, want 0660)')
     if mode & 0o006:
         problems.append(f'world-accessible (mode {mode & 0o777:04o})')
-    if acl_text and re.search(rf'^user:{re.escape(user)}:', acl_text, re.M):
+    if acl_text is None:
+        problems.append('getfacl unavailable - cannot prove uaccess was '
+                        'cleared (install the acl package)')
+    elif re.search(rf'^user:{re.escape(user)}:', acl_text, re.M):
         problems.append(f'{user} still holds an ACL (uaccess not cleared)')
     return (not problems), problems
 
@@ -397,13 +413,21 @@ def find_pad(uniq=None, name=PAD_NAME, procfile='/proc/bus/input/devices'):
 
 
 def read_acl(path):
-    """getfacl text, or '' if the tool is missing. Bounded, never blocking."""
+    """getfacl text, or None if the tool could not be run.
+
+    None and '' are DIFFERENT answers and the caller must treat them so: ''
+    means "asked, no named ACL entries", None means "could not ask". Returning
+    '' for both is how the one check standing between Steam and the pad used
+    to pass silently on a box without the `acl` package installed.
+    """
     try:
         out = subprocess.run(['getfacl', '-cE', path], capture_output=True,
                              text=True, timeout=2.0)
-        return out.stdout or ''
     except (OSError, subprocess.SubprocessError):
-        return ''
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout or ''
 
 
 def open_physical(path):
@@ -431,10 +455,11 @@ class JsonlLog:
         self.seq = 0
         self._day = None
         self._f = None
+        self.broken = None
         try:
             os.makedirs(directory, exist_ok=True)
-        except OSError:
-            pass
+        except OSError as e:
+            self.broken = str(e)
 
     def write(self, rec):
         self.seq += 1
@@ -450,8 +475,17 @@ class JsonlLog:
                 self._f = open(os.path.join(
                     self.dir, f'{self.prefix}-{day}.jsonl'), 'a', buffering=1)
             self._f.write(json.dumps(rec, default=str) + '\n')
-        except OSError:
-            pass
+            self.broken = None
+        except OSError as e:
+            # Still never raises - a logger that can kill the input path is
+            # worse than a silent one. But "silent" was taken literally: under
+            # the real unit the service user's home is /nonexistent, so every
+            # record went nowhere and the process looked healthy in journalctl
+            # while the flip's entire evidence trail did not exist. Say it,
+            # once per new failure.
+            if self.broken != str(e):
+                self.broken = str(e)
+                say(f'EVIDENCE LOST: cannot write {self.dir}: {e}')
         return rec
 
     def close(self):
@@ -502,7 +536,17 @@ class InputProc:
         self.args = args
         self.log = JsonlLog(args.log_dir)
         self.own = args.own_input
-        self.tracker = gesture.PressTracker()
+        self.conf = gestureconf.load()
+        self.tracker = gesture.PressTracker(
+            hold_seconds=self.conf.hold_seconds,
+            double_tap_s=self.conf.double_tap_seconds,
+            long_hold_seconds=self.conf.long_hold_seconds)
+        # The hold tiers are announced from HERE, not from PressTracker.poll()
+        # - see poll_hold(). These two are the "already announced" latches
+        # poll() would otherwise keep inside the tracker, where they would
+        # change what feed() decides.
+        self._hold_reported = False
+        self._long_hold_reported = False
         self.ffmap = FFMap()
         self.persist = Persistence(args.persist_secs)
         self.phys = None
@@ -512,10 +556,11 @@ class InputProc:
         self.pending = deque()     # (deadline_mono, etype, code, value)
         self.latencies = deque(maxlen=4096)
         self.counts = {'in': 0, 'out': 0, 'dropped': 0, 'ff': 0,
-                       'gesture': 0, 'reinjected': 0}
+                       'gesture': 0, 'reinjected': 0, 'write_failures': 0}
         self.gesture_at = time.monotonic()
         self.hold_pending = False
         self.stop = False
+        self.degraded = None
         self._next_scan = 0.0
         self._next_health = time.monotonic() + HEALTH_SECONDS
 
@@ -557,13 +602,25 @@ class InputProc:
         so the timestamp is carried for completeness only - the kernel times
         we actually reason with are the PHYSICAL ones, read before this."""
         if self.ui is None:
-            return
+            return False
         try:
             os.write(self.ui.fd, struct.pack(EVENT_FORMAT, sec, usec,
                                              etype, code, value))
             self.counts['out'] += 1
+            return True
         except OSError as e:
+            # A swallowed write is how a button gets stuck: if the DOWN half
+            # of a chord lands and the UP half does not, the game holds that
+            # button until something else releases it. Record it as evidence
+            # (say() alone never reaches the corpus) and let the caller
+            # decide - drain_pending abandons the rest of the chord and
+            # re-asserts all-keys-up.
+            self.counts['write_failures'] += 1
             say(f'virtual write failed: {e}')
+            self.log.write({'kind': 'virtual-pad', 'event': 'write-failed',
+                            'etype': int(etype), 'code': int(code),
+                            'value': int(value), 'error': str(e)})
+            return False
 
     def syn(self):
         self.emit(gesture.EV_SYN, gesture.SYN_REPORT, 0)
@@ -592,7 +649,17 @@ class InputProc:
     def ff_upload(self, request_id):
         """UI_FF_UPLOAD: create (id -1 -> map) AND update (translate the id,
         same slot). Bounded: one begin/end pair, no retries, no waiting."""
-        upload = self.ui.begin_upload(request_id)
+        # The handshake itself is outside the careful try below unless it is
+        # guarded here: an OSError from begin_upload/end_upload propagates out
+        # of the poll loop and kills the process, which to a running game is a
+        # controller unplug followed by a different controller plugging in.
+        try:
+            upload = self.ui.begin_upload(request_id)
+        except (OSError, RuntimeError) as e:
+            self.counts['ff'] += 1
+            self.log.write({'kind': 'ff', 'event': 'upload-handshake-failed',
+                            'error': f'{type(e).__name__}: {e}'})
+            return
         upload.retval = 0
         try:
             virt = int(upload.effect.id)
@@ -630,13 +697,23 @@ class InputProc:
             self.log.write({'kind': 'ff', 'event': 'upload-failed',
                             'error': f'{type(e).__name__}: {e}'})
         finally:
-            self.ui.end_upload(upload)
+            try:
+                self.ui.end_upload(upload)
+            except (OSError, RuntimeError) as e:
+                self.log.write({'kind': 'ff', 'event': 'upload-end-failed',
+                                'error': f'{type(e).__name__}: {e}'})
             self.counts['ff'] += 1
 
     def ff_erase(self, request_id):
         """UI_FF_ERASE - the one SR7 singles out: unhandled, a closing game
         stalls 30 SECONDS per effect waiting for a reply that never comes."""
-        erase = self.ui.begin_erase(request_id)
+        try:
+            erase = self.ui.begin_erase(request_id)
+        except (OSError, RuntimeError) as e:
+            self.counts['ff'] += 1
+            self.log.write({'kind': 'ff', 'event': 'erase-handshake-failed',
+                            'error': f'{type(e).__name__}: {e}'})
+            return
         erase.retval = 0
         try:
             virt = int(erase.effect_id)
@@ -656,7 +733,11 @@ class InputProc:
             self.log.write({'kind': 'ff', 'event': 'erase-failed',
                             'error': f'{type(e).__name__}: {e}'})
         finally:
-            self.ui.end_erase(erase)
+            try:
+                self.ui.end_erase(erase)
+            except (OSError, RuntimeError) as e:
+                self.log.write({'kind': 'ff', 'event': 'erase-end-failed',
+                                'error': f'{type(e).__name__}: {e}'})
             self.counts['ff'] += 1
 
     def ff_play(self, code, value):
@@ -728,8 +809,22 @@ class InputProc:
                             'node': path, 'error': str(e)})
             return False
         if self.own and self.args.assert_ownership and not self.check_ownership(path):
-            dev.close()
-            raise SystemExit(3)
+            # check_ownership's contract is "REFUSE to own, log loudly, leave
+            # the legacy stack enabled - never half-own the pad". It used to
+            # SystemExit(3) instead, from a path the 1Hz rescan also calls, so
+            # a transient permission race (logind's uaccess ACL not yet
+            # revoked on a reconnect) killed a RUNNING process five times in
+            # ten seconds and tripped StartLimitBurst. The unit then stayed
+            # dead with the udev rule still armed: no inputproc, and no other
+            # process able to open the pad either. Degrade instead - forward
+            # everything, intercept nothing, and keep saying so.
+            self.own = False
+            self.degraded = 'ownership assertion failed'
+            say('DEGRADED to observe-and-forward-only: not owning the pad. '
+                'The legacy stack keeps its gestures. Fix the udev rule and '
+                'restart; `sudo couchd-input-release` if the pad is hidden.')
+            self.log.write({'kind': 'health', 'event': 'degraded',
+                            'why': 'ownership-assert', 'node': path})
         self.phys, self.phys_path = dev, path
         if self.own:
             try:
@@ -756,8 +851,13 @@ class InputProc:
         except (OSError, KeyError) as e:
             say(f'ownership check could not stat {path}: {e}')
             return False
+        try:
+            owner_name = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            owner_name = str(st.st_uid)
         ok, problems = evaluate_ownership(gid_name, st.st_mode,
-                                          read_acl(path))
+                                          read_acl(path),
+                                          owner_name=owner_name)
         self.log.write({'kind': 'health', 'event': 'ownership',
                         'node': path, 'ok': ok, 'problems': problems,
                         'group': gid_name, 'mode': oct(st.st_mode & 0o777)})
@@ -769,6 +869,21 @@ class InputProc:
     def detach(self, why):
         if self.phys is None:
             return
+        if self.own and self.hold_pending:
+            # A press was in flight when the pad went. No release is coming,
+            # and the tracker is about to be reset, so this is the only moment
+            # the record can say a hold was cut off rather than simply
+            # vanishing.
+            self.report('gesture', event='ps-hold-release-timeout',
+                        held=self.tracker.held_for(), why=why)
+        # Anything still queued for the virtual pad belongs to a press on a
+        # pad that no longer exists. Draining it after all_keys_up() would
+        # emit a phantom guide chord into whatever is running - and would
+        # break the "every button released, ONE SYN, then silence" guarantee.
+        if self.pending:
+            self.log.write({'kind': 'virtual-pad', 'event': 'pending-dropped',
+                            'queued': len(self.pending), 'why': why})
+            self.pending.clear()
         if self.grabbed:
             try:
                 self.phys.ungrab()
@@ -780,8 +895,11 @@ class InputProc:
         except OSError:
             pass
         self.phys = None
+        self.phys_path = None
         self.tracker.reset()
         self.hold_pending = False
+        self._hold_reported = False
+        self._long_hold_reported = False
         self.log.write({'kind': 'health', 'event': 'detached', 'why': why})
         say(f'physical pad gone ({why})')
 
@@ -831,6 +949,8 @@ class InputProc:
         self.gesture_at = time.monotonic()
         if outcome == gesture.DOWN:
             self.hold_pending = True
+            self._hold_reported = False
+            self._long_hold_reported = False
             self.report('press', event='BTN_MODE', value=1,
                         kernel_t=round(k, 6), forwarded=False)
         elif outcome in (gesture.TAP, gesture.DOUBLE_TAP):
@@ -846,8 +966,57 @@ class InputProc:
             self.inject_tap()
         elif outcome == gesture.HOLD_RELEASE:
             self.hold_pending = False
+            if not (self._hold_reported or self._long_hold_reported):
+                # feed() is NOT binding-aware: it calls any press over
+                # hold_seconds a hold. Stage 1 is - couchd's g_hold_fires is
+                # `binding('hold') != "none" and g_hold_reached`, so with the
+                # hold unbound it keeps a long press in 'down' and releases it
+                # as a TAP. Honour the same gate here, or a long press with
+                # hold=none is swallowed: withheld from the virtual pad,
+                # never re-injected, gone.
+                self.report('gesture', event='ps-tap',
+                            held=self.tracker.press_duration,
+                            kernel_t=round(k, 6), over_hold_threshold=True)
+                self.inject_tap()
+                return
             self.report('gesture', event='ps-hold-release',
                         held=self.tracker.press_duration, kernel_t=round(k, 6))
+
+    def binding(self, name):
+        """The effective action for one gesture, read from the SAME config
+        file couchd reads. Defaults match couchd's Observed.binding()."""
+        return (self.conf.bindings or {}).get(
+            name, gestureconf.DEFAULT_BINDINGS.get(name, 'none'))
+
+    def poll_hold(self, mono):
+        """Announce the hold tiers, at most once per press.
+
+        SR4, and the reason this does not call `PressTracker.poll()`: poll()
+        LATCHES `hold_fired` on the tracker, and the shared `feed()` then
+        classifies the eventual release as HOLD_RELEASE regardless of that
+        release's real kernel duration (gesture.py's `was_hold`). Stage 1
+        never polls, so its identical tracker classifies the same release by
+        duration alone. One stalled loop iteration near the threshold is
+        therefore enough to make the two stacks decide differently about the
+        same press - which is exactly the invariant the combined input+gestures
+        cutover rests on. So the tiers are detected with the same non-latching
+        predicates couchd's guards use, and the tracker is left pristine.
+        """
+        t = self.tracker
+        k = t.kernel_now()
+        if (not self._hold_reported and self.binding('hold') != 'none'
+                and gesture.hold_reached(t.button_down, t.down_since_k, k,
+                                         t.hold_seconds)):
+            self._hold_reported = True
+            self.gesture_at = mono
+            self.report('gesture', event='ps-hold', held=t.held_for())
+        if (not self._long_hold_reported and t.long_hold_seconds is not None
+                and self.binding('long_hold') != 'none'
+                and gesture.long_hold_reached(t.button_down, t.down_since_k, k,
+                                              t.long_hold_seconds)):
+            self._long_hold_reported = True
+            self.gesture_at = mono
+            self.report('gesture', event='ps-long-hold', held=t.held_for())
 
     def inject_tap(self):
         """The withheld tap, re-injected to the VIRTUAL pad with
@@ -861,10 +1030,30 @@ class InputProc:
         self.counts['reinjected'] += 1
 
     def drain_pending(self, mono):
-        while self.pending and self.pending[0][0] <= mono:
-            _, etype, code, value = self.pending.popleft()
-            self.emit(etype, code, value)
-            self.syn()
+        """ONE queued event per pass, never two.
+
+        `mono` is sampled once at the top of the loop, so a pass that arrives
+        more than CHORD_GAP late used to find both halves of the chord due and
+        emit them back-to-back in a single while-loop - which is precisely the
+        coalescing CHORD_GAP exists to prevent. Being late is also not a reason
+        to compress: the rest of the chord is pushed out by the lateness, so
+        the GAP survives even when the absolute timing does not.
+        """
+        if not self.pending or self.pending[0][0] > mono:
+            return
+        due, etype, code, value = self.pending.popleft()
+        if not self.emit(etype, code, value):
+            # The virtual pad is not taking writes. Abandoning the chord
+            # half-sent is what leaves a button held, so drop the remainder
+            # and re-assert a known-good state.
+            self.pending.clear()
+            self.all_keys_up()
+            return
+        self.syn()
+        late = mono - due
+        if late > 0 and self.pending:
+            self.pending = deque((d + late, t, c, v)
+                                 for d, t, c, v in self.pending)
 
     def on_loss(self, why):
         self.detach(why)
@@ -906,6 +1095,8 @@ class InputProc:
         rec = {'kind': 'health', 'event': 'tick',
                'state': self.persist.state,
                'grabbed': self.grabbed, 'owns_input': self.own,
+               'degraded': self.degraded,
+               'evidence_broken': self.log.broken,
                'node': self.phys_path,
                'ff_live': self.ffmap.live(),
                'p50_ms': None, 'p99_ms': None}
@@ -966,8 +1157,14 @@ class InputProc:
                 want[self.phys.fd] = 'phys'
             if self.ui is not None:
                 want[self.ui.fd] = 'virt'
-            for fd in list(registered):
-                if fd not in want:
+            # Reconcile on (fd, role), not fd alone. A closed fd number is
+            # reusable immediately, so the physical pad can be handed the
+            # number the destroyed uinput node just gave up - and a map keyed
+            # on the number alone would keep the stale role, dispatch the
+            # pad's readiness to the uinput handler, never drain the pad, and
+            # spin on a permanently asserted POLLIN.
+            for fd, which in list(registered.items()):
+                if want.get(fd) != which:
                     poller.unregister(fd)
                     registered.pop(fd)
             for fd, which in want.items():
@@ -989,18 +1186,21 @@ class InputProc:
                         self.on_loss('pollhup')
 
             mono = time.monotonic()
-            # hold fires on the KERNEL clock, extrapolated - a held button
-            # with no further reports must still decide (R4)
-            if self.own and self.tracker.poll() == gesture.HOLD:
-                self.gesture_at = mono
-                self.report('gesture', event='ps-hold',
-                            held=self.tracker.held_for())
-            # the release that never came
-            if (self.own and self.hold_pending and not self.tracker.button_down
+            if self.own:
+                self.conf = gestureconf.load()
+                self.poll_hold(mono)
+            # The release that never came: the button is STILL DOWN and no
+            # further kernel events are coming (dead pad, stuck button), so
+            # this is measured on the monotonic clock. The old form of this
+            # guard also required `not button_down`, which detach() is the
+            # only thing that produces - and detach() clears hold_pending on
+            # the next line, so the branch could never run. A pad lost
+            # mid-press is now reported by detach() itself.
+            if (self.own and self.hold_pending and self.tracker.button_down
                     and gesture.handoff_overdue(mono - self.gesture_at)):
                 self.hold_pending = False
                 self.report('gesture', event='ps-hold-release-timeout',
-                            held=None)
+                            held=self.tracker.held_for(), why='no-release')
             for action in self.persist.tick(mono):
                 if action == A_DESTROY:
                     say('persistence window expired: destroying the virtual '
@@ -1049,15 +1249,58 @@ def parse_args(argv=None):
     p.add_argument('--no-ownership-assert', dest='assert_ownership',
                    action='store_false', default=True,
                    help='RIG ONLY: skip SR5 ownership assertion (E1)')
+    # RIG ONLY, and a different kind of dangerous from the one above: this
+    # one says "yes, I know the gestures I intercept go nowhere".
+    p.add_argument('--supervisor-stub-ok', action='store_true',
+                   help='RIG ONLY: own the pad even though the couchd '
+                        'supervisor wire is still a stub')
     return p.parse_args(argv)
+
+
+def grants_input(env_override=None):
+    """Does this process own the pad?
+
+    `couchd/owns.conf` is the answer, because owns.conf's own header says so:
+    "input - stage 2 only - the input PROCESS reads this name". It used to be
+    read from COUCHD_OWNS in the environment, which the systemd unit pinned to
+    `input` unconditionally - so merely enabling the unit grabbed the pad, the
+    declared combined cutover with `gestures` was bypassed, and the charter's
+    one-step rollback ("empty this file FIRST") did not release it.
+
+    COUCHD_OWNS still wins WHEN SET, because the fake-pad rig drives this
+    process without touching the console's real ownership file. An unset
+    variable means "ask owns.conf", which is what the unit now does.
+    """
+    raw = (os.environ if env_override is None else env_override).get(
+        'COUCHD_OWNS')
+    if raw is not None:
+        return owns('input', env={'COUCHD_OWNS': raw})
+    # load(), not owns(): owns() also requires couchd's heartbeat to be fresh,
+    # which is the LEGACY stack's question ("may I stand down?"). This process
+    # is not legacy - it must own the pad or not own it on the declaration
+    # alone, or a couchd restart would silently hand the pad back mid-session.
+    return 'input' in ownsconf.load().names
 
 
 def main(argv=None):
     args = parse_args(argv)
-    # COUCHD_OWNS is the flag day. Without "input" in it this process is a
-    # forwarder that intercepts NOTHING - BTN_MODE goes straight through and
-    # the legacy pad-home-watcher keeps its gestures.
-    args.own_input = owns('input') and not args.observe
+    args.own_input = grants_input() and not args.observe
+    if args.own_input and not args.supervisor_stub_ok:
+        # THE interlock. report() is still a stub: inputproc's gestures land
+        # in a JSONL file and nothing in this repo reads it. Meanwhile owning
+        # the pad means grabbing it, so couchd's PadObserver (which matches on
+        # the name 'DualSense Wireless Controller' and would see only our
+        # X360-named virtual node) and the legacy watcher both go blind. With
+        # `gestures` flipped, that is the entire PS-button vocabulary dead in
+        # the living room, with status.json still reporting a healthy
+        # `acting`. Refuse rather than discover it on the sofa.
+        raise SystemExit(
+            'REFUSING to own the pad: the couchd supervisor wire is still a '
+            'stub (see report()), so nothing would consume the gestures this '
+            'process intercepts, and grabbing the pad blinds both existing '
+            'gesture stacks. Wire the supervisor socket first, or pass '
+            '--supervisor-stub-ok if you are deliberately testing the grab '
+            'path with the gesture vocabulary expendable.')
     InputProc(args).run()
     return 0
 

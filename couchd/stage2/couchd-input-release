@@ -4,8 +4,9 @@
 # SR3: rollback must never need Donnie to find the sudo password at 11pm
 # with a dead pad in his hand. This script is root-owned and root-only
 # writable, and the sudoers drop-in (sudoers-couchd) lets ds2000 run THIS
-# ONE SCRIPT with NOPASSWD. It takes no arguments on purpose - there is no
-# way to turn it into a general-purpose root shell.
+# ONE SCRIPT with NOPASSWD. That is where the safety comes from: not from
+# the argument list, but from ds2000 being unable to change what runs. The
+# sudoers line pins it to an empty argument list all the same.
 #
 # It is idempotent: running it twice, or when nothing is installed, is fine
 # and is never an error.
@@ -17,50 +18,105 @@
 #
 set -u
 
+# This body runs as root, so nothing here is resolved by bare name off an
+# inherited PATH. sudo's secure_path normally already guarantees that; this
+# does not depend on it still being configured. Absolute paths below, and a
+# fixed PATH for anything a helper might shell out to.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+SYSTEMCTL=/usr/bin/systemctl
+UDEVADM=/usr/bin/udevadm
+MV=/usr/bin/mv
+SED=/usr/bin/sed
+
 RULE=/etc/udev/rules.d/72-couchd-own-dualsense.rules
 UNIT=inputproc.service
 
 log() { echo "couchd-input-release: $*"; }
 
+# Not `set -e`. The sequencing below is deliberate and each step is meant to
+# be survivable: a udevadm that fails must not stop us reaching the
+# per-device retrigger, because a half-rolled-back pad is worse than a
+# noisy one. Every step therefore reports its own failure and continues,
+# and the exit status at the bottom says whether anything went wrong.
+failed=0
+warn() { failed=1; log "WARNING: $*"; }
+
+# A missing binary IS fatal, and it is worth being loud about rather than
+# discovering it one command at a time in the dark.
+for bin in "$SYSTEMCTL" "$UDEVADM" "$MV" "$SED"; do
+  if [ ! -x "$bin" ]; then
+    log "FATAL: $bin is missing or not executable - cannot roll back safely"
+    exit 2
+  fi
+done
+
 # 1. Stop the owner first. If the rule went away while inputproc still held
 #    EVIOCGRAB, the pad would be un-hidden but still ungrabbable.
-if systemctl list-unit-files "$UNIT" >/dev/null 2>&1; then
-  if systemctl is-active --quiet "$UNIT"; then
+#    Then DISABLE it, so that the two halves of this rollback have the same
+#    lifetime. Disarming the rule survives a reboot (the file is renamed on
+#    disk); a mere `stop` does not, so without the disable the unit would
+#    come back at the next boot, grab a pad that udev no longer hands it,
+#    and the box would be in a state neither half of the design describes.
+if "$SYSTEMCTL" list-unit-files "$UNIT" >/dev/null 2>&1; then
+  if "$SYSTEMCTL" is-active --quiet "$UNIT"; then
     log "stopping $UNIT"
-    systemctl stop "$UNIT" || log "WARNING: could not stop $UNIT"
+    "$SYSTEMCTL" stop "$UNIT" || warn "could not stop $UNIT"
   fi
+  # `disable` on an already-disabled unit is a no-op that exits 0, so this
+  # stays idempotent.
+  if "$SYSTEMCTL" is-enabled --quiet "$UNIT" 2>/dev/null; then
+    log "disabling $UNIT (it must not come back at the next boot)"
+    "$SYSTEMCTL" disable "$UNIT" >/dev/null 2>&1 \
+      || warn "could not disable $UNIT - CHECK IT BEFORE REBOOTING"
+  else
+    log "$UNIT already disabled"
+  fi
+else
+  log "no $UNIT installed (nothing to stop)"
 fi
 
 # 2. Disarm the rule by renaming it. Declarative, crash-immune: no runtime
 #    chmod to leave behind (this is the InputPlumber #582/#586 failure mode
 #    we specifically designed out).
 if [ -f "$RULE" ]; then
-  mv -f "$RULE" "$RULE.off"
-  log "rule disarmed -> $RULE.off"
+  if "$MV" -f "$RULE" "$RULE.off"; then
+    log "rule disarmed -> $RULE.off"
+  else
+    warn "could not rename $RULE - THE PAD IS STILL OURS, fix this by hand"
+  fi
 else
   log "no rule at $RULE (already released)"
 fi
 
 # 3. Reload and re-trigger so the ACLs come back NOW, not at next replug.
-udevadm control --reload-rules || log "WARNING: udevadm reload failed"
-udevadm trigger --subsystem-match=input --subsystem-match=hidraw \
-  || log "WARNING: udevadm trigger failed"
-udevadm settle --timeout=10 || true
+"$UDEVADM" control --reload-rules || warn "udevadm reload failed"
+"$UDEVADM" trigger --subsystem-match=input --subsystem-match=hidraw \
+  || warn "udevadm trigger failed"
+"$UDEVADM" settle --timeout=10 || true
 
 # 4. Restore uaccess explicitly for anything still lacking it. The trigger
 #    above normally does this; this is the belt to its braces, and it is
 #    also what makes the script safe to run when udev is being obtuse.
 shopt -s nullglob
 for dev in /dev/input/event* /dev/hidraw*; do
-  name=$(udevadm info --query=property --name="$dev" 2>/dev/null \
-         | sed -n 's/^ID_MODEL=//p')
+  # A device can disappear between the glob and the query, so this whole
+  # line is allowed to come back empty rather than abort the loop.
+  name=$("$UDEVADM" info --query=property --name="$dev" 2>/dev/null \
+         | "$SED" -n 's/^ID_MODEL=//p') || name=''
   case "$name" in
     *DualSense*|*Wireless_Controller*)
-      udevadm trigger --action=change "$dev" 2>/dev/null || true
+      "$UDEVADM" trigger --action=change "$dev" 2>/dev/null || true
       ;;
   esac
 done
 
 log "done - verify with:  getfacl -c /dev/input/eventN"
 log "(expect a user:ds2000:rw- line; if it is absent the pad is still ours)"
+if [ "$failed" -ne 0 ]; then
+  log "one or more steps reported a WARNING above - re-read them before"
+  log "assuming the pad is back. Re-running this script is safe."
+  exit 1
+fi
 exit 0
