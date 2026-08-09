@@ -288,11 +288,12 @@ identically, so it points at disk1's physical enclosure/cable/drive.
 Temperature during an event has still never been measured:
 `sudo ~/couch/tools/disk-triage -o /tmp/t.txt`.
 
-SEPARATE and confirmed: the 5 Aug outage DID lose data, recorded as "nothing
-lost". Header sweep = 335 good, 2 all-zero: Simpsons S03E11 and S06E06 (both
-5 Aug 16:57). They read fine, the bytes are just zeros - fsck cannot see this.
-Sonarr has retried them ~4x/90s ever since (700 failures in one night); that
-import queue is stuck until the two files are deleted and re-grabbed.
+SEPARATE, and now FIXED: the 5 Aug outage DID lose data, recorded as "nothing
+lost". Header sweep found 335 good and 2 all-zero (Simpsons S03E11, S06E06).
+Repaired 9 Aug by force-rechecking both torrents in qBittorrent - it still
+thought them complete, so the recheck found the bad pieces and re-pulled only
+those. Sweep is now 337/337 valid, both episodes imported to /mnt/media/tv,
+and Sonarr's retry loop went from 4 failures a minute to zero.
 
 ### disk-monitor.sh had 4 bugs - fixed copy staged, needs a sudo cp (9 Aug)
 It alerted TWICE for the single 05:06 reset, which is what exposed it. The
