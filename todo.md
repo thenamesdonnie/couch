@@ -300,7 +300,11 @@ test the enforcement against. The decision rule has 33 tests
 TV, and correctly doing nothing with the set in standby.
 
 `~/.local/bin/tv-power-watcher` is the DEAD Toshiba version - headed off with
-a warning so its `HEADPHONES_MAC = ""` is not mistaken for the switch.
+a warning so its `HEADPHONES_MAC = ""` is not mistaken for the switch. It DOES
+have a systemd unit (a system one - the first pass only checked `--user` and
+wrongly called it unscheduled), and that unit is in a crash loop against the
+old TV's address: 8922 restarts, ~17k journal lines an hour, since 6 Aug.
+Needs `sudo systemctl disable --now tv-power-watcher.service`.
 
 ### Open: the power bar is unreachable when nothing else is running
 `script.couch.switcher`'s main() returns early with "Nothing else is running"

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Capture everything worth having about the two USB media disks, in one go.
+#
+# Written during the 9 Aug 2026 incident (four SuperSpeed link resets on sdb in
+# 33 minutes). Both disks are NVMe drives behind Realtek RTL9210 USB bridges,
+# and that bridge needs `-d sntrealtek` before smartctl will say anything at
+# all - which is the detail nobody remembers at 3am, three incidents in.
+#
+# Temperature is the reading that matters: the standing hypothesis for this
+# family of dropouts is thermal (see the memory note - "third dropout on
+# usb-storage = thermal", the rule set after the UAS quirk went on). It has
+# never actually been measured DURING an event, because reading it needs root
+# and the events happen unattended. Hence this script: one sudo, everything.
+#
+#   sudo ~/couch/tools/disk-triage            # print
+#   sudo ~/couch/tools/disk-triage -o FILE    # and save a copy
+#
+# Read-only. Touches no service, mounts nothing, changes nothing.
+set -uo pipefail
+
+OUT=""
+[ "${1:-}" = "-o" ] && OUT="${2:-}"
+
+run() { printf '\n===== %s =====\n' "$1"; shift; "$@" 2>&1; }
+
+main() {
+  printf 'disk-triage  %s  (%s)\n' "$(date '+%F %T')" "$(uptime -p)"
+
+  if [ "$(id -u)" -ne 0 ]; then
+    echo
+    echo "NOT ROOT - the SMART sections will be empty."
+    echo "Re-run: sudo $0 ${OUT:+-o $OUT}"
+  fi
+
+  run "which disk is which" lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,SERIAL
+  run "mount state (rw or has it gone ro?)" grep -E ' /mnt/disk[12] ' /proc/mounts
+  run "usb topology" lsusb -t
+  run "driver bound (usb-storage = the UAS quirk is on)" \
+      sh -c 'for d in /sys/bus/usb/devices/*:1.0; do
+               [ -e "$d/driver" ] && echo "$d -> $(basename "$(readlink -f "$d/driver")")"
+             done'
+  run "uas quirk config" sh -c 'cat /etc/modprobe.d/*uas* 2>/dev/null || echo none'
+
+  # The whole point of the exercise.
+  for dev in sda sdb; do
+    run "SMART: /dev/$dev (Realtek bridge passthrough)" \
+        smartctl -a -d sntrealtek "/dev/$dev"
+  done
+  run "temperatures, everything the box can see" sensors
+
+  run "link resets + I/O errors, this boot" \
+      sh -c "journalctl -k -b --no-pager | grep -E 'reset SuperSpeed|I/O error, dev sd|EXT4-fs error|remounting.*read-only' | tail -60"
+  run "reset COUNT per device, this boot" \
+      sh -c "journalctl -k -b --no-pager | grep -oE 'usb [0-9]+-[0-9]+: reset SuperSpeed' | sort | uniq -c"
+
+  # Current load, because 'it dropped under write load' and 'it dropped while
+  # idle' are different faults with different suspects.
+  run "current io (5s sample)" sh -c '
+    a=$(awk "\$3==\"sda\"{print \$6,\$10}" /proc/diskstats)
+    b=$(awk "\$3==\"sdb\"{print \$6,\$10}" /proc/diskstats)
+    sleep 5
+    a2=$(awk "\$3==\"sda\"{print \$6,\$10}" /proc/diskstats)
+    b2=$(awk "\$3==\"sdb\"{print \$6,\$10}" /proc/diskstats)
+    echo "sda read/written sectors: $a -> $a2"
+    echo "sdb read/written sectors: $b -> $b2"'
+  run "who has files open on disk1" sh -c 'lsof /mnt/disk1 2>/dev/null | head -25 || echo "(lsof unavailable)"'
+}
+
+if [ -n "$OUT" ]; then
+  main | tee "$OUT"
+  echo "saved: $OUT"
+else
+  main
+fi
