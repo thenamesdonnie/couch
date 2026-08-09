@@ -145,15 +145,23 @@ one line per region you actually attacked and found sound, then a
 
 | lens | sol | claude | synthesis |
 |---|---|---|---|
-| 1 stage 2 input process | ✅ 9 Aug, `docs/audits/stage2-inputproc-review-20260809-sol.md` (10 findings, 2 CRITICAL, 73k tokens) | ❌ not run | ❌ not run |
+| 1 stage 2 input process | ✅ 9 Aug, `...-sol.md` (10 findings, 2 CRITICAL) | ✅ 9 Aug, `...-claude.md` (21 findings, 4 CRITICAL) | ✅ `...-synthesis.md` — 14 code fixes + tests shipped, 5 open for a ruling |
 | 2 daemon core | ❌ | ❌ | ❌ |
 | 3 legacy + seam | ❌ | ❌ | ❌ |
 | 4 phone arm | ❌ | ❌ | ❌ |
 | 5 evidence machinery | ❌ | ❌ | ❌ |
 
-Lens 1's two CRITICALs were spot-checked against the code the same day
-(notes at the foot of that file) but NOT adjudicated - no blind Claude
-half exists yet, so nothing has been fixed on their authority.
+**What lens 1 taught us about running these.** Blindness has to be
+STRUCTURAL, not honour-based: sol's report was committed before the claude
+half ran, so the second reviewer was given a detached worktree pinned to the
+commit before it, where the file simply does not exist. Do that from the
+start next time - run both halves before committing either. The pair earned
+its cost: they agreed on both CRITICALs by different routes (sol via the pad
+NAME filter, claude via the udev PERMISSIONS - both true, and they compound),
+and every split was a severity disagreement rather than a contradiction, with
+claude's grade winning twice. Neither reviewer could run the suite in its
+sandbox, so both reasoned statically; budget for the adjudicator verifying
+every claim against the code, which is where the real time went.
 
 ---
 
