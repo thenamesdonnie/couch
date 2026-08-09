@@ -20,7 +20,37 @@ ssap:// URI, and .button() drives the pointer socket. The open question is
 purely whether webOS exposes Multi View at all, and SSAP is largely
 undocumented, so the honest move is to ask rather than to guess a URI.
 
-Three answers are possible, in descending order of how nice they are:
+WHAT THE RESEARCH SAYS (9 Aug 2026, read this BEFORE running anything):
+
+  * The app id is real and stable: `com.webos.app.multiview`. There is NO
+    official API for it. LG's own developer forum refused the question and
+    redirected it to customer service, so nothing about driving Multi View
+    is supported or documented. The one public note about launching it
+    (openlgtv's hacking gist) is webOS 3.8 on a 2018 set and says it needed
+    root - not authoritative for a 2025 C5, where Multi View is a normal
+    UI feature under Settings.
+  * DUAL HDMI IS NOT A C5 FEATURE. Two HDMI inputs side by side needs the
+    Alpha 11 processor: 2024 G4 and 2025 G5/M5 only. On a C5 the second
+    source must come from a SHORT WHITELIST.
+  * LG's own help page gives that whitelist. Paired with HDMI, the second
+    source can be: smartphone screen share, AirPlay, the camera, or
+    YouTube (Spotify appears in other pairings). Jellyfin and Kodi are NOT
+    on it, and LG notes "supported apps are subject to change".
+  * Listed as unsupported content: 8K, Dolby Vision, and 4K HIGH FRAME
+    RATE. Which is a bad sign for 4K120 surviving Multi View, though LG
+    says it about broadcast sources and not explicitly about HDMI input.
+    Nobody documents the HDMI case. That is the thing to measure.
+
+So the shape of the answer changed: the second source cannot be our
+library directly. Two routes survive, and both are worth five minutes:
+
+  a. YouTube in the corner. Zero code, works today if it works at all.
+  b. Phone screen share / AirPlay in the corner. This is the interesting
+     one, because it routes AROUND the app whitelist - the TV only sees a
+     screen share, so whatever the phone plays (Jellyfin, the couch app)
+     ends up on screen. The phone is already a full client of everything.
+
+Three answers are possible from the probe below, best first:
 
   1. Multi View is a LAUNCH POINT with an id. Then `tv app <id>` starts it
      today, and the follow-up question is whether launch params can pick the
@@ -31,9 +61,11 @@ Three answers are possible, in descending order of how nice they are:
      through the on-screen UI - fragile, order-dependent, and it would need
      re-checking after every webOS update. Workable, not lovely.
 
-Whatever it prints, note that Multi View usually constrains the main image.
-Check what happens to 4K120 and VRR with it on BEFORE building anything on
-top of this - if it drops the game to 60 it is not worth having.
+Whatever it prints, the probe is the SMALLER half of the experiment. The
+decisive test is manual and needs the remote: Settings -> Multi View, HDMI 3
+plus YouTube or a phone screen share, and then look at what happened to
+4K120 and VRR. If the game drops to 60 the whole idea is dead, and no amount
+of API access changes that.
 """
 import asyncio
 import json
