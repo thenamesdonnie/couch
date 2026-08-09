@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Catch the NEXT disk1 link reset with its context, without needing root.
+
+Five `usb 4-4: reset SuperSpeed` events on 9 Aug (01:49, 02:18, 02:22 x2,
+05:06) and after each one the same question could not be answered: was the
+disk busy at the time, or idle? Donnie's whole confusion is that the previous
+failures came under heavy download load and this one came while he was not
+touching the box - and post-hoc journal reading cannot settle it, because
+/proc/diskstats is cumulative and the media services run as other users so
+their /proc/<pid>/io is unreadable from here.
+
+So: sample the two disks once a second into a ring buffer, watch the kernel
+log for a reset, and when one lands, dump the minutes either side of it. That
+turns "I wasn't doing anything" from a memory into a measurement.
+
+Deliberately root-free, so it can just run. Whole-device throughput from
+/proc/diskstats is world-readable and is exactly the number in question; the
+per-process attribution and the temperature both need privileges and are left
+to tools/disk-triage.
+
+    tools/disk-reset-watch                 # foreground
+    systemctl --user start disk-reset-watch    # the way it actually runs
+
+Report lands in ~/couch/recordings/disk-resets.log.
+"""
+import collections
+import os
+import re
+import subprocess
+import sys
+import time
+
+DEVICES = ("sda", "sdb")
+WINDOW = 300                 # seconds of history kept either side
+POLL_JOURNAL = 5.0           # how often to look for new resets
+SECTOR = 512
+LOG = os.path.expanduser("~/couch/recordings/disk-resets.log")
+RESET_RE = re.compile(r"usb ([0-9]+-[0-9.]+): reset SuperSpeed")
+
+
+def diskstats():
+    """{dev: (read_sectors, write_sectors)} - cumulative since boot."""
+    out = {}
+    try:
+        with open("/proc/diskstats") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 9 and parts[2] in DEVICES:
+                    out[parts[2]] = (int(parts[5]), int(parts[9]))
+    except OSError:
+        pass
+    return out
+
+
+def new_resets(since):
+    """Reset lines the kernel has logged since `since` (a journal timestamp)."""
+    try:
+        r = subprocess.run(
+            ["journalctl", "-k", "--since", since, "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    hits = []
+    for line in r.stdout.splitlines():
+        m = RESET_RE.search(line)
+        if m:
+            hits.append((line.split()[0], m.group(1), line))
+    return hits
+
+
+def rate_table(ring, centre_ts):
+    """Throughput per second around the event, as MB/s per device."""
+    rows = []
+    prev = None
+    for ts, stats in ring:
+        if prev is not None:
+            dt = ts - prev[0]
+            if dt > 0:
+                cells = []
+                for dev in DEVICES:
+                    a = prev[1].get(dev)
+                    b = stats.get(dev)
+                    if a and b:
+                        rmb = (b[0] - a[0]) * SECTOR / 1048576 / dt
+                        wmb = (b[1] - a[1]) * SECTOR / 1048576 / dt
+                        cells.append("%s r%7.2f w%7.2f" % (dev, rmb, wmb))
+                rows.append((ts - centre_ts, "  ".join(cells)))
+        prev = (ts, stats)
+    return rows
+
+
+def summarise(rows, lo, hi):
+    """Peak and mean read MB/s for sdb over a slice, so 'busy or idle' is a
+    number rather than an impression."""
+    vals = []
+    for off, text in rows:
+        if lo <= off <= hi:
+            m = re.search(r"sdb r\s*([0-9.]+)", text)
+            if m:
+                vals.append(float(m.group(1)))
+    if not vals:
+        return "no samples"
+    return "peak %.2f MB/s, mean %.2f MB/s over %d samples" % (
+        max(vals), sum(vals) / len(vals), len(vals))
+
+
+def report(handle, when, port, line, ring):
+    centre = time.time()
+    rows = rate_table(ring, centre)
+    handle.write("\n" + "=" * 72 + "\n")
+    handle.write("RESET  %s  port %s\n" % (when, port))
+    handle.write(line.strip() + "\n\n")
+    # The verdict first, because it is the only thing anyone reads at 3am.
+    handle.write("sdb read load before the reset:\n")
+    handle.write("   last 30s : %s\n" % summarise(rows, -30, 0))
+    handle.write("   last 120s: %s\n" % summarise(rows, -120, 0))
+    handle.write("   last 300s: %s\n\n" % summarise(rows, -300, 0))
+    handle.write("per-second throughput (offset seconds from detection):\n")
+    for off, text in rows:
+        if -90 <= off <= 0:
+            handle.write("  %+5.0fs  %s\n" % (off, text))
+    handle.flush()
+
+
+def main():
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    ring = collections.deque(maxlen=WINDOW + 60)
+    # Only ever look forward, so a restart does not re-report old events.
+    since = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG, "a") as handle:
+        handle.write("\n--- watch started %s (since %s) ---\n"
+                     % (time.strftime("%F %T"), since))
+        handle.flush()
+        last_check = 0.0
+        while True:
+            ring.append((time.time(), diskstats()))
+            now = time.time()
+            if now - last_check >= POLL_JOURNAL:
+                for when, port, line in new_resets(since):
+                    report(handle, when, port, line, ring)
+                since = time.strftime("%Y-%m-%d %H:%M:%S")
+                last_check = now
+            time.sleep(1.0)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        pass

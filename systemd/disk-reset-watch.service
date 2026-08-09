@@ -1,0 +1,19 @@
+[Unit]
+Description=Record what disk1 was doing when its USB link resets
+Documentation=file:///home/ds2000/couch/tools/disk-reset-watch
+
+[Service]
+Type=simple
+ExecStart=/home/ds2000/couch/tools/disk-reset-watch
+Restart=always
+RestartSec=10
+# Diagnostic only - it must never be the reason anything else is short of CPU.
+Nice=10
+IOSchedulingClass=idle
+# It writes its own report file; keep it out of the journal that the disk
+# problem has to be read from.
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=default.target
