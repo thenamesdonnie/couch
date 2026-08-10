@@ -99,7 +99,30 @@ them:
    FIXED by deleting the dissolve: the tile now stays solid the whole way out,
    no frame-difference spike anywhere in the exit.
 
-2. A DESIGN LIMIT, still open, and this one is yours to call. A fixedlist at
+2. SOLVED IN PROTOTYPE (0950c8f, window 1198 only - clip sent 10 Aug). The
+   tile now genuinely leaves the ring and exits the screen. It is NOT the
+   list's tile: it is an "exit ghost", a plain image drawn OUTSIDE the
+   container (nothing clips it, no slot limit) textured with
+   $INFO[Container(9000).ListItem(-1).Art(thumb)] = the item just left.
+   THE KEY FACT, measured, worth never re-deriving: Container(9000).OnNext is
+   a ONE-FRAME PULSE (1 frame of 420 recorded; does not scale with
+   scrolltime). It can trigger an animation - a Focus/Unfocus condition is
+   read once at trigger time, which is why the old dissolve worked - but it
+   can never gate a 210ms flight with <visible>. The working shape is a
+   HIDDEN animation: Kodi keeps the control rendered while its Hidden
+   animation plays, so it flies out AFTER the pulse has gone. Flight measured
+   at 183ms real; ~3.5 skin px/frame, fully off the left screen edge.
+   TO DECIDE: (a) does the 183ms flight feel right or does it want to be
+   slower/faster, (b) the open artefact - the list's own outgoing tile still
+   crawls out inside the ring (skin x80..116) while the ghost flies, so two
+   copies are briefly visible. That remnant is the itemlayout instance and no
+   focusedlayout animation reaches it; killing it means changing the row's
+   slot geometry so the outgoing slot lands entirely left of the container
+   bound, which changes the resting rhythm of the whole row. Not done
+   unilaterally. Then port 1198 -> Home.xml.
+
+3. The ORIGINAL framing below is kept because the trade-offs still apply if
+   you would rather change the control than keep a ghost. A fixedlist at
    focusposition 0 gives the outgoing item exactly ONE SLOT of travel and then
    culls it at the container's left bound. The bound is at skin x80 and the
    ring's stroke is drawn at x50, so the tile evaporates 30px INSIDE the ring
