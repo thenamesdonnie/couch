@@ -125,3 +125,46 @@ rather than on an installed unit — I confirmed the code half and the
 INSTALL.md half, and the inference between them is sound but untested. The
 fd-reuse coincidence behind claude #13 could not be constructed without a
 device; the missing invariant is confirmed and now fixed regardless.
+
+---
+
+## RULINGS — Donnie, 10 Aug 2026 ~04:15
+
+The five open items are decided. Recorded here because the synthesis is
+where they were raised, and a ruling that lives only in a chat is not a
+ruling.
+
+**1. Rollback mid-game: INSTANT.** inputproc re-reads `owns.conf` live and
+releases the pad within a tick when the name goes away, exactly as couchd and
+the legacy scripts do. Rationale (mine, accepted): a panic button you have to
+remember a second step for is not one. The cost is understood - a half-written
+file mid-game hands the pad back - and `owns.py` already degrades a broken
+file to "own nothing", which is the safe direction.
+
+**2. The touchpad and gyro: DO NOT TAKE THEM.** Donnie's words: "i use the
+touchpad mouse all the time so maybe just let that pass through couchd rather
+that we take hold and send it on". So the udev rule is narrowed to the
+buttons node only. We never own the Touchpad or Motion Sensors devices, so
+there is nothing to forward and nothing to get wrong - the cursor keeps
+working because we never interrupted it. This is better than the reviewers'
+framing, which assumed we would grab and re-emit.
+
+**3. The PS button: OWNED, and the app only ever sees a HOLD.** Donnie: "own
+it and only give it to apps when it's held, which sends a press to keep a
+press as the home button". So:
+  * a TAP is couchd's alone - nothing reaches Steam, Kodi or the game, which
+    is what finally stops Steam's Big Picture menu toggling in the background
+    off our own gestures;
+  * a HOLD is the deliberate "I want the app's own home button", and is
+    delivered to the app as a plain short PRESS.
+  * NEEDS CONFIRMING before it ships - see the note in todo.md. The reading
+    above is mine, and a hold reaching Steam is also how the 7 Aug power-menu
+    suspend happened, so this one does not ship on an inference.
+
+**4. A switcher pick outranks the enforcement window: YES.** Choosing
+something from the switcher cancels any guard window that contradicts it.
+This is ruling R-b, open since the acceptance night, and it bit live tonight:
+the guard raised Kodi over Big Picture twice per run while Donnie was trying
+to switch to it.
+
+**5. Build the supervisor wire: TONIGHT.**
