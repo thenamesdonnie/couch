@@ -157,9 +157,20 @@ press as the home button". So:
     off our own gestures;
   * a HOLD is the deliberate "I want the app's own home button", and is
     delivered to the app as a plain short PRESS.
-  * NEEDS CONFIRMING before it ships - see the note in todo.md. The reading
-    above is mine, and a hold reaching Steam is also how the 7 Aug power-menu
-    suspend happened, so this one does not ship on an inference.
+  * CONFIRMED by Donnie, same night: "yeah basically a ps hold will be an in
+    app press". So it is settled, not inferred.
+  * Note on the interaction with the existing bindings, which needs no new
+    ruling: whether couchd ALSO acts on a hold stays governed by the `hold`
+    binding on the switcher settings page. Today that is `context_menu`, so a
+    hold would open Kodi's context menu AND pass a press to the app. Setting
+    `hold` to `none` there makes a hold a PURE pass-through. That is existing
+    machinery (gestureconf already supports `hold=none`, and it is the only
+    way to reach the long-hold tier), so the choice stays Donnie's per-context
+    rather than being baked into the input process.
+  * The 7 Aug power-menu suspend is the reason to be careful here: a hold
+    reaching Steam is that same path. The difference is that this one is a
+    PHYSICAL hold he performed deliberately, not a synthetic press we
+    generated - and it is a single press, not a repeating one.
 
 **4. A switcher pick outranks the enforcement window: YES.** Choosing
 something from the switcher cancels any guard window that contradicts it.
