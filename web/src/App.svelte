@@ -1,5 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './lib/anim.js';
+  import { reducedMotion } from './lib/reduced-motion.js';
   import { onMount } from 'svelte';
   import { live, connect } from './lib/state.svelte.js';
   import { prefetchAll, refreshNow } from './lib/store.svelte.js';
@@ -131,8 +132,8 @@
 </nav>
 
 {#if themeSheet}
-  <div use:fadeIn out:fadeOut class="scrim" onclick={() => (themeSheet = false)} role="presentation">
-    <div use:slideUp out:slideDown class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Theme">
+  <div use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={() => (themeSheet = false)} role="presentation">
+    <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Theme">
       <h2>Theme</h2>
       {#each THEMES as t}
         <button class="themerow" class:on={theme === t.id} onclick={() => { theme = t.id; }}>

@@ -38,7 +38,11 @@ function run(node, from, to, dur, opts = {}) {
 // A true bottom-sheet entrance: the sheet starts fully below the bottom edge
 // (translateY 100% of its own height) and rides up to rest. The scrim's fadeIn
 // dims the backdrop; the sheet itself stays opaque, the way an iOS sheet does.
-export function slideUp(node) {
+export function slideUp(node, { reduced = false } = {}) {
+  if (reduced) {
+    run(node, { opacity: '0' }, { opacity: '1' }, '1ms ease');
+    return;
+  }
   run(node,
     { transform: 'translateY(100%)' },
     { transform: 'translateY(0)' },
@@ -46,8 +50,8 @@ export function slideUp(node) {
     { freezeOverflow: true });
 }
 
-export function fadeIn(node) {
-  run(node, { opacity: '0' }, { opacity: '1' }, '0.22s ease');
+export function fadeIn(node, { reduced = false } = {}) {
+  run(node, { opacity: '0' }, { opacity: '1' }, reduced ? '1ms ease' : '0.22s ease');
 }
 
 // Exit animations are Svelte `out:` transitions (JS-driven per frame, so they
@@ -56,7 +60,8 @@ export function fadeIn(node) {
 // and these only add the dismissal: the sheet rides back down, the scrim fades.
 import { cubicOut } from 'svelte/easing';
 
-export function slideDown(node) {
+export function slideDown(node, { reduced = false } = {}) {
+  if (reduced) return { duration: 1, css: (t) => `opacity: ${t}` };
   // A drag-dismiss (lib/drag.js) records how far the sheet already travelled;
   // ride out from there rather than snapping back to the top first.
   const from = Math.min(parseFloat(node.dataset.dragY || '0') || 0, 100);
@@ -71,9 +76,9 @@ export function slideDown(node) {
   };
 }
 
-export function fadeOut(node) {
+export function fadeOut(node, { reduced = false } = {}) {
   return {
-    duration: 260,
+    duration: reduced ? 1 : 260,
     easing: cubicOut,
     tick: (t) => { node.style.opacity = `${t}`; },
   };

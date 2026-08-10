@@ -1,6 +1,7 @@
 // Pull-to-refresh on the page scroller. Only transform moves (compositor), and
 // it engages only at the very top pulling down, so normal scrolling and the
 // bottom rubber-band are untouched. Touch only - desktop never sees it.
+import { motionDuration } from './reduced-motion.js';
 const THRESHOLD = 72;
 const MAX = 120;
 
@@ -38,7 +39,7 @@ export function pullToRefresh(node, opts = {}) {
     if (dist >= THRESHOLD) {
       refreshing = true;
       opts.onRefresh?.(true);
-      node.style.transition = 'transform 0.24s ease';
+      node.style.transition = `transform ${motionDuration(240)}ms ease`;
       node.style.transform = 'translateY(52px)';
       try { await Promise.resolve(opts.refresh?.()); } catch { /* ignore */ }
       await new Promise((r) => setTimeout(r, 550)); // let the spinner read
@@ -47,7 +48,8 @@ export function pullToRefresh(node, opts = {}) {
   }
 
   function settle() {
-    node.style.transition = 'transform 0.28s ease';
+    const duration = motionDuration(280);
+    node.style.transition = `transform ${duration}ms ease`;
     node.style.transform = 'translateY(0)';
     dist = 0;
     refreshing = false;
@@ -56,7 +58,7 @@ export function pullToRefresh(node, opts = {}) {
     // Clear the transform entirely once it settles. Leaving even translateY(0)
     // makes <main> a containing block for the fixed popup sheets inside it, so
     // they'd anchor to the scrolled page instead of the viewport (off-screen).
-    setTimeout(() => { node.style.transition = ''; node.style.transform = ''; }, 300);
+    setTimeout(() => { node.style.transition = ''; node.style.transform = ''; }, duration + 10);
   }
 
   function reset() {

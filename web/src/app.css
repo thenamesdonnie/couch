@@ -229,12 +229,30 @@ main.withstrip { padding-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom
 .scrim { touch-action: none; }
 .sheet, .dsheet, .chooser { touch-action: pan-y; overscroll-behavior: contain; }
 
-/* Under Reduce Motion, quiet only the ambient LOOPING animations (skeleton
-   pulse, spinner); the one-shot sheet slide still plays. */
+/* Under Reduce Motion, retain state feedback while removing incidental travel. */
 @media (prefers-reduced-motion: reduce) {
-  .sk-cell, .sk-head, .sk-resume, .sk-trend, .sk-svc, .skline, .ythumb.sk {
-    animation: none;
-    opacity: 0.7;
+  html, button, .tile-img, .pic, .pwrbtn, .surface, .edge, .center,
+  .seekbar:not(.dragging) .seekfill, .seekbar:not(.dragging) .seekthumb {
+    transition-duration: 1ms !important;
   }
-  .ptr-spin.spinning { animation-duration: 1.2s; }
+  button:active > .tile-img { transform: none !important; }
+  .edge.up.lit, .edge.down.lit { transform: translateX(-50%) !important; }
+  .edge.left.lit, .edge.right.lit { transform: translateY(-50%) !important; }
+  .ripple { animation: reduced-ripple 1ms ease-out !important; }
+  /* Spinners SLOW, they do not stop. Reduce Motion is about incidental
+     travel, not about removing feedback: a spinner frozen mid-turn reads as
+     hung, and these are the only thing telling you the box is still working.
+     WCAG's concern is large-area parallax, not a 20px loading indicator. */
+  .ptr-spin.spinning, .hitspin, .tilespin, .tvspin {
+    animation-duration: 1.6s !important;
+  }
+  .sk-cell, .sk-head, .sk-resume, .sk-trend, .sk-svc, .skline, .ythumb.sk {
+    animation: none !important;
+    opacity: 0.7 !important;
+  }
+}
+
+@keyframes reduced-ripple {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }

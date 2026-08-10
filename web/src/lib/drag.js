@@ -10,6 +10,7 @@
 // keep it matched to whether the element can actually scroll right now, so an
 // underfilled list never grants the browser a vertical pan that chains to the
 // page behind the sheet. Re-evaluated on resize and content changes.
+import { motionDuration } from './reduced-motion.js';
 export function panYIfScrollable(node) {
   const apply = () => {
     node.style.touchAction = node.scrollHeight > node.clientHeight + 1 ? 'pan-y' : 'none';
@@ -104,9 +105,10 @@ export function dragDismiss(node, { onClose }) {
       node.dataset.dragY = String((dy / node.offsetHeight) * 100);
       onClose();
     } else if (dy > 0) {
-      node.style.transition = 'transform 0.25s cubic-bezier(0.22, 1, 0.36, 1)';
+      const duration = motionDuration(250);
+      node.style.transition = `transform ${duration}ms cubic-bezier(0.22, 1, 0.36, 1)`;
       node.style.transform = '';
-      setTimeout(() => { node.style.transition = ''; node.style.willChange = ''; }, 260);
+      setTimeout(() => { node.style.transition = ''; node.style.willChange = ''; }, duration + 10);
     } else {
       node.style.willChange = '';
     }

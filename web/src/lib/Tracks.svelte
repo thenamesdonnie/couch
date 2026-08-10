@@ -1,5 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
+  import { reducedMotion } from './reduced-motion.js';
   import { portal } from './portal.js';
   import { live, api } from './state.svelte.js';
 
@@ -13,8 +14,8 @@
   }
 </script>
 
-<div use:portal use:fadeIn out:fadeOut class="scrim" onclick={onclose} role="presentation">
-  <div use:slideUp out:slideDown class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Audio and subtitles">
+<div use:portal use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={onclose} role="presentation">
+  <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Audio and subtitles">
     {#if p}
       <h2>Subtitles</h2>
       <div class="list">

@@ -1,5 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
+  import { reducedMotion } from './reduced-motion.js';
   import { portal } from './portal.js';
   import { onMount, flushSync } from 'svelte';
   import { api } from './state.svelte.js';
@@ -321,8 +322,8 @@
 {/if}
 
 {#if winOpen}
-  <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (winOpen = false)} role="presentation">
-    <div use:slideUp out:slideDown class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Switch window">
+  <div use:portal use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={() => (winOpen = false)} role="presentation">
+    <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Switch window">
       <div class="sheetbar">
         <span class="sheettitle">Switch to</span>
         <button class="closebtn" onclick={() => (winOpen = false)} aria-label="Close"><Icon name="x" size={16} /></button>

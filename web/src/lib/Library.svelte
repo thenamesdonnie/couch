@@ -1,5 +1,6 @@
 <script>
   import { slideUp, fadeIn, slideDown, fadeOut } from './anim.js';
+  import { reducedMotion } from './reduced-motion.js';
   import { dragDismiss, panYIfScrollable } from './drag.js';
   import { portal } from './portal.js';
   import { api, fmtTime } from './state.svelte.js';
@@ -321,8 +322,8 @@
 {/if}
 
 {#if resumeChoice}
-  <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (resumeChoice = null)} role="presentation">
-    <div use:slideUp out:slideDown class="chooser" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Play options">
+  <div use:portal use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={() => (resumeChoice = null)} role="presentation">
+    <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} class="chooser" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Play options">
       <span class="ctitle">{resumeChoice.seriesName ? `${resumeChoice.seriesName} ${epLabel(resumeChoice)}` : resumeChoice.name}</span>
       <button class="primary" disabled={casting} onclick={() => playChoice(false)}>Resume from {fmtTime(resumeChoice.resumeSecs)}</button>
       <button disabled={casting} onclick={() => playChoice(true)}>From beginning</button>
@@ -336,8 +337,8 @@
 {/if}
 
 {#if detail}
-  <div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => (detail = null)} role="presentation">
-    <div use:slideUp out:slideDown use:dragDismiss={{ onClose: () => (detail = null) }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.name}>
+  <div use:portal use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={() => (detail = null)} role="presentation">
+    <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} use:dragDismiss={{ onClose: () => (detail = null) }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={detail.name}>
       <div class="sheetbar">
         <span class="sheettitle">{detail.name}</span>
         <button class="closebtn" onclick={() => (detail = null)} aria-label="Close"><Icon name="x" size={16} /></button>

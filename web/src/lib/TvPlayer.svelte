@@ -6,6 +6,7 @@
   // playback ends; this card only has to notice and bow out.
   import { onMount } from 'svelte';
   import { fadeIn, fadeOut, slideUp, slideDown } from './anim.js';
+  import { reducedMotion } from './reduced-motion.js';
   import { portal } from './portal.js';
   import { api, fmtTime } from './state.svelte.js';
   import Icon from './Icon.svelte';
@@ -134,8 +135,8 @@
   }
 </script>
 
-<div use:portal use:fadeIn out:fadeOut class="scrim" onclick={() => onclose?.()} role="presentation">
-  <div use:slideUp out:slideDown class="card" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Play on TV">
+<div use:portal use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={() => onclose?.()} role="presentation">
+  <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} class="card" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Play on TV">
     {#if stage === 'failed'}
       <div class="head">
         <span class="title">{item.name}</span>
