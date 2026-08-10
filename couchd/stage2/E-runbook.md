@@ -564,13 +564,14 @@ green E1 at anyone, including yourself.
 * **That anything downstream receives a gesture.** E1.5 checks that a tap
   and a hold are classified correctly and that BTN_MODE is withheld, and it
   reads the answer out of `/tmp/inputproc.log` and the JSONL. That is the
-  whole loop. `InputProc.report()` is an explicit stub — its docstring says
-  so — because the couchd supervisor socket is a later wire-up, and nothing
-  in this repo reads `~/couch/shadow/inputproc-*.jsonl` (checked 9 Aug
-  2026: `inputproc.py` is the only file that mentions it). So E1 proves the
-  gesture was *detected*, and proves nothing at all about it being *acted
-  on*. On the day the PS button is supposed to open the couch switcher, the
-  wire that makes it do so has never been tested by this ladder.
+  whole loop this ladder runs. The supervisor wire EXISTS now (10 Aug 2026 —
+  `couchd/supervisor.py`, and `run()` refuses to grab the pad unless couchd
+  is listening on it), and `couchd/test_supervisor.py` covers it end to end
+  in isolation. But **no rung of this ladder drives inputproc and a live
+  couchd together**: E1 proves the gesture was *detected*, and still proves
+  nothing about it being *acted on* in the room. Before flag day, run the
+  two side by side and watch `status.json`'s `supervisor` block report a
+  connected peer, non-zero `events`, and `peer_drops` of 0.
 * **That the latency figure covers the slow path.** The p99 gate is honest
   about what it measures but not about what it samples. `latencies.append`
   sits at the end of the forward loop and is only reached on `EV_SYN` of a

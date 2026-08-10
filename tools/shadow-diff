@@ -110,6 +110,22 @@ YIELD_MARKER_VERBS = {'yield'}
 # responsibility reads here as though it were never flipped.
 RESPONSIBILITY_BY_PREFIX = {'gesture': 'gestures', 'transition': 'transitions',
                             'guard': 'guard', 'reconcile': 'reconcile'}
+# ...and the fifth responsibility, which has no prefix because it produces no
+# intents at all. `input` is stage 2's input process: it DECIDES nothing, it
+# grabs the pad and reports the raw BTN_MODE edges to couchd over the
+# supervisor wire, and couchd classifies them with its own PressTracker
+# exactly as it classifies the ones it reads from evdev itself. So it can
+# never produce a divergence row.
+#
+# What it changes is the PROVENANCE of the gesture evidence - while it owns
+# the pad, couchd physically cannot read the device and every BTN_MODE record
+# arrives with via="supervisor" - which is an observer-health question, not a
+# comparison one. See input_wire(). It is tracked here so that a flipped
+# `input` evening does not silently read as an evening that was never flipped.
+NON_INTENT_RESPONSIBILITIES = frozenset({'input'})
+# The obs source the wire's own lifecycle records carry (connect, disconnect,
+# hello, the sender's drop count). Optional: a shadow evening has none.
+SUPERVISOR_SOURCE = 'supervisor'
 ACTING, SHADOWING = 'couchd-acting', 'legacy-acting'
 # The outcomes couchd's acting executor records, in report order.
 ACTING_OUTCOMES = ('acted', 'skipped', 'failed', 'refused', 'model-only')
@@ -131,7 +147,7 @@ REAPER_SLACK = 2                     # R5 whitelist: transient reaper children t
 # note, never a verdict. Blindness comes from the daemon's own observer_blind records,
 # from heartbeat gaps, and from ACTIVITY_CHECKS (world said active, source said nothing).
 REQUIRED_SOURCES = ('pad', 'flags', 'pids', 'kodi', 'x11', 'steam')
-OPTIONAL_SOURCES = ('trigger', 'world')
+OPTIONAL_SOURCES = ('trigger', 'world', 'supervisor')
 ACTIVITY_CHECKS = {'pad': lambda w: bool((w.get('pad') or {}).get('present')),
                    'pids': lambda w: bool(w.get('pids'))}
 GESTURE_IDLE_IGNORE = ('pad-quiet', 'init', 'startup')   # not real release edges
@@ -284,6 +300,22 @@ def arg_diff(a, b):
 
 
 # ---- ownership direction (who ACTED, per responsibility, per window) ---------
+def _owned_set(acted, declared):
+    """What couchd owned, from the two lists its daemon records carry.
+
+    `owns`/`now` is what it can EXECUTE (owns.py's ACTABLE); `owns_declared`/
+    `now_declared` is what owns.conf asked for. They differ only for `input`,
+    which stage-1 couchd cannot execute but which is owned all the same - by
+    the stage-2 process on the other end of the supervisor wire. Only the
+    non-intent names are taken from the declared list, so a corpus written by
+    a daemon that stamped neither, or one that stamped a name couchd declined
+    to act on, reads exactly as it always did.
+    """
+    out = set(acted or ())
+    out |= {n for n in (declared or ()) if n in NON_INTENT_RESPONSIBILITIES}
+    return frozenset(out)
+
+
 def ownership_windows(crecs, span):
     """[(t0, t1, frozenset(owned))] - who owned what, when, from couchd's OWN
     records only.
@@ -309,9 +341,11 @@ def ownership_windows(crecs, span):
         if r.get('kind') != 'daemon' or not isinstance(r.get('t'), (int, float)):
             continue
         if r.get('event') == 'start':
-            marks.append((float(r['t']), frozenset(r.get('owns') or ())))
+            marks.append((float(r['t']),
+                          _owned_set(r.get('owns'), r.get('owns_declared'))))
         elif r.get('event') == 'owns-changed':
-            marks.append((float(r['t']), frozenset(r.get('now') or ())))
+            marks.append((float(r['t']),
+                          _owned_set(r.get('now'), r.get('now_declared'))))
         elif r.get('event') == 'stop':
             marks.append((float(r['t']), frozenset()))
     out, cur, t0 = [], frozenset(), span[0]
@@ -1253,9 +1287,9 @@ def rollover_seed(shadow_path, notes):
         saw, ev = True, r.get('event')
         if ev == 'start':
             since, model = float(r['t']), r.get('model_version')
-            owned = frozenset(r.get('owns') or ())
+            owned = _owned_set(r.get('owns'), r.get('owns_declared'))
         elif ev == 'owns-changed':
-            owned = frozenset(r.get('now') or ())
+            owned = _owned_set(r.get('now'), r.get('now_declared'))
         elif ev == 'stop':
             since, model, owned = None, None, frozenset()
     if not saw:
@@ -1322,6 +1356,94 @@ def observer_health(obs, blinds, snaps, runs, notes):
                     start = None
     return {'window': [t0, t1], 'span_s': span, 'sources': health, 'heartbeat_gap': hb,
             'runs': runs, 'blind': blinds, 'valid': not reasons, 'reasons': reasons}
+
+
+def input_wire(obs, windows, runs, notes):
+    """The `input` responsibility: where the pad evidence actually came from.
+
+    Every other responsibility is judged by comparing two streams of
+    decisions. This one cannot be, because the input process makes none - so
+    it is judged the way an observer is judged: did the evidence arrive, all
+    of it, by the route the ownership record says it should have?
+
+    While couchd owns `input`, the input process holds the DualSense with
+    EVIOCGRAB and (under the flag-day udev rule) couchd cannot open the node
+    at all. Every BTN_MODE observation in that stretch must therefore carry
+    via="supervisor". Three things say the evening is not what it claims:
+
+      * a BTN_MODE record with no `via` while `input` was owned - couchd read
+        the pad directly, so the process that was supposed to own it did not;
+      * the wire disconnecting inside an owned stretch - couchd was blind to
+        the button for however long that lasted;
+      * a non-zero drop count from the sender - SR7 says it drops rather than
+        blocks, and every drop is a press couchd never heard about.
+
+    All three are VALIDITY reasons, not gating rows. A hole in the evidence
+    makes an evening uncomparable; it does not make couchd's decisions wrong.
+    """
+    owned = [(a, b) for a, b, o in windows if 'input' in o]
+    # Only stretches that overlap a run under review: an ownership window that
+    # ran out before the corpus starts describes an evening this report is not
+    # about.
+    scope = [(max(a, ra), min(b, rb)) for a, b in owned for ra, rb in runs
+             if b >= ra and a <= rb]
+    presses = [r for r in obs if r.get('source') == 'pad'
+               and r.get('event') == 'BTN_MODE'
+               and isinstance(r.get('t'), (int, float))]
+    wire_recs = [r for r in obs if r.get('source') == SUPERVISOR_SOURCE
+                 and isinstance(r.get('t'), (int, float))]
+    via = {}
+    for r in presses:
+        via[str(r.get('via') or 'evdev')] = via.get(str(r.get('via') or 'evdev'), 0) + 1
+    events = {}
+    for r in wire_recs:
+        events[str(r.get('event'))] = events.get(str(r.get('event')), 0) + 1
+    drops = max([int(r.get('drops') or 0) for r in wire_recs
+                 if r.get('event') == 'peer-health'] or [0])
+
+    def inside(t):
+        return any(a <= float(t) <= b for a, b in scope)
+
+    problems = []
+    if scope:
+        direct = [r for r in presses if inside(r['t']) and not r.get('via')]
+        if direct:
+            problems.append('%d pad BTN_MODE observation(s) arrived DIRECTLY '
+                            'from evdev while couchd owned `input` (first at '
+                            '%s): the input process was not holding the pad, '
+                            'so this stretch is not the arrangement the '
+                            'ownership record claims'
+                            % (len(direct), fmt_t(float(direct[0]['t']))))
+        gone = [r for r in wire_recs if r.get('event') == 'disconnected'
+                and inside(r['t'])]
+        if gone:
+            problems.append('the supervisor wire DISCONNECTED %d time(s) while '
+                            'couchd owned `input` (first at %s): couchd could '
+                            'not see the button at all for that stretch'
+                            % (len(gone), fmt_t(float(gone[0]['t']))))
+        if not events.get('connected') and not via.get('supervisor'):
+            problems.append('couchd owned `input` but nothing ever connected to '
+                            'the supervisor wire and no pad observation came '
+                            'over it - the pad evidence for this stretch is '
+                            'missing, not merely quiet')
+        if drops:
+            problems.append('the input process reported %d DROPPED observation(s) '
+                            '(SR7: it drops rather than block the pad) - that '
+                            'many BTN_MODE edges never reached couchd' % drops)
+    elif via.get('supervisor') or events:
+        # The mirror case: a wire delivering pad events for a responsibility
+        # nobody declared. Not a validity failure - the evidence is there and
+        # couchd classified it the same way either route - but it means the
+        # ownership record and the world disagree, which is always worth a look.
+        notes.append('supervisor wire records present (%d pad event(s), %s) but '
+                     'no ownership window declares `input` - check owns.conf '
+                     'against what was actually running'
+                     % (via.get('supervisor', 0),
+                        ', '.join('%s=%d' % kv for kv in sorted(events.items()))
+                        or 'no lifecycle records'))
+    return {'owned': [{'from': a, 'to': b} for a, b in scope],
+            'pad_by_route': via, 'wire_events': events, 'peer_drops': drops,
+            'records': len(wire_recs), 'problems': problems}
 
 
 # ---- report ------------------------------------------------------------------
@@ -1700,10 +1822,15 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
                      % ', '.join(owned_here))
     acting = acting_health(crecs, current)
     health = observer_health(obs, blinds, snaps, current, notes)
+    wire = input_wire(obs, windows, current, notes)
     disagreements = [dict(r, label=agreement_label(r)[0], why=agreement_label(r)[1])
                      for r in agree if disagrees(r)
                      and in_runs(float(r.get('t', 0)), current, RUN_EDGE_SLACK_S)]
     reasons = list(health['reasons'])
+    # The `input` responsibility invalidates the same way a blind observer
+    # does: it cannot produce a divergence row, but it can mean the pad
+    # evidence for the evening has holes in it.
+    reasons += wire['problems']
     if not l_ok:
         reasons.append('legacy intent stream missing or empty - nothing to compare')
     if not c_ok:
@@ -1774,7 +1901,7 @@ def build(legacy_path, shadow_path, snapshots_path=None, since=None, context=Tru
             'assertions': [{k: v for k, v in a.items() if k != 'intent'}
                            for a in asserts],
             'agreement': {'total': len(agree), 'disagreements': disagreements},
-            'observer_health': health,
+            'observer_health': health, 'input_wire': wire,
             'gating_count': sum(gating_breakdown.values()),
             'gating_breakdown': gating_breakdown,
             'whitelisted_hard': len(hard) - len(gating),
@@ -1797,6 +1924,27 @@ def render(rep):
         out.append('  %s..%s  %s' % (fmt_t(w['from']), fmt_t(w['to']), w['label']))
     if not own['windows']:
         out.append('  (no daemon records: read as couchd owning nothing)')
+    iw = rep.get('input_wire') or {}
+    if iw.get('owned') or iw.get('records') or iw.get('pad_by_route', {}).get('supervisor'):
+        out += ['', '== INPUT WIRE == (the `input` responsibility: it decides '
+                    'nothing, so it is judged on where the pad EVIDENCE came '
+                    'from, not on rows)']
+        for w in iw['owned']:
+            out.append('  %s..%s  couchd owns `input`: the stage-2 process '
+                       'holds the pad and couchd sees it only over the wire'
+                       % (fmt_t(w['from']), fmt_t(w['to'])))
+        if not iw['owned']:
+            out.append('  (nothing owned `input` in this window)')
+        out.append('  pad BTN_MODE by route: %s'
+                   % (', '.join('%s=%d' % kv
+                                for kv in sorted(iw['pad_by_route'].items()))
+                      or '(none)'))
+        out.append('  wire records: %s; sender-reported drops: %d'
+                   % (', '.join('%s=%d' % kv
+                                for kv in sorted(iw['wire_events'].items()))
+                      or '(none)', iw['peer_drops']))
+        for p in iw['problems']:
+            out.append('  !! %s' % p)
     for sec in SECTIONS:
         rows = [r for r in rep['rows'] if r['section'] == sec]
         if not rows and sec in REVERSED_SECTION.values():

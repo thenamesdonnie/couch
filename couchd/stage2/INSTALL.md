@@ -235,13 +235,16 @@ Not part of this sitting. When the flag-day checklist in
    the open ruling in
    `docs/audits/stage2-inputproc-review-20260809-synthesis.md` before
    assuming otherwise;
-6. **inputproc will refuse to own the pad** while the couchd supervisor
-   socket is a stub, and at the time of writing it still is. That refusal is
-   deliberate: grabbing the pad blinds both existing gesture stacks, and
-   nothing consumes what inputproc intercepts, so the whole PS-button
-   vocabulary would be dead in the room with `status.json` still reporting a
-   healthy `acting`. Wire the supervisor first. `--supervisor-stub-ok` exists
-   for the rig and must never appear at flag day;
+6. **inputproc will refuse to own the pad unless couchd is listening** on the
+   supervisor socket (`~/couch/shadow/couchd.sock`). The refusal is
+   deliberate and it is the same hazard it always was: grabbing the pad
+   blinds couchd's own pad observer AND the legacy watcher, so with nothing
+   consuming what inputproc intercepts, the whole PS-button vocabulary would
+   be dead in the room with `status.json` still reporting a healthy
+   `acting`. **Start couchd before the input process.** Once connected, a
+   couchd restart is only a reconnect and the pad never notices.
+   `--supervisor-stub-ok` skips the check; it exists for the rig and must
+   never appear at flag day;
 7. `journalctl -u inputproc -f` and `tail -f /tmp/inputproc.log`.
 
 Rollback at any point, no password, one command:

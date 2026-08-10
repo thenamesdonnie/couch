@@ -17,6 +17,12 @@ What it does with the stream:
     question is settled by gesture.py (the same module stage 1 runs, SR4);
     a tap is then re-injected with InputPlumber's 80ms chord pacing, a
     hold is ours and is never forwarded;
+  * reports every BTN_MODE edge to couchd over the supervisor wire
+    (supervisor.py) with its KERNEL timestamp and nothing else - an
+    OBSERVATION, never a classification. couchd runs its own PressTracker
+    over those timestamps and reaches its own verdict, which is the only
+    way the two stacks can still be compared (SR4). The send is a bounded
+    queue and a thread: it drops rather than ever blocking this loop (SR7);
   * re-uploads force feedback to the physical pad rather than decoding it
     (S3), with the full UPLOAD-create / UPLOAD-update / ERASE / playback /
     gain contract SR7 demands, and a cache so rumble survives a BT drop;
@@ -53,6 +59,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gesture
 import gestureconf
 import owns as ownsconf
+import supervisor
 from gesture import EVENT_FORMAT, EVENT_SIZE
 
 try:
@@ -64,6 +71,10 @@ HOME = os.path.expanduser('~')
 SHADOW_DIR = os.environ.get('COUCHD_SHADOW_DIR', os.path.join(HOME, 'couch', 'shadow'))
 HUMAN_LOG = '/tmp/inputproc.log'
 SUPERVISOR_SOCK = os.path.join(SHADOW_DIR, 'couchd.sock')
+# How long run() waits for couchd to be listening before it will grab the pad.
+# Not a timeout on the wire itself - once running, a couchd restart is just a
+# reconnect and the pad never notices. This is the startup interlock only.
+SUPERVISOR_WAIT_S = 5.0
 
 PAD_NAME = 'DualSense Wireless Controller'
 PAD_UNWANTED = re.compile(r'Motion|Touchpad', re.I)
@@ -557,6 +568,11 @@ class InputProc:
         self.latencies = deque(maxlen=4096)
         self.counts = {'in': 0, 'out': 0, 'dropped': 0, 'ff': 0,
                        'gesture': 0, 'reinjected': 0, 'write_failures': 0}
+        # The supervisor wire. Constructed here, connected by run(): nothing
+        # in __init__ may touch a socket.
+        self.wire = supervisor.SupervisorClient(
+            path=getattr(args, 'supervisor_sock', None) or SUPERVISOR_SOCK,
+            on_log=say, on_connect=self.wire_resync)
         self.gesture_at = time.monotonic()
         self.hold_pending = False
         self.stop = False
@@ -564,15 +580,22 @@ class InputProc:
         self._next_scan = 0.0
         self._next_health = time.monotonic() + HEALTH_SECONDS
 
-    # -- supervisor socket ------------------------------------------------
+    # -- evidence ---------------------------------------------------------
     def report(self, kind, **fields):
-        """Gesture/press events out of the fast path.
+        """This process's OWN record of what it decided - the evidence trail.
 
-        STUB - the couchd supervisor socket (SO_PEERCRED uid in {ds2000,
-        couchd-input}, SR1) is a LATER wire-up. Until then every event lands
-        in the JSONL and the human log, which is what the E-runbook reads.
-        Deliberately not a blocking send: SR7 forbids gesture/socket work
-        sharing a blocking path with FF handling.
+        Not the supervisor wire, and deliberately so. What goes to couchd is
+        the raw BTN_MODE edge with its kernel timestamp, sent from on_guide()
+        before any interpretation of it (see wire_press). The classified
+        gestures below are what THIS stack made of those same timestamps, and
+        they stay here in the JSONL where the morning differ can compare them
+        against what couchd independently made of them.
+
+        Sending the classification instead would have been fewer lines and
+        would have quietly ended the comparison: couchd would be executing
+        stage 2's verdict rather than reaching its own, the two could not
+        disagree, and SR4's "both stacks decide identically" would become
+        unfalsifiable. supervisor.py's docstring is the long form.
         """
         rec = dict(fields)
         rec.update({'kind': kind, 'owns_input': self.own})
@@ -581,6 +604,39 @@ class InputProc:
             self.counts['gesture'] += 1
             say(f"gesture {fields.get('event')} "
                 f"{round(fields.get('held', 0) or 0, 3)}s")
+
+    # -- supervisor wire --------------------------------------------------
+    def wire_press(self, k, value):
+        """One raw BTN_MODE edge to couchd. NEVER blocks (SR7).
+
+        Called from the fast path, with a kernel event half-way to the virtual
+        pad. `send` either puts it on a bounded queue or counts a drop; a
+        thread owns everything that can wait.
+        """
+        self.wire.send('press', value=int(value), kernel_t=round(k, 6))
+
+    def wire_pad(self, state, **fields):
+        self.wire.send('pad', state=state, owns_input=self.own, **fields)
+
+    def wire_resync(self):
+        """What to say the moment a connection comes up, including after a
+        couchd restart: who we are, and whether there is a pad right now.
+
+        Without the second half a restarted couchd would sit on whatever it
+        last believed about the `pad` region until the controller was next
+        unplugged.
+        """
+        msgs = [('hello', {'pid': os.getpid(),
+                           'version': supervisor.PROTOCOL_VERSION,
+                           'owns_input': self.own, 'sender': 'inputproc'})]
+        if self.phys is not None:
+            msgs.append(('pad', {'state': 'attached', 'node': self.phys_path,
+                                 'grabbed': self.grabbed,
+                                 'owns_input': self.own}))
+        else:
+            msgs.append(('pad', {'state': 'detached', 'why': 'resync',
+                                 'owns_input': self.own}))
+        return msgs
 
     # -- virtual pad ------------------------------------------------------
     def create_virtual(self, ff_codes):
@@ -840,6 +896,9 @@ class InputProc:
             f'uniq={found[0][2] or "?"}')
         self.log.write({'kind': 'health', 'event': 'attached', 'node': path,
                         'uniq': found[0][2], 'grabbed': self.grabbed})
+        # couchd's `pad` region: while we hold the node with EVIOCGRAB, this
+        # is the only channel that can tell it a controller exists at all.
+        self.wire_pad('attached', node=path, grabbed=self.grabbed)
         return True
 
     def check_ownership(self, path):
@@ -901,6 +960,7 @@ class InputProc:
         self._hold_reported = False
         self._long_hold_reported = False
         self.log.write({'kind': 'health', 'event': 'detached', 'why': why})
+        self.wire_pad('detached', why=why)
         say(f'physical pad gone ({why})')
 
     # -- the stream -------------------------------------------------------
@@ -937,6 +997,15 @@ class InputProc:
         """BTN_MODE. Observe mode forwards it untouched; owning mode WITHHOLDS
         it until gesture.py has settled tap-or-hold (a forwarded press that
         later turns out to be a hold is exactly the war stage 2 ends)."""
+        # THE WIRE, first and unconditionally, for BOTH modes and BOTH edges.
+        # This is the single point every BTN_MODE event passes through, which
+        # is exactly where an observation channel belongs: couchd gets the raw
+        # edge and its kernel timestamp before this process has formed an
+        # opinion about it, and reaches its own verdict from the same numbers.
+        # Note the release goes too - report() only ever names it as a
+        # classified gesture, and a consumer running its own PressTracker
+        # needs both edges or nothing it computes means anything.
+        self.wire_press(k, value)
         if not self.own:
             out = translate(gesture.EV_KEY, gesture.BTN_MODE, value)
             self.emit(out[0], out[1], out[2], sec, usec)
@@ -1106,10 +1175,21 @@ class InputProc:
             rec['p99_ms'] = round(percentile(lats, 99) * 1000, 3)
             rec['samples'] = len(lats)
         rec.update(self.counts)
+        # SR7's cost, made visible. `drops` is every observation this process
+        # chose to lose rather than block the pad for - because couchd was not
+        # listening, or was not draining fast enough. A non-zero count means
+        # couchd's view of the button has holes in it, and the evening's
+        # gesture comparison is that much less complete.
+        wire = self.wire.stats()
+        rec['wire'] = wire
         self.log.write(rec)
+        self.wire.send('health', drops=wire['drops'], owns_input=self.own,
+                       degraded=self.degraded, state=self.persist.state)
         say(f"health {self.persist.state} in={self.counts['in']} "
             f"out={self.counts['out']} ff={self.counts['ff']} "
-            f"p50={rec['p50_ms']}ms p99={rec['p99_ms']}ms")
+            f"p50={rec['p50_ms']}ms p99={rec['p99_ms']}ms "
+            f"wire={'up' if wire['connected'] else 'DOWN'} "
+            f"drops={wire['drops']}")
 
     # -- the loop ---------------------------------------------------------
     def run(self):
@@ -1122,6 +1202,28 @@ class InputProc:
         if not self.own:
             say('observe-and-forward-only: BTN_MODE IS forwarded, nothing '
                 'is intercepted')
+        self.wire.start()
+        if self.own and not self.wire.wait_connected(self.args.supervisor_wait):
+            # THE INTERLOCK, now keyed on reality rather than on a stub.
+            # Grabbing the pad hides it from couchd's PadObserver AND from the
+            # legacy watcher; if nothing is listening on the wire, that is the
+            # entire PS-button vocabulary dead in the living room while
+            # status.json still reports a healthy `acting`. Refuse here rather
+            # than discover it on the sofa. Once we ARE connected, a couchd
+            # restart is only a reconnect - the pad never notices.
+            if not self.args.supervisor_stub_ok:
+                self.wire.close()
+                raise SystemExit(
+                    f'REFUSING to own the pad: nothing is listening on '
+                    f'{self.wire.path} after {self.args.supervisor_wait:.0f}s '
+                    f'({self.wire.last_error}). Grabbing the pad blinds both '
+                    f'gesture stacks, so with no supervisor the PS button '
+                    f'would simply stop working. Start couchd first, or pass '
+                    f'--supervisor-stub-ok if you are deliberately testing '
+                    f'the grab path with the gesture vocabulary expendable.')
+            say('WARNING: --supervisor-stub-ok and no supervisor is listening '
+                'on ' + self.wire.path + ' - every gesture this process '
+                'intercepts goes NOWHERE. Rig use only.')
         try:
             self.attach()
             if self.phys is not None:
@@ -1226,7 +1328,9 @@ class InputProc:
             pass
         self.detach('shutdown')
         self.destroy_virtual()
-        self.log.write({'kind': 'health', 'event': 'stopped', **self.counts})
+        self.log.write({'kind': 'health', 'event': 'stopped',
+                        'wire': self.wire.stats(), **self.counts})
+        self.wire.close()
         self.log.close()
 
 
@@ -1239,6 +1343,11 @@ def parse_args(argv=None):
     p.add_argument('--persist-secs', type=float, default=PERSIST_SECONDS,
                    help='hold the virtual pad this long after a BT drop')
     p.add_argument('--log-dir', default=SHADOW_DIR)
+    p.add_argument('--supervisor-sock', default=SUPERVISOR_SOCK,
+                   help='couchd\'s supervisor socket (default %(default)s)')
+    p.add_argument('--supervisor-wait', type=float, default=SUPERVISOR_WAIT_S,
+                   help='seconds to wait for couchd to be listening before '
+                        'grabbing the pad (default %(default)s)')
     p.add_argument('--observe', action='store_true',
                    help='force observe-and-forward-only, ignoring COUCHD_OWNS')
     # RIG ONLY. The fake pad is uaccess'd to ds2000 by 71-dualsense-uaccess
@@ -1250,10 +1359,12 @@ def parse_args(argv=None):
                    action='store_false', default=True,
                    help='RIG ONLY: skip SR5 ownership assertion (E1)')
     # RIG ONLY, and a different kind of dangerous from the one above: this
-    # one says "yes, I know the gestures I intercept go nowhere".
+    # one says "yes, I know the gestures I intercept go nowhere". It used to
+    # mean "the wire is a stub"; the wire is real now, so it means "no
+    # supervisor is listening and I want the pad anyway".
     p.add_argument('--supervisor-stub-ok', action='store_true',
-                   help='RIG ONLY: own the pad even though the couchd '
-                        'supervisor wire is still a stub')
+                   help='RIG ONLY: own the pad even with no couchd supervisor '
+                        'listening on the wire')
     return p.parse_args(argv)
 
 
@@ -1285,22 +1396,11 @@ def grants_input(env_override=None):
 def main(argv=None):
     args = parse_args(argv)
     args.own_input = grants_input() and not args.observe
-    if args.own_input and not args.supervisor_stub_ok:
-        # THE interlock. report() is still a stub: inputproc's gestures land
-        # in a JSONL file and nothing in this repo reads it. Meanwhile owning
-        # the pad means grabbing it, so couchd's PadObserver (which matches on
-        # the name 'DualSense Wireless Controller' and would see only our
-        # X360-named virtual node) and the legacy watcher both go blind. With
-        # `gestures` flipped, that is the entire PS-button vocabulary dead in
-        # the living room, with status.json still reporting a healthy
-        # `acting`. Refuse rather than discover it on the sofa.
-        raise SystemExit(
-            'REFUSING to own the pad: the couchd supervisor wire is still a '
-            'stub (see report()), so nothing would consume the gestures this '
-            'process intercepts, and grabbing the pad blinds both existing '
-            'gesture stacks. Wire the supervisor socket first, or pass '
-            '--supervisor-stub-ok if you are deliberately testing the grab '
-            'path with the gesture vocabulary expendable.')
+    # The interlock that used to live here - "report() is a stub, so nothing
+    # would consume the gestures" - is gone, because the wire is real. What
+    # replaced it is the same refusal keyed on the same hazard, asked of the
+    # world instead of the source: run() will not grab the pad unless a couchd
+    # is actually listening on the supervisor socket.
     InputProc(args).run()
     return 0
 

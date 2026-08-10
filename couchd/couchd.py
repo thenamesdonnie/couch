@@ -53,6 +53,13 @@ import gesture
 import gestureconf
 from gesture import HANDOFF_TIMEOUT, HOLD_SECONDS  # noqa: F401 (re-exported)
 
+# The supervisor wire (stage 2). couchd LISTENS; the input process connects
+# and sends RAW BTN_MODE events with their kernel timestamps, which the
+# PadObserver below feeds to the same PressTracker it feeds from evdev. See
+# supervisor.py's module docstring for why the wire carries observations and
+# never classified gestures. Until something connects, none of it runs.
+import supervisor
+
 # Who owns what, read fresh from ~/couch/couchd/owns.conf every tick. Empty -
 # the state it ships in - means couchd acts on nothing and the legacy scripts
 # act on everything, which is the console exactly as it was.
@@ -154,7 +161,12 @@ SHAD = re.compile(r'Shadps4-sdl|mount_Shadps')
 # wins", which used to mark an entire evening stale because the daemon was
 # restarted after it (and turned a 4-minute idle window into the verdict).
 MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_FILES = ('couchd.py', 'gesture.py', 'gestureconf.py', 'owns.py')
+# supervisor.py is in here because it decides what couchd SEES: what it drops,
+# what it reorders and what it refuses as malformed all change the input the
+# rest of this file reasons over, and two corpora written either side of a
+# change to it are not one model's evidence.
+MODEL_FILES = ('couchd.py', 'gesture.py', 'gestureconf.py', 'owns.py',
+               'supervisor.py')
 
 
 def model_version():
@@ -3282,6 +3294,12 @@ class ExecutorRouter(Executor):
         if self.log is not None:
             self.log.write({'kind': 'daemon', 'event': 'owns-changed',
                             'was': was, 'now': sorted(actable),
+                            # The declared set as well as the actable one - see
+                            # the start record. `input` never appears in `now`
+                            # (couchd cannot execute it) and the differ would
+                            # otherwise read a flipped input evening as though
+                            # it had never been flipped.
+                            'now_declared': current.sorted,
                             'acting': self.acting is not None})
         return True
 
@@ -3412,12 +3430,18 @@ class PadObserver:
         self.w = world
         self.src = world.src('pad')
         self.fds = {}
-        self.present = False
+        self._present = False
         # ALL the tap/hold arithmetic is gesture.py's, byte for byte the same
         # module the stage-2 input process runs (SR4).
         self.tracker = gesture.PressTracker()
         self.first_event_latency = None    # R5: pad-appearance -> first event
         self._appeared_at = None
+        # The stage-2 wire (supervisor.py). BOTH default False, and while they
+        # are, every line below behaves exactly as it did before the wire
+        # existed: `supervised` is only ever set by SupervisorObserver, and it
+        # only sets it while an authorised peer is actually connected.
+        self.supervised = False
+        self.supervised_present = False
 
     # The tracker's state IS the observer's state; these read-only views keep
     # observe()/write_status() unchanged.
@@ -3432,6 +3456,20 @@ class PadObserver:
         lambda self: self.tracker.hold_release_k is not None)
     double_tap_pending = property(
         lambda self: self.tracker.double_tap_k is not None)
+
+    @property
+    def present(self):
+        """Is there a pad? Whoever can actually see one answers.
+
+        Once the stage-2 input process owns the pad it is the ONLY thing on
+        the box that can see the device: it holds the node with EVIOCGRAB, and
+        under the flag-day udev rule ds2000 cannot open it at all. Our own node
+        scan would then find nothing and report the pad absent while somebody
+        is holding it - so while the wire is live, what the wire says IS the
+        answer. With no supervisor connected this is the plain attribute it has
+        always been.
+        """
+        return self.supervised_present if self.supervised else self._present
 
     @staticmethod
     def find_pads():
@@ -3486,7 +3524,7 @@ class PadObserver:
             self.w.log.write({'kind': 'obs', 'source': 'pad', 'event': 'node-open',
                               'node': path})
             self.w.attention('pad-appeared')
-        self.present = bool(self.fds)
+        self._present = bool(self.fds)
 
     def _drop(self, loop, path, why):
         fd = self.fds.pop(path, None)
@@ -3497,7 +3535,7 @@ class PadObserver:
                 os.close(fd)
             self.w.log.write({'kind': 'obs', 'source': 'pad',
                               'event': 'node-close', 'node': path, 'why': why})
-        self.present = bool(self.fds)
+        self._present = bool(self.fds)
         if not self.fds:
             self.tracker.reset()
 
@@ -3514,6 +3552,13 @@ class PadObserver:
             self._drop(loop, path, 'eof')
             self.w.attention('pad-gone', edge=True)
             return
+        if self.supervised:
+            # The wire is live and is the source of truth for this pad. The
+            # bytes still have to be consumed (an undrained POLLIN spins the
+            # loop forever), but feeding them would double-count every press
+            # against the tracker. This is belt and braces: at flag day this
+            # node is grabbed by the input process and we never opened it.
+            return
         for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
             sec, usec, etype, code, value = struct.unpack_from(EVENT_FORMAT,
                                                               data, off)
@@ -3521,29 +3566,206 @@ class PadObserver:
             self.tracker.note_event(k)
             self.src.events += 1
             if etype == EV_KEY and code == BTN_MODE:
-                if self._appeared_at is not None:
-                    self.first_event_latency = time.monotonic() - self._appeared_at
-                    self._appeared_at = None
-                    self.w.log.write({'kind': 'obs', 'source': 'pad',
-                                      'event': 'first-event-latency',
-                                      'seconds': round(self.first_event_latency, 3)})
-                self.tracker.feed(k, value)
-                self.w.log.write({'kind': 'obs', 'source': 'pad',
-                                  'event': 'BTN_MODE', 'value': value,
-                                  'kernel_t': round(k, 6),
-                                  'duration': (round(self.press_duration, 3)
-                                               if value == 0 and self.press_duration
-                                               else None),
-                                  'double_armed': self.tracker.double_armed})
-                # THE gesture edge: every show/route/switcher decision the
-                # room can feel hangs off this event, so it runs a pass now
-                # instead of waiting for the tick (R5).
-                self.w.attention('ps-button', edge=True, kernel_t=k)
-                self.src.last_change = time.monotonic()
+                self.note_button(k, value)
+
+    def note_button(self, k, value, via='evdev'):
+        """ONE BTN_MODE event, from whichever channel carried it.
+
+        Both channels land here on purpose: the tracker, the corpus record and
+        the gesture edge must be identical whether the event arrived from our
+        own read of the evdev node or over the supervisor wire from the process
+        that grabbed it. `via` is a LABEL on the evidence and changes no
+        decision - which is the point, and what makes a flipped `input` evening
+        comparable with every evening before it.
+        """
+        if via != 'evdev':
+            # The evdev path counts every event it reads, stick wiggles and
+            # all; the wire only ever carries the button, so its events are
+            # counted here instead.
+            self.src.events += 1
+        if self._appeared_at is not None:
+            self.first_event_latency = time.monotonic() - self._appeared_at
+            self._appeared_at = None
+            self.w.log.write({'kind': 'obs', 'source': 'pad',
+                              'event': 'first-event-latency',
+                              'seconds': round(self.first_event_latency, 3)})
+        self.tracker.feed(k, value)
+        rec = {'kind': 'obs', 'source': 'pad',
+               'event': 'BTN_MODE', 'value': value,
+               'kernel_t': round(k, 6),
+               'duration': (round(self.press_duration, 3)
+                            if value == 0 and self.press_duration
+                            else None),
+               'double_armed': self.tracker.double_armed}
+        if via != 'evdev':
+            rec['via'] = via
+        self.w.log.write(rec)
+        # THE gesture edge: every show/route/switcher decision the
+        # room can feel hangs off this event, so it runs a pass now
+        # instead of waiting for the tick (R5).
+        self.w.attention('ps-button', edge=True, kernel_t=k)
+        self.src.last_change = time.monotonic()
 
     def close(self, loop):
         for path in list(self.fds):
             self._drop(loop, path, 'shutdown')
+
+
+class SupervisorObserver:
+    """The second source for pad events: stage 2's input process.
+
+    A listener thread accepts the connection and validates every line; this
+    object drains what the thread queued, once per pass, on the daemon's own
+    single thread. No socket is ever touched from the loop.
+
+    THE SAFETY PROPERTY, which the tests pin: with nothing connected, this
+    object changes NOTHING. `drain()` finds an empty queue, leaves
+    `pad.supervised` False, and every decision couchd takes is the decision it
+    took before this class existed. couchd owns gestures on a live console;
+    the wire is inert until something authorised is on the other end of it.
+    """
+
+    def __init__(self, world, pad, path=None, allow_users=None):
+        self.w = world
+        self.pad = pad
+        self.listener = supervisor.SupervisorListener(
+            path=path or supervisor.default_path(SHADOW_DIR),
+            allow_users=(allow_users if allow_users is not None
+                         else supervisor.ALLOWED_USERS),
+            on_log=say)
+        self.src = None             # created by start(), not by construction
+        self.events = 0             # presses that came over the wire
+        self.messages = 0
+        self.last_event_mono = None
+        self.peer_pid = None
+        self.peer_user = None
+        self.peer_owns_input = None
+        self.peer_drops = 0         # drops the SENDER reported (SR7)
+        self.peer_degraded = None
+        self.started = False
+
+    # -- lifecycle --------------------------------------------------------
+    def start(self):
+        """Open the listening socket. A failure is a note, never fatal."""
+        self.src = self.w.src('supervisor')
+        self.started = self.listener.start()
+        if self.started:
+            self.src.touch(True, 'listening, no supervisor connected')
+        else:
+            self.src.touch(False, self.listener.error or 'not listening')
+            self.w.log.write({'kind': 'observer_blind', 'source': 'supervisor',
+                              'why': 'listen-failed',
+                              'detail': self.listener.error})
+        return self.started
+
+    def close(self):
+        self.listener.close()
+        self.started = False
+        # Hand the pad region back to our own eyes: a stopped daemon must not
+        # leave the observer believing a wire that is gone.
+        self.pad.supervised = False
+
+    @property
+    def connected(self):
+        return self.listener.connected
+
+    # -- per-pass ---------------------------------------------------------
+    def drain(self):
+        """Apply everything the wire delivered since the last pass."""
+        for msg in self.listener.get_all():
+            self.messages += 1
+            self._apply(msg)
+        # Set the pad observer's mode LAST, from the live connection state, so
+        # a connect and its first messages take effect in the same pass.
+        self.pad.supervised = self.connected
+        if not self.connected:
+            self.pad.supervised_present = False
+        if self.src is not None and self.started:
+            self.src.touch(True, ('peer pid %s (%s)' % (self.peer_pid,
+                                                        self.peer_user)
+                                  if self.connected
+                                  else 'listening, no supervisor connected'))
+
+    def _apply(self, msg):
+        kind = msg.get('kind')
+        if kind == 'press':
+            self.events += 1
+            self.last_event_mono = time.monotonic()
+            # OBSERVATION, not decision: the raw event and its kernel
+            # timestamp go straight into the same tracker the evdev path
+            # feeds, and couchd's own state machine classifies it (SR4).
+            self.pad.note_button(msg['kernel_t'], msg['value'], via='supervisor')
+        elif kind == 'pad':
+            attached = msg['state'] == 'attached'
+            if attached != self.pad.supervised_present:
+                self.w.log.write({'kind': 'obs', 'source': 'pad',
+                                  'event': ('node-open' if attached
+                                            else 'node-close'),
+                                  'node': msg.get('node'),
+                                  'why': msg.get('why'), 'via': 'supervisor'})
+                self.w.attention('pad-appeared' if attached else 'pad-gone',
+                                 edge=not attached)
+            self.pad.supervised_present = attached
+            if not attached:
+                # Same contract as _drop(): a pad that went away takes its
+                # in-flight press with it, or a level-based reader walks the
+                # tap paths off a press that no longer exists.
+                self.pad.tracker.reset()
+        elif kind == 'hello':
+            self.peer_pid = msg['pid']
+            self.peer_owns_input = msg.get('owns_input')
+            self.w.log.write({'kind': 'obs', 'source': 'supervisor',
+                              'event': 'hello', 'pid': msg['pid'],
+                              'version': msg.get('version'),
+                              'owns_input': msg.get('owns_input'),
+                              'sender': msg.get('sender')})
+        elif kind == 'health':
+            self.peer_drops = msg.get('drops', 0)
+            self.peer_degraded = msg.get('degraded')
+            self.w.log.write({'kind': 'obs', 'source': 'supervisor',
+                              'event': 'peer-health', 'drops': msg.get('drops'),
+                              'owns_input': msg.get('owns_input'),
+                              'degraded': msg.get('degraded'),
+                              'state': msg.get('state')})
+        elif kind == '_connected':
+            self.peer_pid, self.peer_user = msg.get('pid'), msg.get('user')
+            self.w.log.write({'kind': 'obs', 'source': 'supervisor',
+                              'event': 'connected', 'pid': msg.get('pid'),
+                              'user': msg.get('user')})
+        elif kind == '_disconnected':
+            self.peer_pid = self.peer_user = None
+            self.peer_owns_input = None
+            self.pad.supervised_present = False
+            # The wire went away mid-press: forget it, exactly as a dropped
+            # evdev node does.
+            self.pad.tracker.reset()
+            self.w.log.write({'kind': 'obs', 'source': 'supervisor',
+                              'event': 'disconnected', 'pid': msg.get('pid'),
+                              'why': msg.get('why')})
+            self.w.attention('supervisor-gone', edge=True)
+
+    def status(self, mono=None):
+        """What status.json says about the wire, so the health check can see
+        it without opening a socket."""
+        mono = time.monotonic() if mono is None else mono
+        li = self.listener
+        return {'listening': li.listening, 'path': li.path,
+                'connected': self.connected,
+                'peer_pid': self.peer_pid, 'peer_user': self.peer_user,
+                'peer_owns_input': self.peer_owns_input,
+                'connections': li.connections, 'rejected': li.rejected,
+                'malformed': li.malformed,
+                'events': self.events, 'messages': self.messages,
+                # Two drop counters, and they mean different things: `drops`
+                # is our own inbound queue overflowing (couchd fell behind),
+                # `peer_drops` is what the input process threw away because
+                # nobody was listening or the wire was slow (SR7).
+                'drops': li.dropped, 'peer_drops': self.peer_drops,
+                'peer_degraded': self.peer_degraded,
+                'last_event_age_s': (round(mono - self.last_event_mono, 3)
+                                     if self.last_event_mono is not None
+                                     else None),
+                'error': li.error}
 
 
 class FlagObserver:
@@ -4442,6 +4664,9 @@ class Couchd:
         self._env_warned = False
         self._guard_pidfile_ours = False
         self.pad = PadObserver(self.world)
+        # Constructed here, but it opens NOTHING until run() calls start():
+        # importing or instantiating couchd must never bind a socket.
+        self.supervisor = SupervisorObserver(self.world, self.pad)
         self.flags = FlagObserver(self.world)
         self.pids = PidObserver(self.world)
         self.kodi = KodiObserver(self.world)
@@ -4706,6 +4931,9 @@ class Couchd:
 
     # -- observation assembly --------------------------------------------
     def observe(self, loop):
+        # The wire FIRST: a press that arrived over it belongs to this pass's
+        # world, exactly as one read from evdev between passes does.
+        self.supervisor.drain()
         self.flags.read_all()
         session = self.flags.session()
         busy = bool(session or self.flags.suspended() or self.steam.ledger
@@ -4997,6 +5225,10 @@ class Couchd:
                                round(self.pad.first_event_latency, 3)
                                if self.pad.first_event_latency else None)},
             'last_trigger': self.triggers.last,
+            # The stage-2 wire, so the health check can tell "no supervisor"
+            # from "a supervisor that is dropping our pad events on the floor"
+            # without opening a socket of its own.
+            'supervisor': self.supervisor.status(mono),
             # R5: how many decisions rode the gesture edge rather than the
             # tick, and how many neighbouring edges the debounce absorbed.
             'edges': {'seen': self.world.edges,
@@ -5086,6 +5318,12 @@ class Couchd:
         self.log.write({'kind': 'daemon', 'event': 'start', 'pid': os.getpid(),
                         'mode': 'acting' if self.executor.owned else 'shadow',
                         'owns': sorted(self.executor.owned),
+                        # ...and what the FILE asked for. The two differ only
+                        # for `input`, which stage-1 couchd cannot execute but
+                        # which the differ still has to know was flipped: it
+                        # decides whether that evening's pad evidence was
+                        # supposed to arrive over the supervisor wire.
+                        'owns_declared': self.owns.sorted,
                         'owns_file': self.owns.path,
                         # What the differ keys "stale model" off: two runs of
                         # the SAME model are one model's evidence, however many
@@ -5093,6 +5331,7 @@ class Couchd:
                         'model_version': mv['version'],
                         'model_files': mv['files'], 'git': mv['git'],
                         'steam_logs': STEAM_LOGS})
+        self.supervisor.start()
         self._tasks = [asyncio.create_task(self.pad.run(loop)),
                        asyncio.create_task(self.flags.run()),
                        asyncio.create_task(self.kodi.run_notifications())]
@@ -5220,6 +5459,7 @@ class Couchd:
         for t in self._tasks:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
+        self.supervisor.close()
         self.pad.close(loop)
         self.x11.close(loop)
         self.steam.close()

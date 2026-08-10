@@ -28,11 +28,13 @@ affects the console; nothing depends on it and nothing may be made to.
 | `gesture.py` | the PS-button arithmetic: thresholds, predicates, `PressTracker` |
 | `gestureconf.py` | the PS-button **key bindings**, read from Kodi's settings file |
 | `x11.py` | the read-only python-xlib adapter (the only X code; replaced in stage 4) |
+| `supervisor.py` | the **supervisor wire**: the protocol and both endpoints, so one file defines it. couchd listens on `shadow/couchd.sock`, stage 2's `inputproc.py` connects |
 | `test_reconcile.py` | unit + Hypothesis tests for the pure model (no daemon, no I/O) |
 | `test_gesture.py` | the tap / double-tap / hold / long-hold arithmetic |
 | `test_x11.py` | the X adapter: the root subscription, and the request/reply trap that used to swallow every event |
 | `test_edge.py` | the gesture edge - a PS press decides in the debounce, not on the 5s tick - and the x11 observer's two acquisition paths |
 | `test_gestureconf.py` | every failure path of the settings reader, and the safety rail |
+| `test_supervisor.py` | the wire: protocol round trip, malformed lines, an unauthorised peer refused, the send queue dropping rather than blocking, reconnect, and that with nothing connected couchd is byte-for-byte what it was |
 | `couchd.service` | the systemd user unit. **Not installed by the build** |
 
 Install (operator, when wanted):
@@ -95,6 +97,9 @@ rebind lands within a tick - no restart, no reload signal.
 
 * the DualSense evdev node - opened `O_RDONLY`, **never grabbed**; all gesture
   arithmetic uses the kernel's own event timestamps;
+* the **supervisor wire** (`shadow/couchd.sock`) - the second source for the
+  same pad events, for when stage 2's input process owns the pad and couchd
+  physically cannot see the device. See below;
 * `/tmp/game-session`, `/tmp/game-suspended` (plus `vpad.fifo`,
   `steam-input-guard.pid`, `tv-wake-request`) - inotify on the `/tmp`
   *directory* filtered by name, so rename-writes are never missed;
@@ -111,12 +116,51 @@ rebind lands within a tick - no restart, no reload signal.
   ledger) and `controller_ui.txt` (menu routing), tailed `(dev,ino,size)`-aware;
 * `/tmp/game-launch.log`'s `===` lines, as *trigger* observations only.
 
+## The supervisor wire (`shadow/couchd.sock`)
+
+Stage 2's input process holds the DualSense with `EVIOCGRAB` and presents an
+Xbox 360 pad in its place, which means couchd cannot see the real device at
+all: its node scan matches on the name `DualSense Wireless Controller`, and
+under the flag-day udev rule ds2000 cannot even open the node. So the input
+process tells it instead.
+
+**The wire carries observations, not decisions.** inputproc sends the raw
+`BTN_MODE` press and release with their **kernel timestamps** and nothing
+else; couchd feeds them to the same `PressTracker` it feeds from evdev and
+classifies them itself. Sending "ps-hold" down the wire would have been less
+code and would have ended the comparison: couchd would be executing stage 2's
+verdict rather than reaching its own, the two stacks could no longer disagree,
+and SR4's "both stacks decide identically" would be unfalsifiable. The corpus
+records are the same records, with `via: "supervisor"` on them.
+
+* AF_UNIX SOCK_STREAM, newline-delimited JSON, one object per line. couchd
+  **listens**, inputproc **connects** and reconnects on its own with backoff.
+* Kinds: `press` (value + `kernel_t`), `pad` (attached/detached, so the `pad`
+  region is right), `hello` (pid, version, owns_input), `health` (the sender's
+  drop count).
+* Every line is validated on receipt; a malformed one is counted and skipped,
+  never fatal.
+* **SO_PEERCRED**: only `ds2000` and the `couchd-input` service user may
+  connect, resolved by NAME at runtime. Anything else is refused and said so.
+* The socket is `0660` so the ACL on `~/couch/shadow` lets `couchd-input`
+  reach it (stage2/INSTALL.md step 5).
+* The sending end is a **bounded queue plus a thread**: it drops and counts
+  rather than ever blocking the input fast path (SR7). Drops are in
+  inputproc's `health` tick and in `status.json` below.
+* **With nothing connected it is completely inert** - the daemon behaves
+  exactly as it did before the wire existed. Pinned by `test_supervisor.py`.
+* couchd going away is not an error: the pad keeps working, and nobody is
+  listening for a while. inputproc refuses to *grab* the pad at startup if
+  nothing is listening, because that is the failure where the whole PS-button
+  vocabulary dies while `status.json` still reads `acting`.
+
 ## What it writes (the only paths it touches)
 
     ~/couch/shadow/couchd-YYYYMMDD.jsonl     observations, intents, transitions, invariants
     ~/couch/shadow/snapshots-YYYYMMDD.jsonl  periodic world snapshots
     ~/couch/shadow/status.json               current state, rewritten atomically every ~3s
     ~/couch/shadow/couchd.lock               single-instance flock (held fd)
+    ~/couch/shadow/couchd.sock               the supervisor wire (0660, see below)
     /tmp/couchd.log                          human one-liners, same shape as the other scripts
 
 Nothing else. The unit enforces it: `ProtectSystem=strict` with
@@ -137,7 +181,7 @@ couchd existed.
 | `transitions` | `transition:*` intents | `game-launch` (session start/end handover) |
 | `guard` | `guard:*` intents | `steam-input-guard` (+ the watcher's `supersede_guard`) |
 | `reconcile` | `reconcile:*` intents | `pad-home-watcher`'s `reconcile()` |
-| `input` | *(stage 2's input process)* | — |
+| `input` | *(stage 2's input process, over the supervisor wire)* | — |
 
 A yielded script still writes its would-do line to `/tmp/legacy-intents.jsonl`
 with `"yielded": true` — legacy becomes the *shadow* for that responsibility,
@@ -199,6 +243,12 @@ restart pad-home` — or it is still running the code it was started with.
   * `pad` present | absent | unknown
 * `games` - appid → lifecycle (`LAUNCHING`/`RUNNING`/`FROZEN`/`MISSING_WINDOW`/
   `STOPPED`…), from Steam's ledger crossed with the process tree.
+* `supervisor` - the wire. `listening`, `connected`, `peer_pid`/`peer_user`,
+  `last_event_age_s`, and two separate drop counters: `drops` is couchd's own
+  inbound queue overflowing, `peer_drops` is what the input process threw away
+  because nobody was listening or the wire was slow. Either being non-zero
+  means couchd's view of the button has holes in it. `rejected` counts
+  SO_PEERCRED refusals, `malformed` counts unparseable lines.
 * `last_would_do` - the last three decisions, in the same words as
   `/tmp/couchd.log`.
 * `observers` - per source: `ok`, `age_s` since its last update, `events`,

@@ -132,11 +132,33 @@ def yield_marker(t, gesture='double-tap', action='switcher',
                   reason=reason, yielded=True, owner='couchd')
 
 
-def owns_changed(t, now, was=()):
+def owns_changed(t, now, was=(), declared=None):
     """The runtime flip record. couchd re-reads owns.conf every tick, so the
-    13:01 flip left exactly one of these and restarted nothing."""
-    return {'kind': 'daemon', 'event': 'owns-changed', 't': T0 + t,
-            'was': list(was), 'now': list(now), 'acting': bool(now)}
+    13:01 flip left exactly one of these and restarted nothing.
+
+    `now` is what couchd can EXECUTE, `now_declared` what owns.conf asked for.
+    They differ only for `input`, which stage-1 couchd cannot execute but which
+    the stage-2 input process owns on the other end of the supervisor wire.
+    """
+    r = {'kind': 'daemon', 'event': 'owns-changed', 't': T0 + t,
+         'was': list(was), 'now': list(now), 'acting': bool(now)}
+    if declared is not None:
+        r['now_declared'] = list(declared)
+    return r
+
+
+def wire(t, event, **kw):
+    """A supervisor-wire lifecycle record (obs source 'supervisor')."""
+    return obs(t, 'supervisor', event=event, **kw)
+
+
+def press(t, value=0, via=None):
+    """A pad BTN_MODE observation, optionally labelled with the route it came
+    by. No `via` at all is the evdev corpus, which is every evening so far."""
+    r = obs(t, 'pad', event='BTN_MODE', value=value, kernel_t=T0 + t)
+    if via:
+        r['via'] = via
+    return r
 
 
 # ---------------------------------------------------------------- clean evening
@@ -1201,6 +1223,146 @@ def test_a_flip_mid_evening_switches_direction_at_the_ownership_record():
         assert by_verb['close_steam_menu']['section'] == 'ACTED-ONLY'
         txt = sd.render(rep)
         assert 'couchd owns nothing' in txt and 'shadowing for gestures' in txt
+
+
+# ------------------------------------------------ the `input` responsibility
+# It produces no intents, so it can never make a divergence row. What it
+# decides is where the pad EVIDENCE came from, which is judged the way an
+# observer is judged - see shadow-diff's input_wire().
+def test_input_is_owned_from_the_declared_list_not_the_actable_one():
+    """`input` never appears in `owns`: stage-1 couchd cannot execute it. Read
+    only the actable list and a flipped input evening looks unflipped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=['gestures'])
+        rec['owns_declared'] = ['gestures', 'input']
+        rep = run(tmp, [],
+                  [rec,
+                   press(10.0, 1, via='supervisor'),
+                   press(10.3, 0, via='supervisor'),
+                   wire(1.0, 'connected', pid=4243, user='couchd-input')],
+                  heartbeat(0, 60))
+        owned = {n for w in rep['ownership']['windows'] for n in w['owned']}
+        assert owned == {'gestures', 'input'}, owned
+        iw = rep['input_wire']
+        assert iw['owned'], iw
+        assert iw['pad_by_route'] == {'supervisor': 2}, iw
+        assert iw['problems'] == [], iw['problems']
+        # (the fixture has no legacy stream, so the verdict is INVALID for
+        # that reason alone - what matters is that the wire adds nothing)
+        assert not [r for r in rep['validity']['reasons'] if 'wire' in r
+                    or '`input`' in r], rep['validity']
+        assert 'INPUT WIRE' in sd.render(rep)
+
+
+def test_a_corpus_that_stamps_no_declared_list_reads_exactly_as_before():
+    """Every evening written before the wire existed. `input` is absent, the
+    wire section stays out of the report, and nothing gates."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   press(10.0, 1), press(10.3, 0)],
+                  heartbeat(0, 60))
+        owned = {n for w in rep['ownership']['windows'] for n in w['owned']}
+        assert owned == {'gestures'}
+        iw = rep['input_wire']
+        assert iw['owned'] == [] and iw['problems'] == []
+        assert iw['pad_by_route'] == {'evdev': 2}
+        assert 'INPUT WIRE' not in sd.render(rep)
+
+
+def test_pad_events_read_straight_off_evdev_while_input_was_owned_invalidate():
+    """The input process was supposed to be holding the pad. If couchd read
+    the device itself, the stretch is not the arrangement it claims to be."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   owns_changed(5.0, [], declared=['input']),
+                   wire(6.0, 'connected', pid=4243, user='couchd-input'),
+                   press(10.0, 1),               # <- no via: read directly
+                   press(10.3, 0, via='supervisor')],
+                  heartbeat(0, 60))
+        iw = rep['input_wire']
+        assert len(iw['problems']) == 1, iw['problems']
+        assert 'DIRECTLY' in iw['problems'][0]
+        assert rep['validity']['verdict'] == 'INVALID'
+        assert any('DIRECTLY' in r for r in rep['validity']['reasons'])
+
+
+def test_a_wire_that_disconnected_mid_evening_invalidates():
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=[],),
+                   owns_changed(1.0, [], declared=['input']),
+                   wire(2.0, 'connected', pid=4243, user='couchd-input'),
+                   press(10.0, 1, via='supervisor'),
+                   wire(20.0, 'disconnected', pid=4243, why='eof')],
+                  heartbeat(0, 60))
+        iw = rep['input_wire']
+        assert any('DISCONNECTED' in p for p in iw['problems']), iw['problems']
+        assert rep['validity']['verdict'] == 'INVALID'
+
+
+def test_dropped_observations_invalidate_because_couchd_never_heard_them():
+    """SR7: the input process drops rather than blocking the pad. Every drop
+    is a BTN_MODE edge couchd was never told about."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   owns_changed(1.0, [], declared=['input']),
+                   wire(2.0, 'connected', pid=4243, user='couchd-input'),
+                   wire(30.0, 'peer-health', drops=0, owns_input=True),
+                   wire(60.0, 'peer-health', drops=3, owns_input=True),
+                   press(10.0, 1, via='supervisor')],
+                  heartbeat(0, 90))
+        iw = rep['input_wire']
+        assert iw['peer_drops'] == 3
+        assert any('DROPPED' in p for p in iw['problems']), iw['problems']
+        assert rep['validity']['verdict'] == 'INVALID'
+
+
+def test_owning_input_with_nothing_on_the_wire_at_all_invalidates():
+    """The failure the whole wire exists to make impossible, seen from the
+    morning: the pad was owned and the evidence simply is not there."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   owns_changed(1.0, [], declared=['input'])],
+                  heartbeat(0, 60))
+        iw = rep['input_wire']
+        assert any('missing, not merely quiet' in p for p in iw['problems'])
+        assert rep['validity']['verdict'] == 'INVALID'
+
+
+def test_wire_records_with_nobody_owning_input_are_a_note_not_a_verdict():
+    """The mirror case: the evidence is there and couchd classified it the
+    same way either route, but owns.conf and the world disagree."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=['gestures']),
+                   wire(2.0, 'connected', pid=4243, user='couchd-input'),
+                   press(10.0, 1, via='supervisor')],
+                  heartbeat(0, 60))
+        assert rep['input_wire']['problems'] == []
+        assert any('no ownership window declares `input`' in n
+                   for n in rep['notes']), rep['notes']
+        assert not [r for r in rep['validity']['reasons'] if 'wire' in r
+                    or '`input`' in r], rep['validity']
+
+
+def test_input_never_produces_a_divergence_row():
+    """It decides nothing, so there is nothing to be one-sided about."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rep = run(tmp, [],
+                  [daemon_rec(0.0, 'start', 'aaaaaaaaaaaa', owns=[]),
+                   owns_changed(1.0, [], declared=['input']),
+                   wire(2.0, 'connected', pid=4243, user='couchd-input'),
+                   press(10.0, 1, via='supervisor'),
+                   press(10.3, 0, via='supervisor')],
+                  heartbeat(0, 60))
+        assert rep['rows'] == []
+        assert rep['gating_breakdown']['rows'] == 0
+        assert sd.responsibility_of({'reason': 'input:whatever', 'args': {}}) \
+            is None
 
 
 def test_acting_health_counts_acted_skipped_and_failed_per_verb():
