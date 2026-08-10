@@ -306,13 +306,25 @@
 			<visible>Control.HasFocus(9001)</visible>
 		</control>
 
-		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
-		<control type="list" id="9000">
+		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px.
+		     FIXEDLIST, not list, and that is the whole character of the row:
+		     the selector does not travel, the tiles slide into it. A plain
+		     list walks the highlight along stationary tiles until it hits the
+		     edge and only then scrolls, which reads as a cursor on a grid.
+		     A console reads as a reel: one lit position, content moving
+		     through it.
+		     focusposition 0 puts that position at the head of the row, hard
+		     against the Library tile, so games arrive from the right and
+		     nothing is ever half off the left edge. Deliberately NOT a
+		     wraplist - consoles do not wrap, they stop at the end, and the
+		     research is emphatic about it. -->
+		<control type="fixedlist" id="9000">
 			<left>186</left>
 			<top>76</top>
 			<width>1794</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
+			<focusposition>0</focusposition>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onleft>9001</onleft>
 			<onup>9101</onup>

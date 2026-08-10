@@ -253,8 +253,24 @@
 			<label>$INFO[System.Time]</label>
 		</control>
 
-		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px -->
-		<control type="list" id="9000">
+		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px.
+		     FIXEDLIST, not list, and that is the whole character of the row:
+		     the selector does not travel, the tiles slide into it. A plain
+		     list walks the highlight along stationary tiles until it reaches
+		     the edge and only then scrolls, which reads as a cursor on a
+		     grid. A console reads as a reel: one lit position, and the
+		     content moving through it.
+		     focusposition 0 puts that lit position at the head of the row, so
+		     games arrive from the right and none is ever half off the left
+		     edge.
+		     MEASURED, not assumed: Container(9000).Position stays 0 while
+		     CurrentItem climbs, which is the whole property this control
+		     exists to have.
+		     It also WRAPS - right from the last item lands back on Library.
+		     That is not something this change introduced a decision about,
+		     and consoles do the opposite: they stop at the end and make the
+		     dead end audible. Open question for Donnie, not a silent choice. -->
+		<control type="fixedlist" id="9000">
 			<!-- left 65, not 96, and every x inside the layouts below is +31 to
 			     compensate - so no tile moves on screen. The 31px is HEADROOM: a
 			     list clips to its own bounds, and the focused item's halo is drawn
@@ -267,6 +283,7 @@
 			<width>1825</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
+			<focusposition>0</focusposition>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
@@ -290,7 +307,17 @@
 			     182px slot) has always done anyway. Everything below is re-centred on
 			     itemlayout's tile centre (85,103) so it expands symmetrically about
 			     where the resting tile already sits. -->
-			<focusedlayout width="120" height="290">
+			<!-- 151, not 120. The unfocused tile sits at slot-local 61..171 in a
+			     120 slot, which is what makes the 110px/10px rhythm. The FOCUSED
+			     tile is 172 wide at slot-local 30..202, so in a 120 slot it
+			     overflowed 82px and drew straight over its neighbour - visible as
+			     the next game losing its left edge. 151 puts the following tile at
+			     151+61=212, ten past the focused tile's 202, so the gap either
+			     side of the selector matches every other gap in the row.
+			     Equal widths were a deliberate earlier fix ("one slot width, so
+			     the row has no hole where focus used to be") - that hole cannot
+			     happen now the selector is pinned at the head and never moves. -->
+			<focusedlayout width="151" height="290">
 				<control type="group">
 					<!-- launch flourish: the whole focused tile expands and fades
 					     while the room cover darkens (CouchLaunching). Animations
