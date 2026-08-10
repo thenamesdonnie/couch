@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Leave the console alone for hours and record whether it rots.
+
+    tools/aging-test --hours 8 --label kodi-home
+    tools/aging-test --hours 8 --label app-open --note "phone on Games tab"
+
+Console certification runs deliberate soak tests because 38% of failures are
+plain instability - not a wrong pixel, just something that stops working after
+a while. We have never run one on purpose. This is that: it changes NOTHING,
+it only watches, once a minute, and writes a line per sample plus a verdict.
+
+WHAT IT WATCHES, and why each one:
+  * RSS of couchd, the couch server and Kodi - a leak shows as a slope, and a
+    slope is invisible in a spot check;
+  * couchd's heartbeat age and its action_failures counter - the daemon can be
+    alive and not deciding;
+  * the couch app answering HTTP, and how long it takes;
+  * Kodi answering JSON-RPC, and how long it takes - Kodi going deaf while
+    still drawing is a failure mode this box has had;
+  * the display mode, because it fell off 4K120 twice on 10 Aug;
+  * pad presence, headphone connection, and free space on both media disks;
+  * fd and thread counts for the three daemons, because a leak there is the
+    classic cause of "it worked for six hours".
+
+SAFE BY CONSTRUCTION. Read-only: no systemctl, no writes outside its own log,
+nothing that touches the pad, the display or owns.conf. It cannot wake the TV.
+Ctrl-C stops it and still writes the verdict.
+
+The verdict is deliberately conservative: it reports SLOPES and BREAKS, and it
+says plainly when a number moved without saying that the movement is a bug.
+A memory figure that climbs for eight hours is worth a human looking at it,
+which is a different claim from "this is a leak".
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+SHADOW = os.path.expanduser('~/couch/shadow/status.json')
+LOGDIR = os.path.expanduser('~/couch/recordings/aging')
+UNITS = {'couchd': 'couchd', 'couch': 'couch-app', 'kodi': None}
+
+
+def unit_pid(unit):
+    """MainPID of a user unit, which is the honest answer where there is one -
+    no pattern to get wrong and no chance of matching our own command line."""
+    try:
+        out = subprocess.run(['systemctl', '--user', 'show', unit,
+                              '-p', 'MainPID', '--value'],
+                             capture_output=True, text=True, timeout=10).stdout
+        pid = int(out.strip() or 0)
+        return pid or None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def pid_of(pattern):
+    """The FATTEST match, not the first.
+
+    Two traps, both hit on the first run. `pgrep -f` matches this tool's own
+    shell, and Kodi is a Flatpak whose process tree is
+    `bwrap -- kodi` wrapping the real `/app/lib/kodi/kodi.bin` - so taking
+    out[0] measured a 1.8MB wrapper and reported Kodi's RSS as 36KB. The
+    process we want is always the one actually holding the memory.
+    """
+    me = os.getpid()
+    try:
+        pids = [int(x) for x in
+                subprocess.run(['pgrep', '-f', pattern], capture_output=True,
+                               text=True, timeout=10).stdout.split()]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    best, best_rss = None, -1
+    for pid in pids:
+        if pid == me:
+            continue
+        rss = proc_stats(pid).get('rss_kb')
+        if rss is not None and rss > best_rss:
+            best, best_rss = pid, rss
+    return best
+
+
+def proc_stats(pid):
+    """RSS in KB, open fds, threads. None where it cannot be read."""
+    if not pid:
+        return {}
+    out = {}
+    try:
+        for line in open(f'/proc/{pid}/status'):
+            if line.startswith('VmRSS:'):
+                out['rss_kb'] = int(line.split()[1])
+            elif line.startswith('Threads:'):
+                out['threads'] = int(line.split()[1])
+    except OSError:
+        return {}
+    try:
+        out['fds'] = len(os.listdir(f'/proc/{pid}/fd'))
+    except OSError:
+        pass
+    return out
+
+
+def http_ms(url, timeout=5):
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            r.read(256)
+        return round((time.monotonic() - t0) * 1000, 1)
+    except Exception:
+        return None
+
+
+def kodi_ms():
+    """JSON-RPC over its TCP port. Kodi answering HTTP but not RPC is a real
+    state this box has been in."""
+    import socket
+    t0 = time.monotonic()
+    try:
+        s = socket.create_connection(('127.0.0.1', 9090), timeout=5)
+        s.sendall(json.dumps({'jsonrpc': '2.0', 'id': 1,
+                              'method': 'JSONRPC.Ping'}).encode() + b'\n')
+        s.recv(256)
+        s.close()
+        return round((time.monotonic() - t0) * 1000, 1)
+    except Exception:
+        return None
+
+
+def display_mode():
+    try:
+        out = subprocess.run(['xrandr'], capture_output=True, text=True,
+                             timeout=10,
+                             env=dict(os.environ, DISPLAY=':0')).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if '*' in line:
+            parts = line.split()
+            return f'{parts[0]}@{parts[1].rstrip("*+")}' if len(parts) > 1 else parts[0]
+    return None
+
+
+def couchd_state():
+    try:
+        s = json.load(open(SHADOW))
+    except (OSError, ValueError):
+        return {}
+    return {'mode': s.get('mode'), 'heartbeat_age_s': round(time.time() - s.get('t', 0), 1),
+            'action_failures': s.get('action_failures'),
+            'acted': s.get('acted'), 'attention': s.get('attention'),
+            'pad': s.get('regions', {}).get('pad'),
+            'observers_ok': all(v.get('ok') for v in s.get('observers', {}).values())}
+
+
+def disks():
+    out = {}
+    for path in ('/mnt/disk1', '/mnt/disk2', '/mnt/media', '/', os.path.expanduser('~')):
+        try:
+            st = os.statvfs(path)
+            out[os.path.basename(path) or 'home'] = round(
+                st.f_bavail * st.f_frsize / 1e9, 1)
+        except OSError:
+            pass
+    return out
+
+
+def headphones_connected(mac='E4:58:BC:7F:38:74'):
+    try:
+        r = subprocess.run(['/usr/bin/bluetoothctl', 'info', mac],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in r.stdout.splitlines():
+        if line.strip().startswith('Connected:'):
+            return line.split(':', 1)[1].strip().lower() == 'yes'
+    return None
+
+
+def sample():
+    # systemd where a unit owns it, pattern only where nothing does. The couch
+    # app runs as plain `node index.js`, so there is no useful path to match.
+    pids = {'couchd': unit_pid('couchd') or pid_of('couchd/couchd.py'),
+            'couchapp': unit_pid('couch'),
+            'kodi': pid_of('kodi.bin')}
+    rec = {'t': round(time.time(), 1),
+           'procs': {k: proc_stats(v) for k, v in pids.items()},
+           'couchd': couchd_state(),
+           'app_ms': http_ms('http://localhost:8790/api/pip'),
+           'kodi_ms': kodi_ms(),
+           'display': display_mode(),
+           'headphones': headphones_connected(),
+           'free_gb': disks()}
+    return rec
+
+
+def slope(series):
+    """Least-squares slope per hour. Enough to see a leak, not a statistics
+    package."""
+    pts = [(t, v) for t, v in series if v is not None]
+    if len(pts) < 4:
+        return None
+    t0 = pts[0][0]
+    xs = [(t - t0) / 3600 for t, _ in pts]
+    ys = [v for _, v in pts]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    den = sum((x - mx) ** 2 for x in xs)
+    if den == 0:
+        return None
+    return round(sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den, 1)
+
+
+def verdict(recs, path):
+    lines = [f'aging test: {len(recs)} samples over '
+             f'{round((recs[-1]["t"] - recs[0]["t"]) / 3600, 2)}h', '']
+    for proc in ('couchd', 'couchapp', 'kodi'):
+        for metric in ('rss_kb', 'fds', 'threads'):
+            s = slope([(r['t'], r['procs'].get(proc, {}).get(metric)) for r in recs])
+            if s is None:
+                continue
+            first = next((r['procs'][proc][metric] for r in recs
+                          if r['procs'].get(proc, {}).get(metric) is not None), None)
+            mark = ''
+            if metric == 'rss_kb' and first and s > max(2000, first * 0.02):
+                mark = '   <-- climbing, worth a look'
+            if metric in ('fds', 'threads') and s >= 1:
+                mark = '   <-- climbing, worth a look'
+            lines.append(f'{proc:9} {metric:8} start {first!s:>8}  '
+                         f'{s:+.1f}/h{mark}')
+    lines.append('')
+    for key, label in (('app_ms', 'couch app'), ('kodi_ms', 'kodi rpc')):
+        vals = [r[key] for r in recs if r[key] is not None]
+        misses = sum(1 for r in recs if r[key] is None)
+        if vals:
+            lines.append(f'{label:10} n={len(vals)} min={min(vals)} '
+                         f'med={sorted(vals)[len(vals)//2]} max={max(vals)} '
+                         f'unanswered={misses}'
+                         + ('   <-- STOPPED ANSWERING' if misses else ''))
+        else:
+            lines.append(f'{label:10} never answered')
+    modes = {r['display'] for r in recs if r['display']}
+    lines.append(f'display modes seen: {sorted(modes)}'
+                 + ('   <-- CHANGED UNDER US' if len(modes) > 1 else ''))
+    hp = {r['headphones'] for r in recs if r['headphones'] is not None}
+    if hp == {True, False}:
+        lines.append('headphones: DROPPED at least once')
+    elif hp:
+        lines.append(f'headphones: {"connected throughout" if True in hp else "never connected"}')
+    fails = [r['couchd'].get('action_failures') for r in recs if r['couchd']]
+    if fails and fails[-1] and fails[-1] != fails[0]:
+        lines.append(f'couchd action_failures {fails[0]} -> {fails[-1]}   <-- ACTIONS FAILED')
+    stale = [r['couchd'].get('heartbeat_age_s') for r in recs if r['couchd']]
+    if stale and max(x for x in stale if x is not None) > 30:
+        lines.append(f'couchd heartbeat went stale, worst '
+                     f'{max(x for x in stale if x is not None)}s   <-- LEASE WOULD HAVE LAPSED')
+    lines.append('')
+    lines.append('A slope is not a bug. It is a number that moved, and it is '
+                 'the kind of thing a spot check cannot see.')
+    text = '\n'.join(lines)
+    open(path, 'w').write(text + '\n')
+    return text
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument('--hours', type=float, default=8.0)
+    p.add_argument('--interval', type=float, default=60.0)
+    p.add_argument('--label', default='aging')
+    p.add_argument('--note', default='')
+    args = p.parse_args()
+
+    os.makedirs(LOGDIR, exist_ok=True)
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    jsonl = os.path.join(LOGDIR, f'{args.label}-{stamp}.jsonl')
+    report = os.path.join(LOGDIR, f'{args.label}-{stamp}.txt')
+    print(f'aging test "{args.label}" for {args.hours}h, sampling every '
+          f'{args.interval:.0f}s\n  {jsonl}', flush=True)
+    if args.note:
+        print(f'  note: {args.note}', flush=True)
+
+    recs = []
+    deadline = time.monotonic() + args.hours * 3600
+    with open(jsonl, 'a', buffering=1) as f:
+        if args.note:
+            f.write(json.dumps({'kind': 'note', 'note': args.note}) + '\n')
+        try:
+            while time.monotonic() < deadline:
+                r = sample()
+                recs.append(r)
+                f.write(json.dumps(r) + '\n')
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print('\nstopped early', flush=True)
+    if len(recs) < 2:
+        print('too few samples for a verdict')
+        return 1
+    print()
+    print(verdict(recs, report))
+    print(f'\nreport: {report}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
