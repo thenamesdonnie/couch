@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Hand a small, self-contained job to gpt-5.6-terra via the Codex CLI, fenced
+# in a throwaway git worktree so it CANNOT touch the live tree.
+#
+#     tools/terra-task <name> <prompt-file>
+#     tools/terra-task pip-copy /tmp/job.md
+#
+# Donnie, 10 Aug 2026: "give the smaller stuff to chatgpt so it isn't in the
+# way. maybe 5.6 terra". This is that, with the safety the arrangement needs.
+#
+# WHY A WORKTREE. workspace-write lets an agent write anywhere under its root.
+# This box runs a live console: couchd is executing gestures on a real TV,
+# ~/.local/bin holds the running legacy scripts, and couchd/owns.conf is the
+# switch both stacks read. An agent that misreads its brief at four in the
+# morning should not be able to reach any of that. So each job gets its own
+# detached worktree off HEAD, terra works there, and the diff comes back for
+# review before anything lands. Nothing it does is live until a human (or me)
+# has read it.
+#
+# The worktree is left in place deliberately - the diff is the deliverable and
+# throwing it away on exit would mean re-running the job to look at it twice.
+# `git worktree remove` when done, or tools/terra-task --clean.
+set -uo pipefail
+
+REPO=/home/ds2000/couch
+BASE=/tmp/terra-tasks
+
+if [ "${1:-}" = "--clean" ]; then
+    for d in "$BASE"/*; do
+        [ -d "$d" ] && git -C "$REPO" worktree remove --force "$d" 2>/dev/null
+    done
+    git -C "$REPO" worktree prune
+    rm -rf "$BASE"
+    echo "cleaned"
+    exit 0
+fi
+
+NAME="${1:?usage: terra-task <name> <prompt-file>}"
+PROMPT="${2:?usage: terra-task <name> <prompt-file>}"
+[ -r "$PROMPT" ] || { echo "cannot read $PROMPT" >&2; exit 2; }
+
+WT="$BASE/$NAME"
+mkdir -p "$BASE"
+git -C "$REPO" worktree remove --force "$WT" 2>/dev/null
+git -C "$REPO" worktree add --detach "$WT" HEAD >/dev/null 2>&1 || {
+    echo "could not create worktree at $WT" >&2; exit 3; }
+
+# The fence, restated to the agent as well as enforced by the worktree. Belt
+# and braces: the worktree stops it reaching the live tree, and this stops it
+# wasting the job trying.
+{
+    cat <<EOF
+You are working in a THROWAWAY GIT WORKTREE at $WT. It is a copy. Treat it as
+the whole world: never reference or touch $REPO, /home/ds2000/.local/bin, or
+anything under /etc. Do not run systemctl, do not run git commit, do not
+install packages, and do not start or stop any service. This box is a LIVE
+living-room console with someone asleep in the house.
+
+Work only on the task below. Leave the tree with your changes uncommitted -
+the diff is the deliverable and it will be reviewed before anything ships.
+
+---
+
+EOF
+    cat "$PROMPT"
+} > "$WT/.terra-brief.md"
+
+echo "worktree: $WT"
+echo "running terra..."
+codex exec -m gpt-5.6-terra -C "$WT" -s workspace-write - \
+    < "$WT/.terra-brief.md" > "$WT/.terra-log.txt" 2>&1
+rc=$?
+echo "codex exit $rc; log at $WT/.terra-log.txt"
+
+rm -f "$WT/.terra-brief.md"
+echo "=== diff ==="
+git -C "$WT" --no-pager diff --stat
+git -C "$WT" --no-pager status --short | grep -v "^?? .terra-log" || true
+exit $rc
