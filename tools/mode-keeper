@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Put the TV back on 4K120 when something knocks it off.
+
+    mode-keeper [--once] [--dry-run]
+
+THE PROBLEM. 4K120 on the C5 is not in the EDID: it is a hand-made modeline
+(1188.00 3840 4016 4104 4400 2160 2168 2178 2250) that only works because
+amdgpu is forced to build a 4:2:0 stream through the DP->HDMI adapter. Both
+halves are applied ONCE - the driver flag by couch-4k120.service at boot, the
+mode by kodi-tv when Kodi starts. So the first time the television switches
+input away and back, X drops to a 60Hz EDID mode and nothing puts it back
+until Kodi is restarted. Donnie, 10 Aug 2026: "the display keeps going back
+to 60hz every time i go off it".
+
+WHAT THIS DOES. Watches RandR for output changes and re-applies the mode when
+the TV is connected and has fallen off it. Re-adds the modeline first, because
+a full disconnect takes the mode definition with it.
+
+WHAT IT DELIBERATELY WILL NOT DO:
+
+  * touch anything while a GAME session is live. Changing display mode under
+    a presenting fullscreen game is the same family of move as toggling the
+    compositor under one, which has black-screened a game on this box twice.
+    A game that is running gets left alone, full stop.
+  * fight a deliberate choice. It only acts when the current mode is one of
+    the EDID defaults, so setting 1080p by hand stays set.
+  * thrash. One correction per COOLDOWN at most, and it counts them, so a
+    fight with something else shows up as a number rather than as a flicker.
+
+Kodi enumerates display modes once at startup, so if this corrects the mode
+while Kodi is running, Kodi's own idea of the mode list can be stale. That is
+better than sitting at 60Hz, but it is why a restart via tools/kodi-restart
+is worth doing if playback looks wrong afterwards.
+"""
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+MODE = '4k120'
+MODELINE = ('1188.00 3840 4016 4104 4400 2160 2168 2178 2250 '
+            '+hsync +vsync').split()
+# Only correct away from these. Anything else is assumed to be a human choice.
+RECLAIM_FROM = {'3840x2160', '4096x2160', '1920x1080'}
+COOLDOWN = 8.0
+POLL = 4.0
+GAME_FLAGS = ('/tmp/game-running', '/tmp/game-suspended')
+
+
+def xrandr(*args, display=':0'):
+    return subprocess.run(['xrandr', *args],
+                          env=dict(os.environ, DISPLAY=display),
+                          capture_output=True, text=True, timeout=20)
+
+
+def state(display=':0'):
+    """(output name, current mode label) or (None, None)."""
+    out = xrandr(display=display)
+    name = current = None
+    for line in out.stdout.splitlines():
+        if ' connected' in line and not line.startswith(' '):
+            name = line.split()[0]
+            continue
+        if name and line.startswith('   ') and '*' in line:
+            current = line.split()[0]
+            break
+    return name, current
+
+
+def game_running():
+    """Never touch the display while a game is up - see the module docstring.
+    Any doubt counts as yes."""
+    if any(os.path.exists(f) for f in GAME_FLAGS):
+        return True
+    try:
+        r = subprocess.run([os.path.expanduser('~/.local/bin/game-pids')],
+                           capture_output=True, text=True, timeout=10)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
+def reapply(output, display=':0', dry_run=False):
+    if dry_run:
+        print(f'would put {output} back on {MODE}')
+        return True
+    # newmode fails harmlessly when the definition survived; addmode is what
+    # matters after a full disconnect took it away.
+    xrandr('--newmode', MODE, *MODELINE, display=display)
+    xrandr('--addmode', output, MODE, display=display)
+    r = xrandr('--output', output, '--mode', MODE, display=display)
+    if r.returncode != 0:
+        print(f'could not set {MODE}: {r.stderr.strip()[:200]}', flush=True)
+        return False
+    return True
+
+
+def tick(display, dry_run, last_fix, corrections):
+    name, current = state(display)
+    if not name:
+        return last_fix, corrections
+    if current == MODE:
+        return last_fix, corrections
+    if current not in RECLAIM_FROM:
+        return last_fix, corrections          # a deliberate choice; leave it
+    if game_running():
+        print(f'{current} but a game is running - leaving the display alone',
+              flush=True)
+        return last_fix, corrections
+    now = time.monotonic()
+    if now - last_fix < COOLDOWN:
+        return last_fix, corrections
+    print(f'{name} fell to {current} - putting it back on {MODE} '
+          f'(correction {corrections + 1})', flush=True)
+    ok = reapply(name, display, dry_run)
+    return now, corrections + (1 if ok else 0)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument('--display', default=os.environ.get('DISPLAY', ':0'))
+    p.add_argument('--once', action='store_true')
+    p.add_argument('--dry-run', action='store_true')
+    args = p.parse_args()
+
+    name, current = state(args.display)
+    print(f'mode-keeper: {name or "no output"} currently {current or "?"}',
+          flush=True)
+    last_fix, corrections = 0.0, 0
+    if args.once:
+        tick(args.display, args.dry_run, last_fix, corrections)
+        return 0
+    while True:
+        try:
+            last_fix, corrections = tick(args.display, args.dry_run,
+                                         last_fix, corrections)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f'tick failed ({type(e).__name__}: {e}) - carrying on',
+                  flush=True)
+        time.sleep(POLL)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
