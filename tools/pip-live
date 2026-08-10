@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Run a game under gamescope with the picture-in-picture overlay on top.
+
+    tools/pip-live -- <game command...>
+    tools/pip-live --media ~/some.mkv -- glxgears
+    tools/pip-live --backend headless -- xeyes        # rehearsal, no screen
+
+One command instead of three, because the fiddly part is gamescope's NESTED
+display: the overlay has to live on it, and its number is only knowable from
+inside. This wraps the game command in a one-line shim that reports its
+DISPLAY, waits for it, then starts pipd there and hands you the phone.
+
+Everything it starts, it stops. Ctrl-C, or the game exiting, takes the
+overlay down with it.
+
+BEFORE THE FIRST LIVE RUN, know these, all of them learned the hard way on
+this box and all of them still true here:
+
+  * mpv must be installed or there is no picture. `sudo apt install mpv`.
+    Without it this still runs and the overlay is simply empty.
+  * NEVER toggle xfwm4 compositing while a game is presenting fullscreen.
+    It has black-screened a live game twice. Not something this script can
+    stop you doing in another terminal.
+  * Kodi enumerates display modes once at startup, so if anything changes
+    the output, restart Kodi afterwards - and with tools/kodi-restart, never
+    `pkill -9 kodi.bin`, which makes Kodi forge a crashlog.
+  * gamescope's own exit code is noise (it discards the game's and segfaults
+    in teardown). gamescope-wrap launders it; the code you see is the game's.
+
+The phone control is the Games tab. It will say "not running" until this
+starts, and go live within a second or two of the overlay coming up.
+"""
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+WRAP = os.path.join(HERE, 'gamescope-wrap')
+PIPD = os.path.join(HERE, 'pipd')
+GAMESCOPE_DIR = os.path.expanduser('~/src/gamescope/build/src')
+DISPLAY_FILE = '/tmp/couch-pip-display'
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument('--media', help='what to play in the corner (file or url)')
+    p.add_argument('--backend', default='sdl',
+                   help='gamescope backend; headless rehearses with no screen')
+    p.add_argument('--player', default='mpv', choices=('mpv', 'none'))
+    p.add_argument('--nx', type=float, default=0.66)
+    p.add_argument('--ny', type=float, default=0.05)
+    p.add_argument('--nw', type=float, default=0.30)
+    p.add_argument('rest', nargs=argparse.REMAINDER,
+                   help='-- then the game command')
+    args = p.parse_args()
+
+    game = args.rest[1:] if args.rest[:1] == ['--'] else args.rest
+    if not game:
+        raise SystemExit('nothing to run: put the game after --')
+    if args.player == 'mpv' and args.media and not shutil_which('mpv'):
+        raise SystemExit('mpv is not installed and --media was given: '
+                         '`sudo apt install mpv`, or pass --player none')
+
+    if os.path.exists(DISPLAY_FILE):
+        os.unlink(DISPLAY_FILE)
+    # gamescope execs gamescopereaper BY NAME; in our source build it lives
+    # beside the binary rather than on PATH.
+    env = dict(os.environ,
+               PATH=GAMESCOPE_DIR + os.pathsep + os.environ.get('PATH', ''))
+
+    shim = f'printf %s "$DISPLAY" > {DISPLAY_FILE}; exec "$@"'
+    cmd = [WRAP, '--backend', args.backend, '--',
+           'sh', '-c', shim, 'pip-live'] + game
+    print(f'starting: {" ".join(game)}')
+    gs = subprocess.Popen(cmd, env=env)
+
+    display = None
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        if gs.poll() is not None:
+            raise SystemExit(f'the game exited before it started ({gs.returncode})')
+        if os.path.exists(DISPLAY_FILE):
+            got = open(DISPLAY_FILE).read().strip()
+            if got:
+                display = got
+                break
+        time.sleep(0.2)
+    if not display:
+        gs.terminate()
+        raise SystemExit('never saw a nested display - is gamescope working? '
+                         'try --backend headless -- xeyes to rehearse')
+    if display == os.environ.get('DISPLAY'):
+        gs.terminate()
+        raise SystemExit('the nested display is the outer one - refusing, '
+                         'this would put the overlay on the real desktop')
+    print(f'nested display {display}')
+
+    pip_cmd = [sys.executable, PIPD, '--display', display,
+               '--player', args.player if args.media else 'none',
+               '--nx', str(args.nx), '--ny', str(args.ny), '--nw', str(args.nw)]
+    if args.media:
+        pip_cmd.append(args.media)
+    pip = subprocess.Popen(pip_cmd)
+    print('overlay starting; the phone\'s Games tab controls it now')
+    if not args.media:
+        print('(no --media, so the picture is empty - the point of this run '
+              'is whether the plane appears and moves)')
+
+    def stop(*_):
+        for proc in (pip, gs):
+            if proc.poll() is None:
+                proc.terminate()
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        rc = gs.wait()
+    finally:
+        if pip.poll() is None:
+            pip.terminate()
+            try:
+                pip.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pip.kill()
+        if os.path.exists(DISPLAY_FILE):
+            os.unlink(DISPLAY_FILE)
+    print(f'game exited {rc} (this is the GAME\'s code, not gamescope\'s)')
+    return rc
+
+
+def shutil_which(name):
+    from shutil import which
+    return which(name)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
