@@ -317,13 +317,13 @@
 			     Equal widths were a deliberate earlier fix ("one slot width, so
 			     the row has no hole where focus used to be") - that hole cannot
 			     happen now the selector is pinned at the head and never moves. -->
-			<focusedlayout width="151" height="290">
+			<focusedlayout width="120" height="290">
 				<control type="group">
 					<!-- launch flourish: the whole focused tile expands and fades
 					     while the room cover darkens (CouchLaunching). Animations
 					     must sit on a CONTROL; on the layout element Kodi silently
 					     ignores them, which is why v1 of this never moved. -->
-					<animation effect="zoom" start="100" end="150" center="116,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+					<animation effect="zoom" start="100" end="150" center="93,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
 				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
@@ -351,24 +351,24 @@
 				     very first frame - a hard jump. -->
 				<!-- halo ring, offset outside the tile like the PS5 -->
 				<control type="image">
-					<left>0</left>
-					<top>-13</top>
-					<width>232</width>
-					<height>232</height>
+					<left>-15</left>
+					<top>-5</top>
+					<width>216</width>
+					<height>216</height>
 					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="64" end="100" center="116,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="64" center="116,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="64" end="100" center="93,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="64" center="93,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<control type="image">
-					<left>0</left>
-					<top>-13</top>
-					<width>232</width>
-					<height>232</height>
+					<left>-15</left>
+					<top>-5</top>
+					<width>216</width>
+					<height>216</height>
 					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="64" end="100" center="116,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="64" center="116,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="64" end="100" center="93,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="64" center="93,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- The focused tile at full size - but ONLY while the row
 				     actually has focus. Kodi keeps drawing focusedlayout for a
@@ -379,15 +379,15 @@
 				     The halo, lightbar and label were already gated this way;
 				     the tile itself was not. -->
 				<control type="image">
-					<left>30</left>
-					<top>17</top>
-					<width>172</width>
-					<height>172</height>
+					<left>15</left>
+					<top>25</top>
+					<width>156</width>
+					<height>156</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="64" end="100" center="116,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="64" center="116,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="64" end="100" center="93,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="64" center="93,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- ...and the resting tile in its place, geometry and diffuse
 				     copied from itemlayout above so a row that has lost focus
@@ -408,9 +408,9 @@
 					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>30</left>
-					<top>199</top>
-					<width>172</width>
+					<left>15</left>
+					<top>191</top>
+					<width>156</width>
 					<height>12</height>
 					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 					<aspectratio>stretch</aspectratio>
