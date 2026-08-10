@@ -203,6 +203,27 @@
   );
   const wouldDo = $derived(couchd?.wouldDo?.[0] ?? '');
 
+  // Display state is intentionally fetched directly: {ok:false} is a normal
+  // answer when X is unavailable, not an error worthy of a phone toast.
+  let display = $state(null);
+  async function loadDisplay() {
+    try {
+      const res = await fetch('/api/display', { cache: 'no-store' });
+      if (res.ok) display = await res.json();
+    } catch { /* keep the last reading */ }
+  }
+  onMount(() => {
+    loadDisplay();
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') loadDisplay();
+    }, 5000);
+    return () => clearInterval(t);
+  });
+  const currentMode = $derived(display?.current
+    ? `${display.current.width} × ${display.current.height} @ ${display.current.refresh} Hz`
+    : 'No active mode');
+  const displayName = $derived(display?.monitor || display?.output || 'Display');
+
   // Window switcher: list the open windows and jump to one, plus quick Kodi and
   // show-desktop actions.
   let winOpen = $state(false);
@@ -272,6 +293,42 @@
     <span class="dim small">{scale > 1 ? scale.toFixed(1) + 'x · drag to pan' : 'Pinch to zoom, tap to click'}</span>
   </div>
 </div>
+
+{#if display}
+  <div class="card displaycard">
+    <div class="row">
+      <h2 class="grow" style="margin:0">Display</h2>
+      {#if display.ok}<span class="small" class:warn={!display.has4k120}>{display.has4k120 ? '4K120 available' : '4K120 unavailable'}</span>{/if}
+    </div>
+    {#if !display.ok}
+      <p class="dim small displayline">Cannot read the display{display.reason ? `, ${display.reason}` : ''}.</p>
+    {:else}
+      <p class="mode">{currentMode}</p>
+      <p class="dim small displayline">
+        {displayName}{display.connected ? '' : ' disconnected'}
+        {#if display.current?.custom} · custom modeline{/if}
+        {#if display.physicalSize} · {display.physicalSize.width} × {display.physicalSize.height} mm{/if}
+      </p>
+      {#if !display.has4k120}<p class="small warn displayline">4K120 is not in the current mode list.</p>{/if}
+      {#if display.modes.length || !display.has4k120}
+        <div class="modelist">
+          {#each display.modes as mode (mode.name)}
+            <div class="moderow" class:mutedmode={!display.has4k120 && /^4k/i.test(mode.name)}>
+              <span>{mode.name}{mode.custom ? ' custom' : ''}</span>
+              <span class="dim mono">{mode.refreshRates.join(', ')} Hz</span>
+            </div>
+          {/each}
+          {#if !display.has4k120}
+            <div class="moderow mutedmode">
+              <span>4K120</span>
+              <span class="mono">Not advertised by the display</span>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+  </div>
+{/if}
 
 <div class="card">
   <div class="row">
@@ -441,6 +498,14 @@
   .cd p:last-child { margin-bottom: 0; }
   .cdline { margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .warn { color: var(--warn); }
+
+  .displaycard { overflow: hidden; }
+  .mode { margin: 10px 0 3px; font-size: 20px; font-weight: 600; }
+  .displayline { margin: 0 0 6px; }
+  .modelist { margin: 10px -14px -14px; border-top: 1px solid var(--line); }
+  .moderow { display: flex; justify-content: space-between; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .moderow:last-child { border-bottom: 0; }
+  .mutedmode { color: var(--muted); }
 
   .zoomrow { margin-top: 10px; }
   .kbd { margin: 10px 0 8px; }

@@ -27,6 +27,7 @@ import { activeDownloads } from './downloads.js';
 import * as ytprogress from './ytprogress.js';
 import { createTvCast, createHdrRouter } from './tvcast.js';
 import { routes as pipRoutes } from './pip.js';
+import { routes as displayRoutes } from './display.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
@@ -984,6 +985,10 @@ app.post('/api/windows/activate', wrap(async (req) => {
 // answers {running:false} with a 200 rather than failing, so the phone can draw
 // "not running" as the ordinary state it is.
 app.use('/api/pip', pipRoutes);
+
+// Read-only X output state. This stays separate from screen control because
+// mode changes during a game can black-screen the TV.
+app.use('/api/display', displayRoutes);
 
 // --- art proxies ---
 
