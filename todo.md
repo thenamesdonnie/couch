@@ -83,6 +83,48 @@ five minutes) for whether the C5 can do this itself. Dual HDMI is G5/M5 only,
 but HDMI + YouTube or HDMI + phone screen share are on LG's whitelist, and
 the TV route costs the PC nothing.
 
+## ▶ GAMES ROW: THE TILE THAT CANNOT LEAVE (added 10 Aug ~23:00, NEEDS DONNIE)
+
+Donnie, three passes: "pressing RIGHT, the outgoing focused tile does not
+visibly LEAVE the selector box". Two separate things were tangled up here, and
+slow-motion capture in the 1198 twin (10x, 60fps, frame-differenced) separated
+them:
+
+1. A REAL BUG, now fixed (see below). The dissolve emptied the box by frame
+   138 of the transition, then Kodi reverted the item to itemlayout at frame
+   141 and a fully opaque resting tile POPPED BACK IN (strip luminance stepped
+   48.9 -> 67.3 in a single frame) before sliding out. Fade, flicker back, get
+   eaten. Every previous pass tuned the focusedlayout fade, which cannot
+   reach the itemlayout copy that is the thing you actually watch leave.
+   FIXED by deleting the dissolve: the tile now stays solid the whole way out,
+   no frame-difference spike anywhere in the exit.
+
+2. A DESIGN LIMIT, still open, and this one is yours to call. A fixedlist at
+   focusposition 0 gives the outgoing item exactly ONE SLOT of travel and then
+   culls it at the container's left bound. The bound is at skin x80 and the
+   ring's stroke is drawn at x50, so the tile evaporates 30px INSIDE the ring
+   - it never reaches an edge, which is exactly why it reads as "it doesn't
+   leave the box". No animation tuning fixes this; the control shape has to
+   change. The options, with their costs:
+   - focusposition 1: the outgoing tile lands in a REAL slot and stays
+     visible, so it genuinely travels away and nothing is culled or faded.
+     Cost: a permanent slot left of the selector, so the whole row shifts
+     right to keep that slot clear of the ring - a composition change to the
+     home screen, not a tweak. This is closest to "the old tile physically
+     travels away".
+   - widen the exit lane (container bound left of the ring): MEASURED to make
+     things worse, not better. Travel is fixed at one slot, so a wider lane
+     just means MORE of the tile is still on screen when the cull fires
+     (36px visible at bound=x80, 110px = the whole tile at bound=x6). The
+     lane needs a fade to hide the cull, and a fade is what we just removed.
+   - clip on the ring's stroke (bound x50, every layout x +30): the tile dies
+     on a drawn line instead of in mid-air. Cheap, honest, but it is still
+     "swallowed", not "left".
+   - accept it: the tile crossfades in place and the row reads as a reel.
+
+   Not decided, deliberately. Comparison clip recorded 10 Aug (before/after
+   the bug fix, 10x): the fix is committed, the design question is not.
+
 ## ▶ STAGELIGHT - the console skin build (added 7 Aug ~23:00, phase 1 LIVE)
 
 The evening session: skin.couch forked (a43c5fa, ACTIVE on the TV, symlinked
