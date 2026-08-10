@@ -278,25 +278,32 @@
 			     flat against the edge and its caption cut with it (Donnie, 8 Aug:
 			     "it's clipping on the left side"). Width grows by the same 31 so
 			     the right edge is where it always was. -->
-			<!-- ...and since 10 Aug the row ALSO carries one whole slot of EXIT
-			     LANE: left -55 (= 65-120) with focusposition 1 keeps the focused
-			     slot at exactly screen x 65, but the outgoing tile now has a slot
-			     to exist in (global 6..116) instead of being sliced at the
-			     container edge and then popping out of existence when the scroll
-			     completed (Donnie: "the leftmost just disappears"). The fade
-			     itself is the scrim image drawn after this list. -->
-			<left>-55</left>
+			<!-- left 80 = the FOCUSED TILE's own left edge, on purpose: the
+			     container clips its items at this bound, so the outgoing tile
+			     slides UNDER the selector ring and is guillotined exactly at the
+			     ring's stroke - a clip aligned with a drawn border reads as
+			     intentional, the same way a screen-edge clip does. This replaced
+			     the scrim-over-artwork fade, which Donnie rightly called a smudge:
+			     a dark overlay on live art is not an opacity fade, and Kodi has no
+			     per-item opacity to do a real one. The halo rings are STATIC
+			     overlays drawn after this list (the selector never moves, so they
+			     never need to) - which is also what frees the row from needing
+			     left headroom inside the container at all. -->
+			<left>80</left>
 			<top>76</top>
-			<width>1945</width>
+			<width>1810</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
-			<focusposition>1</focusposition>
+			<focusposition>0</focusposition>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
 			<itemlayout width="120" height="290">
 				<control type="image">
-					<left>61</left>
+					<!-- 46, not 61: the slot origin moved +15 when the container
+					     bound moved to the tile edge; -15 here keeps every tile at
+					     the same screen x it always had. -->
+					<left>46</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -356,27 +363,6 @@
 				     grow keeps 170ms because nothing interrupts it. Without any
 				     Unfocus at all the outgoing tile measured resting size in the
 				     very first frame - a hard jump. -->
-				<!-- halo ring, offset outside the tile like the PS5 -->
-				<control type="image">
-					<left>-15</left>
-					<top>-5</top>
-					<width>216</width>
-					<height>216</height>
-					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
-					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="70.5" end="100" center="171,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="70.5" center="171,103" time="120" tween="sine" easing="out">Unfocus</animation>
-				</control>
-				<control type="image">
-					<left>-15</left>
-					<top>-5</top>
-					<width>216</width>
-					<height>216</height>
-					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
-					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="70.5" end="100" center="171,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="70.5" center="171,103" time="120" tween="sine" easing="out">Unfocus</animation>
-				</control>
 				<!-- The focused tile at full size - but ONLY while the row
 				     actually has focus. Kodi keeps drawing focusedlayout for a
 				     container's current item even when the container is not
@@ -386,15 +372,15 @@
 				     The halo, lightbar and label were already gated this way;
 				     the tile itself was not. -->
 				<control type="image">
-					<left>15</left>
+					<left>0</left>
 					<top>25</top>
 					<width>156</width>
 					<height>156</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="70.5" end="100" center="171,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="70.5" center="171,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="70.5" end="100" center="156,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="70.5" center="156,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- ...and the resting tile in its place, geometry and diffuse
 				     copied from itemlayout above so a row that has lost focus
@@ -405,7 +391,7 @@
 					     conditional - so the resting tile is centred in the slot
 					     it inherited and the extra 62px falls evenly either side
 					     instead of piling up after it. -->
-					<left>61</left>
+					<left>46</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -415,7 +401,7 @@
 					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>15</left>
+					<left>0</left>
 					<top>191</top>
 					<width>156</width>
 					<height>12</height>
@@ -424,7 +410,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="label">
-					<left>30</left>
+					<left>15</left>
 					<top>215</top>
 					<width>620</width>
 					<height>38</height>
@@ -448,27 +434,32 @@
 			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;home=1&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
 		</control>
 
-		<!-- The exit fade. The outgoing tile slides into the exit lane and
-		     dims under this scrim instead of just being clipped - the venue
-		     finder's left-edge fade, which Donnie asked for by photo. Two
-		     copies stacked because the texture tops out at alpha 240 and one
-		     layer read too thin over bright artwork. Placed -60..80 so it
-		     reaches ZERO exactly at the focused tile's left edge (x=80): the
-		     focused tile is never dimmed, and the resting exit tile (6..116)
-		     keeps a readable sliver on its right, like the photo. -->
+		<!-- The selector, STATIC. The focus box never moves (fixedlist,
+		     focusposition 0), so the rings do not belong inside the per-item
+		     layout - hoisting them out is what lets the container clip
+		     outgoing tiles at the ring's own stroke. Screen coords: the ring
+		     sits 30px outside the 156px tile at 80..236, so 50..266; zoom
+		     centre (236,179) is the tile's shared right edge in screen space,
+		     the same continuity sum as the tile's own grow. -->
 		<control type="image">
-			<left>-60</left>
-			<top>76</top>
-			<width>140</width>
-			<height>290</height>
-			<texture colordiffuse="ff0a0c10">couch/scrim-left.png</texture>
+			<left>50</left>
+			<top>71</top>
+			<width>216</width>
+			<height>216</height>
+			<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+			<visible>Control.HasFocus(9000)</visible>
+			<animation effect="zoom" start="70.5" end="100" center="236,179" time="170" tween="sine" easing="out">Focus</animation>
+			<animation effect="zoom" start="100" end="70.5" center="236,179" time="120" tween="sine" easing="out">Unfocus</animation>
 		</control>
 		<control type="image">
-			<left>-60</left>
-			<top>76</top>
-			<width>140</width>
-			<height>290</height>
-			<texture colordiffuse="ff0a0c10">couch/scrim-left.png</texture>
+			<left>50</left>
+			<top>71</top>
+			<width>216</width>
+			<height>216</height>
+			<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+			<visible>Control.HasFocus(9000)</visible>
+			<animation effect="zoom" start="70.5" end="100" center="236,179" time="170" tween="sine" easing="out">Focus</animation>
+			<animation effect="zoom" start="100" end="70.5" center="236,179" time="120" tween="sine" easing="out">Unfocus</animation>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
