@@ -339,6 +339,22 @@
 					     ignores them, which is why v1 of this never moved. -->
 					<animation effect="zoom" start="100" end="150" center="93,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+				<!-- THE EXIT, directional - take two. Moving right the outgoing
+				     tile has no slot to land in (the list culls left of the
+				     selector), so it dissolves DURING the slide: gone by 120ms,
+				     nothing for the cull to pop. Moving left it lands in a slot
+				     that exists, so no fade.
+				     THE LESSON FROM TAKE ONE, which blanked the whole home
+				     screen: Kodi animations PERSIST at their end state, and the
+				     layout instance is shared across items - an Unfocus fade to
+				     0 with no Focus-side restore left every later focused item
+				     invisible. So the Focus fade below is UNCONDITIONAL: every
+				     focus render starts from 0 and lands at 100, which both
+				     repairs any persisted 0 and reads as a soft crossfade with
+				     the outgoing tile's dissolve. Proven in the 1198 dev twin
+				     before it came anywhere near this file. -->
+				<animation effect="fade" start="100" end="0" time="120" tween="sine" easing="out" condition="Container(9000).OnNext">Unfocus</animation>
+				<animation effect="fade" start="0" end="100" time="170" tween="sine" easing="out">Focus</animation>
 				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
 				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
 				     layouts on a frame boundary. 64 is not a taste number - it is

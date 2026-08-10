@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Couch Home (Stagelight phase 3 preview), PS5-emulating layout per
-     Donnie's reference photo (8 Aug): tight top row of small square tiles
-     (110px, 10px gaps), focused tile enlarged (172px) with a halo ring and
-     its name underneath, the focused game's key art filling the screen,
-     its clearlogo lower-left with a Play pill. Library tile leads the row.
-     Runs as window 1198 until approved as the real Home. Plain controls
-     (C13). -->
+<!-- The DEV TWIN of Home.xml, resynced 10 Aug 2026. Iterate here first:
+     ActivateWindow(1198) shows it without touching the real Home, which is
+     what "do it in 1198" exists for after the exit-fade experiment broke the
+     live home screen. Keep byte-identical to Home.xml apart from this header
+     and the window id, and resync BEFORE each experiment - an experiment on
+     a stale twin proves nothing. -->
 <window type="window" id="1198">
 	<defaultcontrol always="true">9000</defaultcontrol>
 	<controls>
@@ -252,86 +251,57 @@
 			<label>$INFO[System.Time]</label>
 		</control>
 
-		<!-- the Library tile: first stop on the row, PS5-icon sized -->
-		<control type="button" id="9001">
-			<left>96</left>
-			<top>124</top>
-			<width>110</width>
-			<height>110</height>
-			<label></label>
-			<texturefocus colordiffuse="ff262c37">couch/libtile.png</texturefocus>
-			<texturenofocus colordiffuse="cc161a22">couch/libtile.png</texturenofocus>
-			<onclick>ActivateWindow(1197)</onclick>
-			<onright>9000</onright>
-			<onup>9101</onup>
-		</control>
-		<!-- 2x2 grid glyph -->
-		<control type="image">
-			<left>130</left>
-			<top>158</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
-		</control>
-		<control type="image">
-			<left>154</left>
-			<top>158</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
-		</control>
-		<control type="image">
-			<left>130</left>
-			<top>182</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="ffeceef1">couch/glyph.png</texture>
-		</control>
-		<control type="image">
-			<left>154</left>
-			<top>182</top>
-			<width>18</width>
-			<height>18</height>
-			<texture colordiffuse="$VAR[Couch_Live_Color]">couch/glyph.png</texture>
-		</control>
-		<control type="label">
-			<left>66</left>
-			<top>244</top>
-			<width>170</width>
-			<height>34</height>
-			<font>Couch_Caption</font>
-			<textcolor>ffeceef1</textcolor>
-			<align>center</align>
-			<label>Library</label>
-			<visible>Control.HasFocus(9001)</visible>
-		</control>
-
 		<!-- the row: PS5 rhythm, 110px tiles with 10px gaps, focused 172px.
 		     FIXEDLIST, not list, and that is the whole character of the row:
 		     the selector does not travel, the tiles slide into it. A plain
-		     list walks the highlight along stationary tiles until it hits the
-		     edge and only then scrolls, which reads as a cursor on a grid.
-		     A console reads as a reel: one lit position, content moving
-		     through it.
-		     focusposition 0 puts that position at the head of the row, hard
-		     against the Library tile, so games arrive from the right and
-		     nothing is ever half off the left edge. Deliberately NOT a
-		     wraplist - consoles do not wrap, they stop at the end, and the
-		     research is emphatic about it. -->
+		     list walks the highlight along stationary tiles until it reaches
+		     the edge and only then scrolls, which reads as a cursor on a
+		     grid. A console reads as a reel: one lit position, and the
+		     content moving through it.
+		     focusposition 0 puts that lit position at the head of the row, so
+		     games arrive from the right and none is ever half off the left
+		     edge.
+		     MEASURED, not assumed: Container(9000).Position stays 0 while
+		     CurrentItem climbs, which is the whole property this control
+		     exists to have.
+		     It also WRAPS - right from the last item lands back on Library.
+		     That is not something this change introduced a decision about,
+		     and consoles do the opposite: they stop at the end and make the
+		     dead end audible. Open question for Donnie, not a silent choice. -->
 		<control type="fixedlist" id="9000">
-			<left>186</left>
+			<!-- left 65, not 96, and every x inside the layouts below is +31 to
+			     compensate - so no tile moves on screen. The 31px is HEADROOM: a
+			     list clips to its own bounds, and the focused item's halo is drawn
+			     31px left of its tile. At left 96 the first item's halo was sliced
+			     flat against the edge and its caption cut with it (Donnie, 8 Aug:
+			     "it's clipping on the left side"). Width grows by the same 31 so
+			     the right edge is where it always was. -->
+			<!-- left 80 = the FOCUSED TILE's own left edge, on purpose: the
+			     container clips its items at this bound, so the outgoing tile
+			     slides UNDER the selector ring and is guillotined exactly at the
+			     ring's stroke - a clip aligned with a drawn border reads as
+			     intentional, the same way a screen-edge clip does. This replaced
+			     the scrim-over-artwork fade, which Donnie rightly called a smudge:
+			     a dark overlay on live art is not an opacity fade, and Kodi has no
+			     per-item opacity to do a real one. The halo rings are STATIC
+			     overlays drawn after this list (the selector never moves, so they
+			     never need to) - which is also what frees the row from needing
+			     left headroom inside the container at all. -->
+			<left>80</left>
 			<top>76</top>
-			<width>1794</width>
+			<width>1810</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
 			<focusposition>0</focusposition>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
-			<onleft>9001</onleft>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
 			<itemlayout width="120" height="290">
 				<control type="image">
-					<left>30</left>
+					<!-- 46, not 61: the slot origin moved +15 when the container
+					     bound moved to the tile edge; -15 here keeps every tile at
+					     the same screen x it always had. -->
+					<left>46</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -340,51 +310,122 @@
 					<colordiffuse>c8ffffff</colordiffuse>
 				</control>
 			</itemlayout>
-			<focusedlayout width="182" height="290">
+			<!-- SAME WIDTH as itemlayout, deliberately. Kodi sizes a slot from its
+			     layout, and focusedlayout being 62px wider meant the row's current
+			     item kept a fat slot even after the row lost focus - a visible hole
+			     between two tiles (Donnie, 8 Aug: "a weird gap between bb and hk").
+			     With both at 120 the rhythm never changes and the focused tile grows
+			     OVER its neighbours instead, which is what the halo (232px wide in a
+			     182px slot) has always done anyway. Everything below is re-centred on
+			     itemlayout's tile centre (85,103) so it expands symmetrically about
+			     where the resting tile already sits. -->
+			<!-- 151, not 120. The unfocused tile sits at slot-local 61..171 in a
+			     120 slot, which is what makes the 110px/10px rhythm. The FOCUSED
+			     tile is 172 wide at slot-local 30..202, so in a 120 slot it
+			     overflowed 82px and drew straight over its neighbour - visible as
+			     the next game losing its left edge. 151 puts the following tile at
+			     151+61=212, ten past the focused tile's 202, so the gap either
+			     side of the selector matches every other gap in the row.
+			     Equal widths were a deliberate earlier fix ("one slot width, so
+			     the row has no hole where focus used to be") - that hole cannot
+			     happen now the selector is pinned at the head and never moves. -->
+			<focusedlayout width="120" height="290">
 				<control type="group">
 					<!-- launch flourish: the whole focused tile expands and fades
 					     while the room cover darkens (CouchLaunching). Animations
 					     must sit on a CONTROL; on the layout element Kodi silently
 					     ignores them, which is why v1 of this never moved. -->
-					<animation effect="zoom" start="100" end="150" center="116,126" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+					<animation effect="zoom" start="100" end="150" center="93,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
-				<!-- halo ring, offset outside the tile like the PS5 -->
+				<!-- THE EXIT, directional - take two. Moving right the outgoing
+				     tile has no slot to land in (the list culls left of the
+				     selector), so it dissolves DURING the slide: gone by 120ms,
+				     nothing for the cull to pop. Moving left it lands in a slot
+				     that exists, so no fade.
+				     THE LESSON FROM TAKE ONE, which blanked the whole home
+				     screen: Kodi animations PERSIST at their end state, and the
+				     layout instance is shared across items - an Unfocus fade to
+				     0 with no Focus-side restore left every later focused item
+				     invisible. So the Focus fade below is UNCONDITIONAL: every
+				     focus render starts from 0 and lands at 100, which both
+				     repairs any persisted 0 and reads as a soft crossfade with
+				     the outgoing tile's dissolve. Proven in the 1198 dev twin
+				     before it came anywhere near this file. -->
+				<animation effect="fade" start="100" end="0" time="120" tween="sine" easing="out" condition="Container(9000).OnNext">Unfocus</animation>
+				<animation effect="fade" start="0" end="100" time="170" tween="sine" easing="out">Focus</animation>
+				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
+				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
+				     layouts on a frame boundary. 64 is not a taste number - it is
+				     110/172, so the zoom starts at exactly the resting tile's size
+				     and ends at exactly the focused one, about the (116,103) centre
+				     both already share. Change one of those sizes and this must
+				     change with it.
+
+				     Both halves were measured on the set by stretching the times to
+				     2000ms and burst-capturing (the halo's height through the tile
+				     centre x, calibrated against its known 232):
+
+				       Focus    197.0 -> 215.5 -> 227.5 -> 229.5   animates
+				       Unfocus  232.0 -> 227.0 -> 211.5 -> resting  animates, but
+				                                                    the tail is cut
+
+				     Kodi reverts the item to itemlayout partway through an Unfocus
+				     rather than holding the layout for the full duration, so the
+				     shrink cannot be relied on to finish. Hence 120ms and easing
+				     OUT on the way down: most of the distance is covered early, so
+				     whatever Kodi truncates is a short hop rather than a pop. The
+				     grow keeps 170ms because nothing interrupts it. Without any
+				     Unfocus at all the outgoing tile measured resting size in the
+				     very first frame - a hard jump. -->
+				<!-- The focused tile at full size - but ONLY while the row
+				     actually has focus. Kodi keeps drawing focusedlayout for a
+				     container's current item even when the container is not
+				     focused, so moving left to Library left the last game
+				     sitting there enlarged and haloed as though it were still
+				     selected (Donnie, 8 Aug: "the game before it stays big").
+				     The halo, lightbar and label were already gated this way;
+				     the tile itself was not. -->
 				<control type="image">
 					<left>0</left>
-					<top>10</top>
-					<width>232</width>
-					<height>232</height>
-					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
-					<visible>Control.HasFocus(9000)</visible>
-				</control>
-				<control type="image">
-					<left>0</left>
-					<top>10</top>
-					<width>232</width>
-					<height>232</height>
-					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
-					<visible>Control.HasFocus(9000)</visible>
-				</control>
-				<control type="image">
-					<left>30</left>
-					<top>40</top>
-					<width>172</width>
-					<height>172</height>
+					<top>25</top>
+					<width>156</width>
+					<height>156</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
+					<visible>Control.HasFocus(9000)</visible>
+					<animation effect="zoom" start="70.5" end="100" center="156,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="70.5" center="156,103" time="120" tween="sine" easing="out">Unfocus</animation>
+				</control>
+				<!-- ...and the resting tile in its place, geometry and diffuse
+				     copied from itemlayout above so a row that has lost focus
+				     reads as one unbroken line of equal tiles. -->
+				<control type="image">
+					<!-- left 61, not 30: the focused slot is 182 wide against
+					     itemlayout's 120, and a layout width cannot be made
+					     conditional - so the resting tile is centred in the slot
+					     it inherited and the extra 62px falls evenly either side
+					     instead of piling up after it. -->
+					<left>46</left>
+					<top>48</top>
+					<width>110</width>
+					<height>110</height>
+					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+					<aspectratio>scale</aspectratio>
+					<colordiffuse>c8ffffff</colordiffuse>
+					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>30</left>
-					<top>222</top>
-					<width>172</width>
+					<left>0</left>
+					<top>191</top>
+					<width>156</width>
 					<height>12</height>
 					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
 					<aspectratio>stretch</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="label">
-					<left>30</left>
-					<top>238</top>
+					<left>15</left>
+					<top>215</top>
 					<width>620</width>
 					<height>38</height>
 					<font>Couch_Label</font>
@@ -404,7 +445,35 @@
 			     changes, so pause-snap stamps CouchGamesRev on every capture and
 			     every clear and the row follows. Empty property = empty suffix, so
 			     the URL stays valid before anything has ever been stamped. -->
-			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
+			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;home=1&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
+		</control>
+
+		<!-- The selector, STATIC. The focus box never moves (fixedlist,
+		     focusposition 0), so the rings do not belong inside the per-item
+		     layout - hoisting them out is what lets the container clip
+		     outgoing tiles at the ring's own stroke. Screen coords: the ring
+		     sits 30px outside the 156px tile at 80..236, so 50..266; zoom
+		     centre (236,179) is the tile's shared right edge in screen space,
+		     the same continuity sum as the tile's own grow. -->
+		<control type="image">
+			<left>50</left>
+			<top>71</top>
+			<width>216</width>
+			<height>216</height>
+			<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
+			<visible>Control.HasFocus(9000)</visible>
+			<animation effect="zoom" start="70.5" end="100" center="236,179" time="170" tween="sine" easing="out">Focus</animation>
+			<animation effect="zoom" start="100" end="70.5" center="236,179" time="120" tween="sine" easing="out">Unfocus</animation>
+		</control>
+		<control type="image">
+			<left>50</left>
+			<top>71</top>
+			<width>216</width>
+			<height>216</height>
+			<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+			<visible>Control.HasFocus(9000)</visible>
+			<animation effect="zoom" start="70.5" end="100" center="236,179" time="170" tween="sine" easing="out">Focus</animation>
+			<animation effect="zoom" start="100" end="70.5" center="236,179" time="120" tween="sine" easing="out">Unfocus</animation>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
@@ -417,7 +486,7 @@
 			<texture background="true">$INFO[Container(9000).ListItem.Art(clearlogo)]</texture>
 			<aspectratio align="left" aligny="bottom">keep</aspectratio>
 			<fadetime>300</fadetime>
-			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
+			<visible>!$EXP[Home_Library_Focused] + !String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -427,7 +496,7 @@
 			<font>Couch_Title</font>
 			<textcolor>ffeceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Label]</label>
-			<visible>!Control.HasFocus(9001) + String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
+			<visible>!$EXP[Home_Library_Focused] + String.IsEmpty(Container(9000).ListItem.Art(clearlogo))</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -437,7 +506,7 @@
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
 			<label>$INFO[Container(9000).ListItem.Property(CouchPlaytime)]$INFO[Container(9000).ListItem.Property(CouchLastPlayed),   ·   ]$INFO[Container(9000).ListItem.Property(CouchAchievements),   ·   ]$INFO[Container(9000).ListItem.Property(CouchSize),   ·   ]</label>
-			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
+			<visible>!$EXP[Home_Library_Focused] + !Control.HasFocus(9500)</visible>
 		</control>
 		<!-- the Play pill -->
 		<control type="image">
@@ -446,7 +515,7 @@
 			<width>232</width>
 			<height>64</height>
 			<texture colordiffuse="d8161d28">couch/pill.png</texture>
-			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
+			<visible>!$EXP[Home_Library_Focused] + !Control.HasFocus(9500)</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -458,7 +527,7 @@
 			<align>center</align>
 			<aligny>center</aligny>
 			<label>Play</label>
-			<visible>!Control.HasFocus(9001) + !Control.HasFocus(9500)</visible>
+			<visible>!$EXP[Home_Library_Focused] + !Control.HasFocus(9500)</visible>
 		</control>
 
 		<!-- Library focused: its own lower-left block -->
@@ -470,7 +539,7 @@
 			<font>Couch_Title</font>
 			<textcolor>ffeceef1</textcolor>
 			<label>Library</label>
-			<visible>Control.HasFocus(9001)</visible>
+			<visible>$EXP[Home_Library_Focused]</visible>
 		</control>
 		<control type="label">
 			<left>96</left>
@@ -480,7 +549,7 @@
 			<font>Couch_Label</font>
 			<textcolor>b4eceef1</textcolor>
 			<label>Films · TV · YouTube · everything you have</label>
-			<visible>Control.HasFocus(9001)</visible>
+			<visible>$EXP[Home_Library_Focused]</visible>
 		</control>
 
 		<!-- achievements shelf: the focused game's Steam achievements as icon
@@ -488,7 +557,7 @@
 		     the shelf is focused the game's Play/stats step aside and the focused
 		     achievement's name + description own the lower-left. -->
 		<control type="group">
-			<visible>!Control.HasFocus(9001) + !String.IsEmpty(Container(9000).ListItem.Property(CouchAchievements))</visible>
+			<visible>!$EXP[Home_Library_Focused] + !String.IsEmpty(Container(9000).ListItem.Property(CouchAchievements))</visible>
 
 			<!-- focused achievement detail (only while browsing the shelf) -->
 			<control type="label">
