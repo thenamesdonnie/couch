@@ -337,21 +337,38 @@
 					     ignores them, which is why v1 of this never moved. -->
 					<animation effect="zoom" start="100" end="150" center="93,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
-				<!-- THE EXIT, directional - take two. Moving right the outgoing
-				     tile has no slot to land in (the list culls left of the
-				     selector), so it dissolves DURING the slide: gone by 120ms,
-				     nothing for the cull to pop. Moving left it lands in a slot
-				     that exists, so no fade.
-				     THE LESSON FROM TAKE ONE, which blanked the whole home
-				     screen: Kodi animations PERSIST at their end state, and the
-				     layout instance is shared across items - an Unfocus fade to
-				     0 with no Focus-side restore left every later focused item
-				     invisible. So the Focus fade below is UNCONDITIONAL: every
-				     focus render starts from 0 and lands at 100, which both
-				     repairs any persisted 0 and reads as a soft crossfade with
-				     the outgoing tile's dissolve. Proven in the 1198 dev twin
-				     before it came anywhere near this file. -->
-				<animation effect="fade" start="100" end="0" time="120" tween="sine" easing="out" condition="Container(9000).OnNext">Unfocus</animation>
+				<!-- THE EXIT, take three - and the dissolve is GONE, because
+				     slow-motion capture showed it doing the opposite of its job.
+				     MEASURED in the 1198 twin at 10x (60fps region capture,
+				     frame-differenced): the dissolve emptied the selector by
+				     frame 138 of the transition, and then at frame 141 Kodi
+				     reverted the item to ITEMLAYOUT - which has no fade - and a
+				     fully opaque resting tile POPPED BACK INTO the box and only
+				     then slid out. Strip luminance stepped 48.9 -> 67.3 in one
+				     frame. So the tile appeared to vanish, flicker back, and get
+				     eaten: three "fix the exit" passes all tuned this fade, and
+				     none of them could work, because the thing you actually watch
+				     leave is drawn by itemlayout and no focusedlayout animation
+				     can reach it.
+				     Without the dissolve the outgoing tile stays opaque the whole
+				     way out: it shrinks with the zoom below, the layout swap lands
+				     on the same size (that is what the 70.5% continuity is for),
+				     and it slides until the container clips it. Re-measured the
+				     same way: no frame-difference spike anywhere in the exit.
+				     WHAT THIS STILL DOES NOT DO is make the tile LEAVE the box.
+				     A fixedlist at focusposition 0 gives the outgoing item exactly
+				     one slot of travel and culls it at the container bound, so it
+				     is eaten 30px INSIDE the ring rather than escaping past it.
+				     That is a control-shape limit, not an animation one - see
+				     todo.md "games row: the tile that cannot leave".
+				     THE LESSON FROM TAKE ONE, still live: Kodi animations PERSIST
+				     at their end state and the layout instance is shared across
+				     items - an Unfocus fade to 0 with no Focus-side restore left
+				     every later focused item invisible and blanked the home
+				     screen. The Focus fade below stays UNCONDITIONAL: it is no
+				     longer repairing a fade this file sets, but it starts every
+				     focus render at 0 and lands at 100, so it both fades the
+				     incoming tile in and repairs any 0 persisted from elsewhere. -->
 				<animation effect="fade" start="0" end="100" time="170" tween="sine" easing="out">Focus</animation>
 				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
 				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
@@ -446,6 +463,31 @@
 			     every clear and the row follows. Empty property = empty suffix, so
 			     the URL stays valid before anything has ever been stamped. -->
 			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;home=1&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
+		</control>
+
+		<!-- THE EXIT GHOST - the tile that actually leaves.
+		     The list itself CANNOT do this: a fixedlist gives an outgoing item
+		     exactly one slot of travel (120px) and then culls it, and the
+		     container clips it at its own left bound long before that. The tile
+		     needs 236px of travel to clear the screen and it only ever gets 120.
+		     So the thing you watch fly off the edge is not the list's tile: it
+		     is this control, drawn OUTSIDE the container where nothing clips it
+		     and no slot limit applies, textured with the item the row just left
+		     ($INFO ListItem(-1) - verified live: with Bloodborne current it
+		     resolves Hollow Knight's composed tile).
+		     It is drawn BEFORE the halo rings, so it passes behind the selector
+		     stroke on its way out rather than over it.
+		     No fade: fading is what made the old exit read as a smudge. It
+		     travels the full 250px and is simply gone off the left edge. -->
+		<control type="image" id="9010">
+			<left>80</left>
+			<top>101</top>
+			<width>156</width>
+			<height>156</height>
+			<texture background="true" diffuse="couch/mask-round.png">$INFO[Container(9000).ListItem(-1).Art(thumb)]</texture>
+			<aspectratio>scale</aspectratio>
+			<visible>Container(9000).OnNext</visible>
+			<animation effect="slide" start="0,0" end="-250,0" time="210" tween="sine" easing="out">Hidden</animation>
 		</control>
 
 		<!-- The selector, STATIC. The focus box never moves (fixedlist,
