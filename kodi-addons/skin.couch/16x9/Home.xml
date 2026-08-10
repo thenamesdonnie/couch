@@ -357,8 +357,8 @@
 					<height>216</height>
 					<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="64" end="100" center="93,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="64" center="93,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="70.5" end="100" center="171,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="70.5" center="171,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<control type="image">
 					<left>-15</left>
@@ -367,8 +367,8 @@
 					<height>216</height>
 					<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="64" end="100" center="93,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="64" center="93,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="70.5" end="100" center="171,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="70.5" center="171,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- The focused tile at full size - but ONLY while the row
 				     actually has focus. Kodi keeps drawing focusedlayout for a
@@ -386,8 +386,8 @@
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="64" end="100" center="93,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="64" center="93,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="70.5" end="100" center="171,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="70.5" center="171,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- ...and the resting tile in its place, geometry and diffuse
 				     copied from itemlayout above so a row that has lost focus
