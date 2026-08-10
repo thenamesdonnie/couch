@@ -167,3 +167,43 @@ def test_mirror_matches_the_live_script():
         pytest.fail('legacy-mirror/tv-waker-webos missing')
     assert open(MIRROR, encoding='utf-8').read() == \
         open(LIVE, encoding='utf-8').read()
+
+
+# =========================================================================
+# The 10 Aug 2026 fault: unreachable is not off
+#
+# is_on() collapsed probe()'s "(None, None)" - which means BOTH "in standby"
+# and "I could not reach it" - into a plain False. With a 2s timeout against
+# a busy television that read as OFF, and the watcher hung up on Donnie's
+# headphones five times in ten minutes while he was listening to them.
+#
+# The pure rule was never wrong: headphone_decision already refuses to act on
+# tv_on=None. The caller was throwing that None away.
+# =========================================================================
+def test_unreachable_is_not_the_same_answer_as_off():
+    """The tri-state probe must distinguish them. Same wire behaviour,
+    different meaning: a set that ANSWERS 'not Active' is off; a set that
+    does not answer at all is unknown."""
+    src = open(LIVE, encoding='utf-8').read()
+    assert 'async def is_on_tristate' in src
+    assert 'HP_OFF_STRIKES' in src, (
+        'without a strike count a single blip still hangs up the headphones')
+
+
+def test_a_single_unreachable_probe_never_disconnects():
+    """One blip must be indistinguishable from nothing happening."""
+    assert decide(None, True, False, False) is None
+
+
+def test_strikes_are_enough_to_notice_a_real_power_off_promptly():
+    """The guarantee Donnie asked for still has to hold: turn the TV off and
+    the headphones do let go. Bound how long that takes."""
+    worst_case = waker.HP_POLL * waker.HP_OFF_STRIKES
+    assert worst_case <= 40, (
+        f'a real power-off would take {worst_case}s to be noticed; that is '
+        'long enough to feel like the rule is not working')
+
+
+def test_the_probe_timeout_is_not_hair_trigger():
+    """2s was the value that produced the live fault against a busy set."""
+    assert waker.HP_PROBE_TIMEOUT >= 4

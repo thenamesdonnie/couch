@@ -50,6 +50,13 @@ FLAG = Path('/tmp/tv-wake-request')
 # would retry every poll forever while you watch on the soundbar, and each
 # failed bluetoothctl connect blocks for its whole timeout.
 HP_POLL = 10.0               # seconds between TV-state checks for this watcher
+# A webOS set in real standby is UNREACHABLE, so "cannot reach it" is also
+# what a genuine power-off looks like - we cannot tell them apart in one
+# probe. So we count: this many consecutive unreachable probes before the
+# headphones are hung up on. A blip costs nothing; a real power-off is still
+# acted on inside HP_POLL * HP_OFF_STRIKES seconds.
+HP_OFF_STRIKES = 3
+HP_PROBE_TIMEOUT = 4         # 2s was tight enough that a busy TV read as off
 HP_TIMEOUT = 25              # bluetoothctl can sit on a connect for a while
 # Escape hatch: touch this and the headphones are left entirely alone, for
 # using them with the PC while the television is off. Without it, a daemon
@@ -90,6 +97,27 @@ def pad_present():
 
 async def is_on(conf):
     state, _app = await probe(conf["host"], conf["key"], timeout=2)
+    return state == "Active"
+
+
+async def is_on_tristate(conf, timeout=HP_PROBE_TIMEOUT):
+    """True / False / None - and the None is the whole point.
+
+    probe() answers (None, None) for BOTH "the set is in standby" and "I
+    could not reach it", because for WAKING a TV those are the same thing and
+    guessing wrong costs a stray magic packet. For the headphone rule they are
+    not remotely the same: a short timeout against a busy television, a Wi-Fi
+    blip, or the set mid-input-switch reads as OFF and hangs up on the
+    headphones mid-listen. That happened live, five times in ten minutes, on
+    10 Aug 2026.
+
+    So here, unreachable is UNKNOWN. A set that ANSWERS and says it is not
+    Active is a real, immediate False. Deciding when enough consecutive
+    unknowns amount to "off" is the caller's job - see headphone_watch.
+    """
+    state, _app = await probe(conf["host"], conf["key"], timeout=timeout)
+    if state is None:
+        return None
     return state == "Active"
 
 
@@ -304,15 +332,30 @@ async def headphone_watch(conf):
     say(f"headphones: watching {mac} (TV off => disconnected)")
     prev_on = None
     complained = False       # keep a stuck disconnect from filling the journal
+    unknowns = 0             # consecutive unreachable probes
     while True:
         try:
-            tv_on = await is_on(conf)
+            reading = await is_on_tristate(conf)
         except Exception as e:                              # noqa: BLE001
             if not complained:
                 say(f"headphones: cannot read TV state ({e}) - doing nothing")
                 complained = True
             await asyncio.sleep(HP_POLL)
             continue
+        # Unreachable is not off, until it has been unreachable for a while.
+        # Anything less and a blip hangs up on a pair of headphones someone
+        # is listening to.
+        if reading is None:
+            unknowns += 1
+            if unknowns < HP_OFF_STRIKES:
+                say(f"headphones: TV unreachable ({unknowns}/{HP_OFF_STRIKES})"
+                    " - not calling that off yet")
+                await asyncio.sleep(HP_POLL)
+                continue
+            tv_on = False
+        else:
+            unknowns = 0
+            tv_on = reading
         connected = await asyncio.to_thread(hp_connected, mac)
         just_on = bool(tv_on) and prev_on is False
         action = headphone_decision(tv_on, connected, just_on,
