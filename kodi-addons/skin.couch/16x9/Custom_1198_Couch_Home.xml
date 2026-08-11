@@ -365,11 +365,17 @@
 				     at their end state and the layout instance is shared across
 				     items - an Unfocus fade to 0 with no Focus-side restore left
 				     every later focused item invisible and blanked the home
-				     screen. The Focus fade below stays UNCONDITIONAL: it is no
-				     longer repairing a fade this file sets, but it starts every
-				     focus render at 0 and lands at 100, so it both fades the
-				     incoming tile in and repairs any 0 persisted from elsewhere. -->
-				<animation effect="fade" start="0" end="100" time="170" tween="sine" easing="out">Focus</animation>
+				     screen.
+				     THERE IS DELIBERATELY NO FOCUS FADE HERE (11 Aug). One used to
+				     sit at this spot, unconditional, and Donnie: "the oncoming tile
+				     flashes first". It lifted every incoming tile from fully
+				     transparent WHILE the tile was growing, and a grow that also
+				     fades up reads as a flash, not as a tile arriving. It only ever
+				     existed to repair alpha persisted by the old Unfocus dissolve,
+				     and that dissolve went in 09cc7ac - checked before removing it:
+				     zero fade-to-0 animations remain in this file, so there is
+				     nothing left for it to repair. If a blank tile ever reappears,
+				     look for a NEW fade-to-0 rather than restoring this one. -->
 				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
 				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
 				     layouts on a frame boundary. 64 is not a taste number - it is
