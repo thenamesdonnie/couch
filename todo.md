@@ -128,7 +128,33 @@ content string has no revision kicker like the games row's CouchGamesRev, so
 Container.Refresh cannot save it; leaving and re-entering the window fixes it.
 Worth giving it the same kicker.
 
-## ▶ GAMES ROW: REVERTED TO REAL TILES (11 Aug, 8bfb2c9) - ONE DECISION LEFT
+## ▶ GAMES ROW: DONE (11 Aug, 07d2150) - the tile leaves, into a real slot
+
+FIVE attempts, and the one that worked added nothing. focusposition 1 gives the
+outgoing item a real slot to travel into and shrink inside; every earlier try
+kept the selector pinned at the head, where there is nowhere for it to go, and
+tried to fake the exit with an extra control instead. That is what produced the
+ghost (3e92b89) and the hoisted frame (3bd9b05), both of which made tiles appear
+from nowhere and were reverted.
+
+Live geometry: pitch 156 (= the focused tile exactly), resting 130 flush to the
+slot's right edge at offset 26, gaps 26px, grow 83.3% -> 100%, rings at 206 with
+centre 392,179. The ring is ALLOWED to overlap the neighbour it sits in front of
+- it is a static control drawn after the list, so that is depth-correct, and
+reserving 30px for it is what made the first pass look too airy.
+
+Verified on the live home at 60fps, not just the twin.
+
+THE LESSON, worth more than the geometry: a fixedlist gives an outgoing item one
+slot of travel and then culls it, and the container clips it before that. No
+animation and no extra control can conjure space that does not exist. If the
+exit ever needs changing again, change the SPACE, not the animation.
+
+Remaining, cosmetic and Donnie has seen it: at the head of the row the left slot
+is empty, so the row starts ~156px in. That space is the exit lane; it fills as
+soon as you move right.
+
+## ▶ (superseded) GAMES ROW: REVERTED TO REAL TILES
 
 Donnie, 11 Aug: "all i want is the current tile to leave and shrink and the new
 tile to enter and get bigger... tiles are appearing out of thin air".
