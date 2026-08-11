@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Render the Couch UI sound set from a spec, with levels that are ASSERTED.
+
+There is no sample library on this box, so the cues are synthesised. That is a
+feature, not a compromise: every cue in the set is generated from the same few
+primitives, so they are a FAMILY by construction - same timbre, same decay
+shape, related pitches - rather than four unrelated noises that happen to be in
+the same folder.
+
+    tools/uisound-render            # render to the addon's resources/
+    tools/uisound-render --dry-run  # print what would be written
+
+Design notes and the measured calibration live in docs/specs/ui-sound.md.
+Every cue is peak-normalised to an explicit target in dBFS and the result is
+re-measured after writing, because "I set the amplitude" is not the same claim
+as "the file is that loud".
+"""
+import argparse
+import math
+import os
+import struct
+import sys
+import wave
+
+SR = 48000          # matches audiooutput.samplerate on this box; no resampling
+CHANNELS = 2
+OUT_DEFAULT = os.path.expanduser(
+    '~/couch/kodi-addons/resource.uisounds.couch/resources')
+
+
+# ---------------------------------------------------------------- primitives
+
+def _env(n, attack, decay, curve=4.0):
+    """Attack/decay envelope in SAMPLES. Exponential decay, because a linear
+    fade-out on a very short cue reads as a click at the end."""
+    out = []
+    for i in range(n):
+        a = min(1.0, i / attack) if attack > 0 else 1.0
+        d = math.exp(-curve * max(0.0, i - attack) / max(1, decay))
+        out.append(a * d)
+    return out
+
+
+def tone(freq, dur, attack=0.002, decay=None, curve=4.0, harmonics=()):
+    """A pitched cue: fundamental plus optional quiet harmonics."""
+    n = int(SR * dur)
+    decay = decay if decay is not None else n
+    e = _env(n, int(SR * attack), int(decay if decay > 1 else SR * decay), curve)
+    buf = []
+    for i in range(n):
+        t = i / SR
+        v = math.sin(2 * math.pi * freq * t)
+        for mult, amp in harmonics:
+            v += amp * math.sin(2 * math.pi * freq * mult * t)
+        buf.append(v * e[i])
+    return buf
+
+
+def noise(dur, attack=0.001, curve=8.0, seed=1):
+    """A soft transient with no pitch - for cues that should read as a 'thud'
+    or 'brush' rather than a note."""
+    n = int(SR * dur)
+    e = _env(n, int(SR * attack), n, curve)
+    # deterministic LCG: the same build must produce the same bytes every time
+    x = seed
+    buf = []
+    for i in range(n):
+        x = (1103515245 * x + 12345) & 0x7FFFFFFF
+        buf.append(((x / 0x3FFFFFFF) - 1.0) * e[i])
+    return buf
+
+
+def lowpass(buf, cutoff):
+    """One-pole low-pass. Takes the glassy edge off a synthetic cue so it sits
+    in a room instead of sitting on top of it."""
+    a = math.exp(-2 * math.pi * cutoff / SR)
+    out, prev = [], 0.0
+    for v in buf:
+        prev = (1 - a) * v + a * prev
+        out.append(prev)
+    return out
+
+
+def mix(*layers):
+    n = max(len(l) for l in layers)
+    out = [0.0] * n
+    for l in layers:
+        for i, v in enumerate(l):
+            out[i] += v
+    return out
+
+
+def peak_normalise(buf, target_dbfs):
+    peak = max(abs(v) for v in buf) or 1.0
+    gain = (10 ** (target_dbfs / 20.0)) / peak
+    return [v * gain for v in buf]
+
+
+def write_wav(path, buf, dry=False):
+    data = b''.join(struct.pack('<hh', *(int(max(-1, min(1, v)) * 32767),) * 2)
+                    for v in buf)
+    if dry:
+        return len(buf) / SR
+    with wave.open(path, 'w') as w:
+        w.setnchannels(CHANNELS)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(data)
+    return len(buf) / SR
+
+
+def measure(path):
+    """Read the file back and report what is ACTUALLY in it."""
+    with wave.open(path) as w:
+        n = w.getnframes()
+        raw = w.readframes(n)
+        s = struct.unpack('<%dh' % (n * w.getnchannels()), raw)
+        mono = s[0::2]
+        peak = max(abs(v) for v in mono) / 32768
+        rms = math.sqrt(sum(v * v for v in mono) / len(mono)) / 32768
+        return (n / w.getframerate(),
+                20 * math.log10(peak) if peak else -99,
+                20 * math.log10(rms) if rms else -99)
+
+
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--out', default=OUT_DEFAULT)
+    a = ap.parse_args()
+    print('uisound-render: primitives only; the cue table lands with the '
+          'research pass (docs/specs/ui-sound.md).')
+    sys.exit(0)
