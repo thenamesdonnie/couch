@@ -811,19 +811,36 @@ EOF
       signal=SIGKILL reason=close-ignored "why=$why"
     for p in $doomed; do kill -9 "$p" 2>/dev/null; done
   fi
-  # shadPS4 has no save-on-quit to protect, but ask nicely (SIGTERM) and give
-  # it a moment to close its memory cards before forcing.
+  # "shadPS4 has no save-on-quit to protect" - THAT COMMENT WAS WRONG, and it
+  # is probably why this path force-killed so readily. userdata0010 is rewritten
+  # during play, and more importantly BLOODBORNE CARES HOW IT DIED: three
+  # upstream reports (shadPS4 #1641, #1189, compat #211) describe footsteps,
+  # weapon hits and menu sounds going silent while music keeps playing, on a
+  # session started after the game was force-quit rather than exited via its own
+  # menu. All six of our captured sessions ended mid-gameplay on a poll line -
+  # not one clean shutdown - so every session after the first started dirty.
+  # That is the leading explanation for the missing SFX, and this is where it
+  # was being caused. Give it a real chance to leave under its own power, and
+  # RECORD which way it went so the next session's state is not a mystery.
   if emu_running; then
     say "closing shadps4"
     intent quit shadps4 \
       "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
       resolver=pgrep signal=SIGTERM scope=shadps4 "reason=$why"
     pkill -TERM -f 'Shadps4-sdl|mount_Shadps'
-    for _ in $(seq 24); do emu_running || break; sleep 0.25; done  # same 6s grace
-    emu_running && { intent kill shadps4 \
-      "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
-      resolver=pgrep signal=SIGKILL reason=term-ignored; \
-      pkill -KILL -f 'Shadps4-sdl|mount_Shadps'; }
+    # 6s was not a considered number and shutdown does real work (flushing the
+    # save, closing the audio device). 30s costs nothing on a quit nobody is
+    # waiting on, and a SIGKILL is what leaves the game believing it crashed.
+    for _ in $(seq 120); do emu_running || break; sleep 0.25; done
+    if emu_running; then
+      say "shadps4 IGNORED SIGTERM after 30s - force killing. NEXT LAUNCH WILL START DIRTY"
+      intent kill shadps4 \
+        "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
+        resolver=pgrep signal=SIGKILL reason=term-ignored
+      pkill -KILL -f 'Shadps4-sdl|mount_Shadps'
+    else
+      say "shadps4 exited under its own power (clean)"
+    fi
   fi
   say "games closed"
 }
