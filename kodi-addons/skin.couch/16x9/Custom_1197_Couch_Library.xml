@@ -159,7 +159,7 @@
 						<visible>Control.HasFocus(7900)</visible>
 					</control>
 				</focusedlayout>
-				<content target="videos">plugin://script.copacetic.helper/?info=couch_nextup&amp;v=2</content>
+				<content target="videos">plugin://script.copacetic.helper/?info=couch_nextup&amp;v=2$INFO[Window(Home).Property(CouchLibRev),&amp;r=]</content>
 			</control>
 
 			<!-- CONTINUE -->
@@ -295,7 +295,7 @@
 						<visible>Control.HasFocus(8000)</visible>
 					</control>
 				</focusedlayout>
-				<content target="videos">plugin://script.copacetic.helper/?info=couch_continue&amp;v=2</content>
+				<content target="videos">plugin://script.copacetic.helper/?info=couch_continue&amp;v=2$INFO[Window(Home).Property(CouchLibRev),&amp;r=]</content>
 			</control>
 
 			<!-- NEW -->
