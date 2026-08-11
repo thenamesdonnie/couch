@@ -17,6 +17,16 @@
 # Called detached from the Kodi helper plugin, so it owns the whole session:
 # nothing here may assume a terminal, and a launch must always restore Kodi's
 # input on the way out, whatever happened in the middle.
+# PATH (11 Aug 2026). Launching from the PHONE failed with "shadps4: command
+# not found" and the user just saw a loading screen and a bounce back to
+# Kodi. Launches from Kodi go through flatpak-spawn, which passes an explicit
+# PATH containing ~/.local/bin; launches from couch.service inherit systemd's
+# PATH, which does not. shadps4, tv, game-pids, pause-snap, steam-uimode and
+# pad-home-watcher ALL live only in ~/.local/bin, so this was never specific
+# to the emulator - it broke every helper, from that one caller, silently,
+# because the launch output was going to /dev/null.
+export PATH="$HOME/.local/bin:$PATH"
+
 set -u
 
 # Callers vary: the Kodi plugin has the session's display, an SSH shell or the
@@ -1223,15 +1233,34 @@ case "$MODE" in
   shadps4)
     # APPID carries the eboot.bin path of a dumped game, or is empty to open
     # the emulator's own controller-driven library (Big Picture).
+
+    # DON'T RELAUNCH INTO A HALF-DEAD INSTANCE (11 Aug 2026). Donnie launched
+    # from the phone 4s after quitting and the emulator never appeared: no
+    # window, and no "Starting shadps4" line in its own log, so it died before
+    # it initialised rather than crashing in play. The AppImage mounts a
+    # squashfs at /tmp/.mount_Shadps* and unmounts it on exit, and starting a
+    # new one into that teardown is a race. Wait for the old instance to be
+    # properly gone - process AND mount - before starting another.
+    _t=0
+    while emu_running || ls -d /tmp/.mount_Shadps* >/dev/null 2>&1; do
+      sleep 0.5; _t=$((_t+1))
+      [ $_t -ge 40 ] && { say "previous instance still here after 20s, starting anyway"; break; }
+    done
+    [ $_t -gt 0 ] && say "waited $((_t/2))s for the previous instance to clear"
+
+    # KEEP THE EMULATOR'S OWN OUTPUT. This used to go to /dev/null, which is
+    # exactly why the failed launch above could not be diagnosed at all.
+    _emulog=/tmp/shadps4-launch.log
+    { echo; echo "=== $(date '+%F %T') launch ${APPID:-bigpicture}"; } >>"$_emulog"
     if [ -n "$APPID" ]; then
-      shadps4 "$APPID" >/dev/null 2>&1 &
+      shadps4 "$APPID" >>"$_emulog" 2>&1 &
     else
-      shadps4 >/dev/null 2>&1 &
+      shadps4 >>"$_emulog" 2>&1 &
     fi
     t=0
     while ! emu_running; do
       sleep 1; t=$((t+1))
-      [ $t -ge 60 ] && { say "shadps4 never appeared (60s)"; break; }
+      [ $t -ge 60 ] && { say "shadps4 never appeared (60s) - see /tmp/shadps4-launch.log"; break; }
     done
     if emu_running; then
       say "shadps4 running"
