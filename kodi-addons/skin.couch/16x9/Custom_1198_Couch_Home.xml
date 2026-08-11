@@ -287,7 +287,7 @@
 			     overlays drawn after this list (the selector never moves, so they
 			     never need to) - which is also what frees the row from needing
 			     left headroom inside the container at all. -->
-			<left>80</left>
+			<left>101</left>
 			<top>76</top>
 			<width>1810</width>
 			<height>290</height>
@@ -296,12 +296,12 @@
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
-			<itemlayout width="170" height="290">
+			<itemlayout width="156" height="290">
 				<control type="image">
 					<!-- 46, not 61: the slot origin moved +15 when the container
 					     bound moved to the tile edge; -15 here keeps every tile at
 					     the same screen x it always had. -->
-					<left>20</left>
+					<left>13</left>
 					<top>38</top>
 					<width>130</width>
 					<height>130</height>
@@ -329,7 +329,7 @@
 			     Equal widths were a deliberate earlier fix ("one slot width, so
 			     the row has no hole where focus used to be") - that hole cannot
 			     happen now the selector is pinned at the head and never moves. -->
-			<focusedlayout width="170" height="290">
+			<focusedlayout width="156" height="290">
 				<control type="group">
 					<!-- launch flourish: the whole focused tile expands and fades
 					     while the room cover darkens (CouchLaunching). Animations
@@ -409,15 +409,15 @@
 				     The halo, lightbar and label were already gated this way;
 				     the tile itself was not. -->
 				<control type="image">
-					<left>7</left>
+					<left>0</left>
 					<top>25</top>
 					<width>156</width>
 					<height>156</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="83.3" end="100" center="85,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="83.3" center="85,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="83.3" end="100" center="78,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="83.3" center="78,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- ...and the resting tile in its place, geometry and diffuse
 				     copied from itemlayout above so a row that has lost focus
@@ -428,7 +428,7 @@
 					     conditional - so the resting tile is centred in the slot
 					     it inherited and the extra 62px falls evenly either side
 					     instead of piling up after it. -->
-					<left>20</left>
+					<left>13</left>
 					<top>38</top>
 					<width>130</width>
 					<height>130</height>
@@ -438,7 +438,7 @@
 					<visible>!Control.HasFocus(9000)</visible>
 				</control>
 				<control type="image">
-					<left>7</left>
+					<left>0</left>
 					<top>191</top>
 					<width>156</width>
 					<height>12</height>
@@ -447,7 +447,7 @@
 					<visible>Control.HasFocus(9000)</visible>
 				</control>
 				<control type="label">
-					<left>22</left>
+					<left>15</left>
 					<top>215</top>
 					<width>620</width>
 					<height>38</height>
