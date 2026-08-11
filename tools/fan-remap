@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 CONF = '/etc/fancontrol'
 DROPIN_DIR = '/etc/systemd/system/fancontrol.service.d'
@@ -45,11 +46,24 @@ def main():
     if os.geteuid() != 0:
         sys.exit('needs root: sudo python3 %s' % SELF)
 
-    names = hwmon_by_name()
-    board = names.get('nct6798')
-    gpu = names.get('amdgpu')
+    # WAIT FOR THE SENSORS TO EXIST (12 Aug 2026). This ran as fancontrol's
+    # ExecStartPre at 21:31:25 on 11 Aug, BEFORE amdgpu had registered its
+    # hwmon node, reported "amdgpu=None", exited 1, and took the whole service
+    # down with it - so the curve never ran and the case fan sat on the board's
+    # flat 50% default for the entire uptime, at idle, audibly. The sensor was
+    # present seconds later. A one-shot lookup at boot is a race this box
+    # loses; poll instead. Costs nothing when they are already there.
+    for attempt in range(60):                      # up to ~30s
+        names = hwmon_by_name()
+        board = names.get('nct6798')
+        gpu = names.get('amdgpu')
+        if board and gpu:
+            if attempt:
+                print('sensors appeared after %.1fs' % (attempt * 0.5))
+            break
+        time.sleep(0.5)
     if not board or not gpu:
-        sys.exit('sensors not found (nct6798=%s amdgpu=%s) - nothing changed'
+        sys.exit('sensors not found after 30s (nct6798=%s amdgpu=%s) - nothing changed'
                  % (board, gpu))
 
     conf = open(CONF).read()
