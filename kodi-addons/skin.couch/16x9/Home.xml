@@ -294,19 +294,19 @@
 			<width>1810</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
-			<focusposition>0</focusposition>
+			<focusposition>1</focusposition>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
-			<itemlayout width="120" height="290">
+			<itemlayout width="156" height="290">
 				<control type="image">
 					<!-- 46, not 61: the slot origin moved +15 when the container
 					     bound moved to the tile edge; -15 here keeps every tile at
 					     the same screen x it always had. -->
-					<left>46</left>
-					<top>48</top>
-					<width>110</width>
-					<height>110</height>
+					<left>26</left>
+					<top>38</top>
+					<width>130</width>
+					<height>130</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<colordiffuse>c8ffffff</colordiffuse>
@@ -331,7 +331,7 @@
 			     Equal widths were a deliberate earlier fix ("one slot width, so
 			     the row has no hole where focus used to be") - that hole cannot
 			     happen now the selector is pinned at the head and never moves. -->
-			<focusedlayout width="120" height="290">
+			<focusedlayout width="156" height="290">
 				<control type="group">
 					<!-- launch flourish: the whole focused tile expands and fades
 					     while the room cover darkens (CouchLaunching). Animations
@@ -412,8 +412,8 @@
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="70.5" end="100" center="156,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="70.5" center="156,103" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="83.3" end="100" center="156,103" time="170" tween="sine" easing="out">Focus</animation>
+					<animation effect="zoom" start="100" end="83.3" center="156,103" time="120" tween="sine" easing="out">Unfocus</animation>
 				</control>
 				<!-- ...and the resting tile in its place, geometry and diffuse
 				     copied from itemlayout above so a row that has lost focus
@@ -424,10 +424,10 @@
 					     conditional - so the resting tile is centred in the slot
 					     it inherited and the extra 62px falls evenly either side
 					     instead of piling up after it. -->
-					<left>46</left>
-					<top>48</top>
-					<width>110</width>
-					<height>110</height>
+					<left>26</left>
+					<top>38</top>
+					<width>130</width>
+					<height>130</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<colordiffuse>c8ffffff</colordiffuse>
@@ -475,24 +475,24 @@
 		     centre (236,179) is the tile's shared right edge in screen space,
 		     the same continuity sum as the tile's own grow. -->
 		<control type="image">
-			<left>50</left>
+			<left>206</left>
 			<top>71</top>
 			<width>216</width>
 			<height>216</height>
 			<texture border="48" infill="false" colordiffuse="$VAR[Couch_Live_Color]">couch/halo-glow.png</texture>
 			<visible>Control.HasFocus(9000)</visible>
-			<animation effect="zoom" start="70.5" end="100" center="236,179" time="170" tween="sine" easing="out">Focus</animation>
-			<animation effect="zoom" start="100" end="70.5" center="236,179" time="120" tween="sine" easing="out">Unfocus</animation>
+			<animation effect="zoom" start="83.3" end="100" center="392,179" time="170" tween="sine" easing="out">Focus</animation>
+			<animation effect="zoom" start="100" end="83.3" center="392,179" time="120" tween="sine" easing="out">Unfocus</animation>
 		</control>
 		<control type="image">
-			<left>50</left>
+			<left>206</left>
 			<top>71</top>
 			<width>216</width>
 			<height>216</height>
 			<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
 			<visible>Control.HasFocus(9000)</visible>
-			<animation effect="zoom" start="70.5" end="100" center="236,179" time="170" tween="sine" easing="out">Focus</animation>
-			<animation effect="zoom" start="100" end="70.5" center="236,179" time="120" tween="sine" easing="out">Unfocus</animation>
+			<animation effect="zoom" start="83.3" end="100" center="392,179" time="170" tween="sine" easing="out">Focus</animation>
+			<animation effect="zoom" start="100" end="83.3" center="392,179" time="120" tween="sine" easing="out">Unfocus</animation>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
