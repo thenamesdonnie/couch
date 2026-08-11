@@ -287,9 +287,20 @@
 			     overlays drawn after this list (the selector never moves, so they
 			     never need to) - which is also what frees the row from needing
 			     left headroom inside the container at all. -->
-			<left>80</left>
+			<!-- left 116, not 80. THE POINT OF THE WHOLE RESTRUCTURE: a list
+			     clips to its own bounds, and with the bound at the focused
+			     tile's left edge the outgoing item's resting tile still had
+			     36px inside it (local -74..36 after the scroll) - the second
+			     copy that crawled in the ring while the ghost flew away.
+			     Move the bound to 116 and drop every layout x by 36 and that
+			     remnant lands entirely LEFT of the bound, so it is clipped to
+			     nothing. Nothing on screen moves: the tiles are where they
+			     were, the container just stops drawing 36px sooner.
+			     This is only possible because the focus frame is no longer
+			     INSIDE the list - see the hoisted frame below. -->
+			<left>116</left>
 			<top>76</top>
-			<width>1810</width>
+			<width>1774</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
 			<focusposition>0</focusposition>
@@ -298,10 +309,12 @@
 			<ondown>9500</ondown>
 			<itemlayout width="120" height="290">
 				<control type="image">
-					<!-- 46, not 61: the slot origin moved +15 when the container
-					     bound moved to the tile edge; -15 here keeps every tile at
-					     the same screen x it always had. -->
-					<left>46</left>
+					<!-- 10, not 46: the container bound moved +36, so every x in
+					     here drops by 36 and each tile stays at the screen x it
+					     has always had. 10 is also exactly what makes the
+					     outgoing slot (local -120) put its tile at -110..0 -
+					     flush with the bound, so none of it survives the clip. -->
+					<left>10</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
@@ -329,127 +342,22 @@
 			     Equal widths were a deliberate earlier fix ("one slot width, so
 			     the row has no hole where focus used to be") - that hole cannot
 			     happen now the selector is pinned at the head and never moves. -->
+			<!-- IDENTICAL to itemlayout, and that is the whole idea now. The
+			     focus frame - big tile, lightbar, caption - is drawn OUTSIDE
+			     this list (below), so the row itself only ever draws resting
+			     tiles. That is what lets the container bound sit clear of the
+			     exit region, and it is how a console row is actually built:
+			     one lit position, content moving through it, rather than a
+			     tile that swells in place. -->
 			<focusedlayout width="120" height="290">
-				<control type="group">
-					<!-- launch flourish: the whole focused tile expands and fades
-					     while the room cover darkens (CouchLaunching). Animations
-					     must sit on a CONTROL; on the layout element Kodi silently
-					     ignores them, which is why v1 of this never moved. -->
-					<animation effect="zoom" start="100" end="150" center="93,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
-					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
-				<!-- THE EXIT, take three - and the dissolve is GONE, because
-				     slow-motion capture showed it doing the opposite of its job.
-				     MEASURED in the 1198 twin at 10x (60fps region capture,
-				     frame-differenced): the dissolve emptied the selector by
-				     frame 138 of the transition, and then at frame 141 Kodi
-				     reverted the item to ITEMLAYOUT - which has no fade - and a
-				     fully opaque resting tile POPPED BACK INTO the box and only
-				     then slid out. Strip luminance stepped 48.9 -> 67.3 in one
-				     frame. So the tile appeared to vanish, flicker back, and get
-				     eaten: three "fix the exit" passes all tuned this fade, and
-				     none of them could work, because the thing you actually watch
-				     leave is drawn by itemlayout and no focusedlayout animation
-				     can reach it.
-				     Without the dissolve the outgoing tile stays opaque the whole
-				     way out: it shrinks with the zoom below, the layout swap lands
-				     on the same size (that is what the 70.5% continuity is for),
-				     and it slides until the container clips it. Re-measured the
-				     same way: no frame-difference spike anywhere in the exit.
-				     WHAT THIS STILL DOES NOT DO is make the tile LEAVE the box.
-				     A fixedlist at focusposition 0 gives the outgoing item exactly
-				     one slot of travel and culls it at the container bound, so it
-				     is eaten 30px INSIDE the ring rather than escaping past it.
-				     That is a control-shape limit, not an animation one - see
-				     todo.md "games row: the tile that cannot leave".
-				     THE LESSON FROM TAKE ONE, still live: Kodi animations PERSIST
-				     at their end state and the layout instance is shared across
-				     items - an Unfocus fade to 0 with no Focus-side restore left
-				     every later focused item invisible and blanked the home
-				     screen. The Focus fade below stays UNCONDITIONAL: it is no
-				     longer repairing a fade this file sets, but it starts every
-				     focus render at 0 and lands at 100, so it both fades the
-				     incoming tile in and repairs any 0 persisted from elsewhere. -->
-				<animation effect="fade" start="0" end="100" time="170" tween="sine" easing="out">Focus</animation>
-				<!-- GROW/SHRINK. The row used to snap between sizes: itemlayout
-				     draws the tile at 110 and focusedlayout at 172, and Kodi swaps
-				     layouts on a frame boundary. 64 is not a taste number - it is
-				     110/172, so the zoom starts at exactly the resting tile's size
-				     and ends at exactly the focused one, about the (116,103) centre
-				     both already share. Change one of those sizes and this must
-				     change with it.
-
-				     Both halves were measured on the set by stretching the times to
-				     2000ms and burst-capturing (the halo's height through the tile
-				     centre x, calibrated against its known 232):
-
-				       Focus    197.0 -> 215.5 -> 227.5 -> 229.5   animates
-				       Unfocus  232.0 -> 227.0 -> 211.5 -> resting  animates, but
-				                                                    the tail is cut
-
-				     Kodi reverts the item to itemlayout partway through an Unfocus
-				     rather than holding the layout for the full duration, so the
-				     shrink cannot be relied on to finish. Hence 120ms and easing
-				     OUT on the way down: most of the distance is covered early, so
-				     whatever Kodi truncates is a short hop rather than a pop. The
-				     grow keeps 170ms because nothing interrupts it. Without any
-				     Unfocus at all the outgoing tile measured resting size in the
-				     very first frame - a hard jump. -->
-				<!-- The focused tile at full size - but ONLY while the row
-				     actually has focus. Kodi keeps drawing focusedlayout for a
-				     container's current item even when the container is not
-				     focused, so moving left to Library left the last game
-				     sitting there enlarged and haloed as though it were still
-				     selected (Donnie, 8 Aug: "the game before it stays big").
-				     The halo, lightbar and label were already gated this way;
-				     the tile itself was not. -->
 				<control type="image">
-					<left>0</left>
-					<top>25</top>
-					<width>156</width>
-					<height>156</height>
-					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-					<aspectratio>scale</aspectratio>
-					<visible>Control.HasFocus(9000)</visible>
-					<animation effect="zoom" start="70.5" end="100" center="156,103" time="170" tween="sine" easing="out">Focus</animation>
-					<animation effect="zoom" start="100" end="70.5" center="156,103" time="120" tween="sine" easing="out">Unfocus</animation>
-				</control>
-				<!-- ...and the resting tile in its place, geometry and diffuse
-				     copied from itemlayout above so a row that has lost focus
-				     reads as one unbroken line of equal tiles. -->
-				<control type="image">
-					<!-- left 61, not 30: the focused slot is 182 wide against
-					     itemlayout's 120, and a layout width cannot be made
-					     conditional - so the resting tile is centred in the slot
-					     it inherited and the extra 62px falls evenly either side
-					     instead of piling up after it. -->
-					<left>46</left>
+					<left>10</left>
 					<top>48</top>
 					<width>110</width>
 					<height>110</height>
 					<texture background="true" diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 					<aspectratio>scale</aspectratio>
 					<colordiffuse>c8ffffff</colordiffuse>
-					<visible>!Control.HasFocus(9000)</visible>
-				</control>
-				<control type="image">
-					<left>0</left>
-					<top>191</top>
-					<width>156</width>
-					<height>12</height>
-					<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
-					<aspectratio>stretch</aspectratio>
-					<visible>Control.HasFocus(9000)</visible>
-				</control>
-				<control type="label">
-					<left>15</left>
-					<top>215</top>
-					<width>620</width>
-					<height>38</height>
-					<font>Couch_Label</font>
-					<textcolor>ffeceef1</textcolor>
-					<label>$INFO[ListItem.Label]</label>
-					<visible>Control.HasFocus(9000)</visible>
-				</control>
 				</control>
 			</focusedlayout>
 			<!-- The trailing $INFO is a REVISION, not decoration. Kodi caches a
@@ -503,6 +411,56 @@
 			<aspectratio>scale</aspectratio>
 			<visible>Container(9000).OnNext</visible>
 			<animation effect="slide" start="0,0" end="-250,0" time="210" tween="sine" easing="out">Hidden</animation>
+		</control>
+
+		<!-- THE FOCUS FRAME, hoisted out of the list (11 Aug, "can we do the
+		     proper fix"). It used to live in focusedlayout, which meant the
+		     container had to be wide enough to draw it - and a container that
+		     is wide enough to draw the focused tile is also wide enough to
+		     show 36px of the tile that just left. That was the double image.
+		     Out here nothing clips it, so the list's bound can sit at 116 and
+		     eat the remnant whole.
+		     It does not grow any more, and that is the trade Donnie took: the
+		     frame is fixed and the artwork flows THROUGH it (fadetime does the
+		     crossfade), which is the reel the row comment has described since
+		     day one - one lit position, content moving through it - rather
+		     than a tile that swells in place.
+		     Screen coords, straight from where these controls used to render:
+		     tile 80,101 (container top 76 + layout top 25), lightbar 80,267,
+		     caption 95,291. Drawn AFTER the exit ghost so the incoming art
+		     covers it at rest and the outgoing tile emerges from behind the
+		     frame, and BEFORE the halo rings so the rings still sit on top. -->
+		<control type="image">
+			<left>80</left>
+			<top>101</top>
+			<width>156</width>
+			<height>156</height>
+			<texture background="true" diffuse="couch/mask-round.png">$INFO[Container(9000).ListItem.Art(thumb)]</texture>
+			<aspectratio>scale</aspectratio>
+			<fadetime>0</fadetime>
+			<visible>Control.HasFocus(9000)</visible>
+			<!-- launch flourish, moved with the frame it belongs to -->
+			<animation effect="zoom" start="100" end="150" center="236,179" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+			<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+		</control>
+		<control type="image">
+			<left>80</left>
+			<top>267</top>
+			<width>156</width>
+			<height>12</height>
+			<texture colordiffuse="$VAR[Couch_Live_Color]">couch/lightbar.png</texture>
+			<aspectratio>stretch</aspectratio>
+			<visible>Control.HasFocus(9000)</visible>
+		</control>
+		<control type="label">
+			<left>95</left>
+			<top>291</top>
+			<width>620</width>
+			<height>38</height>
+			<font>Couch_Label</font>
+			<textcolor>ffeceef1</textcolor>
+			<label>$INFO[Container(9000).ListItem.Label]</label>
+			<visible>Control.HasFocus(9000)</visible>
 		</control>
 
 		<!-- The selector, STATIC. The focus box never moves (fixedlist,
