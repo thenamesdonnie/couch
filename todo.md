@@ -128,7 +128,41 @@ content string has no revision kicker like the games row's CouchGamesRev, so
 Container.Refresh cannot save it; leaving and re-entering the window fixes it.
 Worth giving it the same kicker.
 
-## ▶ GAMES ROW: THE TILE NOW LEAVES (live 11 Aug, one artefact open)
+## ▶ GAMES ROW: REVERTED TO REAL TILES (11 Aug, 8bfb2c9) - ONE DECISION LEFT
+
+Donnie, 11 Aug: "all i want is the current tile to leave and shrink and the new
+tile to enter and get bigger... tiles are appearing out of thin air".
+
+The exit ghost and the hoisted focus frame are BOTH GONE. Each faked the exit
+with an extra control, and that is precisely why tiles materialised. The row is
+back to 09cc7ac: one real tile per game, Kodi's own Focus/Unfocus zooms doing
+the grow and the shrink. Verified on the live home at 60fps.
+
+THE ONE THING STILL NOT DONE is the outgoing tile actually leaving the screen.
+It shrinks away and the last of it is clipped at the container bound. Four
+attempts to add an exit have each made the row worse, so DO NOT ADD ANOTHER
+CONTROL. With real tiles there is exactly one way:
+
+  focusposition 1 - a genuine slot to the left for the outgoing tile to travel
+  into and shrink inside. Nothing culled, nothing invented, and it is what he
+  described wanting.
+
+  THE COST, worked out and not yet paid: the focused tile is 156 and the slot
+  pitch is 120, so with a left neighbour the focused tile overlaps it by 36px
+  (this is the old "the next game loses its left edge" bug, from the other
+  side). Pitch must be >= the focused width. Options:
+    - pitch 166, resting tiles stay 110: gaps go 10 -> 56px. Airy, fewer tiles.
+    - pitch 166, resting tiles grow to ~130: gaps ~36px. Closer to the current
+      density, but every tile changes size.
+    - keep pitch 120 and shrink the focused tile to <=120: the grow becomes
+      ~9%, probably too subtle to read as "gets bigger".
+  Plus: the halo ring sits 30px outside the tile, so it will overlap the left
+  neighbour unless the pitch grows further, OR the ring is dropped for the
+  lightbar (which IS the skin's stated focus grammar - Includes_Couch.xml).
+
+  Needs Donnie to pick, because all three change how the row LOOKS at rest.
+
+## ▶ (superseded) GAMES ROW: THE TILE NOW LEAVES
 
 DONE: Donnie chose the flying exit ("go back to the way it worked when it left
 the box") and it is LIVE on Home.xml as of 3e92b89. Verified by recording a
