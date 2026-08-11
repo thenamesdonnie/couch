@@ -467,6 +467,46 @@
 			<content target="videos">plugin://script.copacetic.helper/?info=games&amp;home=1&amp;v=8$INFO[Window(Home).Property(CouchGamesRev),&amp;r=]</content>
 		</control>
 
+		<!-- THE EXIT GHOST - the tile that actually leaves. Donnie, 11 Aug:
+		     "go back to the way it worked when it left the box".
+		     THE LIST CANNOT DO THIS. A fixedlist gives an outgoing item exactly
+		     one slot of travel (120px) and then culls it, and the container
+		     clips it at its own left bound long before that. The tile needs
+		     236px of travel just to clear the screen and it only ever gets 120.
+		     So the thing you watch fly off the edge is NOT the list's tile: it
+		     is this control, drawn OUTSIDE the container where nothing clips it
+		     and no slot limit applies, textured with the item the row just left
+		     ($INFO ListItem(-1) - verified live: with Bloodborne current it
+		     resolves Hollow Knight's composed tile).
+		     WHY <visible> IS OnNext AND THE ANIMATION IS *Hidden*, which is the
+		     whole trick and cost an evening to find: Container(9000).OnNext is
+		     a ONE-FRAME PULSE. Measured by recording a ghost gated on it with
+		     no animation - visible for exactly 1 frame out of 420, and it does
+		     NOT scale with scrolltime. So OnNext can TRIGGER an animation (a
+		     Focus/Unfocus condition is read once, at trigger time, which is why
+		     the old dissolve ever ran) but it can never GATE a 210ms flight:
+		     the first attempt used it as <visible> with a Visible animation and
+		     the ghost was simply never seen. Kodi keeps a control rendered
+		     while its HIDDEN animation plays, so the control is visible for the
+		     one pulse frame and then flies out over the full 210ms after the
+		     condition has already gone false.
+		     Drawn BEFORE the halo rings, so it passes behind the selector
+		     stroke on its way out rather than over it. No fade: fading is what
+		     made the old exit read as a smudge, and it does not need one -
+		     it travels 250px and is gone off the left edge.
+		     Measured at 10x: tracks steadily left at ~3.5 skin px/frame, fully
+		     clear of the screen. Real-speed flight 183ms. -->
+		<control type="image" id="9010">
+			<left>80</left>
+			<top>101</top>
+			<width>156</width>
+			<height>156</height>
+			<texture background="true" diffuse="couch/mask-round.png">$INFO[Container(9000).ListItem(-1).Art(thumb)]</texture>
+			<aspectratio>scale</aspectratio>
+			<visible>Container(9000).OnNext</visible>
+			<animation effect="slide" start="0,0" end="-250,0" time="210" tween="sine" easing="out">Hidden</animation>
+		</control>
+
 		<!-- The selector, STATIC. The focus box never moves (fixedlist,
 		     focusposition 0), so the rings do not belong inside the per-item
 		     layout - hoisting them out is what lets the container clip
