@@ -34,9 +34,9 @@
 		     tall (46 label + 268 row + 26 air); focus below the first row
 		     slides the whole group up one section at a time. -->
 		<control type="group">
-			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000) | Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
-			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
-			<animation effect="slide" end="0,-340" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000) | Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200)">Conditional</animation>
 
 			<control type="label">
 				<left>96</left>
@@ -62,7 +62,7 @@
 				<left>96</left>
 				<top>174</top>
 				<width>1730</width>
-				<height>268</height>
+				<height>300</height>
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<ondown>8000</ondown>
@@ -165,7 +165,7 @@
 			<!-- CONTINUE -->
 			<control type="label">
 				<left>96</left>
-				<top>468</top>
+				<top>500</top>
 				<width>800</width>
 				<height>38</height>
 				<font>Couch_Label</font>
@@ -174,9 +174,9 @@
 			</control>
 			<control type="list" id="8000">
 				<left>96</left>
-				<top>514</top>
+				<top>546</top>
 				<width>1730</width>
-				<height>268</height>
+				<height>300</height>
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<onup>7900</onup>
@@ -209,7 +209,7 @@
 						<lefttexture>-</lefttexture>
 						<righttexture>-</righttexture>
 						<overlaytexture>-</overlaytexture>
-						<midtexture colordiffuse="ffe8a849">couch/pill.png</midtexture>
+						<midtexture colordiffuse="ffe8a849">couch/pill-bar.png</midtexture>
 						<visible>!String.IsEmpty(ListItem.Property(CouchProgress))</visible>
 					</control>
 					<control type="label">
@@ -301,7 +301,7 @@
 			<!-- NEW -->
 			<control type="label">
 				<left>96</left>
-				<top>808</top>
+				<top>872</top>
 				<width>800</width>
 				<height>38</height>
 				<font>Couch_Label</font>
@@ -310,9 +310,9 @@
 			</control>
 			<control type="list" id="8100">
 				<left>96</left>
-				<top>854</top>
+				<top>918</top>
 				<width>1730</width>
-				<height>268</height>
+				<height>300</height>
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<onup>8000</onup>
@@ -369,7 +369,7 @@
 			<!-- EVERYTHING -->
 			<control type="label">
 				<left>96</left>
-				<top>1148</top>
+				<top>1244</top>
 				<width>1200</width>
 				<height>38</height>
 				<font>Couch_Label</font>
@@ -378,7 +378,7 @@
 			</control>
 			<control type="panel" id="8200">
 				<left>96</left>
-				<top>1194</top>
+				<top>1290</top>
 				<width>1730</width>
 				<height>790</height>
 				<orientation>vertical</orientation>
