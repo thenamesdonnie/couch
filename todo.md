@@ -91,13 +91,18 @@ through so add proper full functionality to find what i want etc."
 FIXED already (a911327, live): the sliced captions and the yellow slab. See
 that commit - both were size bugs, not layout taste.
 
+DONE 11 Aug (abdc42b): FILMS / TV TABS, Donnie's call ("yeah make movie and
+tv separate tabs"). Kodi has no videodb node that merges movies and tvshows
+and smart playlists are per-type too, so one grid could only ever be one of
+them; the tabs set Window(home).Property(CouchBrowse) and
+$VAR[Couch_Browse_Node] resolves the grid's path. Switching is on CLICK not
+focus, deliberately - see the commit. Verified live: Films 88, TV 30.
+DO NOT RE-TRY conditional navigation tags to make onup return to the active
+tab. `<onup condition="...">` CRASHES Kodi hard, three times in ninety
+seconds, mid-skin-load (11 Aug, crashlogs logged as ours in
+docs/kodi21-flatpak-migration.md).
+
 STILL OPEN, and it is a design decision, not a bug:
-- "Everything · A to Z" is `videodb://movies/titles/`. That is movies ONLY,
-  which is exactly why no TV shows up. Kodi has no single videodb path that
-  merges movies and tvshows, and smart playlists are per-type too (movies,
-  tvshows, episodes - there is no mixed video type). So "one grid with
-  everything in it" cannot be done by pointing the panel somewhere else; it
-  needs either two sources shown together or a switch.
 - No search, no sort, no filter, no letter jump. The v5 spec called for "A-Z
   grid with L1 R1 letter jump" (docs/specs/console-skin.md) and only the grid
   got built.
