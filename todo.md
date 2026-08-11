@@ -134,18 +134,19 @@ DONE: Donnie chose the flying exit ("go back to the way it worked when it left
 the box") and it is LIVE on Home.xml as of 3e92b89. Verified by recording a
 real press on the live home, not just the twin.
 
-ONE ARTEFACT LEFT, ~33ms of double image: the ghost flies out while the LIST's
-own outgoing tile still crawls inside the ring (skin x80..116). That remnant is
-the itemlayout instance and no focusedlayout animation reaches it. Two ways to
-kill it, both needing Donnie because both cost something he already asked for:
-  (a) move the incoming tile's Focus zoom centre from the shared right edge
-      (156,103) to the left edge (0,103). At 70.5% it would then span 80..190
-      and cover the remnant from the first frame. Cost: regresses "the incoming
-      tile grows from where it rests" (59d8100).
-  (b) hoist the focused tile OUT of the list entirely, the way the halo rings
-      already were, so the container only ever draws resting tiles and its left
-      bound can sit clear of the exit region. Cleaner, closer to how a PS5 row
-      is actually built, but it is a real restructure of the row.
+DONE 11 Aug (3bd9b05): Donnie picked (b), "the proper fix". The focus frame is
+hoisted out of the list, the container bound moved 80 -> 116 with every layout
+x dropped 36 to compensate, and the outgoing tile now lands entirely left of
+the bound - clipped to nothing. focusedlayout is identical to itemlayout; the
+row only ever draws resting tiles. The frame no longer grows: it is fixed and
+the artwork flows through it, fadetime 0 (a crossfade there is the same smudge
+rejected on 10 Aug).
+
+STILL TO JUDGE BY EYE: for ~200ms during the slide the INCOMING game shows
+twice - in the frame, which adopts it immediately, and as its own resting tile
+still travelling into place behind the frame. Hiding the traveller trades it
+for a moving gap between the frame and the next tile, which is probably worse.
+Left alone deliberately. Comparison clip sent 11 Aug.
 
 The original framing below is kept - the fixedlist limits it describes are why
 the ghost exists at all.
