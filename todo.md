@@ -83,6 +83,46 @@ five minutes) for whether the C5 can do this itself. Dual HDMI is G5/M5 only,
 but HDMI + YouTube or HDMI + phone screen share are on LG's whitelist, and
 the TV route costs the PC nothing.
 
+## ▶ LIBRARY: BROWSING IS NOT FINISHED (added 11 Aug ~14:10, NEEDS DONNIE)
+
+Donnie, 11 Aug: "i can only see films in everything - it's hard to look
+through so add proper full functionality to find what i want etc."
+
+FIXED already (a911327, live): the sliced captions and the yellow slab. See
+that commit - both were size bugs, not layout taste.
+
+STILL OPEN, and it is a design decision, not a bug:
+- "Everything · A to Z" is `videodb://movies/titles/`. That is movies ONLY,
+  which is exactly why no TV shows up. Kodi has no single videodb path that
+  merges movies and tvshows, and smart playlists are per-type too (movies,
+  tvshows, episodes - there is no mixed video type). So "one grid with
+  everything in it" cannot be done by pointing the panel somewhere else; it
+  needs either two sources shown together or a switch.
+- No search, no sort, no filter, no letter jump. The v5 spec called for "A-Z
+  grid with L1 R1 letter jump" (docs/specs/console-skin.md) and only the grid
+  got built.
+
+THE OPTIONS, cheapest first:
+  1. Add a "TV · A to Z" section next to the movies one. Trivial, but it is
+     two places to look, which is the thing he is complaining about.
+  2. Make the Everything section SWITCH source - All / Films / TV - on the
+     shoulder buttons or a small tab strip above the grid. Kodi can do this
+     with a window property driving the panel's content string (the same
+     trick the games row uses for its revision kicker). "All" still needs two
+     panels stacked or a script-built list.
+  3. Build the browse page properly: letter rail down the side (L1/R1 jump),
+     sort/filter, and a search that covers both libraries. This is the spec'd
+     answer and the real fix for "hard to look through".
+  Recommendation: 2 now (it directly answers "I can only see films"), 3 as
+  the proper build, since global search already exists as script.globalsearch
+  and is wired to the home corner strip.
+
+NOTE for whoever does it: the Next up row (7900) caches EMPTY if its plugin
+invocation is in flight during a skin reload - seen twice on 11 Aug. Its
+content string has no revision kicker like the games row's CouchGamesRev, so
+Container.Refresh cannot save it; leaving and re-entering the window fixes it.
+Worth giving it the same kicker.
+
 ## ▶ GAMES ROW: THE TILE THAT CANNOT LEAVE (added 10 Aug ~23:00, NEEDS DONNIE)
 
 Donnie, three passes: "pressing RIGHT, the outgoing focused tile does not
