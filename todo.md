@@ -128,7 +128,29 @@ content string has no revision kicker like the games row's CouchGamesRev, so
 Container.Refresh cannot save it; leaving and re-entering the window fixes it.
 Worth giving it the same kicker.
 
-## ▶ GAMES ROW: THE TILE THAT CANNOT LEAVE (added 10 Aug ~23:00, NEEDS DONNIE)
+## ▶ GAMES ROW: THE TILE NOW LEAVES (live 11 Aug, one artefact open)
+
+DONE: Donnie chose the flying exit ("go back to the way it worked when it left
+the box") and it is LIVE on Home.xml as of 3e92b89. Verified by recording a
+real press on the live home, not just the twin.
+
+ONE ARTEFACT LEFT, ~33ms of double image: the ghost flies out while the LIST's
+own outgoing tile still crawls inside the ring (skin x80..116). That remnant is
+the itemlayout instance and no focusedlayout animation reaches it. Two ways to
+kill it, both needing Donnie because both cost something he already asked for:
+  (a) move the incoming tile's Focus zoom centre from the shared right edge
+      (156,103) to the left edge (0,103). At 70.5% it would then span 80..190
+      and cover the remnant from the first frame. Cost: regresses "the incoming
+      tile grows from where it rests" (59d8100).
+  (b) hoist the focused tile OUT of the list entirely, the way the halo rings
+      already were, so the container only ever draws resting tiles and its left
+      bound can sit clear of the exit region. Cleaner, closer to how a PS5 row
+      is actually built, but it is a real restructure of the row.
+
+The original framing below is kept - the fixedlist limits it describes are why
+the ghost exists at all.
+
+## ▶ (original) GAMES ROW: THE TILE THAT CANNOT LEAVE (added 10 Aug ~23:00)
 
 Donnie, three passes: "pressing RIGHT, the outgoing focused tile does not
 visibly LEAVE the selector box". Two separate things were tangled up here, and
