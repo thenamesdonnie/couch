@@ -237,7 +237,13 @@
     pointer-events: none;
   }
   .ptr-spin { display: flex; }
-  .ptr-spin.spinning { animation: ptrspin 0.7s linear infinite; }
+  /* Own compositor layer, so the rotation keeps running while the main thread
+     is busy - see the matching note on .tilespin in Library.svelte. */
+  .ptr-spin.spinning {
+    animation: ptrspin 0.9s linear infinite;
+    will-change: transform;
+    backface-visibility: hidden;
+  }
   @keyframes ptrspin { to { transform: rotate(360deg); } }
 
   .toast {

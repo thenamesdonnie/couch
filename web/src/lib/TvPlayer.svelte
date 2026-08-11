@@ -259,7 +259,15 @@
     border-radius: 50%;
     border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
     border-top-color: var(--accent);
-    animation: tvspin 0.7s linear infinite;
+    /* Smoothness (11 Aug): a launch is exactly when the app is busiest
+       polling, and a spinner that shares a layer with a re-rendering list
+       stutters at the worst moment. will-change gives it its own
+       compositor layer so the rotation keeps running while the main
+       thread is busy, and 0.9s reads smoother than 0.7s at 24px - a
+       fast spinner makes every dropped frame visible. */
+    will-change: transform;
+    backface-visibility: hidden;
+    animation: tvspin 0.9s linear infinite;
   }
   @keyframes tvspin { to { transform: rotate(360deg); } }
 
