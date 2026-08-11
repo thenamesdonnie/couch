@@ -35,6 +35,20 @@
 		<value>ffe8a849</value>
 	</variable>
 
+	<!-- Which library the Library page's browse grid is showing. Kodi has no
+	     videodb node that merges movies and tvshows, and smart playlists are
+	     per-type too, so "Everything" could only ever have been one of them -
+	     it was movies, which is why Donnie could "only see films" (11 Aug).
+	     Two tabs, one grid: this resolves the node, and because a container
+	     rebuilds when its resolved content string CHANGES, switching the tab
+	     is all it takes to reload the grid. Same mechanism as the games row's
+	     CouchGamesRev kicker. The property lives on `home` (not on 1197)
+	     because that is the window every part of this skin already reads. -->
+	<variable name="Couch_Browse_Node">
+		<value condition="String.IsEqual(Window(home).Property(CouchBrowse),tvshows)">tvshows</value>
+		<value>movies</value>
+	</variable>
+
 	<!-- The focus mark. One grammar for the whole skin: a lit bar in the
 	     live colour under whatever has focus. -->
 	<include name="Couch_Lightbar">

@@ -34,9 +34,9 @@
 		     tall (46 label + 268 row + 26 air); focus below the first row
 		     slides the whole group up one section at a time. -->
 		<control type="group">
-			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000) | Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
-			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100) | Control.HasFocus(8200)">Conditional</animation>
-			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200)">Conditional</animation>
+			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8000) | Control.HasFocus(8100) | Control.HasFocus(8200) | Control.HasFocus(8300) | Control.HasFocus(8301)">Conditional</animation>
+			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8100) | Control.HasFocus(8200) | Control.HasFocus(8300) | Control.HasFocus(8301)">Conditional</animation>
+			<animation effect="slide" end="0,-372" time="210" tween="sine" easing="out" condition="Control.HasFocus(8200) | Control.HasFocus(8300) | Control.HasFocus(8301)">Conditional</animation>
 
 			<control type="label">
 				<left>96</left>
@@ -316,7 +316,7 @@
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">210</scrolltime>
 				<onup>8000</onup>
-				<ondown>8200</ondown>
+				<ondown>8300</ondown>
 				<itemlayout width="172" height="328">
 					<control type="image">
 						<left>40</left>
@@ -366,15 +366,109 @@
 				<content target="videos">special://skin/extras/playlists/recent_movies.xsp</content>
 			</control>
 
-			<!-- EVERYTHING -->
+			<!-- EVERYTHING - two tabs, one grid.
+			     Was a single label over a movies-only grid, so half the
+			     library was unreachable (Donnie, 11 Aug: "i can only see
+			     films in everything"). Kodi cannot merge movies and tvshows
+			     into one node, so the honest answer is a switch: the tabs set
+			     Window(home).Property(CouchBrowse) and $VAR[Couch_Browse_Node]
+			     resolves the grid's content path from it.
+			     Switching is on CLICK, not on focus: the grid's onup lands on
+			     the Films tab, and a focus-driven switch would silently throw
+			     you back to films every time you came up out of the TV grid.
+			     So the ACTIVE tab (lit bar) and the FOCUSED tab (filled
+			     background) are shown differently, on purpose. -->
+			<control type="button" id="8300">
+				<left>96</left>
+				<top>1236</top>
+				<width>150</width>
+				<height>44</height>
+				<label></label>
+				<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
+				<texturenofocus>-</texturenofocus>
+				<onclick>SetProperty(CouchBrowse,movies,home)</onclick>
+				<onleft>8300</onleft>
+				<onright>8301</onright>
+				<onup>8100</onup>
+				<ondown>8200</ondown>
+			</control>
+			<control type="button" id="8301">
+				<left>256</left>
+				<top>1236</top>
+				<width>150</width>
+				<height>44</height>
+				<label></label>
+				<texturefocus colordiffuse="30ffffff">couch/libtile.png</texturefocus>
+				<texturenofocus>-</texturenofocus>
+				<onclick>SetProperty(CouchBrowse,tvshows,home)</onclick>
+				<onleft>8300</onleft>
+				<onright>8301</onright>
+				<onup>8100</onup>
+				<ondown>8200</ondown>
+			</control>
 			<control type="label">
 				<left>96</left>
-				<top>1244</top>
-				<width>1200</width>
-				<height>38</height>
+				<top>1240</top>
+				<width>150</width>
+				<height>36</height>
 				<font>Couch_Label</font>
-				<textcolor>d2eceef1</textcolor>
-				<label>Everything · A to Z</label>
+				<align>center</align>
+				<textcolor>ffeceef1</textcolor>
+				<label>Films</label>
+				<visible>!String.IsEqual(Window(home).Property(CouchBrowse),tvshows)</visible>
+			</control>
+			<control type="label">
+				<left>96</left>
+				<top>1240</top>
+				<width>150</width>
+				<height>36</height>
+				<font>Couch_Label</font>
+				<align>center</align>
+				<textcolor>ff8a93a0</textcolor>
+				<label>Films</label>
+				<visible>!!String.IsEqual(Window(home).Property(CouchBrowse),tvshows)</visible>
+			</control>
+			<control type="label">
+				<left>256</left>
+				<top>1240</top>
+				<width>150</width>
+				<height>36</height>
+				<font>Couch_Label</font>
+				<align>center</align>
+				<textcolor>ffeceef1</textcolor>
+				<label>TV</label>
+				<visible>String.IsEqual(Window(home).Property(CouchBrowse),tvshows)</visible>
+			</control>
+			<control type="label">
+				<left>256</left>
+				<top>1240</top>
+				<width>150</width>
+				<height>36</height>
+				<font>Couch_Label</font>
+				<align>center</align>
+				<textcolor>ff8a93a0</textcolor>
+				<label>TV</label>
+				<visible>!String.IsEqual(Window(home).Property(CouchBrowse),tvshows)</visible>
+			</control>
+			<!-- which tab is ACTIVE (6px, so it clears the grid at 1290 - the
+			     18px Couch_Lightbar would have run underneath the posters) -->
+			<control type="image">
+				<left>110</left>
+				<top>1282</top>
+				<width>122</width>
+				<height>6</height>
+				<texture colordiffuse="$VAR[Couch_Live_Color]">couch/pill-bar.png</texture>
+				<aspectratio>stretch</aspectratio>
+				<visible>!String.IsEqual(Window(home).Property(CouchBrowse),tvshows)</visible>
+			</control>
+			<control type="image">
+				<left>270</left>
+				<top>1282</top>
+				<width>122</width>
+				<height>6</height>
+				<texture colordiffuse="$VAR[Couch_Live_Color]">couch/pill-bar.png</texture>
+				<aspectratio>stretch</aspectratio>
+				<visible>String.IsEqual(Window(home).Property(CouchBrowse),tvshows)</visible>
 			</control>
 			<control type="panel" id="8200">
 				<left>96</left>
@@ -383,7 +477,7 @@
 				<height>790</height>
 				<orientation>vertical</orientation>
 				<scrolltime tween="sine" easing="out">210</scrolltime>
-				<onup>8100</onup>
+				<onup>8300</onup>
 				<itemlayout width="288" height="500">
 					<control type="image">
 						<left>10</left>
@@ -460,7 +554,7 @@
 						<label>$INFO[ListItem.Year]</label>
 					</control>
 				</focusedlayout>
-				<content target="videos">videodb://movies/titles/</content>
+				<content target="videos">videodb://$VAR[Couch_Browse_Node]/titles/</content>
 			</control>
 		</control>
 

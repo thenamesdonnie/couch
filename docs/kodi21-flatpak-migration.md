@@ -222,6 +222,21 @@ Two things follow, and both are now enforced rather than remembered:
 So: ignore every `kodi_crashlog-*` dated 8 or 9 Aug 2026. Anything from 9 Aug
 onward that kodi-restart did not announce is real.
 
+**Also ignore these three, they are mine, not the box's:**
+`kodi_crashlog-20260811_172234`, `_172325`, `_172400`. Building the Library
+browse tabs on 11 Aug I gave the grid a conditional navigation tag -
+`<onup condition="...">8301</onup>` with a plain `<onup>` fallback under it.
+Kodi does not accept a condition on a navigation tag: it took the skin down
+HARD, mid-load, three times in ninety seconds until kodi-tv's 3-crash limit
+stopped relaunching. The log ends on `Loading skin file:
+Custom_1197_Couch_Library.xml` with nothing after it, which is what a fatal
+skin-parse crash looks like from the outside. Reverted to a plain `<onup>`,
+`tools/kodi-restart` brought it back clean. Lesson worth keeping: conditional
+`<onup>/<ondown>/<onleft>/<onright>` is NOT a thing in this Kodi, and a bad
+navigation tag is a crash rather than an ignored attribute - so skin
+navigation changes want the 1198/1197 dev route and a real reload test, not
+a "that looks harmless" edit straight onto the live window.
+
 ## Checked, and cheaper than it looked
 
 Things that read like they must break and do not. Each was checked against a
