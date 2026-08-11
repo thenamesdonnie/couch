@@ -289,12 +289,12 @@
 			     overlays drawn after this list (the selector never moves, so they
 			     never need to) - which is also what frees the row from needing
 			     left headroom inside the container at all. -->
-			<left>101</left>
+			<left>-55</left>
 			<top>76</top>
-			<width>1810</width>
+			<width>1966</width>
 			<height>290</height>
 			<orientation>horizontal</orientation>
-			<focusposition>1</focusposition>
+			<focusposition>2</focusposition>
 			<scrolltime tween="sine" easing="out">210</scrolltime>
 			<onup>9101</onup>
 			<ondown>9500</ondown>
