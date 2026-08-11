@@ -123,11 +123,101 @@ def measure(path):
                 20 * math.log10(rms) if rms else -99)
 
 
+# ------------------------------------------------------------------ the cues
+#
+# Every number here is argued in docs/specs/ui-sound.md. The short version:
+#
+#  * PEAK, not RMS, is the target, because Kodi sums overlapping sounds with no
+#    limiter (ActiveAE mixes additively). The cursor tick can stack ~4 deep on a
+#    held direction, so -26 dBFS peak sums to about -14 dBFS - still clear of
+#    clipping. Peaking a UI cue near 0 dBFS, as two of Kodi's stock sounds do,
+#    is how you get pumping on a soundbar.
+#  * THE LADDER is roughly 6 dB per step of consequence, measured off Valve's
+#    shipped Big Picture set. The whole family spans 8 dB (-26 to -18), inside
+#    the ~10 dB spread Brewster/Patterson recommend so nothing stands out when
+#    the volume goes up and nothing vanishes when it goes down.
+#  * EVERYTHING RECURRING STAYS BELOW 5 kHz (Brewster). Above that it is thrown
+#    away first by high-frequency hearing loss and by a modest soundbar.
+#  * SHORT, because Kodi has NO rate limit - no 50 ms lockout like Valve's. The
+#    cursor tick is the shortest thing in the set for exactly that reason.
+#  * Harmonics, not pure sines: "simple tones such as sinewaves are not
+#    effective" (Brewster). Each cue is a fundamental plus quiet partials,
+#    low-passed so it sits in a room instead of on top of it.
+#
+# name          dur   freq  harmonics                 attack  curve  lp    peak
+CUES = {
+    # the reference. Fires on every direction press, so it is the shortest,
+    # quietest thing here and it decays fast so repeats barely overlap.
+    'cursor':  dict(dur=0.055, freq=1600, harm=((2, .30), (3, .12)),
+                    atk=0.0015, curve=7.0, lp=5200, peak=-26.0),
+    # confirm: warmer and lower than the tick, +6 dB.
+    'select':  dict(dur=0.150, freq=1180, harm=((2, .40), (3, .18), (4, .07)),
+                    atk=0.003, curve=4.2, lp=4200, peak=-20.0),
+    # back: same family, falling contour, +4 dB.
+    'back':    dict(dur=0.170, freq=880, harm=((2, .32), (3, .12)),
+                    atk=0.004, curve=4.0, lp=3600, peak=-22.0, glide=-0.28),
+    # error: fast attack, deliberately unresolved (a flat 7th against the
+    # fundamental), so it reads as "no" without being loud.
+    'error':   dict(dur=0.130, freq=2100, harm=((1.78, .55), (2, .22)),
+                    atk=0.001, curve=6.0, lp=5000, peak=-20.0),
+    # window open / close: the rare cues, so they get the top of the ladder and
+    # the most air. Rising vs falling glide carries the direction.
+    'in':      dict(dur=0.380, freq=760, harm=((2, .34), (3, .16), (5, .05)),
+                    atk=0.010, curve=3.0, lp=4800, peak=-18.0, glide=+0.55),
+    'out':     dict(dur=0.400, freq=760, harm=((2, .30), (3, .12)),
+                    atk=0.010, curve=3.2, lp=4000, peak=-21.0, glide=-0.42),
+    # launch: the biggest thing in the set and the rarest. Slow attack, so it
+    # swells rather than clicks - it is covering the curtain, not a keypress.
+    'launch':  dict(dur=0.750, freq=1500, harm=((1.5, .40), (2, .30), (3, .12)),
+                    atk=0.240, curve=1.8, lp=4600, peak=-18.0, glide=+0.30),
+}
+
+
+def render_cue(spec):
+    n = int(SR * spec['dur'])
+    e = _env(n, int(SR * spec['atk']), n, spec['curve'])
+    glide = spec.get('glide', 0.0)
+    buf = []
+    phase = 0.0
+    for i in range(n):
+        t = i / SR
+        # a gentle pitch glide gives the family its direction without needing
+        # a second note; ratio is per-cue and can be negative (falling)
+        f = spec['freq'] * (1.0 + glide * (t / spec['dur']))
+        phase += 2 * math.pi * f / SR
+        v = math.sin(phase)
+        for mult, amp in spec['harm']:
+            v += amp * math.sin(phase * mult)
+        buf.append(v * e[i])
+    buf = lowpass(buf, spec['lp'])
+    return peak_normalise(buf, spec['peak'])
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--out', default=OUT_DEFAULT)
     a = ap.parse_args()
-    print('uisound-render: primitives only; the cue table lands with the '
-          'research pass (docs/specs/ui-sound.md).')
-    sys.exit(0)
+    if not a.dry_run:
+        os.makedirs(a.out, exist_ok=True)
+    print('%-9s %7s %9s %9s   %s' % ('cue', 'len', 'peak', 'rms', 'target'))
+    bad = []
+    for name, spec in CUES.items():
+        path = os.path.join(a.out, name + '.wav')
+        write_wav(path, render_cue(spec), a.dry_run)
+        if a.dry_run:
+            print('%-9s %6.0fms %9s %9s   %.1f dBFS (dry run)'
+                  % (name, spec['dur'] * 1000, '-', '-', spec['peak']))
+            continue
+        dur, pk, rms = measure(path)
+        print('%-9s %6.0fms %6.1f dB %6.1f dB   want %.1f'
+              % (name, dur * 1000, pk, rms, spec['peak']))
+        # ASSERT the file is what we asked for, rather than trusting the maths
+        if abs(pk - spec['peak']) > 0.6:
+            bad.append('%s: peak %.1f, wanted %.1f' % (name, pk, spec['peak']))
+    if bad:
+        print('\nLEVEL ASSERTION FAILED:')
+        for b in bad:
+            print('  ' + b)
+        sys.exit(1)
+    print('\nall cues within 0.6 dB of target; 48kHz 16-bit stereo')
