@@ -450,6 +450,10 @@ harness before the subject.
 - SMART on these enclosures needs `-d sntrealtek` (NVMe behind Realtek bridge);
   `-d sat` returns nothing.
 - memtest still never run (the 5 Aug idle-freeze mystery).
+- **Left uncommitted on purpose:** `kodi-addons/resource.uisounds.couch/`
+  (unfinished, above) and `shadow/*.jsonl` + `shadow/status.json` - couchd
+  runtime logs, already dirty when this session started; they are not build
+  artefacts and nothing this session changed them.
 
 ## ▶ Previous resume block (9 Aug 2026 ~13:40 — overnight build, then a live disk incident)
 
