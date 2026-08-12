@@ -128,7 +128,17 @@ content string has no revision kicker like the games row's CouchGamesRev, so
 Container.Refresh cannot save it; leaving and re-entering the window fixes it.
 Worth giving it the same kicker.
 
-## ▶ GAMES ROW: DONE (11 Aug, 07d2150) - the tile leaves, into a real slot
+## ▶ GAMES ROW: DONE (11-12 Aug) - the tile leaves, into a real slot
+
+**UPDATED 12 Aug** (`23d8d06`, `7c349ea`, `a2d2893`): the unconditional Focus
+fade is gone (it read as a flash, not a grow); pitch tightened 170 -> 156 so
+gaps went 40 -> 26; and the container now starts off-screen at x=-55 with a
+third slot, so the outgoing tile is clipped at the SCREEN edge rather than
+100px inside it. Kodi has no per-item opacity so a real fade is impossible -
+the answer was space, not animation. Selector never moved: focused slot =
+list_left + focusposition*W, so -55 + 2*156 = 257 = the old 101 + 1*156.
+**STILL UNVERIFIED BY EYE while scrolling.**
+
 
 FIVE attempts, and the one that worked added nothing. focusposition 1 gives the
 outgoing item a real slot to travel into and shrink inside; every earlier try
@@ -351,7 +361,97 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (9 Aug 2026 ~13:40 — overnight build, then a live disk incident)
+## ▶ Resume here (12 Aug 2026 ~10:30 — BLOODBORNE SOUND SOLVED, and it was our launcher)
+
+**The headline: the missing attack/menu/footstep sounds were caused by
+`game-launch` force-killing the emulator.** Bloodborne notices it was not
+exited through its own menu and silences a whole audio category for the
+session while music keeps playing. Donnie's own hunch ("i was thinking it
+could be about it not quitting cleanly") cracked it after a night of my
+theories that did not survive contact with evidence. Matches shadPS4 #1641,
+#1189, compat #211. Full detail + everything eliminated: auto-memory
+`homelab-bloodborne-mods.md`.
+
+Two layers of fix are in:
+- `59aa7fb` — quit grace 6s -> 30s, SIGKILL only if genuinely ignored, and it
+  now LOGS `exited under its own power (clean)` vs `IGNORED SIGTERM ... NEXT
+  LAUNCH WILL START DIRTY`. So session state stops being a mystery.
+- The community SoundCrashFix byte, `0x204E: 00 -> 01`, applied to BOTH
+  `userdata0010` and `backup0010` under
+  `~/.local/share/shadPS4/home/1000/savedata/CUSA00900/SPRJ0005/`
+  (note the `home/1000/` path). Full save backup at
+  `~/games/ps4/bloodborne/save-backups/2026-08-12-pre-soundfix/`.
+  **NOT yet confirmed in play** — next launch, check sounds AND that the save
+  loads with progress intact. Restore = `cp -a <backup>/. <savedir>/`.
+
+**THE METHOD LESSON worth carrying:** all six captured sessions had been
+force-killed, so "wait for a working session and diff it" could never have
+produced one. When an intermittent bug never shows its good case, suspect the
+harness before the subject.
+
+### Also fixed this session
+- **`0359b6d` — phone launches were ALWAYS broken.** `shadps4: command not
+  found`: couch.service inherits systemd's PATH with no `~/.local/bin`, while
+  Kodi launches go via flatpak-spawn which sets it. Hit every helper (`tv`,
+  `game-pids`, `pause-snap`…), not just the emulator. Stayed invisible because
+  the launcher sent the emulator's output to `/dev/null` — now kept at
+  `/tmp/shadps4-launch.log`. New memory: `couch-launch-path-trap.md`.
+- **`4b33bd7` — fancontrol had been dead since boot.** `tools/fan-remap` ran as
+  ExecStartPre before amdgpu registered its hwmon node, exited 1, took the
+  service down; case fan sat on the board's flat 50% all evening at idle. Now
+  polls up to 30s. Donnie restarted the service: case fan 1664 -> 1148 rpm.
+- **4K on Bloodborne WORKS** (the "needs a 4090" note is folklore — the limit
+  is a guest-side fixed heap, not host VRAM). Currently reverted to 1440p
+  because 4K cost 60 -> 45-50fps (CPU-bound: `NexusRevolution` and
+  `shadPS4:GpuComm` each peg a core) and the HUD is pinned at 1080p so it
+  pixelates. The working 4K patch file is kept at
+  `~/.local/share/shadPS4/patches/shadPS4/Bloodborne.xml.upstream-4k.bak`
+  (needs `extra_dmem_in_mbytes: 4000` with it). Detail in auto-memory.
+- **`7c349ea` / `a2d2893` — games row**: pitch tightened 170 -> 156 (gaps 40 ->
+  26), and the row now starts off-screen at x=-55 with a third slot so the
+  outgoing tile is clipped at the screen edge instead of mid-screen. Kodi has
+  no per-item opacity, so a true fade is not available — change the space, not
+  the animation.
+- **`42e9b36` — spinners** get their own compositor layer and run at 0.9s.
+
+### ▶ NEEDS DONNIE (nothing here can be done from this side)
+1. **Confirm the Bloodborne save is fine** on next launch — sounds present,
+   progress intact. It is the one change made to his save data.
+2. **The games row still has NO eyes on it.** Pitch + off-screen exit were
+   verified by measurement on a 4K grab, never by looking while scrolling.
+   Static frames cannot show motion.
+3. **CPU fan is now the loudest thing in the box** (1247 rpm at 36C, still on
+   the BIOS curve; only the case fan is managed). Proposed config extending the
+   curve to pwm2 via TSI0_TEMP is at scratchpad `fancontrol.new` — the apply
+   line was given, not yet run. Risk stated: if fancontrol dies the fan stays
+   put (CPU throttles, no damage).
+4. **GPU is still pinned at `high`** from the coil-whine test. Clicking
+   "helped but didn't go away completely". Revert when done:
+   `sudo bash -c 'echo auto > /sys/class/drm/card1/device/power_dpm_force_performance_level'`
+5. **YouTube bass**: TV is on `standard` sound mode, output `external_arc` to a
+   **Hisense Sound Bar** — so the TV's own EQ is bypassed and a bass setting
+   made on the TV does nothing. Check the SOUNDBAR's separate subwoofer level
+   and its sound mode (Virtual:X/Movie upmix dumps low end into the sub;
+   Music/Standard is right for YouTube). The soundbar is HDMI-only, not
+   readable from here.
+
+### Open / not done
+- **`kodi-addons/resource.uisounds.couch/` is UNTRACKED and unfinished** — 7
+  rendered WAVs + `tools/uisound-render` + `docs/specs/ui-sound.md`, but no
+  `addon.xml`, no `resources/sounds.xml`, not installed. Deliberately left out
+  of every commit this session. Spec notes Kodi 21 produces no action sounds
+  from controller input (upstream #27184) — verify before building further.
+- **disk1 (Lexar NM790 4TB, `/mnt/disk1`) USB alert 12 Aug 10:09** — assessed
+  and benign: ONE failed **READ**, no ext4 errors ever, drive SMART pristine
+  (0% used, 0 media errors, 100% spare). The fault is the RTL9210 USB link, not
+  the drive. **33 unsafe shutdowns** is the number to watch — offered to add it
+  to disk-monitor, not yet built. Real fix is eventually moving that NVMe out
+  of the enclosure into an M.2 slot.
+- SMART on these enclosures needs `-d sntrealtek` (NVMe behind Realtek bridge);
+  `-d sat` returns nothing.
+- memtest still never run (the 5 Aug idle-freeze mystery).
+
+## ▶ Previous resume block (9 Aug 2026 ~13:40 — overnight build, then a live disk incident)
 
 All work committed on master. **This repo has NO git remote**, so "committed"
 is the only backup that exists — a standing risk worth naming.
