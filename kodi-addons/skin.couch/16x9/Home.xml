@@ -337,7 +337,7 @@
 					     while the room cover darkens (CouchLaunching). Animations
 					     must sit on a CONTROL; on the layout element Kodi silently
 					     ignores them, which is why v1 of this never moved. -->
-					<animation effect="zoom" start="100" end="150" center="93,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+					<animation effect="zoom" start="100" end="150" center="78,103" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 					<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 				<!-- THE EXIT, take three - and the dissolve is GONE, because
 				     slow-motion capture showed it doing the opposite of its job.
@@ -489,6 +489,8 @@
 			<visible>Control.HasFocus(9000)</visible>
 			<animation effect="zoom" start="83.3" end="100" center="335,179" time="170" tween="sine" easing="out">Focus</animation>
 			<animation effect="zoom" start="100" end="83.3" center="335,179" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="100" end="150" center="335,179" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+			<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 		</control>
 		<control type="image">
 			<left>227</left>
@@ -499,6 +501,8 @@
 			<visible>Control.HasFocus(9000)</visible>
 			<animation effect="zoom" start="83.3" end="100" center="335,179" time="170" tween="sine" easing="out">Focus</animation>
 			<animation effect="zoom" start="100" end="83.3" center="335,179" time="120" tween="sine" easing="out">Unfocus</animation>
+					<animation effect="zoom" start="100" end="150" center="335,179" time="480" tween="cubic" easing="out" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
+			<animation effect="fade" start="100" end="0" time="480" tween="sine" easing="in" condition="!String.IsEmpty(Window(home).Property(CouchLaunching))">Conditional</animation>
 		</control>
 
 		<!-- lower-left: the focused game's own logo, PS5 style; text fallback
