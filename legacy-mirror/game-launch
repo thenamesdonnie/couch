@@ -1251,6 +1251,32 @@ case "$MODE" in
     # APPID carries the eboot.bin path of a dumped game, or is empty to open
     # the emulator's own controller-driven library (Big Picture).
 
+    # BLOODBORNE: force the save's clean-exit flag before every launch
+    # (14 Aug 2026). Byte 0x204E in userdata0010/backup0010 is the game's own
+    # "was I closed properly" marker; it silences attack/menu/footstep sounds
+    # for the whole session when 0. The game writes 0 on every crash AND on
+    # every launcher-driven quit (SIGTERM never counts as a proper exit), so
+    # without this the sounds die after any incident and stay dead. Safe now:
+    # the sounds-on combat crash was the BB Reborne pack, removed 14 Aug -
+    # vanilla + sounds is verified stable. If crashes at combat ever return,
+    # REMOVE THIS FIRST and see homelab-bloodborne-mods memory.
+    _bbsave=/home/ds2000/.local/share/shadPS4/home/1000/savedata/CUSA00900/SPRJ0005
+    if [ -d "$_bbsave" ]; then
+      python3 - "$_bbsave" <<'BBFLAG' || true
+import os, sys
+d = sys.argv[1]
+for n in ('userdata0010', 'backup0010'):
+    p = os.path.join(d, n)
+    try:
+        with open(p, 'r+b') as f:
+            f.seek(0x204E)
+            if f.read(1) == b'\x00':
+                f.seek(0x204E); f.write(b'\x01')
+    except OSError:
+        pass
+BBFLAG
+    fi
+
     # DON'T RELAUNCH INTO A HALF-DEAD INSTANCE (11 Aug 2026). Donnie launched
     # from the phone 4s after quitting and the emulator never appeared: no
     # window, and no "Starting shadps4" line in its own log, so it died before
