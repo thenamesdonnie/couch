@@ -1233,17 +1233,34 @@ def test_ensure_big_picture_confirms_at_quarter_second_grain():
 
 def test_teardown_polls_are_quarter_second_same_deadlines():
     """Textual: the save-on-quit grace keeps its deliberate totals - 8s ask
-    (32 x 0.25), 6s shadPS4 (24 x 0.25), 10s launcher bow-out (40 x 0.25,
-    both arms) - and the post-thaw `sleep 1` grace before the WM_DELETE ask
-    is untouched (it is settle time for the thawed game, not a poll)."""
+    (32 x 0.25), 30s shadPS4 (120 x 0.25; was 6s until 59aa7fb, when the
+    Bloodborne clean-exit work showed the emulator needs real time to bow
+    out or the save's dirty flag silences the session's sounds), 10s
+    launcher bow-out (40 x 0.25, both arms) - and the post-thaw `sleep 1`
+    grace before the WM_DELETE ask is untouched (it is settle time for the
+    thawed game, not a poll)."""
     text = _gl_text()
     fn = _gl_fn('close_games')
     assert 'for _ in $(seq 32); do game_running || break; sleep 0.25; done' in fn
-    assert 'for _ in $(seq 24); do emu_running || break; sleep 0.25; done' in fn
+    assert 'for _ in $(seq 120); do emu_running || break; sleep 0.25; done' in fn
     assert re.search(r'^\s*sleep 1\s*$', fn, re.M)      # the thaw grace stays
     assert text.count(
         'for _ in $(seq 40); do [ -f "$SESSION" ] || break; sleep 0.25; done') == 2
     assert not re.search(r'\[ -f "\$SESSION" \] \|\| break; sleep 1;', text)
+
+
+def test_close_ignored_sweep_never_sigkills_the_emulator():
+    """Textual: the +8s WM_DELETE force-kill sweep excludes shadPS4's pids.
+    game_pids includes them, so without the filter the sweep SIGKILLed the
+    emulator - the dirty exit that silences Bloodborne's session sounds -
+    and made the SIGTERM + 30s emulator branch below it unreachable on
+    every in-game quit (shadPS4 ignores WM_DELETE while a game runs;
+    caught live 15 Aug 2026)."""
+    fn = _gl_fn('close_games')
+    assert "shad=\" $(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\\n' ' ') \"" in fn
+    assert 'case "$shad" in *" $p "*) continue ;; esac' in fn
+    # the kill loop runs on the filtered list, and only when it is non-empty
+    assert 'scope=steam-only' in fn
 
 
 def test_curtain_show_has_no_status_preprobe():

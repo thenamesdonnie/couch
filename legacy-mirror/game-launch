@@ -595,7 +595,13 @@ def walk(w):
                 g = c.get_geometry()
                 if want == 'bp' and 'Big Picture' in nm:
                     target = (c, 1)
-                elif want == 'emu' and ('shadps4' in (cls[0] or '').lower() or 'shadps4' in nm.lower()):
+                elif want == 'emu' and ('shadps4' in (cls[0] or '').lower() or 'shadps4' in nm.lower()
+                                        or (cls[0] or '').lower() == 'gamescope'):
+                    # Under the stage-3 wrap the emulator's own window lives
+                    # INSIDE the nested compositor and never maps on this
+                    # display; the thing to raise is gamescope's SDL window,
+                    # class 'gamescope'. Only game wraps run gamescope on
+                    # this box, so the class is as good as the name.
                     # The emulator opens fullscreen and usually grabs focus on
                     # its own; this just makes sure it sits above Kodi if not.
                     if target is None or g.width * g.height > target[1]:
@@ -805,11 +811,29 @@ EOF
   # in 200ms used to cost a full second of discretization per stage.
   for _ in $(seq 32); do game_running || break; sleep 0.25; done
   if game_running; then
-    say "close ignored, force killing"
-    local doomed; doomed="$(game_pids)"
-    intent kill all "pids:=$(_jnums "$doomed")" resolver=game-pids \
-      signal=SIGKILL reason=close-ignored "why=$why"
-    for p in $doomed; do kill -9 "$p" 2>/dev/null; done
+    # NEVER the emulator's pids (15 Aug 2026, caught live): game_pids
+    # includes shadPS4, so this sweep SIGKILLed it at +8s and the SIGTERM +
+    # 30s branch below - the 14 Aug "sounds survive any kind of exit" work -
+    # was dead code on every in-game quit (shadPS4 ignores WM_DELETE while a
+    # game runs). The sweep is for Steam games; the emulator leaves under
+    # its own branch.
+    local doomed shad p
+    doomed="$(game_pids)"
+    shad=" $(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ') "
+    local keep=''
+    for p in $doomed; do
+      case "$shad" in *" $p "*) continue ;; esac
+      keep="$keep $p"
+    done
+    doomed="${keep# }"
+    if [ -n "$doomed" ]; then
+      say "close ignored, force killing"
+      intent kill all "pids:=$(_jnums "$doomed")" resolver=game-pids \
+        signal=SIGKILL reason=close-ignored "why=$why" scope=steam-only
+      for p in $doomed; do kill -9 "$p" 2>/dev/null; done
+    else
+      say "close ignored by the emulator only - leaving it to the SIGTERM grace"
+    fi
   fi
   # "shadPS4 has no save-on-quit to protect" - THAT COMMENT WAS WRONG, and it
   # is probably why this path force-killed so readily. userdata0010 is rewritten
@@ -1295,7 +1319,40 @@ BBFLAG
     # exactly why the failed launch above could not be diagnosed at all.
     _emulog=/tmp/shadps4-launch.log
     { echo; echo "=== $(date '+%F %T') launch ${APPID:-bigpicture}"; } >>"$_emulog"
-    if [ -n "$APPID" ]; then
+
+    # GAMESCOPE WRAP (stage 3, 15 Aug 2026). Run the emulator nested inside
+    # gamescope so overlays (the switcher, PiP) can composite OVER the live
+    # game instead of replacing it. Opt-in behind a file switch, the
+    # guide-press convention: touch ~/couch/data/gamescope-shadps4-enabled to
+    # wrap, rm it to go back to bare. Never load-bearing: gamescope-wrap
+    # execs the game bare (loudly) if gamescope is missing or broken, so the
+    # switch being on cannot lose a launch. Output matches the display's
+    # CURRENT mode (couch-4k120 pins 4K120 but hotplug clears it - ask, don't
+    # assume); the nested display is the same size, so the emulator presents
+    # exactly as it does bare and gamescope adds no scaling step.
+    _gswrap=/home/ds2000/couch/tools/gamescope-wrap
+    _gs_on=0 _gspid=
+    if [ -f /home/ds2000/couch/data/gamescope-shadps4-enabled ] && [ -x "$_gswrap" ]; then
+      _gs_on=1
+      # Size from the Screen header, not the mode line: the pinned 4K120 mode
+      # is a hand-made modeline NAMED "4k120", so the mode column is not WxH.
+      _xr="$(xrandr --current 2>/dev/null)"
+      _gsmode="$(printf '%s\n' "$_xr" | awk -F'current ' '/current /{split($2,a,","); gsub(/ /,"",a[1]); print a[1]; exit}')"
+      _gsrate="$(printf '%s\n' "$_xr" | awk '/\*/{for(i=2;i<=NF;i++) if ($i ~ /\*/) {gsub(/[*+]/,"",$i); printf "%.0f", $i; exit}}')"
+      case "$_gsmode" in [0-9]*x[0-9]*) ;; *) _gsmode=3840x2160 ;; esac
+      case "$_gsrate" in [0-9]|[0-9][0-9]|[0-9][0-9][0-9]) ;; *) _gsrate=120 ;; esac
+      say "gamescope wrap ON: output $_gsmode@$_gsrate (rm ~/couch/data/gamescope-shadps4-enabled to disable)"
+    fi
+    if [ "$_gs_on" = 1 ]; then
+      # -f: gamescope's SDL window fullscreens itself; without it the game
+      # sits in a desktop window. Not on the wrap's NEVER list.
+      if [ -n "$APPID" ]; then
+        "$_gswrap" --output "$_gsmode" --rate "$_gsrate" --gs-arg -f -- shadps4 "$APPID" >>"$_emulog" 2>&1 &
+      else
+        "$_gswrap" --output "$_gsmode" --rate "$_gsrate" --gs-arg -f -- shadps4 >>"$_emulog" 2>&1 &
+      fi
+      _gspid=$!
+    elif [ -n "$APPID" ]; then
       shadps4 "$APPID" >>"$_emulog" 2>&1 &
     else
       shadps4 >>"$_emulog" 2>&1 &
@@ -1313,6 +1370,26 @@ BBFLAG
       curtain_fade
       while emu_running; do sleep 3; done
       say "shadps4 ended"
+    fi
+    # The wrap's teardown belt. emu_running() watches the EMULATOR's
+    # processes, so this loop ends the moment they die - but gamescope is
+    # their parent, not a descendant, and 3.16.25 has known lingering /
+    # teardown-segfault shapes (#2133/#2139; gamescope-wrap's whole reason to
+    # exist). A gamescope that outlives its game is a fullscreen black window
+    # sat over Kodi, so give it a grace to follow the emulator down, then
+    # close it. TERM goes to the wrapper, which forwards it to gamescope.
+    if [ "$_gs_on" = 1 ] && [ -n "$_gspid" ]; then
+      _t=0
+      while kill -0 "$_gspid" 2>/dev/null; do
+        sleep 1; _t=$((_t+1))
+        if [ $_t -ge 8 ]; then
+          say "gamescope lingered ${_t}s after the emulator ended - closing it"
+          kill -TERM "$_gspid" 2>/dev/null
+          break
+        fi
+      done
+      wait "$_gspid" 2>/dev/null
+      [ $_t -gt 0 ] && [ $_t -lt 8 ] && say "gamescope followed the emulator down (${_t}s)"
     fi
     ;;
 esac

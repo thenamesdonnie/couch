@@ -160,7 +160,15 @@ def main():
                             cls = (c.get_wm_class() or ('', ''))[0] or ''
                         except Exception:
                             cls = ''
-                        if (pid and pid in wanted) or cls.startswith('steam_app'):
+                        # 'gamescope' counts as a positive match for the same
+                        # reason steam_app does: under the stage-3 wrap the
+                        # game's visible window is gamescope's SDL window, and
+                        # its _NET_WM_PID is gamescope's own pid - the PARENT
+                        # of the game tree, which game-pids (descendants of
+                        # the game's processes) never contains. Only game
+                        # wraps run gamescope on this box.
+                        if ((pid and pid in wanted) or cls.startswith('steam_app')
+                                or cls == 'gamescope'):
                             if best[0] is None or area > best[0][0]:
                                 best[0] = (area, c.id)
                         elif (cls and cls not in NOT_GAMES
