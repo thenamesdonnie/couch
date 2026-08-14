@@ -361,7 +361,69 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (12 Aug 2026 ~10:30 — BLOODBORNE SOUND SOLVED, and it was our launcher)
+## ▶ Resume here (15 Aug 2026 ~00:30 — BLOODBORNE FULLY WORKING; next: GAMESCOPE)
+
+**NEXT TRACK, asked for by Donnie in his own words: the switcher OVER a live
+game.** "double tap takes me away from bloodborne when ideally it would show
+on top." That is the gamescope build: run shadPS4 (Bloodborne first) inside
+gamescope so Kodi's switcher dialog can composite over the running game.
+Standing start: `gamescope-wrap` is committed (couchd stage 3), and
+`tools/pip-gamescope-rig` PROVED overlay-over-game composition works on this
+box (9 Aug, headless). Plan the wrap into `game-launch shadps4`, test with
+Donnie at the TV, watch for: pad input through gamescope, 1440p scaling,
+shadPS4-under-gamescope quirks, and the freeze/suspend dance interacting
+with a nested compositor. See docs/research/pip-over-a-game-20260809.md.
+
+**BLOODBORNE: everything works as of tonight.** The full arc is in
+auto-memory homelab-bloodborne-mods.md - read it BEFORE touching anything
+BB-related. Headlines: (1) the combat crash was the BB REBORNE MOD PACK -
+all 12 modules reverted (Donnie: "doesn't even change much, keep it like
+this"); zips + per-file backups remain for a rainy-day bisect. (2) The
+silent-SFX bug is the save's clean-exit byte 0x204E; game-launch now
+force-sets it before every launch (5c9d5fc) - if combat crashes EVER return,
+remove that block first. (3) readbacks_mode=1 (Relaxed) applied for the
+stuck translucent ghost-rectangles - UNVERIFIED by eye, first thing to ask
+about; also watch the fps cost (was 50-60 CPU-bound). (4) FMOD Crash Fix
+patch entry exists in Bloodborne.xml but isEnabled=false - do NOT re-enable.
+
+### Also this session
+- Gestures: hold rebound context_menu -> switcher, so hold == double_tap;
+  edited script.couch.switcher settings.xml directly, verified via
+  gestureconf.load(), no rail warnings. Backup at scratchpad
+  switcher-settings.bak.
+- 0e445d1: launch flourish - halo rings now zoom+fade WITH the tile
+  (CouchLaunching), stale zoom centre 93->78 fixed. Motion unverified by eye.
+- Xfce display popups: 7 stacked "keep configuration?" dialogs killed;
+  xfconf displays /Notify -> false so TV hotplugs stop breeding them.
+- Pad lag mystery solved: the Bose headphones auto-connected to the PC's
+  bluetooth (radio contention with the DualSense). Offered
+  `bluetoothctl untrust E4:58:BC:7F:38:74` - NOT run, Donnie hasn't said.
+  Kernel BT patch verified still in place (kernel 7.0.0-28 unchanged).
+- Jellyfin: HardwareAccelerationType was STILL nvenc on an AMD-only box (6
+  days broken transcode); fix line given to Donnie (vaapi + restart) -
+  UNCONFIRMED whether run. Tone mapping needs mesa-opencl-icd (not
+  installed) before 4K HDR transcode looks right. The Inception/Dark Knight
+  "file not supported" on the LG app may ALSO be webOS DV-in-MKV refusal -
+  test after the vaapi fix; Kodi plays both fine regardless.
+- Disk: 3rd/4th link resets on disk1 13 Aug; monitor upgrade READY at
+  scratchpad disk-monitor.sh (unsafe-shutdown counter per serial) - install
+  line given, UNCONFIRMED whether run. Cable-swap discrimination experiment
+  still pending at the box.
+
+### ▶ NEEDS DONNIE (carry-overs + new)
+1. Readbacks verdict: ghost rectangles gone? fps cost?
+2. Games row: pitch/off-screen exit/launch flourish still never verified by
+   eye while moving.
+3. CPU fan curve extension (scratchpad fancontrol.new) - line given, not run.
+4. GPU still pinned `high` from coil-whine test; revert line given.
+5. YouTube bass: check the Hisense soundbar's own sub level / sound mode.
+6. memtest STILL never run.
+
+### Deliberately uncommitted
+- kodi-addons/resource.uisounds.couch/ (unfinished addon, no addon.xml) and
+  shadow/*.jsonl runtime logs.
+
+## ▶ Previous resume block (12 Aug 2026 ~10:30 — BLOODBORNE SOUND SOLVED, and it was our launcher)
 
 **The headline: the missing attack/menu/footstep sounds were caused by
 `game-launch` force-killing the emulator.** Bloodborne notices it was not
