@@ -397,7 +397,8 @@ def _paused_frame(appid):
         return ''
     frames = sorted(n for n in names
                     if n.startswith(safe + '__') and n.endswith('.jpg')
-                    and not n.endswith('.tile.jpg'))
+                    and not n.endswith('.tile.jpg')
+                    and not n.endswith('.full.jpg'))
     if not frames:
         return ''
     return os.path.join(PAUSED_DIR, frames[-1])

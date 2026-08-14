@@ -29,9 +29,15 @@ game was paused. A fresh name is a fresh url to every cache in the chain. Only
 the newest pair per appid is kept, so the directory stays bounded at two small
 jpgs per paused game (and in practice one game is paused at a time).
 
-Two files per capture:
+Three files per capture:
   <appid>__<ms>.jpg       960px-wide 16:9 frame - phone switcher row, Kodi fanart
   <appid>__<ms>.tile.jpg  600x900 centre crop - the portrait poster grid tile
+  <appid>__<ms>.full.jpg  the window at NATIVE size - the TV switcher's
+                          fullscreen backdrop (15 Aug 2026: a 960px frame
+                          stretched over a 4K panel is what Donnie called
+                          "low res"). Phone-facing consumers exclude it by
+                          name; pausedframe.frame_epoch_ms already treats it
+                          as not-a-frame because its stamp tail is not digits.
 
 Test seams (used by the synthetic end-to-end; unset in normal operation):
   PAUSE_SNAP_WID   capture this window id instead of resolving a game window
@@ -60,7 +66,8 @@ XINPUT = os.path.join(HOME, 'couch/server/xinput.py')
 REFRESH = os.path.join(HOME, 'couch/tools/kodi-refresh-games')
 LOG = '/tmp/pause-snap.log'
 
-IMPORT_TIMEOUT = 2      # seconds; the measured cost is ~0.05s
+IMPORT_TIMEOUT = 4      # seconds; ~0.05s measured for the resized grab, but
+                        # the native 4K write behind the .full.jpg is heavier
 RESOLVE_TIMEOUT = 2
 TILE = '600x900'        # the portrait poster grid Copacetic draws the row in
 WIDE = '960x960>'       # shrink-only: never upscale a small window
@@ -254,15 +261,24 @@ def capture(appid):
     wid = game_window()
     stamp = int(time.time() * 1000)
     wide, tile = f'{name}__{stamp}.jpg', f'{name}__{stamp}.tile.jpg'
+    full = f'{name}__{stamp}.full.jpg'
     # Written under a dot-name and renamed into place: readers (the phone, the
     # Kodi row) glob this directory and must never pick up a half-written jpg.
     tmp_wide = os.path.join(DIR, f'.snap-{os.getpid()}.jpg')
     tmp_tile = os.path.join(DIR, f'.snap-{os.getpid()}.tile.jpg')
+    tmp_full = os.path.join(DIR, f'.snap-{os.getpid()}.full.jpg')
     try:
-        r = run(['import', '-window', wid, '-resize', WIDE, '-quality', '80',
-                 tmp_wide], IMPORT_TIMEOUT)
-        if r.returncode != 0 or not os.path.getsize(tmp_wide):
+        # ONE read of the pixmap, at native size; the phone frame and the
+        # poster tile are derived from it locally. The X round-trip is the
+        # part worth doing once - convert on a local jpg is cheap.
+        r = run(['import', '-window', wid, '-quality', '88', tmp_full],
+                IMPORT_TIMEOUT)
+        if r.returncode != 0 or not os.path.getsize(tmp_full):
             raise RuntimeError((r.stderr or 'import produced nothing').strip())
+        w = run(['convert', tmp_full, '-resize', WIDE, '-quality', '80',
+                 tmp_wide], IMPORT_TIMEOUT)
+        if w.returncode != 0 or not os.path.getsize(tmp_wide):
+            raise RuntimeError((w.stderr or 'wide resize produced nothing').strip())
         if is_black(tmp_wide):
             raise RuntimeError(f'frame is blank (window {wid} unredirected?)')
         # The row is a portrait poster grid, so the landscape frame is centre
@@ -271,20 +287,23 @@ def capture(appid):
         t = run(['convert', tmp_wide, '-resize', TILE + '^', '-gravity',
                  'center', '-extent', TILE, '-quality', '80', tmp_tile],
                 IMPORT_TIMEOUT)
-        keep = [wide]
+        keep = [wide, full]
         os.replace(tmp_wide, os.path.join(DIR, wide))
+        os.replace(tmp_full, os.path.join(DIR, full))
         if t.returncode == 0 and os.path.exists(tmp_tile):
             os.replace(tmp_tile, os.path.join(DIR, tile))
             keep.append(tile)
         else:
             say(f'tile crop failed for {appid} (frame kept)')
         prune(name, keep=keep)
-        say(f'{appid}: captured {wid} -> {wide}')
-        announce_pause(os.path.join(DIR, wide))
+        say(f'{appid}: captured {wid} -> {wide} (+full)')
+        # The fly-to-card animation STARTS fullscreen, so it gets the native
+        # frame; the 960px wide stays the phone/row asset.
+        announce_pause(os.path.join(DIR, full))
         nudge_kodi()        # frames are on disk; the row may now rebuild
         return 0
     finally:
-        for p in (tmp_wide, tmp_tile):
+        for p in (tmp_wide, tmp_tile, tmp_full):
             try:
                 os.remove(p)
             except OSError:

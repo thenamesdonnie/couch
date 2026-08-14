@@ -110,6 +110,19 @@ POWER_ACTIONS = [("Quit game", "quit"),
                  ("Controller off", "pad_off"),
                  ("Controller + TV off", "all_off")]
 
+# The Spotify bar, sharing the power strip's row on its right half. Drawn
+# only while the couch server says a phone session is live on the spotifyd
+# receiver (GET /api/spotify -> {active:true}); the XML gates the whole
+# section on PROP_SPOTIFY so an idle receiver leaves the sheet exactly as it
+# was before this feature existed. Unlike every other pick in this dialog a
+# media action does NOT close it: skipping is a repeat-press activity, so the
+# click fires the command, redraws Play/Pause and the now-playing label from
+# the server's answer, and stays open until B backs out.
+MEDIA_ID = 9020
+PROP_SPOTIFY = "couch.spotify"
+PROP_SPOTIFY_LABEL = "couch.spotify.label"
+MEDIA_TIMEOUT = 2     # status is ~3 local busctl calls behind the server
+
 # The freeze-frame backdrop. pause-snap drops the paused game's last rendered
 # frame in PAUSED_DIR at suspend time; the XML's bottom-most image control is
 # bound to PROP_FRAME on THIS window and stays hidden while it is empty, so
@@ -149,6 +162,7 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
     choice = -1
     appid = ""              # the paused session's appid; "" = no live session
     power = ""              # a POWER_ACTIONS key when the bar was used
+    spotify = None          # /api/spotify answer, fetched before doModal
     _filled = False
 
     def __init__(self, *args, **kwargs):
@@ -201,6 +215,14 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
                 xbmc.log("couch.switcher: power bar unavailable (%s)" % e,
                          xbmc.LOGWARNING)
 
+            # The Spotify bar. Same rule as the power bar: its absence is a
+            # poorer sheet, never a missing switcher.
+            try:
+                self._fill_media()
+            except Exception as e:  # noqa: BLE001
+                xbmc.log("couch.switcher: spotify bar unavailable (%s)" % e,
+                         xbmc.LOGWARNING)
+
             # Focus the SWITCH row, never the power bar: the stick must not
             # start on anything that turns the television off.
             self.setFocusId(LIST_ID)
@@ -221,6 +243,8 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
             if 0 <= idx < len(POWER_ACTIONS):
                 self.power = POWER_ACTIONS[idx][1]
             self.close()
+        elif controlId == MEDIA_ID:
+            self._media_click(self.getControl(MEDIA_ID).getSelectedPosition())
 
     def onAction(self, action):
         # Kodi runs the base window's OnAction before this, so navigation and
@@ -235,6 +259,71 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
         # failure), so this is the one place the frame poll gets told to stop.
         self._frame_stop.set()
         super().close()
+
+    # -- the Spotify bar -----------------------------------------------------
+
+    def _fill_media(self):
+        st = self.spotify or {}
+        if not st.get("active"):
+            return              # no phone session - the XML keeps it hidden
+        bar = self.getControl(MEDIA_ID)
+        bar.reset()
+        labels = ["Previous",
+                  "Pause" if st.get("playing") else "Play",
+                  "Next"]
+        bar.addItems([xbmcgui.ListItem(label=lbl) for lbl in labels])
+        bar.selectItem(1)       # play/pause is the middle pill and the point
+        self._set_media_label(st)
+        self.setProperty(PROP_SPOTIFY, "1")
+
+    def _set_media_label(self, st):
+        # Sits beside the amber dot as the media cluster's eyebrow line, so
+        # it is just the music: "Track - Artist", or the service name when
+        # spotifyd has a session but nothing loaded yet.
+        now = " - ".join(x for x in (st.get("track"), st.get("artist")) if x)
+        self.setProperty(PROP_SPOTIFY_LABEL, now if now else "Spotify")
+
+    def _media_click(self, idx):
+        if not 0 <= idx < 3:
+            return
+        pausing = False
+        if idx == 1:
+            # An explicit verb chosen by the pill's CURRENT label, never
+            # MPRIS PlayPause: the toggle races its own read-back (verified
+            # live 15 Aug - two quick PlayPauses left the player paused,
+            # because spotifyd's reported state lags the command it just
+            # took). Play/Pause are idempotent, and they let the label be
+            # redrawn from intent below instead of from that stale read.
+            bar = self.getControl(MEDIA_ID)
+            pausing = bar.getListItem(1).getLabel() == "Pause"
+            cmd = "pause" if pausing else "play"
+        else:
+            cmd = "previous" if idx == 0 else "next"
+        # Inline, not a thread: the round trip is ~300ms (the server re-reads
+        # status after firing the command) and a click that answers with its
+        # own redraw is worth a beat of held frame.
+        try:
+            st = spotify_command(cmd)
+        except Exception as e:  # noqa: BLE001
+            xbmc.log("couch.switcher: spotify %s failed: %s"
+                     % (cmd, e), xbmc.LOGWARNING)
+            return
+        try:
+            if not st.get("active"):
+                # The phone walked away mid-press. Park focus somewhere real
+                # BEFORE hiding the bar, or the pad would be steering a
+                # control that no longer draws.
+                self.setFocusId(LIST_ID)
+                self.clearProperty(PROP_SPOTIFY)
+                return
+            if idx == 1:
+                bar = self.getControl(MEDIA_ID)
+                bar.getListItem(1).setLabel("Play" if pausing else "Pause")
+            # A skip leaves play/pause as it was; only the track line moves.
+            self._set_media_label(st)
+        except Exception as e:  # noqa: BLE001
+            xbmc.log("couch.switcher: spotify redraw failed: %s" % e,
+                     xbmc.LOGWARNING)
 
     # -- the freeze-frame backdrop -------------------------------------------
 
@@ -268,7 +357,7 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
                                              int(time.time() * 1000))
             if not frame:
                 return False
-            self.setProperty(PROP_FRAME, frame)
+            self.setProperty(PROP_FRAME, pausedframe.fullres_variant(frame))
             return True
         except Exception as e:  # noqa: BLE001 - decoration must never cost the dialog
             xbmc.log("couch.switcher: freeze-frame lookup failed: %s" % e,
@@ -308,6 +397,7 @@ def select_window(rows):
     try:
         dlg.rows = rows
         dlg.appid = pausedframe.session_appid(rows, fallback=_suspended_appid())
+        dlg.spotify = _spotify_status()
         dlg.doModal()
         if dlg.power:
             # A power action was picked, so there is no window to switch to.
@@ -329,6 +419,31 @@ def _suspended_appid():
     # through couchhost - a plain open() there would read an empty sandbox
     # and drop the backdrop on every shadPS4 pause.
     return (host_read("/tmp/game-suspended") or "").strip()
+
+
+def _spotify_status():
+    """What the spotifyd receiver is doing, or {} - never an exception.
+
+    {} and {"active": False} both leave the bar hidden, so a slow or absent
+    endpoint (an older server without /api/spotify, say) degrades to the
+    sheet as it was before the bar existed."""
+    try:
+        req = urllib.request.Request(API + "/api/spotify")
+        with urllib.request.urlopen(req, timeout=MEDIA_TIMEOUT) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception as e:  # noqa: BLE001 - decoration must never cost the dialog
+        xbmc.log("couch.switcher: spotify status failed: %s" % e,
+                 xbmc.LOGWARNING)
+        return {}
+
+
+def spotify_command(cmd):
+    """Fire a transport command; returns the server's fresh status so the
+    bar can redraw itself from the answer."""
+    req = urllib.request.Request(API + "/api/spotify/" + cmd, data=b"{}",
+                                 headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read().decode("utf-8"))
 
 
 def get_windows():

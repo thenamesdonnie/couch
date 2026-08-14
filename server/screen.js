@@ -312,7 +312,8 @@ function pausedFrame(appid) {
   let names;
   try { names = fs.readdirSync(PAUSED_DIR); } catch { return null; }
   const hits = names
-    .filter((n) => n.startsWith(prefix) && n.endsWith('.jpg') && !n.endsWith('.tile.jpg'))
+    .filter((n) => n.startsWith(prefix) && n.endsWith('.jpg') && !n.endsWith('.tile.jpg')
+                && !n.endsWith('.full.jpg'))
     .sort();
   return hits.length ? path.join(PAUSED_DIR, hits[hits.length - 1]) : null;
 }

@@ -69,6 +69,19 @@ def newest_frame(dirpath, appid, now_ms, fresh_ms=FRESH_MS, skew_ms=SKEW_MS):
     return os.path.join(dirpath, best_name) if best_name else None
 
 
+def fullres_variant(path):
+    """The native-resolution sibling of a wide frame, when pause-snap wrote
+    one (<stem>.full.jpg beside <stem>.jpg). The switcher's backdrop covers a
+    4K panel and the wide frame is phone-sized (960px), which upscales soft -
+    Donnie, 15 Aug 2026: "freeze frame is low res". Freshness was already
+    judged on the wide frame; the sibling shares its stamp by construction,
+    so this is a name swap, never a second decision."""
+    if not path or not path.endswith('.jpg') or path.endswith('.full.jpg'):
+        return path
+    cand = path[:-len('.jpg')] + '.full.jpg'
+    return cand if os.path.exists(cand) else path
+
+
 def session_appid(rows, fallback=''):
     """The paused session's appid, dug out of the same rows the list is built
     from. Proton games carry it in their window class (steam_app_<appid>);
