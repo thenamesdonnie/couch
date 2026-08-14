@@ -768,6 +768,19 @@ close_games() {
   cont_all
   sleep 1
   game_pids | tr '\n' ' ' > /tmp/game-pids
+  # The WM_DELETE ask and its 8s grace exist for Steam games and Big
+  # Picture. An emulator-only session goes straight to shadPS4's own
+  # SIGTERM branch below: the ask reached the emulator's window tonight
+  # (bare) and in-game shadPS4 ignored it, and under the gamescope wrap the
+  # visible window is not even the emulator's - so the ask only ever cost 8
+  # dead seconds on the way out (15 Aug 2026, Donnie: "quitting the game
+  # takes quite a while").
+  local shad_q p_q steam_present=0
+  shad_q=" $(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ') "
+  for p_q in $(cat /tmp/game-pids 2>/dev/null); do
+    case "$shad_q" in *" $p_q "*) ;; *) steam_present=1; break ;; esac
+  done
+  if [ "$steam_present" = 1 ] || bp_running; then
   intent quit all "pids:=$(_jnums "$(cat /tmp/game-pids 2>/dev/null)")" \
     resolver=game-pids scope=games+bigpicture+shadps4 via=WM_DELETE_WINDOW \
     "reason=$why"
@@ -834,6 +847,9 @@ EOF
     else
       say "close ignored by the emulator only - leaving it to the SIGTERM grace"
     fi
+  fi
+  else
+    say "emulator-only session - skipping the WM_DELETE ask, straight to shadPS4's close"
   fi
   # "shadPS4 has no save-on-quit to protect" - THAT COMMENT WAS WRONG, and it
   # is probably why this path force-killed so readily. userdata0010 is rewritten
@@ -1011,6 +1027,12 @@ case "$MODE" in
     # about to change what is true underneath it: drop it before the teardown
     # (belt and braces - its own watchdog would take it inside seconds anyway).
     curtain_clear quit
+    # The player has already left: Kodi gets its pad back BEFORE the closing
+    # graces, not after them (15 Aug, live: quitting Bloodborne meant tens of
+    # seconds of dead buttons - the pad stayed routed to a game that was
+    # busy dying in the background). The launcher's trap repeats this
+    # restore at the very end; a double enable is a no-op.
+    pad_to_kodi
     if game_running || bp_running || emu_running; then close_games power-menu-quit; else say "nothing to quit"; fi
     exit 0
     ;;

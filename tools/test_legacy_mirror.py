@@ -1263,6 +1263,23 @@ def test_close_ignored_sweep_never_sigkills_the_emulator():
     assert 'scope=steam-only' in fn
 
 
+def test_quit_gives_kodi_the_pad_first_and_skips_the_ask_for_emu_only():
+    """Textual twins of the 15 Aug quit-feel fixes. (1) The quit path routes
+    the pad to Kodi BEFORE the closing graces - the player has already left,
+    and the old order meant tens of seconds of dead buttons while the game
+    died in the background. (2) close_games skips the WM_DELETE ask and its
+    8s grace when the session is emulator-only: shadPS4 ignores the ask
+    in-game, and under the gamescope wrap the visible window is not even
+    the emulator's."""
+    text = _gl_text()
+    quit_block = text[text.index('=== quit (save and close)'):
+                      text.index('nothing to quit')]
+    assert 'pad_to_kodi' in quit_block
+    fn = _gl_fn('close_games')
+    assert 'steam_present=0' in fn
+    assert 'emulator-only session' in fn
+
+
 def test_curtain_show_has_no_status_preprobe():
     """Textual twin of the behavioural test above: curtain_show never shells
     `status` (curtain_clear legitimately still does)."""
