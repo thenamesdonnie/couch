@@ -35,7 +35,11 @@ game resumes, Kodi raises with the game left frozen) is decided in
 server/screen.js exactly as it is for the other two remotes. The power bar
 is the same story: a pick dispatches Addons.ExecuteAddon to
 script.tvpoweroff over Kodi's JSON-RPC, byte-identical to what the Kodi
-dialog sends, so power logic keeps its one home.
+dialog sends, so power logic keeps its one home. And the spotify pills are
+the same story again: drawn only while GET /api/spotify says a phone
+session is live, clicks POST /api/spotify/<cmd> and redraw from the answer
+WITHOUT closing the deck (skipping is a repeat-press activity), explicit
+play/pause verbs rather than a toggle - all of it default.py's rules.
 
 The pad is read RAW from /dev/input (struct input_event is 24 bytes; logind
 ACLs the seat user onto the nodes) because evdev-the-library lives only in
@@ -52,6 +56,7 @@ Exit codes, for the caller that wires this to a gesture:
 
 Test seams (unset in normal operation):
   SWITCHER_OVERLAY_ROWS    path to a JSON file used instead of the HTTP GET
+  SWITCHER_OVERLAY_SPOTIFY path to a JSON file instead of GET /api/spotify
   SWITCHER_OVERLAY_NO_PAD  do not open input devices (rig runs headless)
   SWITCHER_OVERLAY_ONESHOT render once, screenshot-able, exit 0 on SIGTERM
 """
@@ -126,6 +131,17 @@ TITLE_DY = 35                   # title baseline-centre below the card
                                 # (item y 192 box h 40 -> centre 1032;
                                 # card bottom 997; 1032 - 997 = 35)
 TITLE_W = 560                   # the focused title's clip width
+# The spotify cluster, sharing the power strip's row on its right half.
+# Present only while a phone session is live; its eyebrow IS its
+# information - the amber dot and whatever is playing.
+DOT_XY = (1309, 635)            # dot.png at (1302,628) 14x14 -> centre
+DOT_R = 7
+MEDIA_EYEBROW_X = 1330          # now-playing line, same 620..648 box
+MEDIA_EYEBROW_W = 470           # its clip width
+MEDIA_X0 = 1302                 # media list left 1290 + item inset 12
+MEDIA_PITCH = 170               # the list's item width
+MEDIA_CAPSULE_W = 146           # pill width (height/y shared with power)
+MEDIA_ICON = 40                 # icon box at item +65,+20 -> centre x+85
 FONT_CAPTION = ('Regular', 28)  # Couch_Caption (Font.xml)
 FONT_LABEL = ('Medium', 32)     # Couch_Label
 FONT_EMPH = ('SemiBold', 36)    # Couch_Emph
@@ -275,8 +291,9 @@ POWER_ACTIONS = [('Quit game', 'quit'),
 
 
 def move_power(i, action, n=len(POWER_ACTIONS)):
-    """The power bar CLAMPS instead of wrapping: in the XML its ends hand
-    focus to the spotify bar, which is hidden while no session is live, so
+    """Movement inside the power bar WITHOUT a spotify bar to hand off to:
+    it clamps instead of wrapping, because in the XML its ends hand focus
+    to the spotify list, which is hidden while no session is live, so
     'focus then simply stays put at the strip's ends' (the XML's words)."""
     if n <= 0:
         return 0
@@ -287,20 +304,94 @@ def move_power(i, action, n=len(POWER_ACTIONS)):
     return i
 
 
-def deck_move(zone, rail_i, power_i, action, n_rows,
+def spotify_active(spotify):
+    """The one gate everything spotify hangs on, default.py's rule: a dict
+    with active truthy. {} (a failed or absent endpoint) and
+    {'active': False} both leave the deck exactly as it was before the bar
+    existed."""
+    return bool(spotify and spotify.get('active'))
+
+
+def media_items(spotify):
+    """The three pills, default.py's _fill_media verbatim: play/pause
+    FIRST (walking right off the power bar lands on the button that
+    matters), then previous/next. Labels drive the toggle logic; icons are
+    the faces (Donnie's call, 15 Aug: pause/previous/next ARE the three
+    glyphs every remote on earth taught)."""
+    playing = bool(spotify.get('playing'))
+    return [('Pause' if playing else 'Play',
+             'icon-pause.png' if playing else 'icon-play.png'),
+            ('Previous', 'icon-prev.png'),
+            ('Next', 'icon-next.png')]
+
+
+def now_playing_label(spotify):
+    """The media cluster's eyebrow: 'Track - Artist', or the service name
+    when spotifyd has a session but nothing loaded yet (default.py's
+    _set_media_label)."""
+    now = ' - '.join(x for x in (spotify.get('track'),
+                                 spotify.get('artist')) if x)
+    return now if now else 'Spotify'
+
+
+def media_click(spotify, idx):
+    """A pill press -> (command, what the play/pause pill shows after).
+
+    default.py's rule, learned live: an explicit verb chosen by the pill's
+    CURRENT state, never a PlayPause toggle - spotifyd's reported state
+    lags the command it just took, so the pill is redrawn from INTENT, not
+    from the server's stale read. A skip leaves play/pause as it was."""
+    playing = bool(spotify.get('playing'))
+    if idx == 0:
+        return ('pause' if playing else 'play'), not playing
+    return ('previous' if idx == 1 else 'next'), playing
+
+
+def deck_move(zone, rail_i, power_i, media_i, action, n_rows, n_media=0,
               n_power=len(POWER_ACTIONS)):
-    """One move on the deck -> (zone, rail_i, power_i). Mirrors the XML's
-    onup/ondown wiring: up from the rail lands on the power bar, down comes
-    back, and the edges are walls (9010's onup is 9010, 9000's ondown is
-    9000). Each row keeps its own remembered index across zone hops,
-    exactly as Kodi lists remember their selected item."""
+    """One move on the deck -> (zone, rail_i, power_i, media_i).
+
+    Mirrors the XML's wiring plus default.py's _join_strip repair: the
+    power bar and the spotify bar are ONE strip, so walking right off the
+    power bar's end lands on the first pill, left off the first capsule
+    wraps the screen edge onto the last pill, and back again - entering a
+    bar sideways never teleports to wherever it last was. Up from the rail
+    lands on the power bar (the rail's onup is 9010, never 9020); up/down
+    edges are walls; vertical hops keep each list's remembered index,
+    exactly as Kodi lists remember their selected item. n_media=0 (no live
+    session) reduces the strip to the clamping power bar alone."""
     if action == 'up':
-        return 'power', rail_i, power_i
+        if zone == 'rail':
+            return 'power', rail_i, power_i, media_i
+        return zone, rail_i, power_i, media_i
     if action == 'down':
-        return 'rail', rail_i, power_i
+        if zone in ('power', 'media'):
+            return 'rail', rail_i, power_i, media_i
+        return zone, rail_i, power_i, media_i
+    if zone == 'rail':
+        return zone, move_focus(rail_i, action, n_rows), power_i, media_i
     if zone == 'power':
-        return zone, rail_i, move_power(power_i, action, n_power)
-    return zone, move_focus(rail_i, action, n_rows), power_i
+        if not n_media:
+            return zone, rail_i, move_power(power_i, action, n_power), media_i
+        if action == 'left':
+            if power_i > 0:
+                return zone, rail_i, power_i - 1, media_i
+            return 'media', rail_i, power_i, n_media - 1   # screen-edge wrap
+        if action == 'right':
+            if power_i < n_power - 1:
+                return zone, rail_i, power_i + 1, media_i
+            return 'media', rail_i, power_i, 0
+        return zone, rail_i, power_i, media_i
+    if zone == 'media':
+        if action == 'left':
+            if media_i > 0:
+                return zone, rail_i, power_i, media_i - 1
+            return 'power', rail_i, n_power - 1, media_i
+        if action == 'right':
+            if media_i < n_media - 1:
+                return zone, rail_i, power_i, media_i + 1
+            return 'power', rail_i, 0, media_i             # screen-edge wrap
+    return zone, rail_i, power_i, media_i
 
 
 def card_label(row):
@@ -473,14 +564,39 @@ def _ellipsize(draw, text, font, max_w):
     return text + '…'
 
 
-def compose_strip(rows, focus, out_w, out_h, thumbs, power_focus=None):
+_ICONS = {}
+
+
+def _icon(name, size, color):
+    """A media glyph from the addon's own icon-*.png, tinted the way the
+    XML colordiffuses it (the file's alpha is the shape; the fill is
+    ours). None if the file is missing - the caller falls back to the
+    pill's text label, exactly as the XML does."""
+    key = (name, size, color)
+    if key not in _ICONS:
+        from PIL import Image
+        try:
+            src = Image.open(os.path.join(MEDIA_DIR, name)).convert(
+                'RGBA').resize((size, size))
+            tinted = Image.new('RGBA', (size, size), color + (255,))
+            tinted.putalpha(src.split()[-1])
+        except Exception:
+            tinted = None
+        _ICONS[key] = tinted
+    return _ICONS[key]
+
+
+def compose_strip(rows, focus, out_w, out_h, thumbs, power_focus=None,
+                  spotify=None, media_focus=None):
     """The whole deck as one fullscreen RGBA image, a PIL re-creation of
     script-couch-switcher.xml: the eased scrim, the POWER capsules, the
-    SWITCH TO rail. `power_focus` None means the rail card `focus` is lit;
-    an index means that capsule is lit and every card rests (the XML gates
-    every focus mark on ITS list having focus, so nothing else lights up).
-    Redrawn per focus move - tens of ms of PIL at 4K, nothing animates, the
-    move IS the transition."""
+    spotify cluster (drawn only while `spotify` says a phone session is
+    live - an inactive answer leaves the sheet pixel-identical to the deck
+    before the bar existed), the SWITCH TO rail. Exactly one of the three
+    is lit: power_focus/media_focus None+None means the rail card `focus`
+    is (the XML gates every focus mark on ITS list having focus). Redrawn
+    per focus move - tens of ms of PIL at 4K, nothing animates, the move
+    IS the transition."""
     from PIL import Image, ImageDraw
     s = out_h / DESIGN_H
 
@@ -524,8 +640,38 @@ def compose_strip(rows, focus, out_w, out_h, thumbs, power_focus=None):
         d.text((cx + px(CAPSULE_W) / 2, cy + ch / 2), label, font=lab_font,
                fill=(INK if lit else REST_TEXT) + (255,), anchor='mm')
 
+    # The spotify cluster: amber dot + now-playing eyebrow, three icon
+    # pills. Gated whole on an active session, like the XML's
+    # !String.IsEmpty(Window.Property(couch.spotify)).
+    if spotify_active(spotify):
+        d.ellipse((px(DOT_XY[0]) - px(DOT_R), px(DOT_XY[1]) - px(DOT_R),
+                   px(DOT_XY[0]) + px(DOT_R), px(DOT_XY[1]) + px(DOT_R)),
+                  fill=AMBER + (255,))
+        d.text((px(MEDIA_EYEBROW_X), px(EYEBROW_POWER_XY[1])),
+               _ellipsize(d, now_playing_label(spotify), cap_font,
+                          px(MEDIA_EYEBROW_W)),
+               font=cap_font, fill=MUTED + (255,), anchor='lm')
+        for j, (label, icon_name) in enumerate(media_items(spotify)):
+            mx = px(MEDIA_X0 + j * MEDIA_PITCH)
+            lit = media_focus == j
+            d.rounded_rectangle(
+                (mx, px(CAPSULE_Y), mx + px(MEDIA_CAPSULE_W),
+                 px(CAPSULE_Y) + ch), radius=ch // 2,
+                fill=(255, 255, 255, CAPSULE_FOCUS_A if lit else GLASS_A))
+            glyph = _icon(icon_name, px(MEDIA_ICON),
+                          INK if lit else REST_TEXT)
+            centre = (mx + px(MEDIA_CAPSULE_W) / 2, px(CAPSULE_Y) + ch / 2)
+            if glyph is not None:
+                glass.paste(glyph, (round(centre[0] - px(MEDIA_ICON) / 2),
+                                    round(centre[1] - px(MEDIA_ICON) / 2)),
+                            glyph)
+            else:
+                d.text(centre, label, font=lab_font,
+                       fill=(INK if lit else REST_TEXT) + (255,),
+                       anchor='mm')
+
     # The rail's glass panels (and the no-art cards' centred names).
-    rail_lit = power_focus is None
+    rail_lit = power_focus is None and media_focus is None
     for i, row in enumerate(rows):
         x, y = xs[i]
         focused = rail_lit and i == focus
@@ -730,6 +876,35 @@ def fetch_rows():
         raise RuntimeError('no window list from the couch server: %s' % e)
 
 
+def fetch_spotify():
+    """What the spotifyd receiver is doing, or {} - NEVER an exception
+    (default.py's _spotify_status rule): a slow or absent endpoint
+    degrades to the deck as it was before the bar existed."""
+    seam = os.environ.get('SWITCHER_OVERLAY_SPOTIFY')
+    if seam:
+        try:
+            with open(seam) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+    try:
+        with urllib.request.urlopen(API + '/api/spotify', timeout=2) as r:
+            return json.load(r)
+    except Exception as e:  # decoration must never cost the deck
+        say('spotify status failed (%s)' % e)
+        return {}
+
+
+def spotify_command(cmd):
+    """Fire a transport command exactly as the Kodi dialog does
+    (default.py): POST /api/spotify/<cmd> with an empty JSON body; returns
+    the server's fresh status so the pills redraw from the answer."""
+    req = urllib.request.Request(API + '/api/spotify/' + cmd, data=b'{}',
+                                 headers={'content-type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.load(r)
+
+
 def activate(row_id):
     req = urllib.request.Request(
         API + '/api/windows/activate',
@@ -831,9 +1006,11 @@ def main(argv):
     say('rows: %s (focus %d)' % ([r['title'] for r in rows], focus))
 
     thumbs = {i: fetch_thumb(r) for i, r in enumerate(rows)}
+    spotify = fetch_spotify()       # {} hides the cluster, non-fatally
 
     overlay = RailOverlay(display)
-    strip = compose_strip(rows, focus, overlay.out_w, overlay.out_h, thumbs)
+    strip = compose_strip(rows, focus, overlay.out_w, overlay.out_h, thumbs,
+                          spotify=spotify)
     overlay.create(*strip.size)
     # pipd's measured lesson, which bit here too on the first live frame:
     # gamescope's first commit of the plane does not carry a position set
@@ -862,9 +1039,16 @@ def main(argv):
         return 2
 
     st = PadState()
-    zone, power_i = 'rail', 0        # the deck opens on the rail, never on
-    if fds:                          # anything that turns the room off
-        kodi_joystick(False)
+    zone, power_i, media_i = 'rail', 0, 0    # the deck opens on the rail,
+    if fds:                          # never on anything that turns the
+        kodi_joystick(False)         # room off or skips Donnie's track
+
+    def redraw():
+        overlay.draw(compose_strip(
+            rows, focus, overlay.out_w, overlay.out_h, thumbs,
+            power_i if zone == 'power' else None, spotify,
+            media_i if zone == 'media' else None))
+
     try:
         while not stop['sig']:
             # Superseded from outside: the PS button's own resume clears the
@@ -884,13 +1068,34 @@ def main(argv):
             if not action:
                 continue
             if action in ('left', 'right', 'up', 'down'):
-                nz, nf, npw = deck_move(zone, focus, power_i, action,
-                                        len(rows))
-                if (nz, nf, npw) != (zone, focus, power_i):
-                    zone, focus, power_i = nz, nf, npw
-                    overlay.draw(compose_strip(
-                        rows, focus, overlay.out_w, overlay.out_h, thumbs,
-                        power_i if zone == 'power' else None))
+                moved = deck_move(zone, focus, power_i, media_i, action,
+                                  len(rows),
+                                  3 if spotify_active(spotify) else 0)
+                if moved != (zone, focus, power_i, media_i):
+                    zone, focus, power_i, media_i = moved
+                    redraw()
+            elif action == 'select' and zone == 'media':
+                # A media pick does NOT close the deck (default.py's rule:
+                # skipping is a repeat-press activity): fire the verb,
+                # redraw pill + now-playing line from the fresh answer.
+                cmd, next_playing = media_click(spotify, media_i)
+                say('spotify: %s' % cmd)
+                try:
+                    fresh = spotify_command(cmd)
+                except (urllib.error.URLError, OSError, ValueError) as e:
+                    say('spotify %s failed (%s)' % (cmd, e))
+                    continue
+                if not fresh.get('active'):
+                    # The phone walked away mid-press. Park focus somewhere
+                    # real BEFORE hiding the bar (default.py does the same).
+                    spotify = {}
+                    zone = 'rail'
+                else:
+                    # The pill reflects INTENT, never the server's lagging
+                    # read; a skip carries the old state through.
+                    fresh['playing'] = next_playing
+                    spotify = fresh
+                redraw()
             elif action == 'select' and zone == 'power':
                 key = POWER_ACTIONS[power_i][1]
                 say('power: %s' % key)

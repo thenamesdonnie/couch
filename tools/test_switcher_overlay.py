@@ -134,18 +134,78 @@ def test_move_power_clamps_at_the_ends():
 
 
 def test_deck_move_hops_between_rail_and_power_and_remembers():
-    z, r, p = mod.deck_move('rail', 1, 0, 'up', 3)
-    assert (z, r, p) == ('power', 1, 0)
-    z, r, p = mod.deck_move(z, r, p, 'right', 3)
-    assert (z, r, p) == ('power', 1, 1)       # capsule moved, card held
-    z, r, p = mod.deck_move(z, r, p, 'up', 3)
-    assert z == 'power'                       # top edge is a wall
-    z, r, p = mod.deck_move(z, r, p, 'down', 3)
-    assert (z, r, p) == ('rail', 1, 1)        # both indices survived
-    z, r, p = mod.deck_move(z, r, p, 'down', 3)
-    assert z == 'rail'                        # bottom edge is a wall
-    z, r, p = mod.deck_move(z, r, p, 'left', 3)
-    assert (z, r, p) == ('rail', 0, 1)        # rail still wraps its own way
+    st = mod.deck_move('rail', 1, 0, 0, 'up', 3)
+    assert st == ('power', 1, 0, 0)
+    st = mod.deck_move(*st, 'right', 3)
+    assert st == ('power', 1, 1, 0)           # capsule moved, card held
+    st = mod.deck_move(*st, 'up', 3)
+    assert st[0] == 'power'                   # top edge is a wall
+    st = mod.deck_move(*st, 'down', 3)
+    assert st == ('rail', 1, 1, 0)            # both indices survived
+    st = mod.deck_move(*st, 'down', 3)
+    assert st[0] == 'rail'                    # bottom edge is a wall
+    st = mod.deck_move(*st, 'left', 3)
+    assert st == ('rail', 0, 1, 0)            # rail still wraps its own way
+
+
+def test_deck_move_without_spotify_clamps_the_power_bar():
+    """n_media=0 (no live session): the strip is the power bar alone and
+    its ends are walls, pixel-model-identical to the pre-spotify deck."""
+    assert mod.deck_move('power', 0, 0, 0, 'left', 3) == ('power', 0, 0, 0)
+    assert mod.deck_move('power', 0, 2, 0, 'right', 3) == ('power', 0, 2, 0)
+
+
+def test_deck_move_with_spotify_joins_the_strip():
+    """The XML's _join_strip repair: power and spotify act as ONE wrapping
+    strip - rightwards entry lands on the first pill, the screen-edge wrap
+    lands on the last, and never wherever the bar last was."""
+    n = 3
+    st = mod.deck_move('power', 0, 2, 1, 'right', 3, n)
+    assert st == ('media', 0, 2, 0)           # off the end -> first pill
+    st = mod.deck_move(*st, 'right', 3, n)
+    assert st == ('media', 0, 2, 1)           # interior move
+    st = mod.deck_move('media', 0, 2, 2, 'right', 3, n)
+    assert st == ('power', 0, 0, 2)           # screen-edge wrap -> capsule 0
+    st = mod.deck_move('media', 0, 1, 0, 'left', 3, n)
+    assert st == ('power', 0, 2, 0)           # leftwards entry -> last capsule
+    st = mod.deck_move('power', 0, 0, 1, 'left', 3, n)
+    assert st == ('media', 0, 0, 2)           # screen-edge wrap -> last pill
+    st = mod.deck_move('media', 2, 0, 1, 'down', 3, n)
+    assert st == ('rail', 2, 0, 1)            # ondown 9000, indices held
+    assert mod.deck_move('media', 0, 0, 1, 'up', 3, n)[0] == 'media'
+    assert mod.deck_move('rail', 0, 0, 1, 'up', 3, n) \
+        == ('power', 0, 0, 1)                 # rail's onup is 9010, never 9020
+
+
+def test_spotify_active_gates_exactly_like_default_py():
+    assert not mod.spotify_active(None)
+    assert not mod.spotify_active({})
+    assert not mod.spotify_active({'active': False})
+    assert mod.spotify_active({'active': True})
+
+
+def test_media_items_face_the_current_state_play_pause_first():
+    assert mod.media_items({'active': True, 'playing': True}) == [
+        ('Pause', 'icon-pause.png'), ('Previous', 'icon-prev.png'),
+        ('Next', 'icon-next.png')]
+    assert mod.media_items({'active': True})[0] == ('Play', 'icon-play.png')
+
+
+def test_media_click_uses_explicit_verbs_and_intent():
+    """Never PlayPause: spotifyd's read-back lags the command it just
+    took, so the verb comes from the pill's state and the pill's next
+    state from intent. Skips leave play/pause alone."""
+    assert mod.media_click({'playing': True}, 0) == ('pause', False)
+    assert mod.media_click({'playing': False}, 0) == ('play', True)
+    assert mod.media_click({'playing': True}, 1) == ('previous', True)
+    assert mod.media_click({'playing': False}, 2) == ('next', False)
+
+
+def test_now_playing_label_joins_track_and_artist():
+    assert mod.now_playing_label({'track': 'Hunter', 'artist': 'Sakuraba'}) \
+        == 'Hunter - Sakuraba'
+    assert mod.now_playing_label({'track': 'Hunter'}) == 'Hunter'
+    assert mod.now_playing_label({}) == 'Spotify'
 
 
 def test_power_actions_match_the_kodi_dialog():
@@ -211,3 +271,18 @@ def test_rows_seam_reads_a_file(tmp_path, monkeypatch):
     monkeypatch.setenv('SWITCHER_OVERLAY_ROWS', str(p))
     assert [r['id'] for r in mod.fetch_rows()] == \
         ['0x2600080', '0x5800002', 'desktop']
+
+
+def test_spotify_seam_reads_a_file(tmp_path, monkeypatch):
+    p = tmp_path / 'spotify.json'
+    p.write_text(json.dumps({'active': True, 'playing': True,
+                             'track': 'Hunter'}))
+    monkeypatch.setenv('SWITCHER_OVERLAY_SPOTIFY', str(p))
+    assert mod.fetch_spotify()['track'] == 'Hunter'
+
+
+def test_spotify_fetch_is_never_fatal(monkeypatch):
+    """An unreachable /api/spotify must cost the bar, never the deck."""
+    monkeypatch.delenv('SWITCHER_OVERLAY_SPOTIFY', raising=False)
+    monkeypatch.setattr(mod, 'API', 'http://127.0.0.1:1')
+    assert mod.fetch_spotify() == {}
