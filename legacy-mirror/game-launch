@@ -1402,32 +1402,30 @@ BBFLAG
         (
         _gst=0 _gsdisp=""
         while [ $_gst -lt 120 ]; do
-        _gsdisp="$(python3 - "$_gspid" <<'GSDISP'
-import os, sys
-anchor = int(sys.argv[1])
-def ppid(p):
-    try:
-        with open('/proc/%d/stat' % p) as f:
-            return int(f.read().rsplit(') ', 1)[1].split()[1])
-    except (OSError, ValueError, IndexError):
-        return 0
+        # No ancestry test, deliberately (02:05, measured): Xwayland's
+        # parent is SYSTEMD, not gamescope - the user manager spawns it,
+        # so walking up from Xwayland never reaches the wrapper. The rule
+        # that is actually true on this box: the outer display is Xorg,
+        # so ANY Xwayland is a wrap's nested display. Newest wins.
+        _gsdisp="$(python3 - <<'GSDISP'
+import os
+best = (0.0, '')
 for d in os.listdir('/proc'):
     if not d.isdigit():
         continue
     try:
         with open('/proc/%s/cmdline' % d, 'rb') as f:
             argv = f.read().split(b'\0')
+        started = os.stat('/proc/%s' % d).st_mtime
     except OSError:
         continue
     if not argv or b'Xwayland' not in argv[0]:
         continue
     disp = next((a.decode() for a in argv if a.startswith(b':')), '')
-    p = int(d)
-    while p > 1:
-        if p == anchor:
-            print(disp)
-            raise SystemExit
-        p = ppid(p)
+    if disp and disp != ':0' and started >= best[0]:
+        best = (started, disp)
+if best[1]:
+    print(best[1])
 GSDISP
 )"
         if [ -n "$_gsdisp" ]; then
