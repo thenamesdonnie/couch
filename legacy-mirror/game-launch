@@ -1395,6 +1395,13 @@ BBFLAG
       # display that is. Find the Xwayland that descends from our wrapper
       # and publish its :N; couchd reads it through the flag observer.
       if [ "$_gs_on" = 1 ] && [ -n "$_gspid" ]; then
+        # gamescope starts Xwayland LAZILY - it appeared ~15s after the
+        # emulator's processes on the 01:44 launch, well past any polite
+        # wait. So the discovery runs DETACHED and writes the bridge
+        # whenever Xwayland lands; the launch flow never blocks on it.
+        (
+        _gst=0 _gsdisp=""
+        while [ $_gst -lt 120 ]; do
         _gsdisp="$(python3 - "$_gspid" <<'GSDISP'
 import os, sys
 anchor = int(sys.argv[1])
@@ -1426,9 +1433,13 @@ GSDISP
         if [ -n "$_gsdisp" ]; then
           printf '%s' "$_gsdisp" > /tmp/game-gamescope
           say "gamescope nested display $_gsdisp (-> /tmp/game-gamescope)"
-        else
-          say "no Xwayland under the wrap yet - overlay switcher unavailable"
+          break
         fi
+        kill -0 "$_gspid" 2>/dev/null || break   # wrap died; stop looking
+        sleep 0.5; _gst=$((_gst+1))
+        done
+        [ -z "$_gsdisp" ] && say "no Xwayland under the wrap after 60s - overlay switcher unavailable"
+        ) &
       fi
       sleep 3
       yield_to_couchd transitions show "${APPID:-shadps4}" via=xlib-restack \

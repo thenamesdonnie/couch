@@ -73,6 +73,32 @@ def test_dpad_hat_maps_edges_and_centre_is_silent():
     assert mod.pad_action((EV_ABS, mod.ABS_HAT0X, 1), st) == 'right'
 
 
+def test_dpad_hat_vertical_maps_up_and_down():
+    st = mod.PadState()
+    assert mod.pad_action((EV_ABS, mod.ABS_HAT0Y, -1), st) == 'up'
+    assert mod.pad_action((EV_ABS, mod.ABS_HAT0Y, 0), st) is None
+    assert mod.pad_action((EV_ABS, mod.ABS_HAT0Y, 1), st) == 'down'
+
+
+def test_stick_y_edge_detects_and_maps_vertically():
+    st = mod.PadState()
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, 255), st) == 'down'
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, 250), st) is None
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, 128), st) is None
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, 0), st) == 'up'
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, -30000), st) is None  # held
+
+
+def test_stick_axes_engage_independently():
+    """A diagonal that latched X must not eat Y's move (and vice versa)."""
+    st = mod.PadState()
+    assert mod.pad_action((EV_ABS, mod.ABS_X, 255), st) == 'right'
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, 255), st) == 'down'
+    assert mod.pad_action((EV_ABS, mod.ABS_X, 128), st) is None
+    assert mod.pad_action((EV_ABS, mod.ABS_X, 0), st) == 'left'
+    assert mod.pad_action((EV_ABS, mod.ABS_Y, 250), st) is None  # still held
+
+
 def test_stick_8bit_edge_detects_one_move_per_deflection():
     """hid-playstation reports ABS_X 0..255 centred 128: a held deflection
     is a stream of large values and must be ONE move until it returns to
@@ -96,6 +122,47 @@ def test_move_focus_wraps_both_ways():
     assert mod.move_focus(0, 'left', 3) == 2
     assert mod.move_focus(2, 'right', 3) == 0
     assert mod.move_focus(1, 'select', 3) == 1
+
+
+def test_move_power_clamps_at_the_ends():
+    """The XML's power bar hands its ends to a hidden spotify list, which
+    parks focus in place - so the overlay clamps, never wraps."""
+    assert mod.move_power(0, 'left') == 0
+    assert mod.move_power(0, 'right') == 1
+    assert mod.move_power(2, 'right') == 2
+    assert mod.move_power(2, 'left') == 1
+
+
+def test_deck_move_hops_between_rail_and_power_and_remembers():
+    z, r, p = mod.deck_move('rail', 1, 0, 'up', 3)
+    assert (z, r, p) == ('power', 1, 0)
+    z, r, p = mod.deck_move(z, r, p, 'right', 3)
+    assert (z, r, p) == ('power', 1, 1)       # capsule moved, card held
+    z, r, p = mod.deck_move(z, r, p, 'up', 3)
+    assert z == 'power'                       # top edge is a wall
+    z, r, p = mod.deck_move(z, r, p, 'down', 3)
+    assert (z, r, p) == ('rail', 1, 1)        # both indices survived
+    z, r, p = mod.deck_move(z, r, p, 'down', 3)
+    assert z == 'rail'                        # bottom edge is a wall
+    z, r, p = mod.deck_move(z, r, p, 'left', 3)
+    assert (z, r, p) == ('rail', 0, 1)        # rail still wraps its own way
+
+
+def test_power_actions_match_the_kodi_dialog():
+    """The bar is a clone of default.py's POWER_ACTIONS - if the addon
+    grows or renames an action, this must fail until the overlay follows."""
+    src = (Path(__file__).parent.parent / 'kodi-addons'
+           / 'script.couch.switcher' / 'default.py').read_text()
+    assert mod.POWER_ADDON in src
+    for label, key in mod.POWER_ACTIONS:
+        assert '("%s", "%s")' % (label, key) in src
+
+
+def test_card_label_keeps_the_paused_marker():
+    assert mod.card_label({'title': 'shadPS4 v0.17.0 | CUSA00900 - '
+                                    'Bloodborne <01.09> · paused',
+                           'paused': True}) == 'Bloodborne · paused'
+    assert mod.card_label({'title': 'Desktop'}) == 'Desktop'
 
 
 ROWS = {'windows': [

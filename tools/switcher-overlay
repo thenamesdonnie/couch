@@ -14,15 +14,28 @@ the pad cannot leak into the game while the rail is up.
 
 Shape stolen from tools/pipd, which earned it the hard way (read its module
 docstring): the overlay plane blits at 0,0 output-sized and IGNORES the X
-window's own position, so the plane is a FULLSCREEN 32-bit window - here a
-translucent scrim that dims the game - and the rail is a CHILD window whose
-position inside the parent's buffer is what gamescope actually shows.
+window's own position, so the plane is a FULLSCREEN 32-bit window and the
+whole deck is painted into a fullscreen CHILD window inside it.
+
+The LOOK is the Kodi switcher's deck, recreated in PIL ("can we just copy
+the xml over then? and use that one for everything" - Donnie, 15 Aug).
+script-couch-switcher.xml is the source of truth: the eased deck-scrim
+gradient (the real texture, stretched, so the curve cannot drift), the
+POWER capsule bar, the SWITCH TO art rail, one focus grammar - THE FOCUSED
+THING TURNS WHITE (capsules fill white with ink text, tiles get a white
+ring and their title beneath). The XML is authored in 1080i coordinates;
+everything here scales by out_h/1080. The freeze-frame backdrop the Kodi
+dialog fakes with a property is free here: the frozen game itself is
+already behind the plane.
 
 Switching logic: NONE, deliberately, the same contract as the Kodi addon
 and the phone. Rows come from GET /api/windows on the couch server, a pick
 POSTs /api/windows/activate, and everything that happens next (a paused
 game resumes, Kodi raises with the game left frozen) is decided in
-server/screen.js exactly as it is for the other two remotes.
+server/screen.js exactly as it is for the other two remotes. The power bar
+is the same story: a pick dispatches Addons.ExecuteAddon to
+script.tvpoweroff over Kodi's JSON-RPC, byte-identical to what the Kodi
+dialog sends, so power logic keeps its one home.
 
 The pad is read RAW from /dev/input (struct input_event is 24 bytes; logind
 ACLs the seat user onto the nodes) because evdev-the-library lives only in
@@ -44,6 +57,7 @@ Test seams (unset in normal operation):
 """
 import json
 import os
+import re
 import select
 import signal
 import struct
@@ -64,26 +78,64 @@ PAUSED_DIR = os.path.expanduser('~/couch/data/paused')
 # paused tile wants that frame anyway.
 FRAME_WAIT_S = 1.5
 FONT_DIR = os.path.expanduser('~/couch/kodi-addons/skin.couch/fonts/Figtree')
+# The Kodi dialog's own textures - deck-scrim.png carries the eased
+# gradient curve (baked in PIL there too; reusing the file means one curve
+# everywhere, and a redesign there lands here for free).
+MEDIA_DIR = os.path.expanduser(
+    '~/couch/kodi-addons/script.couch.switcher/resources/skins/Default/media')
 
-# Stagelight's own tokens (docs/specs/console-skin.md): amber focus, dark
-# surfaces. The rail should read as the same UI family as the TV skin.
-AMBER = (232, 168, 73)          # e8a849
-TILE_BG = (24, 24, 28)
-LABEL_FG = (235, 235, 235)
-SCRIM_ARGB = 0x99000000         # ~60% black over the game
+# Stagelight deck tokens, lifted verbatim from script-couch-switcher.xml
+# (Kodi hex is AARRGGBB). The deck is white-at-some-opacity everywhere; the
+# only colour it owns is the amber now-playing dot, which appears only when
+# spotify does - so it is a constant here, waiting.
+AMBER = (232, 168, 73)          # FFE8A849, the pilot light
+MUTED = (138, 147, 160)         # FF8A93A0 - eyebrow captions
+REST_TEXT = (182, 189, 198)     # FFB6BDC6 - resting capsule/card labels
+BRIGHT_TEXT = (243, 245, 248)   # FFF3F5F8 - focused labels, rail title
+INK = (16, 20, 26)              # FF10141A - text on a lit capsule
+GLASS_A = 0x1A                  # 10% white: resting capsule + card panel
+GLASS_FOCUS_A = 0x29            # 16% white under a focused card's art
+CAPSULE_FOCUS_A = 0xF8          # the lit capsule is near-solid white
+ART_REST_A = 0xD8               # resting art at 85%; focus is full
+SCRIM_ARGB = 0x00000000         # the child covers the plane edge-to-edge
+                                # and carries the gradient itself; the
+                                # parent's flat scrim would double-dim
+SCRIM_TOP_A = 56                # deck-scrim.png's flat veil up top and the
+SCRIM_EASE = (400, 770)         # 1080-space band where it eases to black
+                                # (the procedural fallback if the texture
+                                # ever goes missing; measured off the file)
 
-# Rail geometry, fractions of the output so 4K and 1080p both compose.
-TILE_W_FRAC = 0.17              # tile width / output width
-TILE_ASPECT = 16 / 9
-TILE_GAP_FRAC = 0.22            # gap as a fraction of tile width
-LABEL_H_FRAC = 0.22             # label bar under the art, of tile height
-RING = 6                        # focus ring stroke, px at 4K (scaled)
+# Geometry: the XML's 1080i numbers, scaled by out_h / DESIGN_H at compose
+# time. Names follow the XML's controls.
+DESIGN_H = 1080.0
+EYEBROW_POWER_XY = (132, 634)   # label box 620..648, centred
+EYEBROW_SWITCH_XY = (132, 798)  # label box 784..812, centred
+CAPSULE_X0 = 132                # power list left 120 + item inset 12
+CAPSULE_Y = 668                 # power list top 660 + item inset 8
+CAPSULE_W, CAPSULE_H = 346, 64  # capsule.png stretch target (a pill)
+CAPSULE_PITCH = 370             # the list's item width
+RAIL_X0 = 132                   # rail left 120 + card inset 12
+RAIL_Y = 828                    # rail top 820 + card inset 8
+CARD_W, CARD_H = 300, 169       # the art card (mask-art.png's own size)
+CARD_PITCH = 324                # the list's item width -> 24px gap
+CARD_RADIUS = 16                # mask-art.png's corner radius, measured
+RING_OUT = 6                    # ring.png sits 6px outside the card
+RING_RADIUS = 24                # ring.png border=24
+RING_STROKE = 4                 # ring.png's stroke width, measured
+TITLE_DY = 35                   # title baseline-centre below the card
+                                # (item y 192 box h 40 -> centre 1032;
+                                # card bottom 997; 1032 - 997 = 35)
+TITLE_W = 560                   # the focused title's clip width
+FONT_CAPTION = ('Regular', 28)  # Couch_Caption (Font.xml)
+FONT_LABEL = ('Medium', 32)     # Couch_Label
+FONT_EMPH = ('SemiBold', 36)    # Couch_Emph
 
 # struct input_event on 64-bit linux: tv_sec, tv_usec, type, code, value
 EVENT_FMT = 'llHHi'
 EVENT_SIZE = struct.calcsize(EVENT_FMT)
 EV_KEY, EV_ABS = 0x01, 0x03
-ABS_HAT0X, ABS_X = 0x10, 0x00
+ABS_HAT0X, ABS_HAT0Y = 0x10, 0x11
+ABS_X, ABS_Y = 0x00, 0x01
 BTN_SOUTH, BTN_EAST = 0x130, 0x131      # Cross / Circle
 STICK_ON = 18000                # DualSense ABS_X is 0..255? no - hid-playstation
 STICK_OFF = 12000               # reports 0..255; see note in pad_action
@@ -142,13 +194,16 @@ def decode_events(buf):
 
 class PadState:
     """Edge detection for the stick, so a held deflection is ONE move.
-    The dpad hat already edge-detects itself (0 between presses)."""
+    The dpad hat already edge-detects itself (0 between presses). The two
+    axes engage independently: a diagonal that latched X must not eat Y."""
     def __init__(self):
-        self.stick_engaged = False
+        self.stick_engaged = False       # ABS_X
+        self.stick_y_engaged = False     # ABS_Y
 
 
 def pad_action(ev, st):
-    """(type, code, value) -> 'left'|'right'|'select'|'back'|None."""
+    """(type, code, value) ->
+    'left'|'right'|'up'|'down'|'select'|'back'|None."""
     etype, code, value = ev
     if etype == EV_KEY and value == 1:
         if code == BTN_SOUTH:
@@ -164,22 +219,37 @@ def pad_action(ev, st):
         if value > 0:
             return 'right'
         return None
-    if code == ABS_X:
+    if code == ABS_HAT0Y:
+        if value < 0:
+            return 'up'
+        if value > 0:
+            return 'down'
+        return None
+    if code in (ABS_X, ABS_Y):
         small = -1 <= value <= 260        # an 8-bit pad (hid-playstation)
         centre = 128 if small else 0
         on = STICK8_ON - 128 if small else STICK_ON
         off = STICK8_OFF - 128 if small else STICK_OFF
         mag = value - centre
-        if st.stick_engaged:
+        vert = code == ABS_Y
+        if (st.stick_y_engaged if vert else st.stick_engaged):
             if abs(mag) < off:
-                st.stick_engaged = False
+                if vert:
+                    st.stick_y_engaged = False
+                else:
+                    st.stick_engaged = False
             return None
+        action = None
         if mag <= -on:
-            st.stick_engaged = True
-            return 'left'
-        if mag >= on:
-            st.stick_engaged = True
-            return 'right'
+            action = 'up' if vert else 'left'
+        elif mag >= on:
+            action = 'down' if vert else 'right'
+        if action:
+            if vert:
+                st.stick_y_engaged = True
+            else:
+                st.stick_engaged = True
+        return action
     return None
 
 
@@ -192,6 +262,54 @@ def move_focus(i, action, n):
     if action == 'right':
         return (i + 1) % n
     return i
+
+
+# The power bar above the rail, verbatim from the Kodi dialog (default.py's
+# POWER_ACTIONS): labels beside the script.tvpoweroff actions they fire.
+# Text, not symbols (Donnie's call, 8 Aug): the three differ only in WHICH
+# things get turned off, and a glyph cannot carry that.
+POWER_ADDON = 'script.tvpoweroff'
+POWER_ACTIONS = [('Quit game', 'quit'),
+                 ('Controller off', 'pad_off'),
+                 ('Controller + TV off', 'all_off')]
+
+
+def move_power(i, action, n=len(POWER_ACTIONS)):
+    """The power bar CLAMPS instead of wrapping: in the XML its ends hand
+    focus to the spotify bar, which is hidden while no session is live, so
+    'focus then simply stays put at the strip's ends' (the XML's words)."""
+    if n <= 0:
+        return 0
+    if action == 'left':
+        return max(0, i - 1)
+    if action == 'right':
+        return min(n - 1, i + 1)
+    return i
+
+
+def deck_move(zone, rail_i, power_i, action, n_rows,
+              n_power=len(POWER_ACTIONS)):
+    """One move on the deck -> (zone, rail_i, power_i). Mirrors the XML's
+    onup/ondown wiring: up from the rail lands on the power bar, down comes
+    back, and the edges are walls (9010's onup is 9010, 9000's ondown is
+    9000). Each row keeps its own remembered index across zone hops,
+    exactly as Kodi lists remember their selected item."""
+    if action == 'up':
+        return 'power', rail_i, power_i
+    if action == 'down':
+        return 'rail', rail_i, power_i
+    if zone == 'power':
+        return zone, rail_i, move_power(power_i, action, n_power)
+    return zone, move_focus(rail_i, action, n_rows), power_i
+
+
+def card_label(row):
+    """What the Kodi dialog prints on/under a card: the cleaned title, with
+    the ' · paused' marker kept (it matters)."""
+    label = short_label(row.get('title') or str(row.get('id', '')))
+    if row.get('paused'):
+        label += ' · paused'
+    return label
 
 
 def pick_rows(payload):
@@ -218,43 +336,97 @@ def initial_focus(rows):
 
 
 def layout(n, out_w, out_h):
-    """-> (strip_w, strip_h, tile_w, tile_h, gap, [(x, y), ...]) for the
-    rail child window, centred; positions are relative to the strip."""
-    tile_w = int(out_w * TILE_W_FRAC)
-    art_h = int(tile_w / TILE_ASPECT)
-    tile_h = int(art_h * (1 + LABEL_H_FRAC))
-    gap = int(tile_w * TILE_GAP_FRAC)
-    pad = RING * 3
-    strip_w = n * tile_w + (n - 1) * gap + 2 * pad
-    strip_h = tile_h + 2 * pad
-    xs = [(pad + i * (tile_w + gap), pad) for i in range(n)]
-    return strip_w, strip_h, tile_w, tile_h, gap, xs
+    """-> (strip_w, strip_h, tile_w, tile_h, gap, [(x, y), ...]).
+
+    The strip IS the whole output now: the deck design is a fullscreen
+    sheet (gradient scrim easing into the bottom), so the child window
+    covers the plane and place_centre lands it at 0,0 untouched. Tiles are
+    the XML's 300x169 cards on a 324 pitch, left-anchored at the rail's
+    x=120 (+12 card inset), scaled out of 1080i space."""
+    s = out_h / DESIGN_H
+    tile_w, tile_h = round(CARD_W * s), round(CARD_H * s)
+    gap = round((CARD_PITCH - CARD_W) * s)
+    pitch = tile_w + gap
+    x0, y = round(RAIL_X0 * s), round(RAIL_Y * s)
+    xs = [(x0 + i * pitch, y) for i in range(n)]
+    return out_w, out_h, tile_w, tile_h, gap, xs
 
 
 # =========================================================================
 # rendering
 # =========================================================================
-def load_font(size):
+_FONTS = {}
+
+
+def load_font(size, weight='SemiBold'):
+    """One of the skin's own Figtree weights at `size` px - the same files
+    Font.xml points the Couch_* fonts at, so the deck's type IS the TV's."""
+    key = (weight, size)
+    if key in _FONTS:
+        return _FONTS[key]
     from PIL import ImageFont
-    for name in ('Figtree-SemiBold.ttf', 'Figtree-Medium.ttf',
-                 'Figtree-Regular.ttf'):
+    font = None
+    for name in ('Figtree-%s.ttf' % weight, 'Figtree-SemiBold.ttf',
+                 'Figtree-Medium.ttf', 'Figtree-Regular.ttf'):
         p = os.path.join(FONT_DIR, name)
         if os.path.exists(p):
             try:
-                return ImageFont.truetype(p, size)
+                font = ImageFont.truetype(p, size)
+                break
             except OSError:
                 pass
-    return ImageFont.load_default()
+    if font is None:
+        font = ImageFont.load_default()
+    _FONTS[key] = font
+    return font
 
 
 def short_label(title):
     """'shadPS4 v0.17.0 | CUSA00900 - Bloodborne <01.09> · paused' is a
-    window title, not a tile label. Take the most game-like fragment."""
+    window title, not a card label. Same cleanup as the Kodi dialog's
+    pretty_title (default.py): strip the emulator preamble and the version
+    tag, pass anything human-named through untouched. The ' · paused'
+    marker is stripped here and re-added by card_label, so callers that
+    want the bare name get it."""
     t = title.replace(' · paused', '')
-    if ' - ' in t:
-        t = t.rsplit(' - ', 1)[1]
-    t = t.split('<')[0].strip(' |')
-    return (t[:28] + '…') if len(t) > 29 else (t or title[:28])
+    m = re.match(r'^shadPS4\b[^|]*\|\s*[A-Z]+\d+\s*-\s*(.*)$', t)
+    if m:
+        t = re.sub(r'\s*<[^>]*>', '', m.group(1))
+    t = t.strip(' |')
+    return (t[:33] + '…') if len(t) > 34 else (t or title[:28])
+
+
+_SCRIM_CACHE = {}
+
+
+def deck_scrim(out_w, out_h):
+    """The deck's backdrop: deck-scrim.png (a light veil up top so the room
+    can still see the game, easing to near-black where the deck sits)
+    stretched to the output, exactly as the XML stretches it to 1920x1080.
+    Falls back to a procedural smoothstep of the measured curve if the
+    addon's media dir ever moves. Cached; callers get a fresh copy."""
+    from PIL import Image
+    key = (out_w, out_h)
+    cached = _SCRIM_CACHE.get(key)
+    if cached is None:
+        alpha = None
+        try:
+            tex = Image.open(os.path.join(MEDIA_DIR, 'deck-scrim.png'))
+            alpha = tex.convert('RGBA').split()[-1].resize(
+                (out_w, out_h), Image.BILINEAR)
+        except Exception:
+            y0, y1 = (v * out_h / DESIGN_H for v in SCRIM_EASE)
+            col = Image.new('L', (1, out_h))
+            col.putdata([
+                int(SCRIM_TOP_A + (255 - SCRIM_TOP_A)
+                    * (0.0 if y <= y0 else 1.0 if y >= y1 else
+                       (lambda t: t * t * (3 - 2 * t))((y - y0) / (y1 - y0))))
+                for y in range(out_h)])
+            alpha = col.resize((out_w, out_h), Image.NEAREST)
+        base = Image.new('RGBA', (out_w, out_h), (0, 0, 0, 255))
+        base.putalpha(alpha)
+        _SCRIM_CACHE[key] = base
+    return _SCRIM_CACHE[key].copy()
 
 
 def fetch_thumb(row, timeout=2.0):
@@ -277,54 +449,127 @@ def fetch_thumb(row, timeout=2.0):
         return None
 
 
-def compose_strip(rows, focus, out_w, out_h, thumbs):
-    """The whole rail as one RGBA image; redrawn per focus move (a few ms of
-    PIL at 4K, measured nowhere near the 120Hz frame budget because nothing
-    here animates - the move IS the transition, matching the stock alt-tab
-    feel rather than the home row's grow)."""
+def _crop_cover(img, w, h):
+    """Centre-crop `img` to cover w x h, like the XML's aspectratio=scale
+    with center alignment."""
+    want = w / h
+    have = img.width / img.height
+    if have > want:
+        cw = int(img.height * want)
+        img = img.crop(((img.width - cw) // 2, 0,
+                        (img.width + cw) // 2, img.height))
+    else:
+        ch = int(img.width / want)
+        img = img.crop((0, (img.height - ch) // 2,
+                        img.width, (img.height + ch) // 2))
+    return img.resize((w, h))
+
+
+def _ellipsize(draw, text, font, max_w):
+    if draw.textlength(text, font=font) <= max_w:
+        return text
+    while text and draw.textlength(text + '…', font=font) > max_w:
+        text = text[:-1].rstrip()
+    return text + '…'
+
+
+def compose_strip(rows, focus, out_w, out_h, thumbs, power_focus=None):
+    """The whole deck as one fullscreen RGBA image, a PIL re-creation of
+    script-couch-switcher.xml: the eased scrim, the POWER capsules, the
+    SWITCH TO rail. `power_focus` None means the rail card `focus` is lit;
+    an index means that capsule is lit and every card rests (the XML gates
+    every focus mark on ITS list having focus, so nothing else lights up).
+    Redrawn per focus move - tens of ms of PIL at 4K, nothing animates, the
+    move IS the transition."""
     from PIL import Image, ImageDraw
+    s = out_h / DESIGN_H
+
+    def px(v):
+        return round(v * s)
+
     n = len(rows)
-    strip_w, strip_h, tile_w, tile_h, _gap, xs = layout(n, out_w, out_h)
-    art_h = int(tile_w / TILE_ASPECT)
-    img = Image.new('RGBA', (strip_w, strip_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    font = load_font(max(18, int(tile_w * 0.085)))
+    _w, _h, tile_w, tile_h, _gap, xs = layout(n, out_w, out_h)
+    # The Kodi list scrolls; here, if the rail outgrows the screen, slide it
+    # left just enough to keep the focused card inside the right margin.
+    # (rail_i keeps marking the current card while the power bar is lit,
+    # so the slide holds steady across a zone hop, like Kodi's scroll.)
+    edge = out_w - px(120)
+    over = xs[focus][0] + tile_w - edge if n else 0
+    if over > 0:
+        xs = [(x - over, y) for x, y in xs]
+
+    img = deck_scrim(out_w, out_h)
+    glass = Image.new('RGBA', (out_w, out_h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(glass)
+    cap_font = load_font(px(FONT_CAPTION[1]), FONT_CAPTION[0])
+    lab_font = load_font(px(FONT_LABEL[1]), FONT_LABEL[0])
+    emph_font = load_font(px(FONT_EMPH[1]), FONT_EMPH[0])
+
+    # Eyebrows (Couch_Caption, muted).
+    d.text((px(EYEBROW_POWER_XY[0]), px(EYEBROW_POWER_XY[1])), 'POWER',
+           font=cap_font, fill=MUTED + (255,), anchor='lm')
+    d.text((px(EYEBROW_SWITCH_XY[0]), px(EYEBROW_SWITCH_XY[1])), 'SWITCH TO',
+           font=cap_font, fill=MUTED + (255,), anchor='lm')
+
+    # The power capsules: translucent white pills, the focused one filling
+    # white with ink text - the deck's one focus grammar.
+    ch = px(CAPSULE_H)
+    for j, (label, _key) in enumerate(POWER_ACTIONS):
+        cx = px(CAPSULE_X0 + j * CAPSULE_PITCH)
+        cy = px(CAPSULE_Y)
+        lit = power_focus == j
+        d.rounded_rectangle(
+            (cx, cy, cx + px(CAPSULE_W), cy + ch), radius=ch // 2,
+            fill=(255, 255, 255, CAPSULE_FOCUS_A if lit else GLASS_A))
+        d.text((cx + px(CAPSULE_W) / 2, cy + ch / 2), label, font=lab_font,
+               fill=(INK if lit else REST_TEXT) + (255,), anchor='mm')
+
+    # The rail's glass panels (and the no-art cards' centred names).
+    rail_lit = power_focus is None
     for i, row in enumerate(rows):
         x, y = xs[i]
-        draw.rounded_rectangle((x, y, x + tile_w, y + tile_h), radius=12,
-                               fill=TILE_BG + (255,))
+        focused = rail_lit and i == focus
+        d.rounded_rectangle(
+            (x, y, x + tile_w, y + tile_h), radius=px(CARD_RADIUS),
+            fill=(255, 255, 255, GLASS_FOCUS_A if focused else GLASS_A))
+        if thumbs.get(i) is None:
+            d.text((x + tile_w / 2, y + tile_h / 2),
+                   _ellipsize(d, card_label(row), lab_font, tile_w - px(16)),
+                   font=lab_font,
+                   fill=(BRIGHT_TEXT if focused else REST_TEXT) + (255,),
+                   anchor='mm')
+    img.alpha_composite(glass)
+
+    # The art, rounded by the mask, dimmed to 85% at rest and full-bright
+    # under focus (the XML's D8FFFFFF diffuse against none).
+    mask_full = Image.new('L', (tile_w, tile_h), 0)
+    ImageDraw.Draw(mask_full).rounded_rectangle(
+        (0, 0, tile_w - 1, tile_h - 1), radius=px(CARD_RADIUS), fill=255)
+    mask_rest = mask_full.point(lambda p: p * ART_REST_A // 255)
+    for i in range(n):
         th = thumbs.get(i)
-        if th is not None:
-            t = th.copy()
-            # centre-crop to the art box
-            want = tile_w / art_h
-            have = t.width / t.height
-            if have > want:
-                w = int(t.height * want)
-                t = t.crop(((t.width - w) // 2, 0, (t.width + w) // 2,
-                            t.height))
-            else:
-                h = int(t.width / want)
-                t = t.crop((0, (t.height - h) // 2, t.width,
-                            (t.height + h) // 2))
-            t = t.resize((tile_w, art_h))
-            img.paste(t, (x, y))
-            # re-round the art's top corners by redrawing the ring path over
-            # a mask is more code than the look is worth at 10 feet: the
-            # focus ring below covers the joins on the row that matters.
-        label = short_label(row['title'])
-        if row.get('paused'):
-            label += '  ·  paused'
-        tw = draw.textlength(label, font=font)
-        draw.text((x + (tile_w - tw) / 2,
-                   y + art_h + (tile_h - art_h - font.size) / 2),
-                  label, font=font, fill=LABEL_FG)
-        if i == focus:
-            for k in range(RING):
-                draw.rounded_rectangle(
-                    (x - 2 - k, y - 2 - k, x + tile_w + 2 + k,
-                     y + tile_h + 2 + k),
-                    radius=14 + k, outline=AMBER + (255,), width=1)
+        if th is None:
+            continue
+        x, y = xs[i]
+        focused = rail_lit and i == focus
+        img.paste(_crop_cover(th, tile_w, tile_h), (x, y),
+                  mask_full if focused else mask_rest)
+
+    # The lit card's white ring and its title beneath (Couch_Emph).
+    if rail_lit and n:
+        top = Image.new('RGBA', (out_w, out_h), (0, 0, 0, 0))
+        d2 = ImageDraw.Draw(top)
+        x, y = xs[focus]
+        m = px(RING_OUT)
+        d2.rounded_rectangle(
+            (x - m, y - m, x + tile_w + m, y + tile_h + m),
+            radius=px(RING_RADIUS), outline=(255, 255, 255, 255),
+            width=max(2, px(RING_STROKE)))
+        d2.text((x, y + tile_h + px(TITLE_DY)),
+                _ellipsize(d2, card_label(rows[focus]), emph_font,
+                           px(TITLE_W)),
+                font=emph_font, fill=BRIGHT_TEXT + (255,), anchor='lm')
+        img.alpha_composite(top)
     return img
 
 
@@ -449,6 +694,28 @@ def kodi_joystick(enabled):
         say('kodi joystick -> %s' % enabled)
     except (urllib.error.URLError, OSError) as e:
         say('kodi joystick toggle failed (%s)' % e)
+
+
+def power_dispatch(action):
+    """Fire a power-bar pick EXACTLY as the Kodi dialog does (default.py):
+    Addons.ExecuteAddon on script.tvpoweroff with params [action], over
+    JSON-RPC. The switcher holds no power logic of its own - tvpoweroff
+    owns what 'quit'/'pad_off'/'all_off' mean, in one home."""
+    import base64
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1,
+                       'method': 'Addons.ExecuteAddon',
+                       'params': {'addonid': POWER_ADDON,
+                                  'params': [action]}}).encode()
+    req = urllib.request.Request(KODI_RPC, data=body, headers={
+        'content-type': 'application/json',
+        'authorization': 'Basic ' + base64.b64encode(
+            KODI_AUTH.encode()).decode()})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+        say('power action %s -> %s' % (action, POWER_ADDON))
+    except (urllib.error.URLError, OSError) as e:
+        say('power action %s failed (%s)' % (action, e))
 
 
 def fetch_rows():
@@ -595,7 +862,8 @@ def main(argv):
         return 2
 
     st = PadState()
-    if fds:
+    zone, power_i = 'rail', 0        # the deck opens on the rail, never on
+    if fds:                          # anything that turns the room off
         kodi_joystick(False)
     try:
         while not stop['sig']:
@@ -615,12 +883,26 @@ def main(argv):
                     action = pad_action(ev, st) or action
             if not action:
                 continue
-            if action in ('left', 'right'):
-                nf = move_focus(focus, action, len(rows))
-                if nf != focus:
-                    focus = nf
-                    overlay.draw(compose_strip(rows, focus, overlay.out_w,
-                                               overlay.out_h, thumbs))
+            if action in ('left', 'right', 'up', 'down'):
+                nz, nf, npw = deck_move(zone, focus, power_i, action,
+                                        len(rows))
+                if (nz, nf, npw) != (zone, focus, power_i):
+                    zone, focus, power_i = nz, nf, npw
+                    overlay.draw(compose_strip(
+                        rows, focus, overlay.out_w, overlay.out_h, thumbs,
+                        power_i if zone == 'power' else None))
+            elif action == 'select' and zone == 'power':
+                key = POWER_ACTIONS[power_i][1]
+                say('power: %s' % key)
+                overlay.close()
+                overlay = None
+                power_dispatch(key)
+                if fds:
+                    # Whatever tvpoweroff leaves on screen (quit lands on
+                    # Kodi; pad_off retires the pad anyway), Kodi must be
+                    # steerable again - same rule as picking it.
+                    kodi_joystick(True)
+                return 0
             elif action == 'select':
                 say('picked: %s' % rows[focus]['title'])
                 overlay.close()
