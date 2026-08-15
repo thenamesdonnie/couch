@@ -22,6 +22,7 @@
 # window off and puts 12000 back without a redeploy.
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -123,6 +124,16 @@ PROP_SPOTIFY = "couch.spotify"
 PROP_SPOTIFY_LABEL = "couch.spotify.label"
 MEDIA_TIMEOUT = 2     # status is ~3 local busctl calls behind the server
 
+# The pills draw icons, not words (Donnie's call, 15 Aug - the opposite of
+# the power bar's rule, and rightly: pause/previous/next ARE the three
+# glyphs every remote on earth taught). Play/pause sits FIRST so walking
+# right off the power bar lands on the button that matters. The icon rides
+# each ListItem as an absolute path property: relative texture lookup for
+# $INFO textures is not worth trusting across Kodi versions, an absolute
+# path cannot miss. Labels are still set ("Pause"/"Play"/...) - the toggle
+# logic and the XML's no-icon fallback both read them.
+MEDIA_ART = os.path.join(ADDON_PATH, "resources", "skins", "Default", "media")
+
 # The freeze-frame backdrop. pause-snap drops the paused game's last rendered
 # frame in PAUSED_DIR at suspend time; the XML's bottom-most image control is
 # bound to PROP_FRAME on THIS window and stays hidden while it is empty, so
@@ -138,6 +149,10 @@ FRAME_POLL_FOR_S = 3.0      # ...for at most 3s, then the backdrop stays dim
 
 ACTION_PREVIOUS_MENU = 10   # Esc / pad B, on skins that map it
 ACTION_NAV_BACK = 92        # what Input.Back and the pad's B send
+ACTION_MOVE_LEFT = 1        # the four navigation actions, for the strip
+ACTION_MOVE_RIGHT = 2       # seam below - Kodi's ids, not ours
+ACTION_MOVE_UP = 3
+ACTION_MOVE_DOWN = 4
 
 
 class SwitcherDialog(xbmcgui.WindowXMLDialog):
@@ -185,7 +200,8 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
         try:
             items = []
             for w in self.rows:
-                li = xbmcgui.ListItem(label=str(w.get("title") or w.get("id")))
+                li = xbmcgui.ListItem(
+                    label=pretty_title(str(w.get("title") or w.get("id"))))
                 # The freeze-frame the server already attaches to a paused
                 # game (screen.js -> /api/art/game). Same picture the phone
                 # switcher shows; absent on everything else, and the layout
@@ -225,6 +241,7 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
 
             # Focus the SWITCH row, never the power bar: the stick must not
             # start on anything that turns the television off.
+            self._strip_focus = LIST_ID
             self.setFocusId(LIST_ID)
         except Exception as e:   # noqa: BLE001 - see below
             # A window that drew wrong must not strand the room in a modal it
@@ -247,12 +264,46 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
             self._media_click(self.getControl(MEDIA_ID).getSelectedPosition())
 
     def onAction(self, action):
-        # Kodi runs the base window's OnAction before this, so navigation and
-        # the built-in back handling already happened; this only makes the
-        # cancel answer explicit rather than relying on the default.
-        if action.getId() in (ACTION_PREVIOUS_MENU, ACTION_NAV_BACK):
+        # Kodi runs the base window's OnAction before this, so navigation
+        # and the built-in back handling already happened; by the time we
+        # see a move action the focus has already landed.
+        aid = action.getId()
+        if aid in (ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT,
+                   ACTION_MOVE_UP, ACTION_MOVE_DOWN):
+            self._join_strip(aid)
+        elif aid in (ACTION_PREVIOUS_MENU, ACTION_NAV_BACK):
             self.choice = -1
             self.close()
+
+    def _join_strip(self, aid):
+        """Make the power bar and the Spotify bar feel like ONE strip.
+
+        They are two lists, and a Kodi list remembers its own selected item
+        - so walking right off the power bar used to teleport to wherever
+        the Spotify bar last was ("it will jump if it was on pause before",
+        Donnie, 15 Aug). The XML cannot fix it (onleft/onright name a
+        control, not a position), so it is repaired here the moment a
+        LEFT/RIGHT lands focus on the other bar: entering rightwards starts
+        at its first pill, entering leftwards (the wrap around the screen
+        edge) at its last. UP/DOWN only refresh the bookkeeping - a
+        vertical entry into a bar keeping its old spot is fine.
+        """
+        try:
+            now = self.getFocusId()
+        except Exception:  # noqa: BLE001 - bookkeeping must never cost input
+            return
+        prev, self._strip_focus = getattr(self, "_strip_focus", None), now
+        if (aid not in (ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT)
+                or now == prev
+                or now not in (POWER_ID, MEDIA_ID)
+                or prev not in (POWER_ID, MEDIA_ID)):
+            return
+        try:
+            bar = self.getControl(now)
+            bar.selectItem(0 if aid == ACTION_MOVE_RIGHT else bar.size() - 1)
+        except Exception as e:  # noqa: BLE001
+            xbmc.log("couch.switcher: strip seam skipped: %s" % e,
+                     xbmc.LOGWARNING)
 
     def close(self):
         # Every exit funnels through here (row picked, backed out, init
@@ -262,17 +313,26 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
 
     # -- the Spotify bar -----------------------------------------------------
 
+    @staticmethod
+    def _media_item(label, icon):
+        li = xbmcgui.ListItem(label=label)
+        li.setProperty("icon", os.path.join(MEDIA_ART, icon))
+        return li
+
     def _fill_media(self):
         st = self.spotify or {}
         if not st.get("active"):
             return              # no phone session - the XML keeps it hidden
         bar = self.getControl(MEDIA_ID)
         bar.reset()
-        labels = ["Previous",
-                  "Pause" if st.get("playing") else "Play",
-                  "Next"]
-        bar.addItems([xbmcgui.ListItem(label=lbl) for lbl in labels])
-        bar.selectItem(1)       # play/pause is the middle pill and the point
+        playing = bool(st.get("playing"))
+        bar.addItems([
+            self._media_item("Pause" if playing else "Play",
+                             "icon-pause.png" if playing else "icon-play.png"),
+            self._media_item("Previous", "icon-prev.png"),
+            self._media_item("Next", "icon-next.png"),
+        ])
+        bar.selectItem(0)       # play/pause leads - it is the point
         self._set_media_label(st)
         self.setProperty(PROP_SPOTIFY, "1")
 
@@ -287,18 +347,18 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
         if not 0 <= idx < 3:
             return
         pausing = False
-        if idx == 1:
+        if idx == 0:
             # An explicit verb chosen by the pill's CURRENT label, never
             # MPRIS PlayPause: the toggle races its own read-back (verified
             # live 15 Aug - two quick PlayPauses left the player paused,
             # because spotifyd's reported state lags the command it just
-            # took). Play/Pause are idempotent, and they let the label be
+            # took). Play/Pause are idempotent, and they let the pill be
             # redrawn from intent below instead of from that stale read.
             bar = self.getControl(MEDIA_ID)
-            pausing = bar.getListItem(1).getLabel() == "Pause"
+            pausing = bar.getListItem(0).getLabel() == "Pause"
             cmd = "pause" if pausing else "play"
         else:
-            cmd = "previous" if idx == 0 else "next"
+            cmd = "previous" if idx == 1 else "next"
         # Inline, not a thread: the round trip is ~300ms (the server re-reads
         # status after firing the command) and a click that answers with its
         # own redraw is worth a beat of held frame.
@@ -316,9 +376,12 @@ class SwitcherDialog(xbmcgui.WindowXMLDialog):
                 self.setFocusId(LIST_ID)
                 self.clearProperty(PROP_SPOTIFY)
                 return
-            if idx == 1:
-                bar = self.getControl(MEDIA_ID)
-                bar.getListItem(1).setLabel("Play" if pausing else "Pause")
+            if idx == 0:
+                item = self.getControl(MEDIA_ID).getListItem(0)
+                item.setLabel("Play" if pausing else "Pause")
+                item.setProperty("icon", os.path.join(
+                    MEDIA_ART,
+                    "icon-play.png" if pausing else "icon-pause.png"))
             # A skip leaves play/pause as it was; only the track line moves.
             self._set_media_label(st)
         except Exception as e:  # noqa: BLE001
@@ -382,7 +445,8 @@ def animated_dialog():
 def select_window(rows):
     """Ask the room where to go. Returns select()'s contract: a row index,
     len(rows) for Cancel, -1 for dismissed."""
-    labels = [str(w.get("title") or w.get("id")) for w in rows] + ["Cancel"]
+    labels = [pretty_title(str(w.get("title") or w.get("id")))
+              for w in rows] + ["Cancel"]
     if not animated_dialog():
         return xbmcgui.Dialog().select(HEADING, labels)
     try:
@@ -419,6 +483,21 @@ def _suspended_appid():
     # through couchhost - a plain open() there would read an empty sandbox
     # and drop the backdrop on every shadPS4 pause.
     return (host_read("/tmp/game-suspended") or "").strip()
+
+
+def pretty_title(title):
+    """A card title, not a window title.
+
+    shadPS4 names its window "shadPS4 v0.17.0 | CUSA00900 - Bloodborne
+    <01.09> · paused" and that engineering string was on the deck in 36px
+    SemiBold. Strip the emulator preamble and the version tag, keep
+    whatever trails it (the " · paused" marker matters). Anything that
+    does not match the pattern passes through untouched - Steam windows,
+    Big Picture and Desktop already carry human names."""
+    m = re.match(r"^shadPS4\b[^|]*\|\s*[A-Z]+\d+\s*-\s*(.*)$", title)
+    if not m:
+        return title
+    return re.sub(r"\s*<[^>]*>", "", m.group(1)).strip()
 
 
 def _spotify_status():

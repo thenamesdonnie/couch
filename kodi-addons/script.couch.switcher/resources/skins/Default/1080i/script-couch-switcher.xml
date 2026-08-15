@@ -1,29 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The on-TV switcher, drawn by default.py's SwitcherDialog.
 
-     Stagelight restyle (8 Aug 2026): the sheet keeps its entrance, but the
-     rows became a PS5-style horizontal rail of rounded tiles - the same
-     grammar as the Couch home row (halo glow + white core on focus, lightbar
-     underneath, Figtree type via the skin's Couch_* font names). Amber is the
-     pilot accent, a literal here because $VAR does not cross the addon
-     boundary.
+     Deck restyle (15 Aug 2026): the full-width sheet is gone. The paused
+     game's freeze-frame stays the whole screen, dissolving through an eased
+     black gradient (deck-scrim.png, a real curve baked in PIL, not a linear
+     fade) into a floating control deck along the bottom: eyebrow-labelled
+     sections, translucent capsule buttons, and the art rail. One focus
+     grammar everywhere - THE FOCUSED THING TURNS WHITE (capsules fill
+     white with ink text, tiles get a white ring) - and the only colour the
+     deck itself brings is the amber now-playing dot; everything else is
+     white at some opacity, so the game's own art carries the screen.
 
-     Everything that can be addon-local IS addon-local: the Stagelight
-     textures are COPIES in media/ (mask-round, halo-glow, halo-core,
-     lightbar), so a skin switch degrades colours, never breaks the dialog.
-     Font names resolve from the active skin; an unknown name falls back to
-     the default font with a log line.
+     Everything addon-local stays addon-local: all textures are in media/
+     (deck-scrim, capsule, ring, dot, mask-art, couch-fill), so a skin
+     switch degrades fonts, never the dialog. Fonts resolve from the active
+     skin (Couch_Caption 28 / Couch_Label 32 / Couch_Emph 36, Figtree).
 
-     Control ids are a contract with default.py: 9000 is the list and the ONLY
-     control the python fetches. Avoid ids 50-59 and 2/3/4/12 (WindowXML
-     claims them; clicks vanish - the list was id 3 once). One log line is
-     expected per open: "Control 9000 ... has been asked to focus, but it
-     can't" - WINDOW_INIT races python filling the list; onInit's setFocusId
-     lands a beat later. -->
+     Control ids are a contract with default.py: 9000 rail, 9010 power,
+     9020 spotify. Avoid ids 50-59 and 2/3/4/12 (WindowXML claims them;
+     clicks vanish - the list was id 3 once). One log line is expected per
+     open: "Control 9000 ... has been asked to focus, but it can't" -
+     WINDOW_INIT races python filling the list; onInit's setFocusId lands a
+     beat later.
+
+     Every focus mark in every focusedlayout is gated on ITS list having
+     focus: Kodi keeps drawing focusedlayout for a list's current item even
+     when the list is not focused, so without the gates two things at once
+     would sit lit up white. Same defect the home row had, same fix - and
+     since this restyle the rail is gated too, not just the bars. -->
 <window type="dialog">
   <defaultcontrol always="true">9000</defaultcontrol>
   <animation effect="fade" start="0" end="100" time="200" tween="sine" easing="out">WindowOpen</animation>
-  <animation effect="fade" start="100" end="0" time="200" tween="sine" easing="in">WindowClose</animation>
+  <animation effect="fade" start="100" end="0" time="180" tween="sine" easing="in">WindowClose</animation>
 
   <controls>
 
@@ -40,286 +48,404 @@
       <visible>!String.IsEmpty(Window.Property(couch.pausedframe))</visible>
     </control>
 
-    <!-- Scrim: keeps the sheet readable over a bright frame. -->
+    <!-- The scrim: a light veil up top (the room can still see the game),
+         easing to near-black where the deck sits. The curve is baked into
+         the texture; stretching it to 1920 wide is free. -->
     <control type="image">
       <left>0</left>
       <top>0</top>
       <width>1920</width>
       <height>1080</height>
-      <texture>couch-fill.png</texture>
-      <colordiffuse>B3000000</colordiffuse>
+      <texture>deck-scrim.png</texture>
     </control>
 
-    <!-- The sheet: bottom-anchored, slides up from the edge. -->
+    <!-- The deck: everything interactive, floating over the gradient.
+         One orchestrated entrance - rise 70px and fade, cubic out. -->
     <control type="group" id="100">
-      <animation effect="slide" start="0,140" end="0,0" time="280" tween="cubic" easing="out">WindowOpen</animation>
-      <animation effect="slide" start="0,0" end="0,140" time="200" tween="cubic" easing="in">WindowClose</animation>
+      <animation effect="slide" start="0,70" end="0,0" time="280" tween="cubic" easing="out">WindowOpen</animation>
+      <animation effect="fade" start="0" end="100" time="240" tween="sine" easing="out">WindowOpen</animation>
+      <animation effect="slide" start="0,0" end="0,70" time="200" tween="cubic" easing="in">WindowClose</animation>
+      <animation effect="fade" start="100" end="0" time="180" tween="sine" easing="in">WindowClose</animation>
 
-      <control type="image">
-        <left>0</left>
-        <top>544</top>
-        <width>1920</width>
-        <height>536</height>
-        <texture>couch-fill.png</texture>
-        <colordiffuse>F20A0C10</colordiffuse>
-      </control>
-
-      <!-- Amber pilot rule along the top edge. -->
-      <control type="image">
-        <left>0</left>
-        <top>544</top>
-        <width>1920</width>
-        <height>3</height>
-        <texture>couch-fill.png</texture>
-        <colordiffuse>FFE8A849</colordiffuse>
-      </control>
-
-
-      <!-- POWER BAR. Text, not symbols: three console actions whose difference
-           is precisely which things get turned off, and a 44px glyph cannot
-           carry "controller" vs "controller and TV" without ambiguity.
-           default.py fills it and dispatches to script.tvpoweroff, so the
-           quit-the-game-politely-first logic has exactly one home.
-           NOT the default control - the sheet opens on the switch row below,
-           so nothing here is ever what the stick lands on first. -->
+      <!-- ROW 1 EYEBROWS. Left: the power section's name. Right: the media
+           cluster's eyebrow IS its information - an amber dot and whatever
+           is playing, both present only while spotifyd has a session. -->
       <control type="label">
-        <left>96</left>
-        <top>556</top>
-        <width>1728</width>
-        <height>36</height>
+        <left>132</left>
+        <top>620</top>
+        <width>500</width>
+        <height>28</height>
         <align>left</align>
         <aligny>center</aligny>
-        <font>Couch_Label</font>
+        <font>Couch_Caption</font>
         <textcolor>FF8A93A0</textcolor>
-        <label>Power</label>
+        <label>POWER</label>
       </control>
 
+      <control type="image">
+        <left>1302</left>
+        <top>628</top>
+        <width>14</width>
+        <height>14</height>
+        <texture>dot.png</texture>
+        <colordiffuse>FFE8A849</colordiffuse>
+        <visible>!String.IsEmpty(Window.Property(couch.spotify))</visible>
+      </control>
+      <control type="label">
+        <left>1330</left>
+        <top>620</top>
+        <width>470</width>
+        <height>28</height>
+        <align>left</align>
+        <aligny>center</aligny>
+        <font>Couch_Caption</font>
+        <textcolor>FF8A93A0</textcolor>
+        <label>$INFO[Window.Property(couch.spotify.label)]</label>
+        <visible>!String.IsEmpty(Window.Property(couch.spotify))</visible>
+      </control>
+
+      <!-- ROW 2, THE CAPSULES. Power bar left, filled by default.py from
+           POWER_ACTIONS and dispatched to script.tvpoweroff - the switcher
+           holds no power logic of its own. Text, not symbols (Donnie's
+           call, 8 Aug): the three actions differ only in WHICH things get
+           turned off, and a glyph cannot carry that. NOT the default
+           control - the deck opens on the rail below, so nothing here is
+           ever what the stick lands on first. -->
       <control type="list" id="9010">
-        <left>66</left>
-        <top>592</top>
-        <width>1788</width>
-        <!-- 88, not the pill's 76+8: the focus underline hangs below the pill
-             and a list clips to its own bounds, so the row has to be tall
-             enough to hold it. 88 puts the underline's last row at 680, four
-             clear of the "Switch to" label at 684. -->
-        <height>88</height>
-        <onleft>9010</onleft>
-        <onright>9010</onright>
+        <left>120</left>
+        <top>660</top>
+        <width>1110</width>
+        <height>80</height>
+        <onleft>9020</onleft>
+        <onright>9020</onright>
         <onup>9010</onup>
         <ondown>9000</ondown>
         <orientation>horizontal</orientation>
-        <scrolltime tween="sine" easing="out">180</scrolltime>
+        <scrolltime tween="sine" easing="out">160</scrolltime>
 
-        <itemlayout height="88" width="420">
+        <itemlayout height="80" width="370">
           <control type="image">
-            <left>30</left>
+            <left>12</left>
             <top>8</top>
-            <width>390</width>
-            <height>68</height>
-            <texture diffuse="mask-round.png">couch-fill.png</texture>
-            <colordiffuse>FF161A22</colordiffuse>
+            <width>346</width>
+            <height>64</height>
+            <texture border="31">capsule.png</texture>
+            <colordiffuse>1AFFFFFF</colordiffuse>
           </control>
           <control type="label">
-            <left>30</left>
+            <left>12</left>
             <top>8</top>
-            <width>390</width>
-            <height>68</height>
+            <width>346</width>
+            <height>64</height>
             <align>center</align>
             <aligny>center</aligny>
-            <font>Couch_Caption</font>
-            <textcolor>FF8A93A0</textcolor>
+            <font>Couch_Label</font>
+            <textcolor>FFB6BDC6</textcolor>
             <label>$INFO[ListItem.Label]</label>
           </control>
         </itemlayout>
 
-        <focusedlayout height="88" width="420">
-          <!-- Every distinguishing mark is gated on the BAR having focus.
-               Kodi keeps drawing focusedlayout for a list's current item even
-               when the list is not focused, so without these "Quit game" sat
-               lit up like a pre-selection while the stick was down on the
-               switch row - on the one bar that turns the television off. Same
-               defect the home row had, same fix. -->
-          <!-- An amber underline, not the halo the tiles use. A 40px 9-slice
-               border on an 88px-tall box leaves 8px of middle, so the ring
-               came out squeezed to nothing - the dog-bone problem in
-               miniature. The switch row's lightbar is the grammar that
-               already reads at TV distance, so the bar borrows it.
-
-               Height is 12 and not 4. lightbar.png is a soft glow whose alpha
-               peaks at its vertical CENTRE and fades to nothing at both edges,
-               so the box height is not the line's weight: at 4 the bright core
-               measured one skin pixel and the "underline" was a hairline. The
-               switch row draws the same texture at 16; 12 is as close as fits
-               above the "Switch to" label. Measure the lit core, not the
-               control, if this is ever retuned. -->
+        <focusedlayout height="80" width="370">
           <control type="image">
-            <left>30</left>
-            <top>76</top>
-            <width>390</width>
-            <height>12</height>
-            <texture>lightbar.png</texture>
-            <colordiffuse>FFE8A849</colordiffuse>
-            <visible>Control.HasFocus(9010)</visible>
-          </control>
-          <control type="image">
-            <left>30</left>
+            <left>12</left>
             <top>8</top>
-            <width>390</width>
-            <height>68</height>
-            <texture diffuse="mask-round.png">couch-fill.png</texture>
-            <colordiffuse>FF1B212C</colordiffuse>
+            <width>346</width>
+            <height>64</height>
+            <texture border="31">capsule.png</texture>
+            <colordiffuse>F8FFFFFF</colordiffuse>
             <visible>Control.HasFocus(9010)</visible>
-          </control>
-          <!-- ...and the resting panel + grey label in its place, copied from
-               itemlayout, so an unfocused bar reads as three equal pills. -->
-          <control type="image">
-            <left>30</left>
-            <top>8</top>
-            <width>390</width>
-            <height>68</height>
-            <texture diffuse="mask-round.png">couch-fill.png</texture>
-            <colordiffuse>FF161A22</colordiffuse>
-            <visible>!Control.HasFocus(9010)</visible>
           </control>
           <control type="label">
-            <left>30</left>
+            <left>12</left>
             <top>8</top>
-            <width>390</width>
-            <height>68</height>
+            <width>346</width>
+            <height>64</height>
             <align>center</align>
             <aligny>center</aligny>
-            <font>Couch_Caption</font>
-            <textcolor>FFECEEF1</textcolor>
+            <font>Couch_Label</font>
+            <textcolor>FF10141A</textcolor>
             <label>$INFO[ListItem.Label]</label>
             <visible>Control.HasFocus(9010)</visible>
           </control>
-          <control type="label">
-            <left>30</left>
+          <control type="image">
+            <left>12</left>
             <top>8</top>
-            <width>390</width>
-            <height>68</height>
+            <width>346</width>
+            <height>64</height>
+            <texture border="31">capsule.png</texture>
+            <colordiffuse>1AFFFFFF</colordiffuse>
+            <visible>!Control.HasFocus(9010)</visible>
+          </control>
+          <control type="label">
+            <left>12</left>
+            <top>8</top>
+            <width>346</width>
+            <height>64</height>
             <align>center</align>
             <aligny>center</aligny>
-            <font>Couch_Caption</font>
-            <textcolor>FF8A93A0</textcolor>
+            <font>Couch_Label</font>
+            <textcolor>FFB6BDC6</textcolor>
             <label>$INFO[ListItem.Label]</label>
             <visible>!Control.HasFocus(9010)</visible>
           </control>
         </focusedlayout>
       </control>
 
-      <control type="label">
-        <left>96</left>
-        <top>684</top>
-        <width>1728</width>
-        <height>40</height>
-        <align>left</align>
-        <aligny>center</aligny>
-        <font>Couch_Label</font>
-        <textcolor>FF8A93A0</textcolor>
-        <label>Switch to</label>
+      <!-- SPOTIFY CAPSULES (9020): Previous / Play-Pause / Next for the
+           spotifyd receiver, right-aligned under their now-playing eyebrow.
+           default.py fills them only while a phone session is live and
+           dispatches clicks to the couch server's /api/spotify - no
+           transport logic lives here. Unlike its neighbours a click does
+           NOT close the deck (skipping is a repeat-press activity). Hidden
+           entirely while the property is empty, which also parks the power
+           bar's onleft/onright wrap: focus then simply stays put at the
+           strip's ends. -->
+      <control type="list" id="9020">
+        <left>1290</left>
+        <top>660</top>
+        <width>510</width>
+        <height>80</height>
+        <onleft>9010</onleft>
+        <onright>9010</onright>
+        <onup>9020</onup>
+        <ondown>9000</ondown>
+        <orientation>horizontal</orientation>
+        <scrolltime tween="sine" easing="out">160</scrolltime>
+        <visible>!String.IsEmpty(Window.Property(couch.spotify))</visible>
+
+        <itemlayout height="80" width="170">
+          <control type="image">
+            <left>12</left>
+            <top>8</top>
+            <width>146</width>
+            <height>64</height>
+            <texture border="31">capsule.png</texture>
+            <colordiffuse>1AFFFFFF</colordiffuse>
+          </control>
+          <control type="image">
+            <left>65</left>
+            <top>20</top>
+            <width>40</width>
+            <height>40</height>
+            <texture>$INFO[ListItem.Property(icon)]</texture>
+            <colordiffuse>FFB6BDC6</colordiffuse>
+          </control>
+          <control type="label">
+            <left>12</left>
+            <top>8</top>
+            <width>146</width>
+            <height>64</height>
+            <align>center</align>
+            <aligny>center</aligny>
+            <font>Couch_Label</font>
+            <textcolor>FFB6BDC6</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+            <visible>String.IsEmpty(ListItem.Property(icon))</visible>
+          </control>
+        </itemlayout>
+
+        <focusedlayout height="80" width="170">
+          <control type="image">
+            <left>12</left>
+            <top>8</top>
+            <width>146</width>
+            <height>64</height>
+            <texture border="31">capsule.png</texture>
+            <colordiffuse>F8FFFFFF</colordiffuse>
+            <visible>Control.HasFocus(9020)</visible>
+          </control>
+          <control type="image">
+            <left>65</left>
+            <top>20</top>
+            <width>40</width>
+            <height>40</height>
+            <texture>$INFO[ListItem.Property(icon)]</texture>
+            <colordiffuse>FF10141A</colordiffuse>
+            <visible>Control.HasFocus(9020)</visible>
+          </control>
+          <control type="image">
+            <left>12</left>
+            <top>8</top>
+            <width>146</width>
+            <height>64</height>
+            <texture border="31">capsule.png</texture>
+            <colordiffuse>1AFFFFFF</colordiffuse>
+            <visible>!Control.HasFocus(9020)</visible>
+          </control>
+          <control type="image">
+            <left>65</left>
+            <top>20</top>
+            <width>40</width>
+            <height>40</height>
+            <texture>$INFO[ListItem.Property(icon)]</texture>
+            <colordiffuse>FFB6BDC6</colordiffuse>
+            <visible>!Control.HasFocus(9020)</visible>
+          </control>
+          <control type="label">
+            <left>12</left>
+            <top>8</top>
+            <width>146</width>
+            <height>64</height>
+            <align>center</align>
+            <aligny>center</aligny>
+            <font>Couch_Label</font>
+            <textcolor>FF10141A</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+            <visible>String.IsEmpty(ListItem.Property(icon))</visible>
+          </control>
+        </focusedlayout>
       </control>
 
-      <!-- The rail. Same items, same order, same trailing Cancel as the
-           select dialog it replaces - default.py builds them, this draws
-           them as tiles. Landscape thumbs (window snapshots / game art);
-           a tile with no art shows its name centred on a panel. -->
+      <control type="label">
+        <left>132</left>
+        <top>784</top>
+        <width>600</width>
+        <height>28</height>
+        <align>left</align>
+        <aligny>center</aligny>
+        <font>Couch_Caption</font>
+        <textcolor>FF8A93A0</textcolor>
+        <label>SWITCH TO</label>
+      </control>
+
+      <!-- THE RAIL. Same items, same order, same trailing Cancel as the
+           select dialog this window replaced - default.py builds them,
+           this draws them as 16:9 art cards. mask-art.png is cut at the
+           art's own aspect so the corner radius stays true (the old
+           mask-round warped when diffuse-stretched). A card with no art
+           (Desktop, Cancel) is a glass panel with its name centred. The
+           focused card: white ring, full-brightness art, title beneath -
+           resting cards sit slightly dimmed and untitled, so the rail
+           reads as art until you point at something. -->
       <control type="list" id="9000">
-        <left>66</left>
-        <top>726</top>
-        <width>1788</width>
-        <height>330</height>
+        <left>120</left>
+        <top>820</top>
+        <width>1680</width>
+        <height>250</height>
         <onleft>9000</onleft>
         <onright>9000</onright>
         <onup>9010</onup>
         <ondown>9000</ondown>
         <orientation>horizontal</orientation>
-        <scrolltime tween="sine" easing="out">210</scrolltime>
+        <scrolltime tween="sine" easing="out">200</scrolltime>
 
-        <itemlayout height="330" width="272">
+        <itemlayout height="250" width="324">
           <control type="image">
-            <left>30</left>
-            <top>52</top>
-            <width>232</width>
-            <height>130</height>
-            <texture diffuse="mask-round.png">couch-fill.png</texture>
-            <colordiffuse>FF161A22</colordiffuse>
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
+            <texture diffuse="mask-art.png">couch-fill.png</texture>
+            <colordiffuse>1AFFFFFF</colordiffuse>
           </control>
           <control type="image">
-            <left>30</left>
-            <top>52</top>
-            <width>232</width>
-            <height>130</height>
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
             <aspectratio align="center" aligny="center">scale</aspectratio>
-            <texture background="true" diffuse="mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-            <colordiffuse>C8FFFFFF</colordiffuse>
+            <texture background="true" diffuse="mask-art.png">$INFO[ListItem.Art(thumb)]</texture>
+            <colordiffuse>D8FFFFFF</colordiffuse>
             <visible>!String.IsEmpty(ListItem.Art(thumb))</visible>
           </control>
           <control type="label">
-            <left>30</left>
-            <top>52</top>
-            <width>232</width>
-            <height>130</height>
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
             <align>center</align>
             <aligny>center</aligny>
-            <font>Couch_Caption</font>
-            <textcolor>FF8A93A0</textcolor>
+            <font>Couch_Label</font>
+            <textcolor>FFB6BDC6</textcolor>
             <label>$INFO[ListItem.Label]</label>
             <visible>String.IsEmpty(ListItem.Art(thumb))</visible>
           </control>
         </itemlayout>
 
-        <focusedlayout height="330" width="272">
-          <!-- halo: amber glow + white core, the home row's focus grammar -->
+        <focusedlayout height="250" width="324">
+          <!-- resting clone first, shown whenever the rail is NOT focused -->
           <control type="image">
-            <left>-14</left>
-            <top>4</top>
+            <left>12</left>
+            <top>8</top>
             <width>300</width>
-            <height>226</height>
-            <texture border="48" infill="false" colordiffuse="C8E8A849">halo-glow.png</texture>
+            <height>169</height>
+            <texture diffuse="mask-art.png">couch-fill.png</texture>
+            <colordiffuse>1AFFFFFF</colordiffuse>
+            <visible>!Control.HasFocus(9000)</visible>
           </control>
           <control type="image">
-            <left>-14</left>
-            <top>4</top>
+            <left>12</left>
+            <top>8</top>
             <width>300</width>
-            <height>226</height>
-            <texture border="48" infill="false" colordiffuse="DCFFFFFF">halo-core.png</texture>
-          </control>
-          <control type="image">
-            <left>16</left>
-            <top>34</top>
-            <width>240</width>
-            <height>166</height>
-            <texture diffuse="mask-round.png">couch-fill.png</texture>
-            <colordiffuse>FF1B212C</colordiffuse>
-          </control>
-          <control type="image">
-            <left>16</left>
-            <top>34</top>
-            <width>240</width>
-            <height>166</height>
+            <height>169</height>
             <aspectratio align="center" aligny="center">scale</aspectratio>
-            <texture background="true" diffuse="mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
-            <visible>!String.IsEmpty(ListItem.Art(thumb))</visible>
-          </control>
-
-          <control type="image">
-            <left>16</left>
-            <top>210</top>
-            <width>240</width>
-            <height>16</height>
-            <texture>lightbar.png</texture>
-            <colordiffuse>FFE8A849</colordiffuse>
+            <texture background="true" diffuse="mask-art.png">$INFO[ListItem.Art(thumb)]</texture>
+            <colordiffuse>D8FFFFFF</colordiffuse>
+            <visible>!String.IsEmpty(ListItem.Art(thumb)) + !Control.HasFocus(9000)</visible>
           </control>
           <control type="label">
-            <left>16</left>
-            <top>232</top>
-            <width>640</width>
-            <height>38</height>
-            <align>left</align>
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
+            <align>center</align>
+            <aligny>center</aligny>
             <font>Couch_Label</font>
-            <textcolor>FFECEEF1</textcolor>
+            <textcolor>FFB6BDC6</textcolor>
             <label>$INFO[ListItem.Label]</label>
+            <visible>String.IsEmpty(ListItem.Art(thumb)) + !Control.HasFocus(9000)</visible>
+          </control>
+
+          <!-- and the lit card when it IS -->
+          <control type="image">
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
+            <texture diffuse="mask-art.png">couch-fill.png</texture>
+            <colordiffuse>29FFFFFF</colordiffuse>
+            <visible>Control.HasFocus(9000)</visible>
+          </control>
+          <control type="image">
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
+            <aspectratio align="center" aligny="center">scale</aspectratio>
+            <texture background="true" diffuse="mask-art.png">$INFO[ListItem.Art(thumb)]</texture>
+            <visible>!String.IsEmpty(ListItem.Art(thumb)) + Control.HasFocus(9000)</visible>
+          </control>
+          <control type="label">
+            <left>12</left>
+            <top>8</top>
+            <width>300</width>
+            <height>169</height>
+            <align>center</align>
+            <aligny>center</aligny>
+            <font>Couch_Label</font>
+            <textcolor>FFF3F5F8</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+            <visible>String.IsEmpty(ListItem.Art(thumb)) + Control.HasFocus(9000)</visible>
+          </control>
+          <control type="image">
+            <left>6</left>
+            <top>2</top>
+            <width>312</width>
+            <height>181</height>
+            <texture border="24" infill="false">ring.png</texture>
+            <visible>Control.HasFocus(9000)</visible>
+          </control>
+          <control type="label">
+            <left>12</left>
+            <top>192</top>
+            <width>560</width>
+            <height>40</height>
+            <align>left</align>
+            <aligny>center</aligny>
+            <font>Couch_Emph</font>
+            <textcolor>FFF3F5F8</textcolor>
+            <label>$INFO[ListItem.Label]</label>
+            <visible>Control.HasFocus(9000)</visible>
           </control>
         </focusedlayout>
       </control>

@@ -62,11 +62,18 @@ class StubList:
     def getSelectedPosition(self):
         return self.selected
 
+    def getListItem(self, pos):
+        return self.items[pos]
+
+    def size(self):
+        return len(self.items)
+
 
 class StubWindowXMLDialog:
     def __init__(self, *_a, **_k):
         self.list = StubList()
         self.bar = StubList()          # the power bar, control 9010
+        self.media = StubList()        # the Spotify bar, control 9020
         self.fetched_ids = []
         self.focus_calls = []
         self.props = {}
@@ -74,13 +81,24 @@ class StubWindowXMLDialog:
 
     def getControl(self, control_id):
         self.fetched_ids.append(control_id)
-        return self.bar if control_id == dflt.POWER_ID else self.list
+        if control_id == dflt.POWER_ID:
+            return self.bar
+        if control_id == dflt.MEDIA_ID:
+            return self.media
+        return self.list
 
     def setFocusId(self, control_id):
         self.focus_calls.append(control_id)
+        self.focus_id = control_id
+
+    def getFocusId(self):
+        return getattr(self, 'focus_id', 0)
 
     def setProperty(self, key, value):
         self.props[key] = value
+
+    def clearProperty(self, key):
+        self.props.pop(key, None)
 
     def doModal(self):
         pass
@@ -96,6 +114,19 @@ class StubListItem:
 
     def setArt(self, art):
         self.art.update(art)
+
+    def setLabel(self, label):
+        self.label = label
+
+    def getLabel(self):
+        return self.label
+
+    def setProperty(self, key, value):
+        self.props = getattr(self, 'props', {})
+        self.props[key] = value
+
+    def getProperty(self, key):
+        return getattr(self, 'props', {}).get(key, '')
 
 
 class StubHomeWindow:
@@ -200,11 +231,12 @@ def _list_control(dom, want=None):
     raise AssertionError('no list with id %d' % want)
 
 
-def test_xml_is_well_formed_and_has_exactly_the_two_lists():
-    # Two since 8 Aug: the switch row, and the power bar above it. Anything
-    # else appearing here is a control the python does not know about.
+def test_xml_is_well_formed_and_has_exactly_the_three_lists():
+    # Three since 15 Aug: the switch row, the power bar, and the Spotify bar
+    # sharing the power bar's strip. Anything else appearing here is a
+    # control the python does not know about.
     ids = sorted(int(c.getAttribute('id')) for c in _lists(_dom()))
-    assert ids == sorted([dflt.LIST_ID, dflt.POWER_ID])
+    assert ids == sorted([dflt.LIST_ID, dflt.POWER_ID, dflt.MEDIA_ID])
 
 
 def test_no_control_id_is_reserved_by_windowxml():
@@ -225,14 +257,22 @@ def test_python_xml_and_defaultcontrol_agree_on_the_list_id():
 
 def test_navigation_only_ever_lands_on_a_real_list():
     # The stick must never walk focus onto a non-focusable control and go
-    # dead. Every direction on both lists names one of the two lists - and
-    # the only crossing between them is the switch row's UP and the power
-    # bar's DOWN, so the bar is never reachable sideways.
+    # dead. Every direction on every list names one of the three lists. The
+    # bars are never reachable from the switch row sideways, only UP; the
+    # two bars hand across to each other at their ends (walking off either
+    # bar's edge wraps onto the other - and when the Spotify bar is hidden
+    # that hop simply fails and focus stays put, which is the intended
+    # no-Spotify behaviour, not a trap).
     dom = _dom()
-    valid = {dflt.LIST_ID, dflt.POWER_ID}
+    valid = {dflt.LIST_ID, dflt.POWER_ID, dflt.MEDIA_ID}
     expect = {(dflt.LIST_ID, 'onup'): dflt.POWER_ID,
-              (dflt.POWER_ID, 'ondown'): dflt.LIST_ID}
-    for which in (dflt.LIST_ID, dflt.POWER_ID):
+              (dflt.POWER_ID, 'ondown'): dflt.LIST_ID,
+              (dflt.POWER_ID, 'onleft'): dflt.MEDIA_ID,
+              (dflt.POWER_ID, 'onright'): dflt.MEDIA_ID,
+              (dflt.MEDIA_ID, 'ondown'): dflt.LIST_ID,
+              (dflt.MEDIA_ID, 'onleft'): dflt.POWER_ID,
+              (dflt.MEDIA_ID, 'onright'): dflt.POWER_ID}
+    for which in (dflt.LIST_ID, dflt.POWER_ID, dflt.MEDIA_ID):
         lst = _list_control(dom, which)
         for tag in ('onup', 'ondown', 'onleft', 'onright'):
             nodes = lst.getElementsByTagName(tag)
@@ -313,6 +353,194 @@ def test_clicking_the_switch_row_leaves_power_empty(dlg=None):
     assert dlg.choice == 1
     assert dlg.power == ''
 
+
+
+# -- the Spotify bar -----------------------------------------------------------
+
+LIVE = {'active': True, 'playing': True,
+        'track': 'Achilles Last Stand', 'artist': 'Led Zeppelin'}
+
+
+def make_live_dialog():
+    dlg = make_dialog()
+    dlg.spotify = dict(LIVE)
+    return dlg
+
+
+def test_spotify_bar_fills_when_a_session_is_live():
+    # Play/pause leads (Donnie's order, 15 Aug), and every pill carries its
+    # icon as an ABSOLUTE path property - relative $INFO texture lookup is
+    # not trusted, so a wrong path here would be an invisible blank pill.
+    dlg = make_live_dialog()
+    dlg.onInit()
+    assert [li.label for li in dlg.media.items] == ['Pause', 'Previous', 'Next']
+    assert dlg.media.selected == 0     # play/pause is the point of the bar
+    icons = [li.getProperty('icon') for li in dlg.media.items]
+    assert [os.path.basename(i) for i in icons] == \
+        ['icon-pause.png', 'icon-prev.png', 'icon-next.png']
+    assert all(os.path.isabs(i) and os.path.exists(i) for i in icons)
+    assert dlg.props[dflt.PROP_SPOTIFY] == '1'
+    assert 'Achilles Last Stand' in dlg.props[dflt.PROP_SPOTIFY_LABEL]
+
+
+def test_spotify_bar_stays_hidden_without_a_session():
+    # {} (server too old / unreachable) and {'active': False} (receiver idle)
+    # must both leave the sheet exactly as it was before the bar existed.
+    for answer in ({}, {'active': False}, None):
+        dlg = make_dialog()
+        dlg.spotify = answer
+        dlg.onInit()
+        assert dlg.media.items == []
+        assert dflt.PROP_SPOTIFY not in dlg.props
+
+
+def test_spotify_shows_play_when_paused():
+    dlg = make_live_dialog()
+    dlg.spotify['playing'] = False
+    dlg.onInit()
+    assert dlg.media.items[0].label == 'Play'
+    assert dlg.media.items[0].getProperty('icon').endswith('icon-play.png')
+
+
+def test_spotify_click_fires_the_command_and_stays_open():
+    """Skipping is a repeat-press activity: unlike every other pick in this
+    dialog, a media action must leave the sheet up. And the middle pill
+    speaks in explicit verbs chosen by its own label, never MPRIS PlayPause:
+    the toggle races its own read-back (two quick PlayPauses left the player
+    paused, live, 15 Aug), so the label is also redrawn from intent, not
+    from the server's laggy answer."""
+    dlg = make_live_dialog()
+    dlg.onInit()
+    fired = []
+    dflt.spotify_command = lambda cmd: (fired.append(cmd) or
+                                        {'active': True, 'playing': True,
+                                         'track': 'T', 'artist': 'A'})
+    dlg.media.selected = 0
+    dlg.onClick(dflt.MEDIA_ID)          # pill shows "Pause" -> explicit pause
+    assert fired == ['pause']
+    assert dlg.closed == 0
+    assert dlg.media.items[0].label == 'Play'   # from intent: st still lags
+    assert dlg.media.items[0].getProperty('icon').endswith('icon-play.png')
+    assert 'T' in dlg.props[dflt.PROP_SPOTIFY_LABEL]
+    dlg.onClick(dflt.MEDIA_ID)          # now shows "Play" -> explicit play
+    assert fired == ['pause', 'play']
+    assert dlg.media.items[0].label == 'Pause'
+    assert dlg.media.items[0].getProperty('icon').endswith('icon-pause.png')
+
+
+def test_spotify_skip_never_touches_the_play_pause_label():
+    dlg = make_live_dialog()
+    dlg.onInit()
+    fired = []
+    dflt.spotify_command = lambda cmd: (fired.append(cmd) or
+                                        {'active': True, 'playing': True,
+                                         'track': 'T2', 'artist': 'A2'})
+    dlg.media.selected = 2
+    dlg.onClick(dflt.MEDIA_ID)
+    dlg.media.selected = 1
+    dlg.onClick(dflt.MEDIA_ID)
+    assert fired == ['next', 'previous']
+    assert dlg.media.items[0].label == 'Pause'  # untouched by skips
+    assert 'T2' in dlg.props[dflt.PROP_SPOTIFY_LABEL]
+
+
+def test_the_strip_reads_as_one_bar_across_the_seam():
+    """Two lists each remember their own selected item, so crossing between
+    them used to teleport to wherever the other bar last was ("it will jump
+    if it was on pause before"). Entering rightwards must land on the first
+    pill, entering leftwards (the screen-edge wrap) on the last - and a
+    vertical entry may keep the bar's old spot."""
+    dlg = make_live_dialog()
+    dlg.onInit()
+
+    # Walk up from the rail into the power bar: bookkeeping only.
+    dlg.focus_id = dflt.POWER_ID
+    dlg.onAction(Action(3))                  # ACTION_MOVE_UP
+    dlg.bar.selected = 2                     # sitting on the bar's far end
+    dlg.media.selected = 0                   # Spotify bar remembers "Pause"
+
+    # Right off the power bar's end -> Spotify bar starts at ITS first pill.
+    dlg.media.selected = 2                   # pretend it remembered "Next"
+    dlg.focus_id = dflt.MEDIA_ID
+    dlg.onAction(Action(2))                  # ACTION_MOVE_RIGHT
+    assert dlg.media.selected == 0
+
+    # Right off the Spotify bar's end wraps -> power bar's first pill.
+    dlg.focus_id = dflt.POWER_ID
+    dlg.onAction(Action(2))
+    assert dlg.bar.selected == 0
+
+    # Left off the power bar's start wraps -> Spotify bar's LAST pill.
+    dlg.focus_id = dflt.MEDIA_ID
+    dlg.onAction(Action(1))                  # ACTION_MOVE_LEFT
+    assert dlg.media.selected == 2
+
+    # Moves WITHIN one bar never touch its selection.
+    dlg.media.selected = 1
+    dlg.onAction(Action(1))
+    assert dlg.media.selected == 1
+
+
+def test_spotify_click_survives_a_dead_server():
+    dlg = make_live_dialog()
+    dlg.onInit()
+
+    def boom(_cmd):
+        raise OSError('server gone')
+    dflt.spotify_command = boom
+    dlg.media.selected = 2
+    dlg.onClick(dflt.MEDIA_ID)
+    assert dlg.closed == 0             # a failed skip never costs the sheet
+
+
+def test_spotify_session_vanishing_parks_focus_before_hiding_the_bar():
+    """If the phone walks away between open and click, the bar hides - but
+    focus must land somewhere real FIRST, or the pad is steering a control
+    that no longer draws."""
+    dlg = make_live_dialog()
+    dlg.onInit()
+    dflt.spotify_command = lambda _cmd: {'active': False}
+    dlg.media.selected = 1
+    dlg.onClick(dflt.MEDIA_ID)
+    assert dlg.closed == 0
+    assert dlg.focus_calls[-1] == dflt.LIST_ID
+    assert dflt.PROP_SPOTIFY not in dlg.props
+
+
+def test_a_broken_spotify_bar_never_costs_the_switcher():
+    dlg = make_live_dialog()
+    real = dlg.getControl
+
+    def boom(control_id):
+        if control_id == dflt.MEDIA_ID:
+            raise RuntimeError('no such control')
+        return real(control_id)
+    dlg.getControl = boom
+    dlg.onInit()
+    assert [li.label for li in dlg.list.items][-1] == 'Cancel'
+    assert dlg.focus_calls == [dflt.LIST_ID]
+    assert dlg.closed == 0
+
+
+def test_titles_are_prettified_for_the_cards():
+    """The deck shows game names, not emulator window titles - and only for
+    titles that match the shadPS4 shape; everything else passes through."""
+    cases = {
+        'shadPS4 v0.17.0 | CUSA00900 - Bloodborne <01.09>': 'Bloodborne',
+        'shadPS4 v0.17.0 | CUSA00900 - Bloodborne <01.09> · paused':
+            'Bloodborne · paused',
+        'Big Picture': 'Big Picture',
+        'Desktop': 'Desktop',
+        'Hollow Knight · paused': 'Hollow Knight · paused',
+    }
+    for raw, want in cases.items():
+        assert dflt.pretty_title(raw) == want, raw
+    dlg = make_dialog(rows=(
+        {'title': 'shadPS4 v0.17.0 | CUSA00900 - Bloodborne <01.09> · paused'},
+        {'title': 'Big Picture'}))
+    dlg.onInit()
+    assert [li.label for li in dlg.list.items] == \
+        ['Bloodborne · paused', 'Big Picture', 'Cancel']
 
 
 def test_reinit_refocuses_without_duplicating_rows():
