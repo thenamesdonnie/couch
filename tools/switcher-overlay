@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The switcher, composited OVER the game by gamescope's overlay plane.
 
-    switcher-overlay --display :1
+    switcher-overlay --display :1              # one-shot: draw, drive, exit
+    switcher-overlay --display :1 --resident   # the per-session daemon
 
 Donnie, 15 Aug 2026, the night the first wrapped game ran: "can we get the
 switcher showing faster and not going to kodi first? or just having it over
@@ -46,7 +47,37 @@ ACLs the seat user onto the nodes) because evdev-the-library lives only in
 couchd's venv and this tool runs on the system python for PIL. The game is
 frozen, so double-reading the device steals nothing from anyone.
 
-Exit codes, for the caller that wires this to a gesture:
+THE RESIDENT MODE (15 Aug 2026, evening - "takes a while to appear... have
+it wait in the background?"). --resident makes the rail live WITH the game
+session instead of per double-tap: game-launch starts it right after the
+display bridge lands, it builds its X window immediately but UNMAPPED
+(gamescope skips unmapped planes entirely - steamcompmgr only paints mapped
+commits - so a hidden rail costs the compositor nothing per frame), and it
+pre-fetches rows/thumbs and pre-composes the sheet down to the BGRA bytes
+PutImage wants, refreshing them lazily while hidden. A double-tap is then
+map-plus-draw: couchd pokes the control socket (pipd's daemon+socket shape,
+/tmp/switcher-overlayd.sock, JSON lines) and the deck is on screen in tens
+of milliseconds instead of a cold python+PIL+HTTP spawn. Every show logs
+`signal-to-mapped` so the claim is measured, not felt.
+
+The contract does not move:
+  * /tmp/switcher-overlay means MAPPED AND OWNING THE PAD, not "process
+    alive" - the resident writes it on map and clears it on unmap, so
+    couchd's effect check and want_pad_owner read exactly what they always
+    read, and a hidden resident leaves the world byte-identical to no rail
+    at all.
+  * Kodi's joystick toggles on map/unmap by the same rules as the one-shot
+    exits (a paused pick's resume owns its own routing; see finish_steps).
+  * The frame-wait runs only when a show actually maps, never at daemon
+    start.
+  * The singleton holds across both modes: a mapped rail (either mode)
+    stands a second one down, and a newer resident retires an older one.
+The one-shot mode stays byte-for-byte in behaviour (exit codes 0/1/2/3
+below) and is couchd's fallback when no resident answers; a one-shot that
+finds a live resident hands the show over and stands down.
+
+Exit codes, for the caller that wires this to a gesture (--resident exits
+0 on a clean shutdown and 2 broken; these are the ONE-SHOT's):
   0  a row was activated (the server owns what that meant)
   1  cancelled with B - and unless --no-resume-on-cancel, the paused row
      was re-activated first, which is the server's own "resume" path
@@ -59,12 +90,17 @@ Test seams (unset in normal operation):
   SWITCHER_OVERLAY_SPOTIFY path to a JSON file instead of GET /api/spotify
   SWITCHER_OVERLAY_NO_PAD  do not open input devices (rig runs headless)
   SWITCHER_OVERLAY_ONESHOT render once, screenshot-able, exit 0 on SIGTERM
+  SWITCHER_OVERLAY_SOCK    control-socket path override (tests bind a fake)
+  SWITCHER_OVERLAY_SUSPENDED / SWITCHER_OVERLAY_BRIDGE
+                           path overrides for the two /tmp flags, so the
+                           headless rig never touches couchd's watched names
 """
 import json
 import os
 import re
 import select
 import signal
+import socket
 import struct
 import sys
 import time
@@ -72,11 +108,27 @@ import urllib.error
 import urllib.request
 
 API = os.environ.get('COUCH_API', 'http://localhost:8790')
-SUSPENDED_FLAG = '/tmp/game-suspended'
+# Both flags take a path override so the headless rig can exercise the
+# whole lifecycle without touching couchd's watched live /tmp names.
+SUSPENDED_FLAG = os.environ.get('SWITCHER_OVERLAY_SUSPENDED',
+                                '/tmp/game-suspended')
+BRIDGE_FLAG = os.environ.get('SWITCHER_OVERLAY_BRIDGE',
+                             '/tmp/game-gamescope')
 # The rail's own announcement, watched by couchd's flag observer: while it
 # exists no repair hands the pad or the screen to the Kodi behind the game,
 # and a second double-tap is a no-op instead of a second rail.
 OVERLAY_FLAG = '/tmp/switcher-overlay'
+# The resident daemon's control surface (pipd's shape: unix socket, one
+# JSON object per line, one reply per line) and its pidfile - the teardown
+# handle game-launch kills by, cmdline-verified first.
+RESIDENT_SOCK = os.environ.get('SWITCHER_OVERLAY_SOCK',
+                               '/tmp/switcher-overlayd.sock')
+RESIDENT_PIDFILE = '/tmp/switcher-overlayd.pid'
+# How often the hidden resident re-fetches rows/thumbs and re-bakes the
+# sheet. Lazy on purpose: everything it caches is cosmetic for at most one
+# first paint (the post-map refresh corrects it in ~200ms), so this only
+# has to keep the cache from growing stale enough to look wrong.
+REFRESH_S = 20.0
 PAUSED_DIR = os.path.expanduser('~/couch/data/paused')
 # How long to wait for the gesture's own pause-snap to land before mapping:
 # mapping first would composite the rail INTO the freeze-frame, and the
@@ -426,6 +478,115 @@ def initial_focus(rows):
     return 0
 
 
+def first_paused(rows):
+    """The paused row a cancel would resume, or None."""
+    for r in rows or []:
+        if r.get('paused'):
+            return r
+    return None
+
+
+def merge_focus(old_rows, new_rows, focus):
+    """Keep the eye where it was across a refresh: the focused ROW (by id)
+    keeps focus even if the list reordered; a vanished row falls back to
+    initial_focus. Without this the post-map refresh would visibly yank
+    the ring off whatever the player was already aiming at."""
+    if 0 <= focus < len(old_rows or []):
+        want = old_rows[focus].get('id')
+        for i, r in enumerate(new_rows):
+            if r.get('id') == want:
+                return i
+    return initial_focus(new_rows)
+
+
+# =========================================================================
+# the map/unmap lifecycle, pure: plans in data, side effects elsewhere.
+# (tools/test_switcher_overlay.py drives these; StepRunner executes them.)
+# =========================================================================
+def parse_command(line):
+    """One control line -> a dict, or ValueError (pipd's rule: the socket
+    must never be able to crash the daemon with a malformed line)."""
+    try:
+        msg = json.loads(line)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError('not JSON: %s' % e)
+    if not isinstance(msg, dict):
+        raise ValueError('expected a JSON object')
+    if not isinstance(msg.get('cmd'), str) or not msg['cmd']:
+        raise ValueError('missing "cmd"')
+    return msg
+
+
+def show_reply(msg, display, mapped, flag_busy):
+    """A 'show' command -> (reply dict, should_map). The reply goes out
+    BEFORE the show runs (two-stage ack), so the poker - couchd mid-pass -
+    is never parked behind the frame-wait. Idempotent by design: a show
+    while mapped is a happy no-op (the second double-tap rule), and a
+    foreign rail owning the flag stands this one down (the singleton)."""
+    if msg.get('display') not in (None, display):
+        return {'ok': False, 'error': 'display mismatch: rail is on %s'
+                                      % display}, False
+    if mapped:
+        return {'ok': True, 'mapped': True, 'note': 'already up'}, False
+    if flag_busy:
+        return {'ok': False, 'error': 'another rail owns the screen'}, False
+    return {'ok': True, 'accepted': True}, True
+
+
+def show_steps(mapped, flag_busy, suspended):
+    """One accepted 'show' -> the ordered side effects, or [] to stand
+    down. The order is the one-shot's, proven live: pads first (nothing
+    could ever be picked without one - abort, do not map), the frame-wait
+    ONLY when suspended and only now that we are really mapping (mapping
+    earlier would burn the rail into pause-snap's freeze-frame), then
+    map+draw, then the flag - which means MAPPED AND OWNING THE PAD, so it
+    must not exist a moment before the sheet does - then Kodi's joystick
+    off so the invisible home row stops listening."""
+    if mapped or flag_busy:
+        return []
+    out = [('open_pads',)]
+    if suspended:
+        out.append(('frame_wait',))
+    out += [('map',), ('draw',), ('write_flag',), ('joystick', False)]
+    return out
+
+
+def finish_steps(outcome, detail=None, paused_row=None,
+                 resume_on_cancel=True):
+    """A deck outcome -> (ordered side effects, one-shot exit code).
+
+    Semantics copied verb for verb from the one-shot flow that ran live
+    15 Aug: the rail leaves the screen BEFORE the world changes (unmap
+    first), the flag stays up THROUGH an activate (guard-vs-resume: while
+    a resume is in flight no reconcile may hand the pad back to Kodi, so
+    remove_flag comes last), and Kodi's joystick returns exactly when the
+    screen lands somewhere Kodi-steerable - never after a paused pick or a
+    resume-on-cancel, whose routing belongs to game-launch's resume, and
+    never after a supersede, where the PS button's own resume already
+    routed the pad."""
+    steps = [('unmap',)]
+    code = 1
+    if outcome == 'picked':
+        steps.append(('activate', detail['id']))
+        if not detail.get('paused'):
+            steps.append(('joystick', True))
+        code = 0
+    elif outcome == 'power':
+        steps += [('power', detail), ('joystick', True)]
+        code = 0
+    elif outcome == 'cancel':
+        if resume_on_cancel and paused_row is not None:
+            steps.append(('activate', paused_row['id']))
+        else:
+            steps.append(('joystick', True))
+    elif outcome == 'superseded':
+        code = 3
+    elif outcome == 'stopped':
+        steps.append(('joystick', True))
+    steps += [('remove_flag',), ('close_pads',)]
+    return steps, code
+
+
 def layout(n, out_w, out_h):
     """-> (strip_w, strip_h, tile_w, tile_h, gap, [(x, y), ...]).
 
@@ -538,6 +699,37 @@ def fetch_thumb(row, timeout=2.0):
             return Image.open(io.BytesIO(r.read())).convert('RGB')
     except Exception:
         return None
+
+
+class ThumbCache:
+    """fetch_thumb, remembered - the resident's art never refetches per
+    show or per redraw. Keyed by the row's thumb URL: a paused row's
+    freeze-frame gets a fresh filename per suspend (pause-snap's epoch-ms
+    stamp), so a new snap misses the cache by construction and get() is
+    always safe at show time; live winthumbs share one URL, so the lazy
+    refresh calls refetch() to keep them current, falling back to the
+    cached copy when a fetch fails (stale art beats a blank card)."""
+
+    def __init__(self, fetch=None):
+        self._fetch = fetch or fetch_thumb
+        self._by_key = {}
+
+    @staticmethod
+    def key(row):
+        return row.get('thumb') or str(row.get('id', ''))
+
+    def get(self, row):
+        k = self.key(row)
+        if k not in self._by_key:
+            self._by_key[k] = self._fetch(row)
+        return self._by_key[k]
+
+    def refetch(self, row):
+        k = self.key(row)
+        fresh = self._fetch(row)
+        if fresh is not None:
+            self._by_key[k] = fresh
+        return self._by_key.get(k)
 
 
 def _crop_cover(img, w, h):
@@ -722,6 +914,20 @@ def compose_strip(rows, focus, out_w, out_h, thumbs, power_focus=None,
 # =========================================================================
 # X plumbing (pipd's Overlay, adapted: scrim parent + image child)
 # =========================================================================
+def bake_bgra(pil_img):
+    """RGBA PIL -> (w, h, the BGRA ZPixmap bytes PutImage wants). Split
+    from the push so the resident can pay the ~33MB-at-4K swizzle while
+    hidden and a show only has to move bytes."""
+    w, h = pil_img.size
+    raw = pil_img.convert('RGBA').tobytes()
+    bgra = bytearray(len(raw))
+    bgra[0::4] = raw[2::4]
+    bgra[1::4] = raw[1::4]
+    bgra[2::4] = raw[0::4]
+    bgra[3::4] = raw[3::4]
+    return w, h, bytes(bgra)
+
+
 class RailOverlay:
     def __init__(self, display_name):
         from Xlib import X, Xatom, display as xdisplay
@@ -739,7 +945,11 @@ class RailOverlay:
                 return depth.visuals[0].visual_id
         return None
 
-    def create(self, strip_w, strip_h):
+    def create(self, strip_w, strip_h, mapped=True):
+        """Build the plane. mapped=False (the resident) leaves the PARENT
+        unmapped: gamescope never sees an external overlay at all, so the
+        hidden rail is free. The child maps now either way - it lives
+        inside the parent and composites only when the parent does."""
         X = self.X
         visual = self._argb_visual()
         if visual is None:
@@ -761,7 +971,36 @@ class RailOverlay:
         self.parent.set_wm_name('couch-switcher')
         self.parent.set_wm_class('couch-switcher', 'couch-switcher')
         self.child.map()
+        if mapped:
+            self.parent.map()
+        else:
+            # Belt for the unmap_now finding above: even a stray commit on
+            # a hidden plane must never reach the screen.
+            self._set_opacity(0)
+        self.dpy.sync()
+
+    def _set_opacity(self, value):
+        atom = self.dpy.get_atom('_NET_WM_WINDOW_OPACITY')
+        self.parent.change_property(atom, self.Xatom.CARDINAL, 32, [value])
+
+    def map_now(self):
+        self._set_opacity(0xffffffff)
         self.parent.map()
+        self.dpy.sync()
+
+    def unmap_now(self):
+        # Opacity 0 is what actually hides it - MEASURED on the headless
+        # rig, then confirmed in the source: steamcompmgr's unmap_win never
+        # clears the plane's committed buffer (a literal "TODO clear done
+        # commits here?") and the external-overlay pick ignores map state,
+        # so a once-shown plane keeps compositing its last frame. The paint
+        # is gated on `externalOverlay->opacity`, so zero removes it. The
+        # unmap stays too: it keeps the X-side state honest and is what
+        # SHOULD hide it the day the TODO gets done. (A never-mapped plane
+        # is invisible only because it has no commit yet - which is why the
+        # resident's hidden start costs nothing either way.)
+        self._set_opacity(0)
+        self.parent.unmap()
         self.dpy.sync()
 
     def place_centre(self, strip_w, strip_h):
@@ -771,23 +1010,20 @@ class RailOverlay:
         self.dpy.sync()
 
     def draw(self, pil_img):
-        """RGBA PIL -> BGRA ZPixmap rows, chunked under the X request cap."""
-        w, h = pil_img.size
-        raw = pil_img.convert('RGBA').tobytes()
-        bgra = bytearray(len(raw))
-        bgra[0::4] = raw[2::4]
-        bgra[1::4] = raw[1::4]
-        bgra[2::4] = raw[0::4]
-        bgra[3::4] = raw[3::4]
-        # A classic X request's length field is CARD16 in 4-byte units, so
-        # one PutImage caps at ~256KB and python-xlib does not negotiate
-        # BIG-REQUESTS: a 1MB chunk dies in struct.pack ('H' overflow),
-        # measured on the first live draw. Stay comfortably under.
+        self.draw_baked(bake_bgra(pil_img))
+
+    def draw_baked(self, baked):
+        """(w, h, BGRA bytes) -> the child, chunked under the X request
+        cap. A classic X request's length field is CARD16 in 4-byte units,
+        so one PutImage caps at ~256KB and python-xlib does not negotiate
+        BIG-REQUESTS: a 1MB chunk dies in struct.pack ('H' overflow),
+        measured on the first live draw. Stay comfortably under."""
+        w, h, bgra = baked
         rows_per_chunk = max(1, 240_000 // (w * 4))
         y = 0
         while y < h:
             rows = min(rows_per_chunk, h - y)
-            chunk = bytes(bgra[y * w * 4:(y + rows) * w * 4])
+            chunk = bgra[y * w * 4:(y + rows) * w * 4]
             self.child.put_image(self.gc, 0, y, w, rows,
                                  self.X.ZPixmap, 32, 0, chunk)
             y += rows
@@ -962,9 +1198,491 @@ def open_pads():
     return fds
 
 
+def wait_for_fresh_frame():
+    """Give the gesture's own pause-snap FRAME_WAIT_S to land. Bounded;
+    no frame is only a cosmetic loss (the paused tile shows stale art)."""
+    deadline = time.monotonic() + FRAME_WAIT_S
+    while time.monotonic() < deadline:
+        if fresh_frame_at(PAUSED_DIR, int(time.time() * 1000)):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def deck_loop(overlay, rows, thumbs, spotify, fds, stop, listen_sock=None,
+              sock_handler=None, refresh_once=None):
+    """Drive the mapped deck until an outcome. Returns
+    (outcome, detail, rows): outcome in 'picked' (detail = the row),
+    'power' (detail = the action key), 'cancel', 'superseded' (the
+    suspended flag cleared underneath us), 'stopped' (a signal, or the
+    resident's socket said so). Media picks stay inside - skipping is a
+    repeat-press activity (default.py's rule).
+
+    The resident threads its listening socket in (`listen_sock` +
+    `sock_handler(conn, msg)` -> outcome-or-None), so a second show is
+    answered while mapped; `refresh_once` runs after the first paint and
+    trues up what the pre-baked sheet guessed (the freshly-paused row's
+    marker and freeze-frame), keeping focus on the same row id."""
+    st = PadState()
+    zone, power_i, media_i = 'rail', 0, 0    # the deck opens on the rail,
+    focus = initial_focus(rows)              # never on anything that turns
+                                             # the room off
+    def redraw():
+        overlay.draw(compose_strip(
+            rows, focus, overlay.out_w, overlay.out_h, thumbs,
+            power_i if zone == 'power' else None, spotify,
+            media_i if zone == 'media' else None))
+
+    if refresh_once is not None:
+        fresh = refresh_once()
+        if fresh is not None:
+            new_rows, new_thumbs, new_spotify = fresh
+            focus = merge_focus(rows, new_rows, focus)
+            rows, thumbs, spotify = new_rows, new_thumbs, new_spotify
+            if zone == 'media' and not spotify_active(spotify):
+                zone = 'rail'
+            redraw()
+
+    while not stop['sig']:
+        # Superseded from outside: the PS button's own resume clears the
+        # flag; a rail with no frozen game under it is a lie.
+        if not os.path.exists(SUSPENDED_FLAG):
+            say('suspended flag gone - closing (superseded)')
+            return 'superseded', None, rows
+        extra = [listen_sock] if listen_sock is not None else []
+        ready, _, _ = select.select(fds + extra, [], [], 0.25)
+        action = None
+        for fd in ready:
+            if listen_sock is not None and fd is listen_sock:
+                out = sock_handler()
+                if out is not None:
+                    return out, None, rows
+                continue
+            try:
+                buf = os.read(fd, EVENT_SIZE * 64)
+            except OSError:
+                continue
+            for ev in decode_events(buf):
+                action = pad_action(ev, st) or action
+        if not action:
+            continue
+        if action in ('left', 'right', 'up', 'down'):
+            moved = deck_move(zone, focus, power_i, media_i, action,
+                              len(rows),
+                              3 if spotify_active(spotify) else 0)
+            if moved != (zone, focus, power_i, media_i):
+                zone, focus, power_i, media_i = moved
+                redraw()
+        elif action == 'select' and zone == 'media':
+            # A media pick does NOT close the deck: fire the verb, redraw
+            # pill + now-playing line from the fresh answer.
+            cmd, next_playing = media_click(spotify, media_i)
+            say('spotify: %s' % cmd)
+            try:
+                fresh = spotify_command(cmd)
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                say('spotify %s failed (%s)' % (cmd, e))
+                continue
+            if not fresh.get('active'):
+                # The phone walked away mid-press. Park focus somewhere
+                # real BEFORE hiding the bar (default.py does the same).
+                spotify = {}
+                zone = 'rail'
+            else:
+                # The pill reflects INTENT, never the server's lagging
+                # read; a skip carries the old state through.
+                fresh['playing'] = next_playing
+                spotify = fresh
+            redraw()
+        elif action == 'select' and zone == 'power':
+            say('power: %s' % POWER_ACTIONS[power_i][1])
+            return 'power', POWER_ACTIONS[power_i][1], rows
+        elif action == 'select':
+            say('picked: %s' % rows[focus]['title'])
+            return 'picked', rows[focus], rows
+        elif action == 'back':
+            say('cancelled')
+            return 'cancel', None, rows
+    return 'stopped', None, rows
+
+
+class StepRunner:
+    """Executes the pure plans (show_steps / finish_steps) against the
+    real world. One home for the side-effect ordering both modes share;
+    `unmap` is the only verb the two spell differently (the one-shot
+    destroys its windows, the resident keeps them for the next show).
+    run() returns False the moment a step refuses - only open_pads can -
+    so an aborted show never half-maps."""
+
+    def __init__(self, overlay, unmap, write_flag, draw):
+        self.overlay = overlay
+        self._unmap = unmap
+        self._write_flag = write_flag
+        self._draw = draw
+        self.fds = []
+        self.frame_wait_ms = 0
+
+    def run(self, steps):
+        for step in steps:
+            name, args = step[0], step[1:]
+            if name == 'open_pads':
+                self.fds = ([] if os.environ.get('SWITCHER_OVERLAY_NO_PAD')
+                            else open_pads())
+                if not self.fds \
+                        and not os.environ.get('SWITCHER_OVERLAY_NO_PAD'):
+                    say('no pad to read - nothing could ever be picked')
+                    return False
+            elif name == 'frame_wait':
+                t0 = time.monotonic()
+                wait_for_fresh_frame()
+                self.frame_wait_ms = int((time.monotonic() - t0) * 1000)
+            elif name == 'map':
+                self.overlay.map_now()
+            elif name == 'draw':
+                self._draw()
+            elif name == 'write_flag':
+                self._write_flag()
+            elif name == 'joystick':
+                if self.fds:
+                    kodi_joystick(args[0])
+            elif name == 'unmap':
+                try:
+                    self._unmap()
+                except Exception as e:
+                    # A dead nested display must not strand the steps that
+                    # matter more: the activate, the joystick, the flag.
+                    say('unmap failed (%s)' % e)
+            elif name == 'activate':
+                try:
+                    activate(args[0])
+                except (urllib.error.URLError, OSError) as e:
+                    say('activate %s failed (%s)' % (args[0], e))
+            elif name == 'power':
+                power_dispatch(args[0])
+            elif name == 'remove_flag':
+                try:
+                    os.remove(OVERLAY_FLAG)
+                except OSError:
+                    pass
+            elif name == 'close_pads':
+                for fd in self.fds:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                self.fds = []
+        return True
+
+
+def write_overlay_flag():
+    try:
+        with open(OVERLAY_FLAG, 'w') as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        say('cannot announce the rail (%s)' % e)
+
+
+# =========================================================================
+# the resident daemon (and its client half)
+# =========================================================================
+def resident_show(display, resume_on_cancel=True, timeout=3.0):
+    """Ask a live resident rail to map. True when a resident accepted the
+    show (or already has it up); False means run the one-shot path. The
+    resident acks before it performs (show_reply), so this returns in
+    milliseconds either way."""
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(RESIDENT_SOCK)
+        s.sendall((json.dumps({'cmd': 'show', 'display': display,
+                               'resume_on_cancel': resume_on_cancel})
+                   + '\n').encode())
+        reply = json.loads(s.recv(4096).decode() or '{}')
+        s.close()
+        if not reply.get('ok'):
+            say('resident refused the show: %s' % reply.get('error'))
+        return bool(reply.get('ok'))
+    except (OSError, ValueError):
+        return False
+
+
+class ResidentRail:
+    """The rail that lives with the game session: window built and baked,
+    plane unmapped, waiting on the control socket. See the module
+    docstring's RESIDENT MODE section for the why."""
+
+    def __init__(self, display):
+        self.display = display
+        self.overlay = None
+        self.sock = None
+        self.mapped = False
+        self.stop = {'sig': False}
+        self.rows, self.thumbs, self.spotify = [], {}, {}
+        self.baked = None
+        self.tc = ThumbCache()
+        self.last_refresh = 0.0     # scheduling clock (0 = refresh due now)
+        self.baked_at = 0.0         # when the sheet was really composed
+        self.resume_on_cancel = True
+        self.pending_show = None
+
+    # -- cache ------------------------------------------------------------
+    def refresh(self):
+        """Re-fetch rows/spotify, refetch thumbs through the cache,
+        recompose the sheet and pre-bake its BGRA bytes. The hidden-side
+        work that makes show map-plus-draw."""
+        try:
+            rows = fetch_rows()
+        except RuntimeError as e:
+            say('refresh: %s' % e)
+            self.last_refresh = time.monotonic()
+            return False
+        spotify = fetch_spotify()
+        thumbs = {i: self.tc.refetch(r) for i, r in enumerate(rows)}
+        sheet = compose_strip(rows, initial_focus(rows), self.overlay.out_w,
+                              self.overlay.out_h, thumbs, spotify=spotify)
+        self.rows, self.thumbs, self.spotify = rows, thumbs, spotify
+        self.baked = bake_bgra(sheet)
+        self.last_refresh = self.baked_at = time.monotonic()
+        return True
+
+    def _refresh_for_show(self):
+        """The just-suspended world, fetched fast right after the instant
+        first paint: the game row grew its ' · paused' marker and its
+        freeze-frame thumb (a NEW url, so the cache misses into a fetch by
+        construction). Returns (rows, thumbs, spotify) or None."""
+        try:
+            rows = fetch_rows()
+        except RuntimeError:
+            return None
+        spotify = fetch_spotify()
+        thumbs = {i: self.tc.get(r) for i, r in enumerate(rows)}
+        self.rows, self.thumbs, self.spotify = rows, thumbs, spotify
+        self.last_refresh = time.monotonic()
+        return rows, thumbs, spotify
+
+    # -- the show itself --------------------------------------------------
+    def do_show(self, t0):
+        runner = StepRunner(self.overlay, self.overlay.unmap_now,
+                            write_overlay_flag,
+                            lambda: self.overlay.draw_baked(self.baked))
+        steps = show_steps(False, rail_already_up(),
+                           os.path.exists(SUSPENDED_FLAG))
+        if not runner.run(steps):
+            return
+        self.mapped = True
+        # The latency this whole mode exists to buy, measured every time.
+        say('show: signal-to-mapped %dms (frame-wait %dms, sheet baked '
+            '%.0fs ago)' % (int((time.monotonic() - t0) * 1000),
+                            runner.frame_wait_ms,
+                            time.monotonic() - self.baked_at))
+        try:
+            outcome, detail, rows = deck_loop(
+                self.overlay, self.rows, self.thumbs, self.spotify,
+                runner.fds, self.stop, listen_sock=self.sock,
+                sock_handler=self.handle_conn,
+                refresh_once=self._refresh_for_show)
+        except Exception:
+            # Whatever broke mid-deck, the screen and pad must come back;
+            # the run loop decides whether the session itself died.
+            outcome, detail, rows = 'stopped', None, self.rows
+            raise
+        finally:
+            steps, _ = finish_steps(outcome, detail,
+                                    paused_row=first_paused(rows),
+                                    resume_on_cancel=self.resume_on_cancel)
+            runner.run(steps)
+            self.mapped = False
+            # The world just changed under the cache (a resume, a raise):
+            # re-bake on the next idle beat rather than in the player's
+            # face.
+            self.last_refresh = 0.0
+
+    # -- the control surface ----------------------------------------------
+    def handle_conn(self, timeout=2.0):
+        """One connection, one line, one reply. Runs from the idle loop
+        AND from inside deck_loop (a poke while mapped), so it must decide
+        from self.mapped. Returns an outcome to hand deck_loop, or None."""
+        try:
+            conn, _ = self.sock.accept()
+        except OSError:
+            return None
+        outcome = None
+        with conn:
+            conn.settimeout(timeout)
+            try:
+                line = conn.recv(4096).decode('utf-8', 'replace')
+                msg = parse_command(line)
+            except (OSError, ValueError) as e:
+                self._reply(conn, {'ok': False, 'error': str(e)})
+                return None
+            cmd = msg['cmd']
+            if cmd == 'show':
+                reply, should_map = show_reply(msg, self.display,
+                                               self.mapped,
+                                               rail_already_up())
+                self._reply(conn, reply)
+                if should_map:
+                    self.resume_on_cancel = bool(
+                        msg.get('resume_on_cancel', True))
+                    self.pending_show = time.monotonic()
+            elif cmd == 'hide':
+                self._reply(conn, {'ok': True})
+                if self.mapped:
+                    outcome = 'stopped'
+            elif cmd == 'quit':
+                self._reply(conn, {'ok': True, 'stopping': True})
+                self.stop['sig'] = True
+                if self.mapped:
+                    outcome = 'stopped'
+            elif cmd == 'status':
+                self._reply(conn, {
+                    'ok': True, 'display': self.display,
+                    'mapped': self.mapped, 'rows': len(self.rows),
+                    'baked_age_s': round(
+                        time.monotonic() - self.baked_at, 1)})
+            else:
+                self._reply(conn, {'ok': False,
+                                   'error': 'unknown cmd %r' % cmd})
+        return outcome
+
+    @staticmethod
+    def _reply(conn, obj):
+        try:
+            conn.sendall((json.dumps(obj) + '\n').encode())
+        except OSError:
+            pass
+
+    # -- lifetime ---------------------------------------------------------
+    def session_gone(self):
+        """The wrapped session this rail belongs to has ended: the display
+        bridge no longer names our display (game-launch cleared it in
+        teardown, or a new launch swept it), or the nested X server itself
+        is gone - which the sync probe notices as a dropped connection."""
+        try:
+            bridge = open(BRIDGE_FLAG).read().strip()
+        except OSError:
+            return 'display bridge cleared'
+        if bridge != self.display:
+            return 'display bridge now names %s' % bridge
+        try:
+            self.overlay.dpy.sync()
+        except Exception as e:
+            return 'nested display died (%s)' % type(e).__name__
+        return None
+
+    def run(self):
+        try:
+            self.overlay = RailOverlay(self.display)
+        except Exception as e:
+            say('no display %s (%s) - resident cannot start' % (
+                self.display, e))
+            return 2
+        self.overlay.create(self.overlay.out_w, self.overlay.out_h,
+                            mapped=False)
+        t0 = time.monotonic()
+        self.refresh()
+        try:
+            if os.path.exists(RESIDENT_SOCK):
+                os.unlink(RESIDENT_SOCK)
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.bind(RESIDENT_SOCK)
+            os.chmod(RESIDENT_SOCK, 0o600)   # pipd's rule: costs nothing
+            self.sock.listen(8)
+        except OSError as e:
+            say('cannot bind %s (%s)' % (RESIDENT_SOCK, e))
+            self.overlay.close()
+            return 2
+        for s in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(s, lambda *_: self.stop.update(sig=True))
+        say('resident rail on %s: hidden and ready, %d rows prebaked in '
+            '%dms' % (self.display, len(self.rows),
+                      int((time.monotonic() - t0) * 1000)))
+        self.pending_show = None
+        try:
+            while not self.stop['sig']:
+                ready, _, _ = select.select([self.sock], [], [], 1.0)
+                if ready:
+                    self.handle_conn()
+                if self.pending_show is not None:
+                    t_show, self.pending_show = self.pending_show, None
+                    try:
+                        self.do_show(t_show)
+                    except Exception as e:
+                        # do_show's finally already unwound the screen; a
+                        # dead display is the next session_gone's verdict,
+                        # anything else is a logged miss, not a death.
+                        say('show broke (%s: %s)' % (type(e).__name__, e))
+                    continue
+                gone = self.session_gone()
+                if gone:
+                    say('%s - resident retiring' % gone)
+                    break
+                if time.monotonic() - self.last_refresh >= REFRESH_S:
+                    self.refresh()
+            return 0
+        finally:
+            # The flag is the pad-ownership announcement: whether we think
+            # we are mapped or a half-run show left it behind, a flag that
+            # names THIS pid must not outlive it.
+            flag_ours = False
+            try:
+                flag_ours = open(OVERLAY_FLAG).read().strip() \
+                    == str(os.getpid())
+            except OSError:
+                pass
+            if self.mapped or flag_ours:
+                # Killed while on screen: leave the room usable, exactly
+                # like the one-shot's killed-from-outside path.
+                runner = StepRunner(self.overlay, self.overlay.unmap_now,
+                                    write_overlay_flag, lambda: None)
+                runner.fds = open_pads()
+                runner.run(finish_steps('stopped')[0])
+                self.mapped = False
+            try:
+                self.sock.close()
+                os.unlink(RESIDENT_SOCK)
+            except OSError:
+                pass
+            self.overlay.close()
+            say('resident rail down')
+
+
+def resident_main(display):
+    # Newest wins, like the display-bridge rule: an earlier resident (a
+    # crashed session's leftover whose X death it has not noticed yet) is
+    # retired, never deferred to. cmdline-verified before the TERM.
+    try:
+        old = int(open(RESIDENT_PIDFILE).read().strip())
+        with open('/proc/%d/cmdline' % old, 'rb') as f:
+            is_rail = b'switcher-overlay' in f.read()
+        if is_rail and old != os.getpid():
+            say('retiring previous resident %d' % old)
+            os.kill(old, signal.SIGTERM)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and os.path.exists(
+                    '/proc/%d' % old):
+                time.sleep(0.1)
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(RESIDENT_PIDFILE, 'w') as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        say('cannot write %s (%s)' % (RESIDENT_PIDFILE, e))
+    try:
+        return ResidentRail(display).run()
+    finally:
+        try:
+            if open(RESIDENT_PIDFILE).read().strip() == str(os.getpid()):
+                os.unlink(RESIDENT_PIDFILE)
+        except OSError:
+            pass
+
+
 def main(argv):
     display = None
     resume_on_cancel = True
+    resident = False
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -972,12 +1690,24 @@ def main(argv):
             display = args.pop(0)
         elif a == '--no-resume-on-cancel':
             resume_on_cancel = False
+        elif a == '--resident':
+            resident = True
         else:
             print(__doc__, file=sys.stderr)
             return 2
     if not display:
         say('--display is required (gamescope\'s nested display)')
         return 2
+
+    if resident:
+        return resident_main(display)
+
+    # A live resident owns this display's rail: hand the show over and
+    # stand down. It acks in milliseconds; anything else (no socket, a
+    # refusal, a stale daemon) falls through to the one-shot below.
+    if resident_show(display, resume_on_cancel):
+        say('a resident rail took the show - standing down')
+        return 0
 
     if rail_already_up():
         say('a rail is already up - standing down')
@@ -988,11 +1718,7 @@ def main(argv):
     # tile wants the fresh frame anyway. Bounded; no frame is only a
     # cosmetic loss.
     if os.path.exists(SUSPENDED_FLAG):
-        deadline = time.monotonic() + FRAME_WAIT_S
-        while time.monotonic() < deadline:
-            if fresh_frame_at(PAUSED_DIR, int(time.time() * 1000)):
-                break
-            time.sleep(0.1)
+        wait_for_fresh_frame()
 
     try:
         rows = fetch_rows()
@@ -1012,20 +1738,18 @@ def main(argv):
     strip = compose_strip(rows, focus, overlay.out_w, overlay.out_h, thumbs,
                           spotify=spotify)
     overlay.create(*strip.size)
-    # pipd's measured lesson, which bit here too on the first live frame:
-    # gamescope's first commit of the plane does not carry a position set
-    # before content exists - the rail composited at 0,0 with the centre
-    # configure already issued. Draw first, THEN place, then damage the
-    # child again so the moved position rides a fresh commit.
     overlay.draw(strip)
-    overlay.place_centre(*strip.size)
-    overlay.draw(strip)
+    if strip.size != (overlay.out_w, overlay.out_h):
+        # pipd's measured lesson: gamescope's first commit of the plane
+        # does not carry a position set before content exists - draw, then
+        # place, then damage again so the move rides a fresh commit. The
+        # deck's strip IS the output, so place is a no-op and the second
+        # full-sheet draw was pure burn; both stay only for a strip that
+        # is ever smaller than the plane again.
+        overlay.place_centre(*strip.size)
+        overlay.draw(strip)
     say('rail up on %s (%dx%d)' % (display, *strip.size))
-    try:
-        with open(OVERLAY_FLAG, 'w') as f:
-            f.write(str(os.getpid()))
-    except OSError as e:
-        say('cannot announce the rail (%s)' % e)
+    write_overlay_flag()
 
     stop = {'sig': False}
     for s in (signal.SIGTERM, signal.SIGINT):
@@ -1035,111 +1759,37 @@ def main(argv):
     oneshot = bool(os.environ.get('SWITCHER_OVERLAY_ONESHOT'))
     if not fds and not oneshot:
         say('no pad to read - nothing could ever be picked')
+        try:
+            os.remove(OVERLAY_FLAG)
+        except OSError:
+            pass
         overlay.close()
         return 2
 
-    st = PadState()
-    zone, power_i, media_i = 'rail', 0, 0    # the deck opens on the rail,
-    if fds:                          # never on anything that turns the
-        kodi_joystick(False)         # room off or skips Donnie's track
+    if fds:                          # the deck opens on the rail, never on
+        kodi_joystick(False)         # anything that turns the room off
 
-    def redraw():
-        overlay.draw(compose_strip(
-            rows, focus, overlay.out_w, overlay.out_h, thumbs,
-            power_i if zone == 'power' else None, spotify,
-            media_i if zone == 'media' else None))
-
+    runner = StepRunner(overlay, overlay.close, write_overlay_flag,
+                        lambda: None)
+    runner.fds = fds
     try:
-        while not stop['sig']:
-            # Superseded from outside: the PS button's own resume clears the
-            # flag; a rail with no frozen game under it is a lie.
-            if not os.path.exists(SUSPENDED_FLAG):
-                say('suspended flag gone - closing (superseded)')
-                return 3
-            ready, _, _ = select.select(fds, [], [], 0.25)
-            action = None
-            for fd in ready:
-                try:
-                    buf = os.read(fd, EVENT_SIZE * 64)
-                except OSError:
-                    continue
-                for ev in decode_events(buf):
-                    action = pad_action(ev, st) or action
-            if not action:
-                continue
-            if action in ('left', 'right', 'up', 'down'):
-                moved = deck_move(zone, focus, power_i, media_i, action,
-                                  len(rows),
-                                  3 if spotify_active(spotify) else 0)
-                if moved != (zone, focus, power_i, media_i):
-                    zone, focus, power_i, media_i = moved
-                    redraw()
-            elif action == 'select' and zone == 'media':
-                # A media pick does NOT close the deck (default.py's rule:
-                # skipping is a repeat-press activity): fire the verb,
-                # redraw pill + now-playing line from the fresh answer.
-                cmd, next_playing = media_click(spotify, media_i)
-                say('spotify: %s' % cmd)
-                try:
-                    fresh = spotify_command(cmd)
-                except (urllib.error.URLError, OSError, ValueError) as e:
-                    say('spotify %s failed (%s)' % (cmd, e))
-                    continue
-                if not fresh.get('active'):
-                    # The phone walked away mid-press. Park focus somewhere
-                    # real BEFORE hiding the bar (default.py does the same).
-                    spotify = {}
-                    zone = 'rail'
-                else:
-                    # The pill reflects INTENT, never the server's lagging
-                    # read; a skip carries the old state through.
-                    fresh['playing'] = next_playing
-                    spotify = fresh
-                redraw()
-            elif action == 'select' and zone == 'power':
-                key = POWER_ACTIONS[power_i][1]
-                say('power: %s' % key)
-                overlay.close()
-                overlay = None
-                power_dispatch(key)
-                if fds:
-                    # Whatever tvpoweroff leaves on screen (quit lands on
-                    # Kodi; pad_off retires the pad anyway), Kodi must be
-                    # steerable again - same rule as picking it.
-                    kodi_joystick(True)
-                return 0
-            elif action == 'select':
-                say('picked: %s' % rows[focus]['title'])
-                overlay.close()
-                overlay = None
-                activate(rows[focus]['id'])
-                if not rows[focus].get('paused') and fds:
-                    # Landing on Kodi/desktop: the pad follows the screen.
-                    # A paused pick resumes instead, and game-launch's
-                    # resume owns the routing there.
-                    kodi_joystick(True)
-                return 0
-            elif action == 'back':
-                say('cancelled')
-                paused = [r for r in rows if r.get('paused')]
-                if resume_on_cancel and paused:
-                    overlay.close()
-                    overlay = None
-                    activate(paused[0]['id'])
-                elif fds:
-                    kodi_joystick(True)
-                return 1
-        if fds and not oneshot:
-            kodi_joystick(True)      # killed from outside: leave Kodi usable
-        return 0 if oneshot else 1
+        outcome, detail, rows = deck_loop(overlay, rows, thumbs, spotify,
+                                          fds, stop)
+        steps, code = finish_steps(outcome, detail,
+                                   paused_row=first_paused(rows),
+                                   resume_on_cancel=resume_on_cancel)
+        runner.run(steps)
+        return 0 if (oneshot and outcome == 'stopped') else code
     finally:
         try:
             os.remove(OVERLAY_FLAG)
         except OSError:
             pass
-        if overlay is not None:
-            overlay.close()
-        for fd in fds:
+        try:
+            overlay.close()      # tolerant of the unmap step's own close
+        except Exception:
+            pass
+        for fd in runner.fds:
             try:
                 os.close(fd)
             except OSError:

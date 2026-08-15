@@ -5,6 +5,7 @@ focus movement, row filtering, layout - because a wrong decision on the
 couch is a player stuck in a menu."""
 import importlib.util
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -286,3 +287,423 @@ def test_spotify_fetch_is_never_fatal(monkeypatch):
     monkeypatch.delenv('SWITCHER_OVERLAY_SPOTIFY', raising=False)
     monkeypatch.setattr(mod, 'API', 'http://127.0.0.1:1')
     assert mod.fetch_spotify() == {}
+
+
+# -- the resident lifecycle: pure plans -----------------------------------
+def test_show_steps_frame_waits_only_when_suspended():
+    """The frame-wait exists so pause-snap's capture is rail-free; it must
+    run only when a show actually maps over a fresh suspend - never at
+    daemon start, never on a plain show."""
+    steps = mod.show_steps(mapped=False, flag_busy=False, suspended=True)
+    assert ('frame_wait',) in steps
+    steps = mod.show_steps(mapped=False, flag_busy=False, suspended=False)
+    assert ('frame_wait',) not in steps
+
+
+def test_show_steps_order_is_pads_wait_map_draw_flag_joystick():
+    steps = mod.show_steps(False, False, True)
+    names = [s[0] for s in steps]
+    assert names == ['open_pads', 'frame_wait', 'map', 'draw',
+                     'write_flag', 'joystick']
+    assert steps[-1] == ('joystick', False)
+    # The flag means MAPPED: it may not exist before the sheet does.
+    assert names.index('write_flag') > names.index('draw')
+
+
+def test_show_steps_stand_down_when_mapped_or_busy():
+    """Idempotent show (the second double-tap rule) and the singleton."""
+    assert mod.show_steps(mapped=True, flag_busy=False, suspended=True) == []
+    assert mod.show_steps(mapped=False, flag_busy=True, suspended=True) == []
+
+
+def test_finish_steps_picked_unmaps_then_activates_then_unflags():
+    """unmap first (the rail leaves before the world changes), the flag
+    LAST (guard-vs-resume: it must hold the pad through the activate)."""
+    steps, code = mod.finish_steps('picked', {'id': '0x1', 'paused': False})
+    names = [s[0] for s in steps]
+    assert code == 0
+    assert names.index('unmap') < names.index('activate') \
+        < names.index('remove_flag')
+    assert ('joystick', True) in steps
+
+
+def test_finish_steps_paused_pick_leaves_the_joystick_alone():
+    """game-launch's resume owns the routing there."""
+    steps, code = mod.finish_steps('picked', {'id': '0x2', 'paused': True})
+    assert code == 0
+    assert ('joystick', True) not in steps
+
+
+def test_finish_steps_cancel_resumes_the_paused_row():
+    paused = {'id': '0x2', 'paused': True}
+    steps, code = mod.finish_steps('cancel', paused_row=paused)
+    assert code == 1
+    assert ('activate', '0x2') in steps
+    assert ('joystick', True) not in steps
+
+
+def test_finish_steps_cancel_without_resume_restores_kodi():
+    steps, code = mod.finish_steps('cancel', paused_row={'id': '0x2'},
+                                   resume_on_cancel=False)
+    assert code == 1
+    assert not any(s[0] == 'activate' for s in steps)
+    assert ('joystick', True) in steps
+    steps, code = mod.finish_steps('cancel', paused_row=None)
+    assert ('joystick', True) in steps
+
+
+def test_finish_steps_superseded_touches_nothing_but_the_flag():
+    """The PS button's own resume already routed the pad."""
+    steps, code = mod.finish_steps('superseded')
+    assert code == 3
+    assert [s[0] for s in steps] == ['unmap', 'remove_flag', 'close_pads']
+
+
+def test_finish_steps_stopped_leaves_kodi_usable():
+    steps, code = mod.finish_steps('stopped')
+    assert code == 1
+    assert ('joystick', True) in steps
+
+
+def test_finish_steps_power_dispatches_then_restores():
+    steps, code = mod.finish_steps('power', 'all_off')
+    assert code == 0
+    names = [s[0] for s in steps]
+    assert names.index('unmap') < names.index('power') \
+        < names.index('remove_flag')
+
+
+def test_first_paused_and_merge_focus():
+    rows = mod.pick_rows(ROWS)
+    assert mod.first_paused(rows)['id'] == '0x5800002'
+    assert mod.first_paused([{'id': 'x', 'title': 'x'}]) is None
+    # Focus follows the row id across a refresh's reorder...
+    old = [{'id': 'a', 'title': 'A'}, {'id': 'b', 'title': 'B'}]
+    new = [{'id': 'b', 'title': 'B'}, {'id': 'a', 'title': 'A'}]
+    assert mod.merge_focus(old, new, 0) == 1
+    # ...and a vanished row falls back to initial_focus.
+    assert mod.merge_focus(old, [{'id': 'c', 'title': 'C'}], 0) == 0
+    assert mod.merge_focus([], [{'id': 'c', 'title': 'C'}], 0) == 0
+
+
+# -- the resident lifecycle: control surface ------------------------------
+def test_parse_command_rejects_malformed_lines():
+    """pipd's rule: the socket must never crash the daemon."""
+    import pytest
+    for bad in ('not json', '[]', '{}', '{"cmd": 3}'):
+        with pytest.raises(ValueError):
+            mod.parse_command(bad)
+    assert mod.parse_command('{"cmd": "show"}')['cmd'] == 'show'
+
+
+def test_show_reply_two_stage_ack():
+    ok, should = mod.show_reply({'cmd': 'show'}, ':1', False, False)
+    assert ok['ok'] and should
+    ok, should = mod.show_reply({'cmd': 'show', 'display': ':1'},
+                                ':1', False, False)
+    assert ok['ok'] and should
+
+
+def test_show_reply_is_idempotent_while_mapped():
+    reply, should = mod.show_reply({'cmd': 'show'}, ':1', True, False)
+    assert reply['ok'] and reply.get('mapped') and not should
+
+
+def test_show_reply_stands_down_for_a_foreign_rail_or_wrong_display():
+    reply, should = mod.show_reply({'cmd': 'show'}, ':1', False, True)
+    assert not reply['ok'] and not should
+    reply, should = mod.show_reply({'cmd': 'show', 'display': ':2'},
+                                   ':1', False, False)
+    assert not reply['ok'] and not should
+
+
+class FakeConn:
+    def __init__(self, line):
+        self.line = line.encode()
+        self.sent = b''
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def recv(self, n):
+        return self.line
+
+    def sendall(self, b):
+        self.sent += b
+
+
+class FakeSock:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def accept(self):
+        return self.conn, None
+
+
+def test_resident_show_is_acked_then_mapped_from_the_loop(monkeypatch):
+    """The two-stage ack: the poker (couchd mid-pass) gets its reply in
+    milliseconds; the frame-wait and the map happen afterwards, from the
+    run loop, on the resident's own time."""
+    monkeypatch.setattr(mod, 'rail_already_up', lambda: False)
+    rail = mod.ResidentRail(':1')
+    conn = FakeConn(json.dumps({'cmd': 'show', 'display': ':1',
+                                'resume_on_cancel': False}))
+    rail.sock = FakeSock(conn)
+    assert rail.handle_conn() is None        # never an outcome while hidden
+    assert json.loads(conn.sent)['accepted']
+    assert rail.pending_show is not None     # the loop maps, not the ack
+    assert rail.resume_on_cancel is False    # the client's flag came along
+
+
+def test_resident_second_show_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(mod, 'rail_already_up', lambda: False)
+    rail = mod.ResidentRail(':1')
+    rail.mapped = True
+    conn = FakeConn(json.dumps({'cmd': 'show'}))
+    rail.sock = FakeSock(conn)
+    assert rail.handle_conn() is None
+    assert json.loads(conn.sent)['mapped']
+    assert rail.pending_show is None
+
+
+def test_resident_quit_stops_and_unwinds_a_mapped_deck(monkeypatch):
+    monkeypatch.setattr(mod, 'rail_already_up', lambda: False)
+    rail = mod.ResidentRail(':1')
+    rail.mapped = True
+    conn = FakeConn(json.dumps({'cmd': 'quit'}))
+    rail.sock = FakeSock(conn)
+    assert rail.handle_conn() == 'stopped'   # deck_loop ends -> finish_steps
+    assert rail.stop['sig'] is True          # ...and the daemon retires
+    rail2 = mod.ResidentRail(':1')
+    rail2.sock = FakeSock(FakeConn(json.dumps({'cmd': 'quit'})))
+    assert rail2.handle_conn() is None       # hidden: nothing to unwind
+    assert rail2.stop['sig'] is True
+
+
+def test_resident_malformed_line_is_answered_not_fatal(monkeypatch):
+    rail = mod.ResidentRail(':1')
+    conn = FakeConn('not json at all')
+    rail.sock = FakeSock(conn)
+    assert rail.handle_conn() is None
+    assert json.loads(conn.sent)['ok'] is False
+
+
+# -- the resident lifecycle: steps against the world ----------------------
+class FakeOverlay:
+    out_w, out_h = 320, 180
+
+    def __init__(self, events):
+        self.events = events
+
+    def map_now(self):
+        self.events.append('map')
+
+    def unmap_now(self):
+        self.events.append('unmap')
+
+
+def _runner(monkeypatch, tmp_path, events):
+    flag = tmp_path / 'switcher-overlay'
+    monkeypatch.setattr(mod, 'OVERLAY_FLAG', str(flag))
+    monkeypatch.delenv('SWITCHER_OVERLAY_NO_PAD', raising=False)
+    monkeypatch.setattr(mod, 'open_pads',
+                        lambda: [os.open(os.devnull, os.O_RDONLY)])
+    monkeypatch.setattr(mod, 'wait_for_fresh_frame',
+                        lambda: events.append('frame_wait') or True)
+    monkeypatch.setattr(mod, 'kodi_joystick',
+                        lambda v: events.append(('joystick', v)))
+    monkeypatch.setattr(mod, 'activate',
+                        lambda i: events.append(('activate', i)))
+    monkeypatch.setattr(mod, 'power_dispatch',
+                        lambda k: events.append(('power', k)))
+    ov = FakeOverlay(events)
+    runner = mod.StepRunner(
+        ov, ov.unmap_now,
+        lambda: (flag.write_text(str(os.getpid())),
+                 events.append('flag'))[-1],
+        lambda: events.append('draw'))
+    return runner, flag
+
+
+def test_step_runner_show_then_finish_holds_the_flag_contract(
+        monkeypatch, tmp_path):
+    """The whole map/unmap state machine end to end: the flag exists
+    exactly while the rail is mapped-and-owning-the-pad, and survives
+    through the activate (guard-vs-resume) before clearing."""
+    import os as _os
+    events = []
+    runner, flag = _runner(monkeypatch, tmp_path, events)
+    assert runner.run(mod.show_steps(False, False, True))
+    assert flag.exists(), 'mapped -> announced'
+    assert events == ['frame_wait', 'map', 'draw', 'flag',
+                      ('joystick', False)]
+    events.clear()
+    steps, code = mod.finish_steps('picked', {'id': '0x9', 'paused': True})
+    assert runner.run(steps)
+    assert events == ['unmap', ('activate', '0x9')]
+    assert not flag.exists(), 'unmapped -> silent'
+    assert runner.fds == [], 'pads handed back'
+
+
+def test_step_runner_aborts_the_show_when_no_pad_exists(
+        monkeypatch, tmp_path):
+    """Mapping a deck nothing can drive would strand the room: no pad, no
+    map, no flag - couchd's effect check times out and says so."""
+    events = []
+    runner, flag = _runner(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(mod, 'open_pads', lambda: [])
+    assert not runner.run(mod.show_steps(False, False, True))
+    assert 'map' not in events
+    assert not flag.exists()
+
+
+def test_step_runner_unmap_failure_still_clears_the_flag(
+        monkeypatch, tmp_path):
+    """A dead nested display (gamescope teardown mid-deck) must not leave
+    a flag that says the rail owns a pad it can no longer read."""
+    events = []
+    runner, flag = _runner(monkeypatch, tmp_path, events)
+    assert runner.run(mod.show_steps(False, False, False))
+    def boom():
+        raise RuntimeError('display gone')
+    runner._unmap = boom
+    steps, _ = mod.finish_steps('stopped')
+    assert runner.run(steps)
+    assert not flag.exists()
+
+
+# -- deck_loop outcomes (headless: no X, no pads) -------------------------
+def test_deck_loop_superseded_when_the_suspend_clears(monkeypatch,
+                                                      tmp_path):
+    monkeypatch.setattr(mod, 'SUSPENDED_FLAG',
+                        str(tmp_path / 'never-written'))
+    rows = [{'id': 'a', 'title': 'A'}]
+    out = mod.deck_loop(None, rows, {}, {}, [], {'sig': False})
+    assert out == ('superseded', None, rows)
+
+
+def test_deck_loop_stopped_on_signal(monkeypatch, tmp_path):
+    flag = tmp_path / 'game-suspended'
+    flag.write_text('x')
+    monkeypatch.setattr(mod, 'SUSPENDED_FLAG', str(flag))
+    rows = [{'id': 'a', 'title': 'A'}]
+    out = mod.deck_loop(None, rows, {}, {}, [], {'sig': True})
+    assert out == ('stopped', None, rows)
+
+
+def test_deck_loop_refresh_once_redraws_and_keeps_the_eye(monkeypatch):
+    """The post-map refresh trues up the pre-baked sheet (the fresh
+    ' · paused' marker) without yanking focus off the row the player is
+    already aiming at."""
+    calls = []
+    monkeypatch.setattr(
+        mod, 'compose_strip',
+        lambda rows, focus, *a, **k: calls.append((rows, focus)) or 'sheet')
+    drawn = []
+
+    class Ov:
+        out_w, out_h = 10, 10
+
+        def draw(self, s):
+            drawn.append(s)
+
+    old = [{'id': 'a', 'title': 'A'}, {'id': 'b', 'title': 'B'}]
+    new = [{'id': 'b', 'title': 'B'},
+           {'id': 'a', 'title': 'A', 'paused': True}]
+    out = mod.deck_loop(Ov(), old, {}, {}, [], {'sig': True},
+                        refresh_once=lambda: (new, {}, {}))
+    assert out == ('stopped', None, new)
+    assert drawn == ['sheet']
+    assert calls[0] == (new, 1)      # focus followed row id 'a'
+
+
+# -- thumb cache and the baked sheet --------------------------------------
+def test_thumb_cache_fetches_once_and_survives_a_failed_refetch():
+    fetched = []
+
+    def fetch(row):
+        fetched.append(row['id'])
+        return 'img-%s' % row['id'] if len(fetched) < 3 else None
+
+    tc = mod.ThumbCache(fetch=fetch)
+    row = {'id': 'a', 'thumb': '/api/art/winthumb?id=a'}
+    assert tc.get(row) == 'img-a'
+    assert tc.get(row) == 'img-a'
+    assert fetched == ['a'], 'second get was the cache'
+    assert tc.refetch(row) == 'img-a'        # refetch 2 succeeded
+    assert tc.refetch(row) == 'img-a'        # refetch 3 failed -> cache
+    assert fetched == ['a', 'a', 'a']
+
+
+def test_thumb_cache_a_fresh_freeze_frame_misses_by_construction():
+    """pause-snap stamps each capture's filename, so a new suspend's row
+    carries a NEW thumb url and get() fetches it even at show time."""
+    fetched = []
+    tc = mod.ThumbCache(fetch=lambda r: fetched.append(r['thumb']) or 'img')
+    tc.get({'id': 'a', 'thumb': '/paused/bb__100.jpg'})
+    tc.get({'id': 'a', 'thumb': '/paused/bb__200.jpg'})
+    assert fetched == ['/paused/bb__100.jpg', '/paused/bb__200.jpg']
+
+
+def test_bake_bgra_swizzles_rgba():
+    from PIL import Image
+    img = Image.new('RGBA', (2, 1), (10, 20, 30, 40))
+    w, h, bgra = mod.bake_bgra(img)
+    assert (w, h) == (2, 1)
+    assert bgra[:4] == bytes([30, 20, 10, 40])
+
+
+# -- the client half ------------------------------------------------------
+def test_resident_show_talks_to_a_live_socket(monkeypatch, tmp_path):
+    import socket as pysocket
+    import threading
+    path = str(tmp_path / 'rail.sock')
+    monkeypatch.setattr(mod, 'RESIDENT_SOCK', path)
+    server = pysocket.socket(pysocket.AF_UNIX, pysocket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+    got = {}
+
+    def serve():
+        conn, _ = server.accept()
+        got['msg'] = json.loads(conn.recv(4096).decode())
+        conn.sendall(b'{"ok": true, "accepted": true}\n')
+        conn.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    assert mod.resident_show(':1', resume_on_cancel=False) is True
+    t.join(2)
+    assert got['msg'] == {'cmd': 'show', 'display': ':1',
+                          'resume_on_cancel': False}
+    server.close()
+
+
+def test_resident_show_false_when_refused_or_absent(monkeypatch, tmp_path):
+    import socket as pysocket
+    import threading
+    monkeypatch.setattr(mod, 'RESIDENT_SOCK', str(tmp_path / 'nothing'))
+    assert mod.resident_show(':1') is False   # no socket -> one-shot path
+    path = str(tmp_path / 'rail.sock')
+    monkeypatch.setattr(mod, 'RESIDENT_SOCK', path)
+    server = pysocket.socket(pysocket.AF_UNIX, pysocket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+
+    def serve():
+        conn, _ = server.accept()
+        conn.recv(4096)
+        conn.sendall(b'{"ok": false, "error": "display mismatch"}\n')
+        conn.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    assert mod.resident_show(':1') is False   # refused -> one-shot path
+    t.join(2)
+    server.close()

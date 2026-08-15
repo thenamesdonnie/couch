@@ -2579,6 +2579,34 @@ class Actuators:
         # ReadWritePaths will fail. Flagged in the record, not hidden.
         return {'pid': p.pid, 'argv': cmd, 'unit': None, 'sandboxed': True}
 
+    # -- the resident switcher rail's control socket -----------------------
+    RAIL_SOCK = '/tmp/switcher-overlayd.sock'
+
+    def rail_show(self, display):
+        """Poke the resident rail (switcher-overlay --resident, started by
+        game-launch with the wrapped session) to map its pre-baked deck -
+        the whole point of the resident is that this beats a cold spawn by
+        an order of magnitude. The rail acks BEFORE it performs (its
+        two-stage show_reply), so this blocks for milliseconds, never for
+        the rail's own frame-wait; the flag-based effect check judges the
+        outcome as ever. Returns None when no resident accepted - the
+        caller falls back to spawning the one-shot rail."""
+        import socket
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect(self.RAIL_SOCK)
+            s.sendall((json.dumps({'cmd': 'show', 'display': display})
+                       + '\n').encode())
+            reply = json.loads(s.recv(4096).decode() or '{}')
+            s.close()
+        except (OSError, ValueError):
+            return None
+        if not reply.get('ok'):
+            return None
+        return {'socket': self.RAIL_SOCK, 'cmd': 'show', 'display': display,
+                'reply': reply}
+
     # -- /tmp flags (write-through; formats copied from the writers) -------
     def write_flag(self, path, content, name=None):
         """Atomic rename-write, because that is what the FlagObserver's
@@ -3339,10 +3367,18 @@ class ActingExecutor(Executor):
     def _a_show_switcher(self, it, o):
         if (it.args or {}).get('via') == 'switcher-overlay':
             # The rail, on gamescope's nested display. It manages the
-            # Kodi-joystick toggle, the pad, and its own flag lifecycle;
-            # this only has to start it in the right place.
+            # Kodi-joystick toggle, the pad, and its own flag lifecycle.
+            # A RESIDENT rail (game-launch parks one with the session,
+            # window built but unmapped, sheet pre-baked) is signalled
+            # over its control socket and maps in tens of ms; spawning
+            # the one-shot is the fallback that keeps double-tap working
+            # when no resident answers (crashed, older game-launch...).
+            display = str(it.args.get('display') or ':1')
+            sent = self.act.rail_show(display)
+            if sent:
+                return sent
             return self.act.spawn([SWITCHER_OVERLAY_BIN, '--display',
-                                   str(it.args.get('display') or ':1')])
+                                   display])
         return self.act.kodi('Addons.ExecuteAddon',
                              {'addonid': 'script.couch.switcher'})
 

@@ -1431,6 +1431,16 @@ GSDISP
         if [ -n "$_gsdisp" ]; then
           printf '%s' "$_gsdisp" > /tmp/game-gamescope
           say "gamescope nested display $_gsdisp (-> /tmp/game-gamescope)"
+          # THE RESIDENT RAIL (15 Aug 2026, evening): park the switcher on
+          # the nested display NOW - window built but unmapped (gamescope
+          # skips unmapped planes), rows/thumbs/sheet pre-baked - so
+          # couchd's double-tap maps it over the control socket instead of
+          # paying a cold spawn. It retires itself when this display dies;
+          # the pidfile TERM below is the belt. Its own newest-wins
+          # startup retires any leftover, so this is always safe to start.
+          /home/ds2000/couch/tools/switcher-overlay --display "$_gsdisp" --resident \
+            > /tmp/switcher-overlayd.log 2>&1 &
+          say "resident switcher rail starting on $_gsdisp (log /tmp/switcher-overlayd.log)"
           break
         fi
         kill -0 "$_gspid" 2>/dev/null || break   # wrap died; stop looking
@@ -1445,6 +1455,18 @@ GSDISP
       curtain_fade
       while emu_running; do sleep 3; done
       say "shadps4 ended"
+    fi
+    # The resident rail goes down FIRST, before gamescope's own teardown:
+    # its window is the kind of lingering client the 3.16.25 teardown
+    # segfault feeds on, and its outcome no longer matters. cmdline-verified
+    # before the TERM (pid-reuse; and NEVER a bare pkill - the self-match
+    # trap). It also retires itself on display death, so this is a belt.
+    if [ "$_gs_on" = 1 ] && [ -f /tmp/switcher-overlayd.pid ]; then
+      _railpid="$(cat /tmp/switcher-overlayd.pid 2>/dev/null)"
+      if [ -n "$_railpid" ] && tr '\0' ' ' < "/proc/$_railpid/cmdline" 2>/dev/null | grep -q switcher-overlay; then
+        say "closing the resident switcher rail ($_railpid)"
+        kill -TERM "$_railpid" 2>/dev/null
+      fi
     fi
     # The wrap's teardown belt. emu_running() watches the EMULATOR's
     # processes, so this loop ends the moment they die - but gamescope is

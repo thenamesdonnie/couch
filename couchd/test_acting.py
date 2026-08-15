@@ -96,6 +96,14 @@ class FakeActuators:
         return self._note('spawn', argv=list(argv) if argv else None,
                           env=env, shell_line=shell_line)
 
+    #: set truthy to make rail_show find a live resident rail
+    rail_resident = False
+
+    def rail_show(self, display):
+        if not self.rail_resident:
+            return None            # no resident answered: caller spawns
+        return self._note('rail_show', display=display)
+
     def write_flag(self, path, content, name=None):
         return self._note('write_flag', path=path, content=content, name=name)
 
@@ -650,6 +658,38 @@ def test_stage_one_launches_nothing_but_resume():
                     {'effect': 'game pids back in state S', 'deadline_s': 5.0})
     assert router.execute(resume, make_obs())['acted'] is True
     assert act.did('spawn')[0]['argv'] == [couchd.GAME_LAUNCH, 'resume']
+
+
+def _overlay_switcher_intent():
+    return Intent('show_switcher', 'tv',
+                  {'via': 'switcher-overlay', 'display': ':1',
+                   'suspended_first': True},
+                  'gesture:double-tap-switcher',
+                  {'effect': 'the overlay rail flag is up',
+                   'deadline_s': 5.0},
+                  requires=('gesture',), cooldown=3.0)
+
+
+def test_show_switcher_overlay_pokes_the_resident_rail_first():
+    """via=switcher-overlay with a resident rail alive: one socket poke
+    (map-plus-draw, the instant path), no spawn."""
+    router, log, act, sayer = rig(owned=('gestures',))
+    act.rail_resident = True
+    rec = router.execute(_overlay_switcher_intent(), make_obs())
+    assert rec['acted'] is True
+    assert act.did('rail_show') == [{'display': ':1'}]
+    assert act.did('spawn') == []
+
+
+def test_show_switcher_overlay_spawns_when_no_resident_answers():
+    """No resident (crashed, or a session launched by an older
+    game-launch): the one-shot spawn keeps double-tap working, exactly as
+    before the resident existed."""
+    router, log, act, sayer = rig(owned=('gestures',))
+    rec = router.execute(_overlay_switcher_intent(), make_obs())
+    assert rec['acted'] is True
+    assert act.did('spawn')[0]['argv'] == [
+        couchd.SWITCHER_OVERLAY_BIN, '--display', ':1']
 
 
 # =========================================================================
