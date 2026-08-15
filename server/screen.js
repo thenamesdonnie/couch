@@ -294,6 +294,14 @@ export async function awaitGuardClaim(since, {
 // menu from the same place.
 const DESKTOP = { id: 'desktop', title: 'Desktop', kodi: false, cls: 'desktop' };
 
+// Desktop plumbing is never a destination. The xfce display helper pops its
+// "keep this configuration?" minimal dialog on every TV hotplug (root cause
+// silenced 15 Aug with xfconf displays /Notify=0, but that reverts if xfce
+// settings are ever reset) and it was showing up in BOTH switchers as a grey
+// mystery card. Classes here vanish from the list before anything else looks
+// at it.
+const IGNORED_CLASSES = new Set(['xfce4-display-settings']);
+
 function suspendedFlag() {
   return fs.existsSync('/tmp/game-suspended');
 }
@@ -428,6 +436,7 @@ async function buildWindows() {
   const out = await walking;
   let list;
   try { list = JSON.parse(out); } catch { return []; }
+  list = list.filter((w) => !IGNORED_CLASSES.has(w.cls || ''));
   if (suspendedFlag()) {
     // The frozen game keeps its row, marked, and now wearing the frame it was
     // frozen on: the switcher answers "where was I?" without resuming first.
