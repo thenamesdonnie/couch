@@ -79,7 +79,11 @@ GUARD_PIDFILE = '/tmp/steam-input-guard.pid'
 GUARD_BIN = '/home/ds2000/.local/bin/steam-input-guard'
 TMP_DIR = '/tmp'
 WATCHED_TMP = {'game-session', 'game-suspended', 'vpad.fifo',
-               'steam-input-guard.pid', 'tv-wake-request'}
+               'steam-input-guard.pid', 'tv-wake-request',
+               # the stage-3 wrap's bridges: game-launch writes the nested
+               # display (":1") while a wrapped session runs; the overlay
+               # switcher rail announces itself while it owns the pad.
+               'game-gamescope', 'switcher-overlay'}
 
 # Steam's log directory, canonicalised ONCE (~/.steam/steam and
 # ~/.steam/debian-installation are the same inode; R5 wants one path).
@@ -298,6 +302,15 @@ class Observed:
     # is the same rule the legacy watcher yields on.
     guard_pid: int = None
     guard_pid_ours: bool = False
+
+    # The stage-3 wrap's bridge flags. `gamescope_display` is the nested
+    # display game-launch wrote to /tmp/game-gamescope (":1") while a
+    # wrapped session runs - the rail can only exist there. `overlay_up` is
+    # /tmp/switcher-overlay, the rail announcing itself: while it is true
+    # the rail owns the pad and the screen, and no repair may hand either
+    # to Kodi behind its back.
+    gamescope_display: str = None
+    overlay_up: bool = False
 
     # pad / gesture (all times are KERNEL event timestamps, R4)
     pad_known: bool = False
@@ -1304,6 +1317,12 @@ def want_pad_owner(o):
     asks instead whether anything is actually in front of the room."""
     if not o.session_present:
         return 'kodi'
+    if o.overlay_up:
+        # The rail is on screen and reading the pad raw; it turned Kodi's
+        # joystick off itself. Handing the pad back to a Kodi that sits
+        # BEHIND the game would let every rail press navigate the invisible
+        # home row (15 Aug 2026, the wiring night).
+        return 'game'
     if o.suspended_present and not playing_despite_flag(o):
         return 'kodi'
     if o.running_pids:
@@ -1602,6 +1621,58 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
     """
     out = []
     handed = False
+    # THE WRAPPED PATH (15 Aug 2026): a gamescope-wrapped game gets the
+    # overlay rail composited OVER it instead of the trip to Kodi. Freeze +
+    # flag + snapshot as ever, then spawn the rail - and NONE of the
+    # handoff: no route_pad kodi (Kodi stays behind the game and must not
+    # eat the stick), no show kodi, no iconify (the compositor must keep
+    # drawing the frozen frame the rail floats over), no kodi guard (a
+    # 6s "keep Kodi on top" window under a game that is deliberately on
+    # top is the resume flap all over again). top_class gates staleness:
+    # a leftover /tmp/game-gamescope from a crashed wrap cannot hijack a
+    # bare session, because a bare game's window is never class
+    # 'gamescope'.
+    wrapped = bool(o.gamescope_display) and (
+        not o.x_known or o.top_class == 'gamescope')
+    if wrapped and o.overlay_up:
+        return []               # the rail IS the switcher; it is already up
+    if wrapped and o.session_present and running:
+        out += _supersede_guard_intent(o, reason)
+        out.append(Intent(
+            'freeze', appid,
+            {'pids': running, 'resolver': PID_RESOLVER, 'signal': 'SIGSTOP',
+             'mode': o.session_mode},
+            reason, _pred('all game pids in state T', 5.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+        out.append(Intent(
+            'set_flag', 'suspended', {'value': appid},
+            reason, _pred('/tmp/game-suspended exists', 2.0),
+            requires=('gesture', 'session'), cooldown=3.0))
+        out.append(_snapshot_intent(appid, reason))
+        out.append(Intent('show_switcher', 'tv',
+                          {'via': 'switcher-overlay',
+                           'display': o.gamescope_display,
+                           'suspended_first': True},
+                          switcher_reason,
+                          # The rail waits for the freeze-frame before it
+                          # maps (so the capture is clean and its paused
+                          # tile is filled), then draws and announces
+                          # itself: /tmp/switcher-overlay appearing IS the
+                          # effect, through the flag observer.
+                          _pred('the overlay rail flag is up', 5.0),
+                          requires=('gesture',), cooldown=3.0))
+        return out
+    if wrapped and o.session_present and o.suspended_present:
+        # Frozen already (a crashed rail, a cancelled one) with the game
+        # still on screen: nothing to freeze, just bring the rail back.
+        out.append(Intent('show_switcher', 'tv',
+                          {'via': 'switcher-overlay',
+                           'display': o.gamescope_display,
+                           'suspended_first': False},
+                          switcher_reason,
+                          _pred('the overlay rail flag is up', 5.0),
+                          requires=('gesture',), cooldown=3.0))
+        return out
     if o.session_present and running:
         out += _supersede_guard_intent(o, reason)
         out.append(Intent(
@@ -2267,6 +2338,7 @@ class RecordingExecutor(Executor):
 # forget to check.
 LOCAL_BIN = os.path.join(HOME, '.local', 'bin')
 GAME_LAUNCH = os.path.join(LOCAL_BIN, 'game-launch')
+SWITCHER_OVERLAY_BIN = os.path.join(HOME, 'couch/tools/switcher-overlay')
 GAME_PIDS = os.path.join(LOCAL_BIN, 'game-pids')
 PAUSE_SNAP = os.path.join(LOCAL_BIN, 'pause-snap')
 VPAD = os.path.join(LOCAL_BIN, 'vpad')
@@ -2698,6 +2770,12 @@ def _eff_show_switcher(o, it):
     python-window pool (13000-13099) with no way to pin it. Both count -
     the addon's ui.animated_dialog setting flips between them at runtime,
     and the check must not decide which one the user prefers."""
+    if (it.args or {}).get('via') == 'switcher-overlay':
+        # The rail lives inside gamescope's nested display, invisible to
+        # every Kodi/X observer out here - but it writes the
+        # /tmp/switcher-overlay flag the moment it is drawn, and the flag
+        # observer sees that by inotify.
+        return o.overlay_up
     return o.kodi_known and (o.kodi_window == KODI_SELECT_DIALOG
                              or (o.kodi_window is not None
                                  and 13000 <= o.kodi_window <= 13099))
@@ -3259,6 +3337,12 @@ class ActingExecutor(Executor):
                               env={'PAUSE_SNAP_SRC': 'couchd'})
 
     def _a_show_switcher(self, it, o):
+        if (it.args or {}).get('via') == 'switcher-overlay':
+            # The rail, on gamescope's nested display. It manages the
+            # Kodi-joystick toggle, the pad, and its own flag lifecycle;
+            # this only has to start it in the right place.
+            return self.act.spawn([SWITCHER_OVERLAY_BIN, '--display',
+                                   str(it.args.get('display') or ':1')])
         return self.act.kodi('Addons.ExecuteAddon',
                              {'addonid': 'script.couch.switcher'})
 
@@ -4978,6 +5062,10 @@ class Couchd:
             now=time.time(), mono=time.monotonic(),
             flags_known=self.world.src('flags').ok,
             session=session, suspended=self.flags.suspended(),
+            gamescope_display=self.flags.state.get('game-gamescope',
+                                                   (None, None))[0],
+            overlay_up=self.flags.state.get('switcher-overlay',
+                                            (None, None))[0] is not None,
             pids_known=self.world.src('pids').ok,
             pid_states=dict(self.pids.states),
             launcher_alive=self.pids.launcher_alive,

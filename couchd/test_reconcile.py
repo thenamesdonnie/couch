@@ -577,6 +577,82 @@ def test_the_model_defaults_to_the_console_as_shipped():
         0.9, 0.35, 3.0)
 
 
+def test_wrapped_double_tap_opens_the_rail_not_kodi():
+    """The stage-3 overlay path (15 Aug 2026): a gamescope-wrapped game gets
+    the rail composited over it - freeze + flag + snapshot + the overlay
+    spawn, and NONE of the Kodi handoff. Every excluded verb here fought
+    the rail live tonight before this branch existed."""
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 top_name='shadPS4 v0.17.0 | CUSA00900', top_class='gamescope',
+                 gamescope_display=':1',
+                 regions={'gesture': 'double-tap', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'other'})
+    got = reconcile(o)
+    assert find(got, 'freeze')
+    assert find(got, 'set_flag')
+    assert find(got, 'snapshot')
+    sw = find(got, 'show_switcher')
+    assert sw and sw[0].args['via'] == 'switcher-overlay'
+    assert sw[0].args['display'] == ':1'
+    assert not find(got, 'route_pad'), verbs(got)
+    assert not find(got, 'show', 'kodi'), verbs(got)
+    assert not find(got, 'spawn_guard'), verbs(got)
+    assert not find(got, 'iconify'), verbs(got)
+
+
+def test_wrapped_double_tap_with_the_rail_up_is_a_noop():
+    o = make_obs(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+                 joystick=False, top_class='gamescope',
+                 gamescope_display=':1', overlay_up=True,
+                 regions={'gesture': 'double-tap', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'other'})
+    assert reconcile(o) == []
+
+
+def test_wrapped_double_tap_on_a_frozen_game_respawns_the_rail_alone():
+    """A cancelled/crashed rail with the frozen game still on screen: no
+    second freeze, no snapshot spam, just the rail back."""
+    o = make_obs(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+                 joystick=False, top_class='gamescope',
+                 gamescope_display=':1',
+                 regions={'gesture': 'double-tap', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'other'})
+    got = reconcile(o)
+    sw = find(got, 'show_switcher')
+    assert sw and sw[0].args['via'] == 'switcher-overlay'
+    assert not find(got, 'freeze')
+    assert not find(got, 'snapshot')
+    assert not find(got, 'route_pad') and not find(got, 'show', 'kodi')
+
+
+def test_stale_gamescope_bridge_cannot_hijack_a_bare_session():
+    """/tmp/game-gamescope left by a crashed wrap + a BARE game running:
+    the window class is the tell (a bare game is never 'gamescope'), and
+    the recipe must fall through to the normal Kodi switcher."""
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 top_name='shadPS4 v0.17.0 | CUSA00900', top_class='shadps4',
+                 gamescope_display=':1',
+                 regions={'gesture': 'double-tap', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'other'})
+    got = reconcile(o)
+    sw = find(got, 'show_switcher')
+    assert sw and sw[0].args['via'] == 'kodi-addon:script.couch.switcher'
+    assert find(got, 'route_pad'), 'the normal handoff'
+
+
+def test_the_rail_owns_the_pad_while_its_flag_is_up():
+    """want_pad_owner: the rail turned Kodi's joystick off itself; the
+    joystick-drift repair must not hand the stick back to the Kodi hiding
+    behind the game."""
+    o = make_obs(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+                 joystick=False, top_class='gamescope',
+                 gamescope_display=':1', overlay_up=True,
+                 regions={'session': 'active', 'input_ownership': 'game',
+                          'foreground': 'other'})
+    assert want_pad_owner(o) == 'game'
+    assert not find(reconcile(o), 'route_pad'), 'no drift repair'
+
+
 def test_rebinding_the_double_tap_changes_what_it_would_do():
     """The exact thing the shadow diff would otherwise report as a T4."""
     o = make_obs(regions={'gesture': 'double-tap'},

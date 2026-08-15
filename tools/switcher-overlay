@@ -54,6 +54,15 @@ import urllib.request
 
 API = os.environ.get('COUCH_API', 'http://localhost:8790')
 SUSPENDED_FLAG = '/tmp/game-suspended'
+# The rail's own announcement, watched by couchd's flag observer: while it
+# exists no repair hands the pad or the screen to the Kodi behind the game,
+# and a second double-tap is a no-op instead of a second rail.
+OVERLAY_FLAG = '/tmp/switcher-overlay'
+PAUSED_DIR = os.path.expanduser('~/couch/data/paused')
+# How long to wait for the gesture's own pause-snap to land before mapping:
+# mapping first would composite the rail INTO the freeze-frame, and the
+# paused tile wants that frame anyway.
+FRAME_WAIT_S = 1.5
 FONT_DIR = os.path.expanduser('~/couch/kodi-addons/skin.couch/fonts/Figtree')
 
 # Stagelight's own tokens (docs/specs/console-skin.md): amber focus, dark
@@ -464,6 +473,41 @@ def activate(row_id):
         r.read()
 
 
+def fresh_frame_at(dirpath, now_ms, within_ms=6000):
+    """True when a freeze-frame captured within `within_ms` of now exists.
+    Filename convention is pause-snap's (<name>__<epoch_ms>.jpg)."""
+    try:
+        names = os.listdir(dirpath)
+    except OSError:
+        return False
+    for n in names:
+        if not n.endswith('.jpg') or n.endswith(('.tile.jpg', '.full.jpg')):
+            continue
+        stem = n[:-len('.jpg')]
+        tail = stem.rsplit('__', 1)[-1]
+        if tail.isdigit() and abs(now_ms - int(tail)) <= within_ms:
+            return True
+    return False
+
+
+def rail_already_up():
+    """The singleton check: a live pid in the flag means the rail is on
+    screen and this invocation should quietly stand down."""
+    try:
+        pid = int(open(OVERLAY_FLAG).read().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        try:
+            os.remove(OVERLAY_FLAG)     # stale corpse; clear it
+        except OSError:
+            pass
+        return False
+
+
 def open_pads():
     with open('/proc/bus/input/devices') as f:
         nodes = pad_nodes(parse_devices(f.read()))
@@ -493,6 +537,21 @@ def main(argv):
         say('--display is required (gamescope\'s nested display)')
         return 2
 
+    if rail_already_up():
+        say('a rail is already up - standing down')
+        return 0
+
+    # Let the suspend's own pause-snap land BEFORE anything maps: a rail in
+    # the composite would be burned into the freeze-frame, and the paused
+    # tile wants the fresh frame anyway. Bounded; no frame is only a
+    # cosmetic loss.
+    if os.path.exists(SUSPENDED_FLAG):
+        deadline = time.monotonic() + FRAME_WAIT_S
+        while time.monotonic() < deadline:
+            if fresh_frame_at(PAUSED_DIR, int(time.time() * 1000)):
+                break
+            time.sleep(0.1)
+
     try:
         rows = fetch_rows()
     except RuntimeError as e:
@@ -518,6 +577,11 @@ def main(argv):
     overlay.place_centre(*strip.size)
     overlay.draw(strip)
     say('rail up on %s (%dx%d)' % (display, *strip.size))
+    try:
+        with open(OVERLAY_FLAG, 'w') as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        say('cannot announce the rail (%s)' % e)
 
     stop = {'sig': False}
     for s in (signal.SIGTERM, signal.SIGINT):
@@ -582,6 +646,10 @@ def main(argv):
             kodi_joystick(True)      # killed from outside: leave Kodi usable
         return 0 if oneshot else 1
     finally:
+        try:
+            os.remove(OVERLAY_FLAG)
+        except OSError:
+            pass
         if overlay is not None:
             overlay.close()
         for fd in fds:

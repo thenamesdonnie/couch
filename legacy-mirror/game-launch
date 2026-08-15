@@ -1354,6 +1354,9 @@ BBFLAG
     # exactly as it does bare and gamescope adds no scaling step.
     _gswrap=/home/ds2000/couch/tools/gamescope-wrap
     _gs_on=0 _gspid=
+    # A stale display bridge from a crashed wrap must never make couchd
+    # offer the overlay rail over a bare launch.
+    rm -f /tmp/game-gamescope
     if [ -f /home/ds2000/couch/data/gamescope-shadps4-enabled ] && [ -x "$_gswrap" ]; then
       _gs_on=1
       # Size from the Screen header, not the mode line: the pinned 4K120 mode
@@ -1386,6 +1389,47 @@ BBFLAG
     done
     if emu_running; then
       say "shadps4 running"
+      # THE DISPLAY BRIDGE (15 Aug 2026): couchd's double-tap opens the
+      # overlay switcher rail on gamescope's nested display instead of the
+      # trip to Kodi - but only something in this process tree knows WHICH
+      # display that is. Find the Xwayland that descends from our wrapper
+      # and publish its :N; couchd reads it through the flag observer.
+      if [ "$_gs_on" = 1 ] && [ -n "$_gspid" ]; then
+        _gsdisp="$(python3 - "$_gspid" <<'GSDISP'
+import os, sys
+anchor = int(sys.argv[1])
+def ppid(p):
+    try:
+        with open('/proc/%d/stat' % p) as f:
+            return int(f.read().rsplit(') ', 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+for d in os.listdir('/proc'):
+    if not d.isdigit():
+        continue
+    try:
+        with open('/proc/%s/cmdline' % d, 'rb') as f:
+            argv = f.read().split(b'\0')
+    except OSError:
+        continue
+    if not argv or b'Xwayland' not in argv[0]:
+        continue
+    disp = next((a.decode() for a in argv if a.startswith(b':')), '')
+    p = int(d)
+    while p > 1:
+        if p == anchor:
+            print(disp)
+            raise SystemExit
+        p = ppid(p)
+GSDISP
+)"
+        if [ -n "$_gsdisp" ]; then
+          printf '%s' "$_gsdisp" > /tmp/game-gamescope
+          say "gamescope nested display $_gsdisp (-> /tmp/game-gamescope)"
+        else
+          say "no Xwayland under the wrap yet - overlay switcher unavailable"
+        fi
+      fi
       sleep 3
       yield_to_couchd transitions show "${APPID:-shadps4}" via=xlib-restack \
         "mode=$MODE" || focus_game emu
@@ -1413,6 +1457,7 @@ BBFLAG
       wait "$_gspid" 2>/dev/null
       [ $_t -gt 0 ] && [ $_t -lt 8 ] && say "gamescope followed the emulator down (${_t}s)"
     fi
+    rm -f /tmp/game-gamescope
     ;;
 esac
 # trap restores pad + focus
