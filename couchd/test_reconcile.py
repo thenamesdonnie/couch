@@ -1296,6 +1296,46 @@ def test_t5_a_suspend_inside_a_game_window_ends_the_window():
     assert rig.machine.regions['enforcement'] == 'none'
 
 
+def test_t5_a_tap_resume_supersedes_a_legacy_kodi_guard():
+    """R7(d)'s mirror (15 Aug 2026, the wrapped-Bloodborne flap): a KODI
+    guard spawned by the preceding suspend was still enforcing when the
+    tap-resume raised the game, and it won the last round - Kodi on top,
+    game running behind, pad with the game. The resume must close the
+    legacy guard exactly as a freeze does, before the launch."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True, guard_pid=E1_GUARD_PID).settle()
+    k0 = 20500.0
+    _press(rig, k0)
+    rig.observe(button_down=False, press_duration=0.3)
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.3)
+    assert find(got, 'launch'), verbs(got)
+    kill = find(got, 'kill', 'steam-input-guard')
+    assert kill, verbs(got)
+    assert kill[0].args['pids'] == [E1_GUARD_PID]
+    assert kill[0].args['reason'] == 'superseded-by-resume'
+    order = [i.verb for i in got]
+    assert order.index('kill') < order.index('launch'), 'before the resume'
+
+
+def test_t5_a_resume_inside_a_kodi_window_flips_it_to_the_game():
+    """R7(d)'s mirror, the region half: acting a tap-resume sets the
+    enforcement target to 'game' at once, but the 'kodi' STATE could only
+    leave via enf_game, which also waits on the legacy suspended flag -
+    cleared ~1.1s into the resume. For that second the still-kodi region
+    raised Kodi over the freshly-shown game window, twice per press."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    rig.machine.regions['enforcement'] = 'kodi'
+    # The flag file is still there (game-launch clears it mid-resume), but
+    # the acted resume has already flipped the target: the kodi window ends.
+    rig.observe(enforcement_target='game',
+                enforcement_until=rig.mono + 6.0, suspended=APPID)
+    assert rig.machine.regions['enforcement'] != 'kodi'
+    assert ('enforcement', 'kodi', 'game', 'resumed-mid-window') \
+        in rig.transitions
+
+
 def test_t5_refreezes_a_game_whose_suspend_was_undone():
     """R7(d): `freeze ... reason=reconcile:refreeze-lost-suspend`.
 

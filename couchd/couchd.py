@@ -846,6 +846,22 @@ def g_enf_game(o):
             and not o.suspended_present)
 
 
+def g_enf_resumed_mid_window(o):
+    """R7(d)'s mirror: a resume landing inside a KODI enforcement window
+    flips it to the game's window at once.
+
+    Acting a tap-resume sets enforcement_target to 'game' immediately, but
+    the region could only leave the 'kodi' STATE via enf_game, which also
+    requires the suspended flag gone - and game-launch clears that flag
+    ~1.1s into a resume (curtain first, flag-first ordering). For that
+    second the still-kodi region raised Kodi over the freshly-shown game
+    window, twice per press (15 Aug 2026, the wrapped-Bloodborne flap:
+    "switched pages a few times and leaves me on kodi with bloodborne
+    running"). A kodi window whose game the player just resumed has
+    nothing left to enforce."""
+    return o.enforcement_target == 'game' and o.mono < o.enforcement_until
+
+
 def g_enf_suspended_mid_window(o):
     """R7(d): a suspend that lands inside a GAME enforcement window ends it.
 
@@ -1076,7 +1092,11 @@ TRANSITIONS = {
                   ('enf_expired', 'none', 'no-guard-window')],
         'none': [('enf_kodi', 'kodi', 'guard-window-kodi'),
                  ('enf_game', 'game', 'guard-window-game')],
-        'kodi': [('enf_game', 'game', 'guard-window-superseded'),
+        # The resume check comes FIRST, same R7(d) logic as the suspend
+        # check below: enf_game alone cannot leave 'kodi' until the legacy
+        # suspended flag clears, which is ~1.1s into the resume.
+        'kodi': [('enf_resumed_mid_window', 'game', 'resumed-mid-window'),
+                 ('enf_game', 'game', 'guard-window-superseded'),
                  ('enf_expired', 'none', 'guard-window-expired')],
         # R7(d): the suspend check comes FIRST. A game window whose game just
         # got frozen has nothing left to enforce, and spending its remaining
@@ -1440,7 +1460,7 @@ def _deiconify_intent(o, appid, reason, cooldown=3.0):
                   else ('session',), cooldown=cooldown)
 
 
-def _supersede_guard_intent(o, reason):
+def _supersede_guard_intent(o, reason, why='superseded-by-freeze'):
     """R7(d): close any enforcement window still open, BEFORE the freeze.
 
     A guard opened by a recent resume spends its seconds asserting game-mode
@@ -1460,7 +1480,7 @@ def _supersede_guard_intent(o, reason):
         return []
     return [Intent('kill', 'steam-input-guard',
                    {'pids': [o.guard_pid], 'resolver': 'guard-pidfile',
-                    'signal': 'SIGTERM', 'reason': 'superseded-by-freeze'},
+                    'signal': 'SIGTERM', 'reason': why},
                    reason, _pred('the guard pidfile is gone or replaced', 5.0),
                    requires=('gesture',), cooldown=5.0)]
 
@@ -1811,6 +1831,15 @@ def reconcile(o):
         out += action_intents(o, 'tap', appid, running)
 
     if g == 'tap-resume':
+        # R7(d)'s mirror image: a standing KODI guard - the legacy process a
+        # suspend spawned seconds ago - would spend the rest of its window
+        # raising Kodi over the very game this tap is resuming (15 Aug 2026,
+        # the first wrapped-Bloodborne evening: three resumes in a row lost
+        # the screen back to Kodi, ending on "Kodi on top, game running,
+        # pad with the game"). The player's gesture supersedes the guard,
+        # exactly as a freeze does.
+        out += _supersede_guard_intent(o, 'gesture:tap-resume',
+                                       why='superseded-by-resume')
         # The bigpicture pseudo-app predicts a WINDOW, not pids: a Big
         # Picture suspend froze nothing, so 'game pids back in state S' is a
         # prediction the world can never satisfy and the oracle verdicted an
