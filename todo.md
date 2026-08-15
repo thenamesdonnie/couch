@@ -411,13 +411,27 @@ returning), taskset pinning (#1542: +17fps on a 5800X3D at 5 cores),
 patches/shadPS4/Bloodborne.xml.upstream-current-crashes.bak (perf set,
 re-edit before use: fps patch OFF), .safe-60fps.bak (live now).
 
-**Rail latency (Donnie: "takes a while to appear... have it wait in the
-background?"):** yes - next build is the RESIDENT rail: spawn with the
-game session, window built but UNMAPPED (gamescope skips unmapped planes,
-zero per-frame cost), rows/thumbs/sheet pre-baked, double-tap = map+draw,
-near-instant. pipd's daemon+socket shape is the precedent. Cheap wins
-meanwhile: drop the redundant second full-sheet draw (fullscreen child
-makes place a no-op), cache thumbs across invocations.
+**Rail latency - RESIDENT RAIL BUILT (15 Aug evening, `a2cce1f`), awaiting
+Donnie's first live feel.** `switcher-overlay --resident` lives with the
+game session: game-launch parks it when the display bridge lands, plane
+built UNMAPPED, rows/thumbs/sheet pre-baked to BGRA, control socket at
+/tmp/switcher-overlayd.sock (pipd's shape). couchd pokes the socket
+(Actuators.rail_show, two-stage ack so a pass never blocks) and falls back
+to the one-shot spawn; a spawned one-shot also hands off to a live
+resident. PROVEN on a headless 4K gamescope rig (scratchpad
+resident-rail-rig): **signal-to-mapped 170ms** with no frame-wait (the
+cold spawn was seconds; live suspends still pay pause-snap's real wait -
+the log line `show: signal-to-mapped Xms (frame-wait Yms...)` in
+/tmp/switcher-overlayd.log separates the two). NEW TRAP FOUND BY THE RIG:
+unmapping a once-shown external overlay does NOT hide it - steamcompmgr
+never clears the commit (literal `// TODO clear done commits here?`) and
+the overlay pick ignores map state; the paint IS gated on
+`externalOverlay->opacity`, so hide = _NET_WM_WINDOW_OPACITY 0 (+ unmap
+for honesty). Flag contract unchanged: /tmp/switcher-overlay = mapped-and-
+owning-the-pad only. Teardown: game-launch TERMs the pidfile (cmdline-
+verified) before gamescope's grace; the resident also retires itself when
+the bridge clears or the nested display dies. Cheap wins in the same
+commit: second full-sheet draw dropped, ThumbCache.
 
 **Watch items:** freeze under the wrap leaves gamescope UNFROZEN (the
 compositor keeps drawing - better shape, but the §6 freeze ruling is still
@@ -430,7 +444,11 @@ pattern) - always bracket: `pgrep -f '[S]hadps4'`.
 (2) the one-launch perf experiment go-ahead (staged above); (3) did you
 ever actually SEE the ghost rectangles readbacks=Relaxed was set for? If
 not, it comes off; (4) the §6 freeze-shape ruling is now live behaviour -
-bless or veto; (5) rail look/feel notes after a few days of use.
+bless or veto; (5) rail look/feel notes after a few days of use;
+(6) NEW: double-tap on the next wrapped launch - it should feel instant
+now (resident rail); if it still lags, read the `signal-to-mapped` line in
+/tmp/switcher-overlayd.log before blaming the rail: frame-wait is
+pause-snap's time, not the rail's.
 
 ## ▶ Previous resume block (15 Aug 2026 ~01:20 — SPOTIFY LIVE + THE SWITCHER DECK; next: GAMESCOPE, unchanged)
 
