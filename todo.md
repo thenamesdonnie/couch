@@ -361,7 +361,72 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (15 Aug 2026 ~01:20 — SPOTIFY LIVE + THE SWITCHER DECK; next: GAMESCOPE, unchanged)
+## ▶ Resume here (15 Aug 2026 ~02:15 — GAMESCOPE TRACK IS LIVE, the switcher floats over the game)
+
+**The whole stage-3 arc shipped in one night, live-tested with Donnie.**
+(Ran CONCURRENTLY with the spotify/deck session below - its deck XML is
+exactly what the rail clones; the two interleave cleanly in git.)
+Bloodborne runs inside nested gamescope (`beaea0d`, switch file
+~/couch/data/gamescope-shadps4-enabled), and double-tap now composites the
+SWITCHER OVER THE LIVE GAME - Donnie: "double tap does work". The rail is
+`tools/switcher-overlay` (gamescope external-overlay plane, pad read raw
+from /dev/input, zero switching logic - same server endpoints as the
+phone), agent-restyled into a faithful PIL clone of the deck (`9b47293`)
+including the spotify bar (`34857c4`, gated on /api/spotify). couchd's
+double-tap recipe branches on two flag bridges (`cfd1bb6`):
+/tmp/game-gamescope (the nested display, written by game-launch - Xwayland
+reparents to SYSTEMD, so it is found by "any Xwayland that isn't :0",
+`da5be71`) and /tmp/switcher-overlay (the rail announcing itself;
+want_pad_owner honours it, second double-tap is a no-op). Also fixed live
+tonight: the resume flap (tap-resume supersedes the standing kodi guard,
+BOTH halves - `8b9b54c`), quit dead-buttons + the emu-only 8s WM_DELETE
+burn (`ae48dc8`), the +8s sweep that SIGKILLed the emulator and made the
+14 Aug 30s grace dead code (in `beaea0d`), native-res freeze-frames for
+the TV (`959cafd`), and the TV's Just Scan was cropping the frame edge
+(fixed on the set - it hid the fps counter).
+
+**FPS, where it stands - CORRECTED ~02:30 after re-reading
+homelab-bloodborne-mods:** (1) **config.toml IS DEAD on this build; the
+live config is `~/.local/share/shadPS4/config.json`** - every toml edit
+tonight (dmem keys, logType async) was a dead letter, which is WHY no
+"extraDmemInMbytes" line ever appeared. config.json HAS
+`General.extra_dmem_in_mbytes` (currently 0) - the heap-bump theory was
+right, the file was wrong. (2) **The eboot has 60fps BAKED IN**
+(1080p.60fps.MOD pkg) - that is where tonight's "60fps with no patch
+enabled" came from, and it makes ANY fps patch on top a double-patch:
+upstream `60 FPS++` (192 blind writes) on the modded eboot is now the
+PRIME suspect for the boot crash, not (only) the heaps. (3)
+`GPU.readbacks_mode = 1` (Relaxed) IS live in config.json (set 14 Aug for
+ghost rectangles, unverified) - and shadPS4 #4215 documents progressive
+Bloodborne fps degradation under Relaxed, so it is a real combat-drops
+suspect. Live now and verified booting ~02:03: safe pack (nexus-84res)
+with `[FPS-MODE]: 60 FPS (With Deltatime)` + 1440p + Skip intro - the
+fps entry is REDUNDANT on the baked eboot and should come back off at the
+next quit. THE NEXT EXPERIMENT, one launch: upstream set {4k Light Grid,
+Disable Dynamic Light Shadows, Resolution 2560x1440, Skip Intro} - NO fps
+patch - plus config.json extra_dmem_in_mbytes 0 -> 4096. Then, separate
+A/Bs in order: readbacks_mode 1 -> 0 (watch for ghost rectangles
+returning), taskset pinning (#1542: +17fps on a 5800X3D at 5 cores),
+40fps lock via GPU.vblank_frequency=40 (120/3 even cadence). Staged:
+patches/shadPS4/Bloodborne.xml.upstream-current-crashes.bak (perf set,
+re-edit before use: fps patch OFF), .safe-60fps.bak (live now).
+
+**Rail latency (Donnie: "takes a while to appear... have it wait in the
+background?"):** yes - next build is the RESIDENT rail: spawn with the
+game session, window built but UNMAPPED (gamescope skips unmapped planes,
+zero per-frame cost), rows/thumbs/sheet pre-baked, double-tap = map+draw,
+near-instant. pipd's daemon+socket shape is the precedent. Cheap wins
+meanwhile: drop the redundant second full-sheet draw (fullscreen child
+makes place a no-op), cache thumbs across invocations.
+
+**Watch items:** freeze under the wrap leaves gamescope UNFROZEN (the
+compositor keeps drawing - better shape, but the §6 freeze ruling is still
+formally Donnie's); emulator log is async now (logType changed - lines can
+trail events when diagnosing); pgrep/pkill SELF-MATCH burned this session
+THREE times (harness shell contains the pattern) - always bracket:
+`pgrep -f '[S]hadps4'`.
+
+## ▶ Previous resume block (15 Aug 2026 ~01:20 — SPOTIFY LIVE + THE SWITCHER DECK; next: GAMESCOPE, unchanged)
 
 **This session: the box is a Spotify Connect speaker, and the switcher got
 its "deck" redesign.** All committed (3a0e256 spotify server, a051cc0 deck,
