@@ -361,7 +361,57 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (15 Aug 2026 ~00:30 — BLOODBORNE FULLY WORKING; next: GAMESCOPE)
+## ▶ Resume here (15 Aug 2026 ~01:20 — SPOTIFY LIVE + THE SWITCHER DECK; next: GAMESCOPE, unchanged)
+
+**This session: the box is a Spotify Connect speaker, and the switcher got
+its "deck" redesign.** All committed (3a0e256 spotify server, a051cc0 deck,
+8135b9c display-dialog filter). Deep detail in auto-memory
+`homelab-spotify-connect.md` - read it before touching spotifyd or the bar.
+
+- **Spotify**: spotifyd v0.4.2 at `~/.local/bin/spotifyd`, user unit
+  `spotifyd.service`, conf at `~/.config/spotifyd/spotifyd.conf`. Phone picks
+  "Couch" in the Spotify app (zeroconf, Premium, no stored login). Server:
+  `server/spotify.js` -> `/api/spotify`. TRAPS: MPRIS name only exists while
+  a session is live; PlayPause is a toggle that RACES its own read-back -
+  send explicit play/pause, draw labels from intent.
+- **The deck** (script.couch.switcher, deployed by rsync to
+  `~/.var/app/tv.kodi.Kodi/data/addons/`): no sheet, PIL-baked gradient
+  scrim over the freeze-frame, white-inversion focus, icon media pills
+  (play/pause first), `_join_strip` makes power+spotify one continuous bar,
+  `pretty_title` turns shadPS4 window titles into game names. 30 tests in
+  `tools/test_switcher_dialog.py`; every state verified on screenshots off
+  the live render at native 4K.
+- **Display popups dead**: xfconf displays /Notify=0 AND screen.js filters
+  `xfce4-display-settings` from `/api/windows` (belt + braces; the xfconf
+  bit reverts if xfce settings reset).
+- CAPTURE RECIPE that worked (memory-worthy): kodi-send RunScript to open
+  the dialog behind a running game, `TakeScreenshot(special://temp/x.png,sync)`
+  (lands in `~/.var/app/tv.kodi.Kodi/data/temp/`), Action(Back) to close;
+  assert state via GUI.GetProperties currentcontrol first. NEVER leave the
+  dialog open - Donnie's pad drives it invisibly. Read tool auto-boosts
+  near-black pixels: measure luminance before believing faint "ghosting".
+
+**► THE EXACT NEXT STEP is unchanged from the previous block: the gamescope
+track** ("double tap takes me away from bloodborne when ideally it would
+show on top") - plan `gamescope-wrap` into `game-launch shadps4`, test with
+Donnie at the TV. See the previous resume block below for the full standing
+start; `data/gamescope-shadps4-enabled` (untracked flag file) is that
+track's, not this session's.
+
+### ▶ NEEDS DONNIE (this session's additions)
+1. **The deck by eye**: entrance/close motion feel (static frames proved
+   layout, not motion), the icon pills at couch distance, and whether the
+   fully-opaque lower scrim reads right over a real paused game.
+2. **Headphone crackle checklist** (BT to the LG C5; TV is WIRED, ruled
+   that out): (a) next crackle, note if you're playing media stored on the
+   USB disks - USB3 enclosures jam 2.4GHz; (b) forget + re-pair headphones
+   on the TV; (c) make sure TV sound output isn't in a "Bluetooth + X" dual
+   mode; (d) TV firmware check. Offer stands: report crackle times and the
+   box can correlate against disk I/O.
+3. Carried from previous block: readbacks verdict, games-row motion, fan
+   curve, GPU pin revert, memtest.
+
+## ▶ Previous resume block (15 Aug 2026 ~00:30 — BLOODBORNE FULLY WORKING; next: GAMESCOPE)
 
 **NEXT TRACK, asked for by Donnie in his own words: the switcher OVER a live
 game.** "double tap takes me away from bloodborne when ideally it would show
