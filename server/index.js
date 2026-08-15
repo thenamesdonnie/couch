@@ -27,6 +27,7 @@ import { activeDownloads } from './downloads.js';
 import * as ytprogress from './ytprogress.js';
 import { createTvCast, createHdrRouter } from './tvcast.js';
 import { routes as pipRoutes } from './pip.js';
+import * as spotify from './spotify.js';
 import { routes as displayRoutes } from './display.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -970,6 +971,14 @@ app.post('/api/screen/type', wrap(async (req) => {
 app.post('/api/screen/key', wrap(async (req) => {
   await screen.pressKey(String(req.body?.key || ''));
 }));
+
+// --- Spotify Connect (the spotifyd "Couch" speaker) ---
+
+// {active:false} is the ordinary answer whenever no phone is connected, so
+// both switchers can draw "no bar" without treating it as a failure.
+app.get('/api/spotify', wrap(() => spotify.status()));
+
+app.post('/api/spotify/:cmd', wrap((req) => spotify.command(req.params.cmd)));
 
 app.get('/api/windows', wrap(async () => ({ windows: await screen.windows() })));
 
