@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""The switcher, composited OVER the game by gamescope's overlay plane.
+
+    switcher-overlay --display :1
+
+Donnie, 15 Aug 2026, the night the first wrapped game ran: "can we get the
+switcher showing faster and not going to kodi first? or just having it over
+the running game?" This is that. It draws the same window rail the Kodi
+switcher and the phone show, as a gamescope external overlay INSIDE the
+nested display, over the game the compositor is already drawing. No Kodi
+raise, no freeze-frame capture, no restack - the "game behind the menu" is
+gamescope's own surface, and because the caller froze the emulator first,
+the pad cannot leak into the game while the rail is up.
+
+Shape stolen from tools/pipd, which earned it the hard way (read its module
+docstring): the overlay plane blits at 0,0 output-sized and IGNORES the X
+window's own position, so the plane is a FULLSCREEN 32-bit window - here a
+translucent scrim that dims the game - and the rail is a CHILD window whose
+position inside the parent's buffer is what gamescope actually shows.
+
+Switching logic: NONE, deliberately, the same contract as the Kodi addon
+and the phone. Rows come from GET /api/windows on the couch server, a pick
+POSTs /api/windows/activate, and everything that happens next (a paused
+game resumes, Kodi raises with the game left frozen) is decided in
+server/screen.js exactly as it is for the other two remotes.
+
+The pad is read RAW from /dev/input (struct input_event is 24 bytes; logind
+ACLs the seat user onto the nodes) because evdev-the-library lives only in
+couchd's venv and this tool runs on the system python for PIL. The game is
+frozen, so double-reading the device steals nothing from anyone.
+
+Exit codes, for the caller that wires this to a gesture:
+  0  a row was activated (the server owns what that meant)
+  1  cancelled with B - and unless --no-resume-on-cancel, the paused row
+     was re-activated first, which is the server's own "resume" path
+  2  broken (no display, no rows, no pad...)
+  3  superseded: the suspended flag cleared underneath us (the PS button's
+     own resume, say) - the rail closed itself and did nothing
+
+Test seams (unset in normal operation):
+  SWITCHER_OVERLAY_ROWS    path to a JSON file used instead of the HTTP GET
+  SWITCHER_OVERLAY_NO_PAD  do not open input devices (rig runs headless)
+  SWITCHER_OVERLAY_ONESHOT render once, screenshot-able, exit 0 on SIGTERM
+"""
+import json
+import os
+import select
+import signal
+import struct
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = os.environ.get('COUCH_API', 'http://localhost:8790')
+SUSPENDED_FLAG = '/tmp/game-suspended'
+FONT_DIR = os.path.expanduser('~/couch/kodi-addons/skin.couch/fonts/Figtree')
+
+# Stagelight's own tokens (docs/specs/console-skin.md): amber focus, dark
+# surfaces. The rail should read as the same UI family as the TV skin.
+AMBER = (232, 168, 73)          # e8a849
+TILE_BG = (24, 24, 28)
+LABEL_FG = (235, 235, 235)
+SCRIM_ARGB = 0x99000000         # ~60% black over the game
+
+# Rail geometry, fractions of the output so 4K and 1080p both compose.
+TILE_W_FRAC = 0.17              # tile width / output width
+TILE_ASPECT = 16 / 9
+TILE_GAP_FRAC = 0.22            # gap as a fraction of tile width
+LABEL_H_FRAC = 0.22             # label bar under the art, of tile height
+RING = 6                        # focus ring stroke, px at 4K (scaled)
+
+# struct input_event on 64-bit linux: tv_sec, tv_usec, type, code, value
+EVENT_FMT = 'llHHi'
+EVENT_SIZE = struct.calcsize(EVENT_FMT)
+EV_KEY, EV_ABS = 0x01, 0x03
+ABS_HAT0X, ABS_X = 0x10, 0x00
+BTN_SOUTH, BTN_EAST = 0x130, 0x131      # Cross / Circle
+STICK_ON = 18000                # DualSense ABS_X is 0..255? no - hid-playstation
+STICK_OFF = 12000               # reports 0..255; see note in pad_action
+# hid-playstation's DualSense ABS_X range is 0..255 centred 128; the
+# thresholds above are for pads that report 16-bit ranges. Both are handled:
+# values <= 255 use the small scale.
+STICK8_ON, STICK8_OFF = 200, 160
+
+
+# =========================================================================
+# pure logic (tools/test_switcher_overlay.py runs all of it headless)
+# =========================================================================
+def parse_devices(text):
+    """/proc/bus/input/devices -> [(name, '/dev/input/eventN'), ...].
+
+    Only the main pad node: motion sensors and touchpad carry the same
+    DualSense name prefix but their N: lines name them, so an exact-name
+    match keeps the buttons node and drops the rest."""
+    out = []
+    name = None
+    for line in text.splitlines():
+        if line.startswith('N: Name='):
+            name = line.split('=', 1)[1].strip().strip('"')
+        elif line.startswith('H: Handlers=') and name:
+            for tok in line.split('=', 1)[1].split():
+                if tok.startswith('event'):
+                    out.append((name, '/dev/input/' + tok))
+            name = None
+    return out
+
+
+def pad_nodes(devs):
+    """The nodes worth opening for switcher navigation: any device whose
+    name says game controller, minus the DualSense's sensor/touchpad
+    side-nodes. Every match is opened - a second pad navigating the rail is
+    a feature, not a conflict."""
+    out = []
+    for name, node in devs:
+        low = name.lower()
+        if ('controller' in low or 'gamepad' in low or 'x-box' in low) \
+                and 'motion' not in low and 'touchpad' not in low:
+            out.append(node)
+    return out
+
+
+def decode_events(buf):
+    """Raw bytes -> [(type, code, value)], dropping any trailing partial."""
+    n = len(buf) // EVENT_SIZE
+    out = []
+    for i in range(n):
+        _s, _u, etype, code, value = struct.unpack_from(EVENT_FMT, buf,
+                                                        i * EVENT_SIZE)
+        out.append((etype, code, value))
+    return out
+
+
+class PadState:
+    """Edge detection for the stick, so a held deflection is ONE move.
+    The dpad hat already edge-detects itself (0 between presses)."""
+    def __init__(self):
+        self.stick_engaged = False
+
+
+def pad_action(ev, st):
+    """(type, code, value) -> 'left'|'right'|'select'|'back'|None."""
+    etype, code, value = ev
+    if etype == EV_KEY and value == 1:
+        if code == BTN_SOUTH:
+            return 'select'
+        if code == BTN_EAST:
+            return 'back'
+        return None
+    if etype != EV_ABS:
+        return None
+    if code == ABS_HAT0X:
+        if value < 0:
+            return 'left'
+        if value > 0:
+            return 'right'
+        return None
+    if code == ABS_X:
+        small = -1 <= value <= 260        # an 8-bit pad (hid-playstation)
+        centre = 128 if small else 0
+        on = STICK8_ON - 128 if small else STICK_ON
+        off = STICK8_OFF - 128 if small else STICK_OFF
+        mag = value - centre
+        if st.stick_engaged:
+            if abs(mag) < off:
+                st.stick_engaged = False
+            return None
+        if mag <= -on:
+            st.stick_engaged = True
+            return 'left'
+        if mag >= on:
+            st.stick_engaged = True
+            return 'right'
+    return None
+
+
+def move_focus(i, action, n):
+    """Wrap-around, matching the home row's feel."""
+    if n <= 0:
+        return 0
+    if action == 'left':
+        return (i - 1) % n
+    if action == 'right':
+        return (i + 1) % n
+    return i
+
+
+def pick_rows(payload):
+    """The API answer -> the rows worth a tile. The desktop row stays (the
+    phone offers it), Kodi stays, the paused game stays. Unmapped strays
+    with no title are noise."""
+    rows = payload.get('windows') if isinstance(payload, dict) else payload
+    out = []
+    for r in rows or []:
+        if not r.get('id') or not r.get('title'):
+            continue
+        out.append(r)
+    return out
+
+
+def initial_focus(rows):
+    """Focus the first row that is NOT the paused game: the player opened
+    the rail to go somewhere else; 'continue' is one press away and B
+    cancels anyway."""
+    for i, r in enumerate(rows):
+        if not r.get('paused'):
+            return i
+    return 0
+
+
+def layout(n, out_w, out_h):
+    """-> (strip_w, strip_h, tile_w, tile_h, gap, [(x, y), ...]) for the
+    rail child window, centred; positions are relative to the strip."""
+    tile_w = int(out_w * TILE_W_FRAC)
+    art_h = int(tile_w / TILE_ASPECT)
+    tile_h = int(art_h * (1 + LABEL_H_FRAC))
+    gap = int(tile_w * TILE_GAP_FRAC)
+    pad = RING * 3
+    strip_w = n * tile_w + (n - 1) * gap + 2 * pad
+    strip_h = tile_h + 2 * pad
+    xs = [(pad + i * (tile_w + gap), pad) for i in range(n)]
+    return strip_w, strip_h, tile_w, tile_h, gap, xs
+
+
+# =========================================================================
+# rendering
+# =========================================================================
+def load_font(size):
+    from PIL import ImageFont
+    for name in ('Figtree-SemiBold.ttf', 'Figtree-Medium.ttf',
+                 'Figtree-Regular.ttf'):
+        p = os.path.join(FONT_DIR, name)
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except OSError:
+                pass
+    return ImageFont.load_default()
+
+
+def short_label(title):
+    """'shadPS4 v0.17.0 | CUSA00900 - Bloodborne <01.09> · paused' is a
+    window title, not a tile label. Take the most game-like fragment."""
+    t = title.replace(' · paused', '')
+    if ' - ' in t:
+        t = t.rsplit(' - ', 1)[1]
+    t = t.split('<')[0].strip(' |')
+    return (t[:28] + '…') if len(t) > 29 else (t or title[:28])
+
+
+def fetch_thumb(row, timeout=2.0):
+    """The row's art as a PIL image, or None. Paused rows carry the
+    freeze-frame; live windows get the compositor's winthumb - the same two
+    sources the phone switcher shows."""
+    from PIL import Image
+    import io
+    url = row.get('thumb') or ('/api/art/winthumb?id=%s' % row['id']
+                               if str(row.get('id', '')).startswith('0x')
+                               else None)
+    if not url:
+        return None
+    if url.startswith('/'):
+        url = API + url
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return Image.open(io.BytesIO(r.read())).convert('RGB')
+    except Exception:
+        return None
+
+
+def compose_strip(rows, focus, out_w, out_h, thumbs):
+    """The whole rail as one RGBA image; redrawn per focus move (a few ms of
+    PIL at 4K, measured nowhere near the 120Hz frame budget because nothing
+    here animates - the move IS the transition, matching the stock alt-tab
+    feel rather than the home row's grow)."""
+    from PIL import Image, ImageDraw
+    n = len(rows)
+    strip_w, strip_h, tile_w, tile_h, _gap, xs = layout(n, out_w, out_h)
+    art_h = int(tile_w / TILE_ASPECT)
+    img = Image.new('RGBA', (strip_w, strip_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = load_font(max(18, int(tile_w * 0.085)))
+    for i, row in enumerate(rows):
+        x, y = xs[i]
+        draw.rounded_rectangle((x, y, x + tile_w, y + tile_h), radius=12,
+                               fill=TILE_BG + (255,))
+        th = thumbs.get(i)
+        if th is not None:
+            t = th.copy()
+            # centre-crop to the art box
+            want = tile_w / art_h
+            have = t.width / t.height
+            if have > want:
+                w = int(t.height * want)
+                t = t.crop(((t.width - w) // 2, 0, (t.width + w) // 2,
+                            t.height))
+            else:
+                h = int(t.width / want)
+                t = t.crop((0, (t.height - h) // 2, t.width,
+                            (t.height + h) // 2))
+            t = t.resize((tile_w, art_h))
+            img.paste(t, (x, y))
+            # re-round the art's top corners by redrawing the ring path over
+            # a mask is more code than the look is worth at 10 feet: the
+            # focus ring below covers the joins on the row that matters.
+        label = short_label(row['title'])
+        if row.get('paused'):
+            label += '  ·  paused'
+        tw = draw.textlength(label, font=font)
+        draw.text((x + (tile_w - tw) / 2,
+                   y + art_h + (tile_h - art_h - font.size) / 2),
+                  label, font=font, fill=LABEL_FG)
+        if i == focus:
+            for k in range(RING):
+                draw.rounded_rectangle(
+                    (x - 2 - k, y - 2 - k, x + tile_w + 2 + k,
+                     y + tile_h + 2 + k),
+                    radius=14 + k, outline=AMBER + (255,), width=1)
+    return img
+
+
+# =========================================================================
+# X plumbing (pipd's Overlay, adapted: scrim parent + image child)
+# =========================================================================
+class RailOverlay:
+    def __init__(self, display_name):
+        from Xlib import X, Xatom, display as xdisplay
+        self.X, self.Xatom = X, Xatom
+        self.dpy = xdisplay.Display(display_name)
+        self.screen = self.dpy.screen()
+        self.root = self.screen.root
+        geom = self.root.get_geometry()
+        self.out_w, self.out_h = geom.width, geom.height
+        self.parent = self.child = self.gc = None
+
+    def _argb_visual(self):
+        for depth in self.screen.allowed_depths:
+            if depth.depth == 32 and depth.visuals:
+                return depth.visuals[0].visual_id
+        return None
+
+    def create(self, strip_w, strip_h):
+        X = self.X
+        visual = self._argb_visual()
+        if visual is None:
+            raise RuntimeError('no 32-bit visual: the scrim cannot be '
+                               'translucent, refusing a black screen')
+        cmap = self.root.create_colormap(visual, X.AllocNone)
+        # The premultiplied translucent scrim IS the parent's background.
+        self.parent = self.root.create_window(
+            0, 0, self.out_w, self.out_h, 0, 32, X.InputOutput, visual,
+            background_pixel=SCRIM_ARGB, border_pixel=0, colormap=cmap,
+            override_redirect=1, event_mask=X.StructureNotifyMask)
+        self.child = self.parent.create_window(
+            0, 0, strip_w, strip_h, 0, 32, X.InputOutput, visual,
+            background_pixel=0, border_pixel=0,
+            colormap=self.root.create_colormap(visual, X.AllocNone))
+        self.gc = self.child.create_gc()
+        atom = self.dpy.get_atom('GAMESCOPE_EXTERNAL_OVERLAY')
+        self.parent.change_property(atom, self.Xatom.CARDINAL, 32, [1])
+        self.parent.set_wm_name('couch-switcher')
+        self.parent.set_wm_class('couch-switcher', 'couch-switcher')
+        self.child.map()
+        self.parent.map()
+        self.dpy.sync()
+
+    def place_centre(self, strip_w, strip_h):
+        x = (self.out_w - strip_w) // 2
+        y = (self.out_h - strip_h) // 2
+        self.child.configure(x=x, y=y, width=strip_w, height=strip_h)
+        self.dpy.sync()
+
+    def draw(self, pil_img):
+        """RGBA PIL -> BGRA ZPixmap rows, chunked under the X request cap."""
+        w, h = pil_img.size
+        raw = pil_img.convert('RGBA').tobytes()
+        bgra = bytearray(len(raw))
+        bgra[0::4] = raw[2::4]
+        bgra[1::4] = raw[1::4]
+        bgra[2::4] = raw[0::4]
+        bgra[3::4] = raw[3::4]
+        # A classic X request's length field is CARD16 in 4-byte units, so
+        # one PutImage caps at ~256KB and python-xlib does not negotiate
+        # BIG-REQUESTS: a 1MB chunk dies in struct.pack ('H' overflow),
+        # measured on the first live draw. Stay comfortably under.
+        rows_per_chunk = max(1, 240_000 // (w * 4))
+        y = 0
+        while y < h:
+            rows = min(rows_per_chunk, h - y)
+            chunk = bytes(bgra[y * w * 4:(y + rows) * w * 4])
+            self.child.put_image(self.gc, 0, y, w, rows,
+                                 self.X.ZPixmap, 32, 0, chunk)
+            y += rows
+        self.dpy.sync()
+
+    def close(self):
+        for win in (self.child, self.parent):
+            if win is not None:
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+        try:
+            self.dpy.sync()
+            self.dpy.close()
+        except Exception:
+            pass
+
+
+# =========================================================================
+# glue
+# =========================================================================
+def say(msg):
+    print('switcher-overlay: %s' % msg, file=sys.stderr, flush=True)
+
+
+KODI_RPC = 'http://localhost:8090/jsonrpc'
+KODI_AUTH = 'kodi:$KODI_PASSWORD'       # game-launch's jrpc, same box, same rule
+
+
+def kodi_joystick(enabled):
+    """Kodi sits BEHIND the rail with its joystick input live (the suspend
+    routed the pad to it) - without this, every dpad press navigates the
+    invisible home row and Cross launches whatever it landed on. Same
+    setting game-launch's pad_to_game/pad_to_kodi flip. Failures are log
+    lines: a rail that refuses to open because Kodi was down would strand
+    the player worse than a background-navigation glitch."""
+    import base64
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1,
+                       'method': 'Settings.SetSettingValue',
+                       'params': {'setting': 'input.enablejoystick',
+                                  'value': bool(enabled)}}).encode()
+    req = urllib.request.Request(KODI_RPC, data=body, headers={
+        'content-type': 'application/json',
+        'authorization': 'Basic ' + base64.b64encode(
+            KODI_AUTH.encode()).decode()})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            r.read()
+        say('kodi joystick -> %s' % enabled)
+    except (urllib.error.URLError, OSError) as e:
+        say('kodi joystick toggle failed (%s)' % e)
+
+
+def fetch_rows():
+    seam = os.environ.get('SWITCHER_OVERLAY_ROWS')
+    if seam:
+        with open(seam) as f:
+            return pick_rows(json.load(f))
+    try:
+        with urllib.request.urlopen(API + '/api/windows', timeout=3) as r:
+            return pick_rows(json.load(r))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise RuntimeError('no window list from the couch server: %s' % e)
+
+
+def activate(row_id):
+    req = urllib.request.Request(
+        API + '/api/windows/activate',
+        data=json.dumps({'id': row_id}).encode(),
+        headers={'content-type': 'application/json'})
+    # Activating a paused row resumes the game, which takes a moment.
+    with urllib.request.urlopen(req, timeout=20) as r:
+        r.read()
+
+
+def open_pads():
+    with open('/proc/bus/input/devices') as f:
+        nodes = pad_nodes(parse_devices(f.read()))
+    fds = []
+    for node in nodes:
+        try:
+            fds.append(os.open(node, os.O_RDONLY | os.O_NONBLOCK))
+        except OSError as e:
+            say('cannot open %s (%s)' % (node, e))
+    return fds
+
+
+def main(argv):
+    display = None
+    resume_on_cancel = True
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == '--display' and args:
+            display = args.pop(0)
+        elif a == '--no-resume-on-cancel':
+            resume_on_cancel = False
+        else:
+            print(__doc__, file=sys.stderr)
+            return 2
+    if not display:
+        say('--display is required (gamescope\'s nested display)')
+        return 2
+
+    try:
+        rows = fetch_rows()
+    except RuntimeError as e:
+        say(str(e))
+        return 2
+    if not rows:
+        say('no rows to show')
+        return 2
+    focus = initial_focus(rows)
+    say('rows: %s (focus %d)' % ([r['title'] for r in rows], focus))
+
+    thumbs = {i: fetch_thumb(r) for i, r in enumerate(rows)}
+
+    overlay = RailOverlay(display)
+    strip = compose_strip(rows, focus, overlay.out_w, overlay.out_h, thumbs)
+    overlay.create(*strip.size)
+    # pipd's measured lesson, which bit here too on the first live frame:
+    # gamescope's first commit of the plane does not carry a position set
+    # before content exists - the rail composited at 0,0 with the centre
+    # configure already issued. Draw first, THEN place, then damage the
+    # child again so the moved position rides a fresh commit.
+    overlay.draw(strip)
+    overlay.place_centre(*strip.size)
+    overlay.draw(strip)
+    say('rail up on %s (%dx%d)' % (display, *strip.size))
+
+    stop = {'sig': False}
+    for s in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, lambda *_: stop.update(sig=True))
+
+    fds = [] if os.environ.get('SWITCHER_OVERLAY_NO_PAD') else open_pads()
+    oneshot = bool(os.environ.get('SWITCHER_OVERLAY_ONESHOT'))
+    if not fds and not oneshot:
+        say('no pad to read - nothing could ever be picked')
+        overlay.close()
+        return 2
+
+    st = PadState()
+    if fds:
+        kodi_joystick(False)
+    try:
+        while not stop['sig']:
+            # Superseded from outside: the PS button's own resume clears the
+            # flag; a rail with no frozen game under it is a lie.
+            if not os.path.exists(SUSPENDED_FLAG):
+                say('suspended flag gone - closing (superseded)')
+                return 3
+            ready, _, _ = select.select(fds, [], [], 0.25)
+            action = None
+            for fd in ready:
+                try:
+                    buf = os.read(fd, EVENT_SIZE * 64)
+                except OSError:
+                    continue
+                for ev in decode_events(buf):
+                    action = pad_action(ev, st) or action
+            if not action:
+                continue
+            if action in ('left', 'right'):
+                nf = move_focus(focus, action, len(rows))
+                if nf != focus:
+                    focus = nf
+                    overlay.draw(compose_strip(rows, focus, overlay.out_w,
+                                               overlay.out_h, thumbs))
+            elif action == 'select':
+                say('picked: %s' % rows[focus]['title'])
+                overlay.close()
+                overlay = None
+                activate(rows[focus]['id'])
+                if not rows[focus].get('paused') and fds:
+                    # Landing on Kodi/desktop: the pad follows the screen.
+                    # A paused pick resumes instead, and game-launch's
+                    # resume owns the routing there.
+                    kodi_joystick(True)
+                return 0
+            elif action == 'back':
+                say('cancelled')
+                paused = [r for r in rows if r.get('paused')]
+                if resume_on_cancel and paused:
+                    overlay.close()
+                    overlay = None
+                    activate(paused[0]['id'])
+                elif fds:
+                    kodi_joystick(True)
+                return 1
+        if fds and not oneshot:
+            kodi_joystick(True)      # killed from outside: leave Kodi usable
+        return 0 if oneshot else 1
+    finally:
+        if overlay is not None:
+            overlay.close()
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
