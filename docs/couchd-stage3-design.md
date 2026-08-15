@@ -1,8 +1,22 @@
 # couchd stage 3 — decision record: gamescope PARKED (4 Aug 2026)
 
-Status: /build research complete; decision is PARK, not GO. This file
-exists so the next session doesn't re-derive it. Full findings in the
-session's research pass; essentials below.
+## ADOPTED 15 Aug 2026 — stage 3 is LIVE for shadPS4
+
+One night, live-tested (commits `beaea0d..da5be71`): shadPS4 wraps in
+nested gamescope behind `~/couch/data/gamescope-shadps4-enabled`, and
+double-tap composites `tools/switcher-overlay` (the deck clone) OVER the
+live game. The §6 gate this file worried about (Steam overlay stripping
+vs steam-input-guard) was neither hit nor settled - shadPS4 is not a
+Steam title, so STEAM titles under the wrap remain unproven and §6
+experiment 5 still stands before any steam_app adoption. The freeze
+under the wrap leaves gamescope UNFROZEN (game-pids never contains an
+ancestor), which is a BETTER shape than the §6 discussion assumed and is
+what makes the overlay rail possible while frozen. Full operational
+detail: auto-memory `couch-gamescope-switcher`, resume state in todo.md.
+
+Status (historical, 4 Aug): /build research complete; decision is PARK,
+not GO. This file exists so the next session doesn't re-derive it. Full
+findings in the session's research pass; essentials below.
 
 ## REASSESSED 9 Aug 2026 — the park is stale, re-open it
 

@@ -421,10 +421,16 @@ makes place a no-op), cache thumbs across invocations.
 
 **Watch items:** freeze under the wrap leaves gamescope UNFROZEN (the
 compositor keeps drawing - better shape, but the §6 freeze ruling is still
-formally Donnie's); emulator log is async now (logType changed - lines can
-trail events when diagnosing); pgrep/pkill SELF-MATCH burned this session
-THREE times (harness shell contains the pattern) - always bracket:
-`pgrep -f '[S]hadps4'`.
+formally Donnie's); the logType-async claim was a dead letter (config.toml
+is dead - logging is still sync via config.json defaults); pgrep/pkill
+SELF-MATCH burned this session THREE times (harness shell contains the
+pattern) - always bracket: `pgrep -f '[S]hadps4'`.
+
+**NEEDS DONNIE:** (1) combat fps verdict on the current safe setup;
+(2) the one-launch perf experiment go-ahead (staged above); (3) did you
+ever actually SEE the ghost rectangles readbacks=Relaxed was set for? If
+not, it comes off; (4) the §6 freeze-shape ruling is now live behaviour -
+bless or veto; (5) rail look/feel notes after a few days of use.
 
 ## ▶ Previous resume block (15 Aug 2026 ~01:20 — SPOTIFY LIVE + THE SWITCHER DECK; next: GAMESCOPE, unchanged)
 
