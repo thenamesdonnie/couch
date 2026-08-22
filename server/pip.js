@@ -47,6 +47,13 @@ export const START_POLL_MS = 200;
 // would be rendered at the size of a matchbox and be unreadable anyway.
 export const PLAYER_ARGS = '--hwdec=auto --no-sub';
 
+// The display bridge: while a game runs wrapped in gamescope, game-launch
+// writes the nested display's name here (and clears it on teardown). An
+// overlay put on :0 then would draw UNDER the wrap - gamescope's own SDL
+// window holds the real screen - so a start reads this first. Dormant while
+// the wrap is benched (22 Aug).
+export const GAMESCOPE_BRIDGE = '/tmp/game-gamescope';
+
 // Seams, same shape as screen.js's _setWindowsSeams: tests point the client at
 // a stub daemon on a temp path, a fake spawn and a temp media root. Called with
 // nothing it restores the real ones.
@@ -57,6 +64,7 @@ const DEFAULTS = {
   pipd: PIPD_BIN,
   logPath: PIP_LOG,
   display: PIP_DISPLAY,
+  bridgePath: GAMESCOPE_BRIDGE,
   spawn: childSpawn,
   startTimeoutMs: START_TIMEOUT_MS,
   pollMs: START_POLL_MS,
@@ -290,14 +298,25 @@ export function resolveMedia(input) {
   return real;
 }
 
+// The picture belongs on whichever display is actually presenting: the
+// bridge's nested display while a wrap is live, the ordinary one otherwise.
+export function pipDisplay() {
+  try {
+    const d = fs.readFileSync(seams.bridgePath, 'utf8').trim();
+    if (/^:\d+(\.\d+)?$/.test(d)) return d;
+  } catch { /* no bridge; the ordinary display */ }
+  return seams.display;
+}
+
 // pipd must outlive this server: a couch.service restart has nothing to do with
 // the picture on the television, and a child that dies with its parent would
 // take the video with it. detached:true is setsid, stdio goes to a log file
 // (the ONLY account of a start that fails after the fork), and unref lets node
 // exit while the daemon carries on.
 export function spawnPipd(media) {
+  const display = pipDisplay();
   const args = [
-    '--display', seams.display,
+    '--display', display,
     '--socket', seams.socketPath,
     '--player-args', PLAYER_ARGS,
     media,
@@ -307,7 +326,7 @@ export function spawnPipd(media) {
   const child = seams.spawn(seams.pipd, args, {
     detached: true,
     stdio: ['ignore', fd ?? 'ignore', fd ?? 'ignore'],
-    env: { ...process.env, DISPLAY: seams.display },
+    env: { ...process.env, DISPLAY: display },
   });
   // An unexecutable pipd raises 'error' on the child, which is fatal to the
   // whole process if nobody is listening. The route reports the failure by

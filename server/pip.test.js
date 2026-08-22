@@ -384,6 +384,9 @@ test('POST /api/pip/start spawns pipd detached and answers the new status', asyn
     socketPath: stub.socketPath, mediaRoot: lib.root, spawn,
     display: ':9', pipd: '/opt/pipd', logPath: path.join(lib.root, 'pip.log'),
     timeoutMs: 80, pollMs: 10, startTimeoutMs: 2000,
+    // Pin the bridge to nowhere: a live /tmp/game-gamescope on the box this
+    // suite runs on must not leak into the assertion below.
+    bridgePath: path.join(lib.root, 'no-bridge'),
   });
   const app = await testServer();
   try {
@@ -403,6 +406,39 @@ test('POST /api/pip/start spawns pipd detached and answers the new status', asyn
     assert.equal(opts.env.DISPLAY, ':9');
     // Never our own stdio: an inherited pipe keeps the daemon tied to us.
     assert.notEqual(opts.stdio[1], 'inherit');
+  } finally { await app.close(); await stub.close(); lib.close(); _setPipSeams(); }
+});
+
+test('a start under a live gamescope wrap targets the nested display, and garbage in the bridge does not', async () => {
+  const lib = fakeLibrary();
+  let up = false;
+  const stub = await stubDaemon(() => (up ? STATUS_REPLY : undefined));
+  const spawn = fakeSpawn(() => { up = true; });
+  const bridge = path.join(lib.root, 'game-gamescope');
+  fs.writeFileSync(bridge, ':1');
+  _setPipSeams({
+    socketPath: stub.socketPath, mediaRoot: lib.root, spawn,
+    display: ':9', pipd: '/opt/pipd', logPath: path.join(lib.root, 'pip.log'),
+    timeoutMs: 80, pollMs: 10, startTimeoutMs: 2000, bridgePath: bridge,
+  });
+  const app = await testServer();
+  try {
+    let res = await app.post('/api/pip/start', { path: lib.episode });
+    assert.equal(res.status, 200);
+    let { args, opts } = spawn.calls[0];
+    assert.deepEqual(args.slice(0, 2), ['--display', ':1'],
+      'the picture must land on the display that is presenting');
+    assert.equal(opts.env.DISPLAY, ':1');
+
+    // A corrupt bridge (a crashed wrap can leave anything) falls back to the
+    // ordinary display rather than handing mpv a nonsense DISPLAY.
+    up = false;
+    fs.writeFileSync(bridge, 'not a display\n');
+    res = await app.post('/api/pip/start', { path: lib.episode });
+    assert.equal(res.status, 200);
+    ({ args, opts } = spawn.calls[1]);
+    assert.deepEqual(args.slice(0, 2), ['--display', ':9']);
+    assert.equal(opts.env.DISPLAY, ':9');
   } finally { await app.close(); await stub.close(); lib.close(); _setPipSeams(); }
 });
 
