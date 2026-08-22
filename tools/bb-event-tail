@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Timestamp shadPS4's interesting log events as they happen.
+#
+#   bb-event-tail <emulator-pid> <out-file>
+#
+# shadPS4's own log has no wall-clock timestamps, so nothing written after a
+# session can say WHEN a shader compile happened. This sidecar starts with the
+# emulator (the shadps4 wrapper spawns it), tails the log from its current end,
+# and stamps each matching line with epoch time - the join key bb-drop-report
+# uses against MangoHud's frame log. It follows the emulator down: when the
+# pid is gone, the tail is killed and the file closed.
+#
+# Events kept deliberately narrow: pipeline/shader compiles (the fight-start
+# hitch cause) and error/critical lines. Widening the grep widens every
+# report; think before adding.
+set -u
+
+PID="${1:?usage: bb-event-tail <emulator-pid> <out-file>}"
+OUT="${2:?usage: bb-event-tail <emulator-pid> <out-file>}"
+LOG="${BB_SHAD_LOG:-$HOME/.local/share/shadPS4/log/shad_log.txt}"
+
+[ -f "$LOG" ] || : > "$LOG"
+size=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+
+# START line anchors MangoHud's elapsed-since-launch clock to wall time.
+echo "START $(date +%s.%3N)" > "$OUT"
+
+tail -c +$((size + 1)) -F "$LOG" 2>/dev/null \
+  | grep --line-buffered -E "Compiling|<Error>|<Critical>" \
+  | while IFS= read -r line; do
+      printf '%s %s\n' "$(date +%s.%3N)" "$line"
+    done >> "$OUT" &
+TAILPID=$!
+
+while kill -0 "$PID" 2>/dev/null; do sleep 2; done
+# kill the whole pipeline: tail is a child of this shell via the pipe's pgid
+kill "$TAILPID" 2>/dev/null
+pkill -P $$ 2>/dev/null
+echo "END $(date +%s.%3N)" >> "$OUT"

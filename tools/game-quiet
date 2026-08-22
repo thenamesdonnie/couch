@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""Silence the box's two ambush noises for the length of a game session.
+
+A game on this box does not get the machine to itself. Two things run in the
+background that can walk into the middle of a session and take the frame rate
+with them, and neither announces itself:
+
+  * qBittorrent. It writes to the media disks over USB, and those disks have
+    a history of dropping their link under sustained write load (twice now).
+    A torrent that starts pulling at 40MB/s while Bloodborne is streaming its
+    own assets is stutter with no visible cause;
+  * whisper-asr, Bazarr's local speech-to-text fallback. It transcribes on the
+    GPU. It is the same GPU the game is drawing with, and a whisper job is
+    minutes of it, not seconds.
+
+    game-quiet on       pause the torrents that are running, stop whisper-asr
+    game-quiet off      put back EXACTLY what `on` changed, nothing else
+    game-quiet status   one line: what is currently quieted
+
+"EXACTLY what `on` changed" is the whole design. `on` writes down the hashes
+of the torrents it paused, and `off` resumes that list rather than resuming
+everything - so a torrent Donnie paused by hand last week stays paused, and
+whisper-asr is only started again if it was running when we arrived. The state
+file IS the restore set; without it `off` has nothing to do and does nothing.
+
+FAILURE HONESTY IS THE POINT. This is meant to be called from game-launch, on
+the path between "Donnie pressed X" and "the game appears". So it has no
+failure mode that reaches the caller: every network call has a 5s timeout and
+a try around it, every failure is one line on stderr and in the log, and the
+exit status is 0 whatever happened (only a mistyped command line exits 2).
+A quiet that half-worked is a worse night than a quiet that did not work; a
+launch that did not happen is a much worse night than either. Callers should
+still run it as `game-quiet on || true` out of habit.
+
+Two qBittorrent dialects. 5.x renamed /torrents/pause and /torrents/resume to
+/stop and /start, so `on` tries pause, takes a 404 as "this is a 5.x" and uses
+stop instead - then records WHICH vocabulary worked, because `off` may run
+hours later and must speak the same one. (`off` will still try the other if
+its recorded verb 404s, in case qBittorrent was updated mid-session.)
+
+Credentials come from ~/couch/.env, the same file the couch server uses, and
+we log in properly rather than leaning on qBittorrent's localhost whitelist:
+qBittorrent lives inside the gluetun VPN container, so from its point of view
+we are not localhost at all.
+
+Test seams (unset in normal operation):
+  GAME_QUIET_STATE   the restore set (default /tmp/game-quiet.state)
+  GAME_QUIET_LOG     the log (default /tmp/game-quiet.log)
+  GAME_QUIET_ENV     where the credentials live (default ~/couch/.env)
+  GAME_QUIET_UNIT    the user unit to stop (default whisper-asr.service)
+"""
+import http.client
+import http.cookiejar
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOME = os.path.expanduser('~')
+STATE = os.environ.get('GAME_QUIET_STATE') or '/tmp/game-quiet.state'
+LOG = os.environ.get('GAME_QUIET_LOG') or '/tmp/game-quiet.log'
+ENV_FILE = os.environ.get('GAME_QUIET_ENV') or os.path.join(HOME, 'couch', '.env')
+UNIT = os.environ.get('GAME_QUIET_UNIT') or 'whisper-asr.service'
+
+DEFAULT_URL = 'http://localhost:8080'
+DEFAULT_USER = 'admin'
+TIMEOUT = 5.0            # every network and systemctl call, no exceptions
+
+# The two dialects, keyed by the name we record in the state file.
+VOCAB = {
+    'pause': {'halt': 'pause', 'go': 'resume'},   # qBittorrent 4.x
+    'stop': {'halt': 'stop', 'go': 'start'},      # qBittorrent 5.x
+}
+
+
+def say(msg):
+    """One line to stderr AND to the log, curtain's habit. stderr is for
+    whoever ran it by hand; the log is for the morning after a session where
+    something was quietly not quieted and nobody was watching a terminal."""
+    line = f'{time.strftime("%Y-%m-%d %H:%M:%S")} game-quiet: {msg}'
+    print(line, file=sys.stderr, flush=True)
+    try:
+        with open(LOG, 'a') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass                                       # a log we cannot write is not
+        #                                            worth failing a launch over
+
+
+class QuietError(Exception):
+    """Anything that means 'this half did not happen'. Always ends as a say()
+    plus carrying on with the other half."""
+
+
+class HttpStatus(QuietError):
+    """A reply we got but did not want. `code` is load-bearing: 404 is how we
+    tell a 4.x qBittorrent from a 5.x one."""
+
+    def __init__(self, code, path):
+        self.code = code
+        super().__init__(f'{path} answered HTTP {code}')
+
+
+class Usage(Exception):
+    pass
+
+
+# =========================================================================
+# pure logic (no disk, no network, no clock)
+# =========================================================================
+def parse_env(text):
+    """KEY=value lines -> dict. Comments, blanks and `export ` are skipped,
+    and one matching pair of surrounding quotes is stripped.
+
+    Hand-rolled rather than a dotenv package because this tool must run under
+    the system python from a launcher script, where no third-party import is
+    guaranteed to exist. The rules are deliberately the same ones tools/
+    couchenv.py already applies to this exact file, plus the quotes: nothing
+    in .env is quoted today, but a password with a space in it would be, and
+    handing qBittorrent a password with quote marks in it fails in a way that
+    reads exactly like a wrong password.
+    """
+    out = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        if line.startswith('export '):
+            line = line[len('export '):].lstrip()
+        key, _, val = line.partition('=')
+        key, val = key.strip(), val.strip()
+        if not key:
+            continue
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+            val = val[1:-1]
+        out[key] = val
+    return out
+
+
+def qb_settings(env, environ=None):
+    """(url, user, password) for the WebUI, or raise QuietError saying why not.
+
+    A real environment variable wins over the file, matching couchenv's rule:
+    if systemd already handed us QBITTORRENT_PASSWORD we use that and never
+    care whether the file is readable.
+    """
+    environ = os.environ if environ is None else environ
+
+    def pick(key, default=None):
+        return environ.get(key) or env.get(key) or default
+
+    password = pick('QBITTORRENT_PASSWORD')
+    if not password:
+        raise QuietError(f'QBITTORRENT_PASSWORD is not set (looked in {ENV_FILE}); '
+                         'leaving the torrents alone')
+    url = (pick('QBITTORRENT_URL', DEFAULT_URL) or DEFAULT_URL).rstrip('/')
+    return url, pick('QBITTORRENT_USER', DEFAULT_USER), password
+
+
+def hashes_from_info(payload):
+    """torrents/info JSON -> the hashes, in the order qBittorrent gave them.
+
+    Defensive about the shape because the alternative is a traceback on the
+    launch path: anything that is not a list of objects with a non-empty
+    string hash is simply not a torrent we can restore later.
+    """
+    if not isinstance(payload, list):
+        raise QuietError(f'torrents/info returned {type(payload).__name__}, not a list')
+    out = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        h = item.get('hash') or item.get('infohash_v1')
+        if isinstance(h, str) and h.strip():
+            out.append(h.strip())
+    return out
+
+
+def join_hashes(hashes):
+    """The WebAPI's own list format. `all` is deliberately never used here."""
+    return '|'.join(hashes)
+
+
+def verb_order(kind, recorded=None):
+    """Which endpoint names to try, in order, for 'halt' or 'go'.
+
+    `on` has no recorded dialect and tries 4.x first (that is what this box
+    runs). `off` tries the dialect that worked at `on` time first, then the
+    other one, so a qBittorrent that was updated between the two calls costs
+    us one 404 rather than a torrent left paused overnight.
+    """
+    names = [recorded] if recorded in VOCAB else []
+    names += [n for n in ('pause', 'stop') if n not in names]
+    return [(n, VOCAB[n][kind]) for n in names]
+
+
+def login_verdict(code, body, cookies):
+    """Did that login work? Returns None for yes, or the reason it did not.
+
+    There are two live dialects and the obvious check only covers one of them.
+    The classic WebUI answers 200 with the body 'Ok.'; THIS BOX answers 204
+    with no body at all and the session cookie in the headers, and reading the
+    body alone calls that a refusal (it cost a live session to find out). So
+    the cookie is the primary evidence - a WebUI that hands out a session
+    cookie has accepted us - and the 'Ok.' body stays as a secondary accept
+    for a server that somehow gives us one without the other.
+
+    'Fails.' is a refusal whatever the status: qBittorrent says it with a 200,
+    which is exactly why status alone is not enough either.
+    """
+    text = (body or '').strip()
+    if text.startswith('Fails'):
+        return 'login refused (bad username or password?)'
+    got_cookie = any(c.upper().startswith('QBT_SID') or c.upper() == 'SID'
+                     for c in cookies)
+    if 200 <= code < 300 and got_cookie:
+        return None
+    if text.startswith('Ok'):
+        return None                                # no cookie: the auth whitelist
+    return (f'login gave HTTP {code} with no session cookie '
+            f'({text[:40] or "empty reply"})')
+
+
+def describe(state):
+    """The `status` line. Pure so the wording is testable without a session."""
+    if not state:
+        return 'nothing is quieted'
+    torrents = state.get('torrents') or {}
+    whisper = state.get('whisper') or {}
+    bits = []
+    n = len(torrents.get('hashes') or [])
+    if n:
+        bits.append(f'{n} torrent{"s" if n != 1 else ""} paused')
+    if whisper.get('stopped'):
+        bits.append(f'{whisper.get("unit", UNIT)} stopped')
+    if torrents.get('error'):
+        bits.append(f'torrents NOT quieted ({torrents["error"]})')
+    if not bits:
+        bits.append('nothing needed quieting')
+    since = state.get('when') or 'an unknown time'
+    return f'quiet since {since}: ' + ', '.join(bits)
+
+
+# =========================================================================
+# the state file
+# =========================================================================
+def read_state(path=None):
+    """(state, existed). A file we cannot parse still counts as existing, so
+    `off` deletes it instead of leaving a booby trap for the next session."""
+    path = path or STATE
+    try:
+        with open(path) as f:
+            return json.load(f), True
+    except FileNotFoundError:
+        return None, False
+    except (OSError, ValueError) as e:
+        say(f'{path} is unreadable ({e}); nothing to restore from it')
+        return None, os.path.exists(path)
+
+
+def write_state(record, path=None):
+    path = path or STATE
+    tmp = f'{path}.{os.getpid()}'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(record, f, indent=2, sort_keys=True)
+            f.write('\n')
+        os.replace(tmp, path)                      # readers never see half a file
+        return True
+    except OSError as e:
+        say(f'cannot write {path} ({e}); `game-quiet off` will not know what to '
+            'put back, restore by hand')
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def remove_state(path=None):
+    path = path or STATE
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        say(f'cannot remove {path} ({e}); the next `on` will think we are '
+            'already quiet')
+
+
+# =========================================================================
+# qBittorrent
+# =========================================================================
+class Qb:
+    """The three calls we need, over urllib with a cookie jar.
+
+    No requests, no aiohttp: this runs under whichever python the launcher
+    happens to be, and the whole client is four lines of urllib anyway.
+    """
+
+    def __init__(self, url, user, password):
+        self.base = url.rstrip('/')
+        self.user = user
+        self.password = password
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.jar))
+
+    def request(self, path, data=None, with_status=False):
+        """Body text, or (status, body text). GET when data is None, form POST
+        otherwise. Raises HttpStatus/QuietError on anything unwelcome.
+
+        The Referer matters: qBittorrent rejects a POST whose Origin/Referer
+        disagrees with its own host as cross-site, and sending our own base URL
+        is the simplest way to always agree.
+        """
+        body = urllib.parse.urlencode(data).encode() if data is not None else None
+        req = urllib.request.Request(self.base + path, data=body,
+                                     headers={'Referer': self.base})
+        if body is not None:
+            req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        try:
+            with self.opener.open(req, timeout=TIMEOUT) as resp:
+                text = resp.read().decode('utf-8', 'replace')
+                return (resp.status, text) if with_status else text
+        except urllib.error.HTTPError as e:
+            raise HttpStatus(e.code, path)
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            raise QuietError(f'{path}: {e}')
+
+    def login(self):
+        """See login_verdict for why this reads the cookie and not just the
+        body: this box's qBittorrent says yes with a 204 and nothing in it."""
+        code, body = self.request(
+            '/api/v2/auth/login',
+            {'username': self.user, 'password': self.password}, with_status=True)
+        problem = login_verdict(code, body, [c.name for c in self.jar])
+        if problem:
+            raise QuietError(f'{problem}; check QBITTORRENT_USER/PASSWORD')
+
+    def running_hashes(self):
+        """Hashes of the torrents that are not paused right now.
+
+        `resumed` is the 4.x filter name; 5.x kept it as an alias for `running`
+        but has been known to tighten filter validation, and a 400 here would
+        otherwise read as "no active torrents" and quietly pause nothing.
+        """
+        for filt in ('resumed', 'running'):
+            try:
+                text = self.request(f'/api/v2/torrents/info?filter={filt}')
+            except HttpStatus as e:
+                if e.code in (400, 404) and filt == 'resumed':
+                    say(f'the `resumed` filter was rejected ({e.code}); '
+                        'trying `running`')
+                    continue
+                raise
+            try:
+                payload = json.loads(text)
+            except ValueError as e:
+                raise QuietError(f'torrents/info is not JSON ({e})')
+            return hashes_from_info(payload)
+        raise QuietError('torrents/info refused both the resumed and running filters')
+
+    def act(self, kind, hashes, recorded=None):
+        """Halt or resume `hashes`. Returns the dialect that worked.
+
+        The 404 probe is the only way to tell the versions apart without
+        parsing /api/v2/app/version, and a probe that costs one extra request
+        on 5.x is cheaper than a version string we would have to keep a table
+        for.
+        """
+        if not hashes:
+            return recorded
+        last = None
+        for name, verb in verb_order(kind, recorded):
+            try:
+                self.request(f'/api/v2/torrents/{verb}',
+                             {'hashes': join_hashes(hashes)})
+                return name
+            except HttpStatus as e:
+                if e.code != 404:
+                    raise
+                last = e
+                say(f'/api/v2/torrents/{verb} is not there (404); '
+                    'this qBittorrent speaks the other dialect')
+        raise QuietError(f'neither dialect has a {kind} endpoint ({last})')
+
+
+def connect():
+    """A logged-in client, or raise QuietError with the reason."""
+    env = {}
+    try:
+        with open(ENV_FILE) as f:
+            env = parse_env(f.read())
+    except OSError as e:
+        say(f'cannot read {ENV_FILE} ({e}); falling back to the environment')
+    url, user, password = qb_settings(env)
+    qb = Qb(url, user, password)
+    qb.login()
+    return qb
+
+
+# =========================================================================
+# whisper-asr (a user unit, so every call is `systemctl --user`)
+# =========================================================================
+def systemctl(*args):
+    """CompletedProcess, or None if systemctl itself would not run."""
+    try:
+        return subprocess.run(['systemctl', '--user', *args],
+                              capture_output=True, text=True, timeout=TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f'systemctl --user {" ".join(args)} failed: {e}')
+        return None
+
+
+def whisper_is_active():
+    r = systemctl('is-active', UNIT)
+    return r is not None and r.stdout.strip() == 'active'
+
+
+def whisper_set(action):
+    r = systemctl(action, UNIT)
+    if r is None:
+        return False
+    if r.returncode != 0:
+        say(f'{action} {UNIT} failed ({r.returncode}): '
+            f'{(r.stderr or r.stdout or "").strip()[:120]}')
+        return False
+    return True
+
+
+# =========================================================================
+# the commands
+# =========================================================================
+def cmd_on():
+    """Quiet both sources and write down exactly what we changed.
+
+    The record is built as we go and written in a finally, so an unexpected
+    exception halfway through still leaves `off` something to restore from -
+    the failure mode we cannot accept is torrents paused with no note of it.
+    """
+    state, existed = read_state()
+    if existed:
+        say(f'already quiet ({describe(state)}); leaving the restore set alone')
+        return 0
+
+    record = {
+        'ts': time.time(),
+        'when': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'pid': os.getpid(),
+        'torrents': {'hashes': [], 'vocab': None},
+        'whisper': {'unit': UNIT, 'stopped': False},
+    }
+    try:
+        try:
+            qb = connect()
+            hashes = qb.running_hashes()
+            if hashes:
+                vocab = qb.act('halt', hashes)
+                record['torrents'] = {'hashes': hashes, 'vocab': vocab}
+                say(f'paused {len(hashes)} torrent{"s" if len(hashes) != 1 else ""} '
+                    f'({vocab} dialect)')
+            else:
+                say('no torrents were running, nothing to pause')
+        except QuietError as e:
+            record['torrents']['error'] = str(e)
+            say(f'torrents not quieted: {e}')
+
+        if whisper_is_active():
+            if whisper_set('stop'):
+                record['whisper']['stopped'] = True
+                say(f'stopped {UNIT}')
+        else:
+            say(f'{UNIT} was not running, leaving it alone')
+    finally:
+        write_state(record)
+    return 0
+
+
+def cmd_off():
+    """Put back exactly what the state file says we changed, then delete it.
+
+    The state file goes whatever happens. A restore that half-failed is
+    logged, but keeping the file would make the next `on` a no-op ("already
+    quiet") and that would compound one bad night into every night after it.
+    """
+    state, existed = read_state()
+    if not existed:
+        say('nothing was quieted (no state file); doing nothing')
+        return 0
+    try:
+        torrents = (state or {}).get('torrents') or {}
+        hashes = [h for h in (torrents.get('hashes') or []) if isinstance(h, str)]
+        if hashes:
+            try:
+                qb = connect()
+                vocab = qb.act('go', hashes, torrents.get('vocab'))
+                say(f'resumed {len(hashes)} torrent{"s" if len(hashes) != 1 else ""} '
+                    f'({vocab} dialect)')
+            except QuietError as e:
+                say(f'torrents NOT resumed: {e}; resume them in qBittorrent '
+                    f'({len(hashes)} hash(es) were: {", ".join(h[:8] for h in hashes)})')
+        else:
+            say('no torrents to resume')
+
+        whisper = (state or {}).get('whisper') or {}
+        if whisper.get('stopped'):
+            if whisper_set('start'):
+                say(f'started {whisper.get("unit", UNIT)}')
+        else:
+            say(f'{UNIT} was not ours to start')
+    finally:
+        remove_state()
+    return 0
+
+
+def cmd_status():
+    state, _existed = read_state()
+    print(describe(state))
+    return 0
+
+
+def parse_args(argv):
+    if not argv:
+        raise Usage(None)
+    cmd, rest = argv[0], argv[1:]
+    if cmd in ('-h', '--help'):
+        return 'help'
+    if cmd not in ('on', 'off', 'status'):
+        raise Usage(f'unknown command {cmd!r} (want on, off or status)')
+    if rest:
+        raise Usage(f'{cmd} takes no arguments (got {rest})')
+    return cmd
+
+
+def main(argv):
+    try:
+        cmd = parse_args(argv)
+    except Usage as e:
+        if not e.args or e.args[0] is None:
+            print(__doc__, file=sys.stderr)
+            return 2
+        say(str(e))
+        return 2
+    if cmd == 'help':
+        print(__doc__.strip())
+        return 0
+    if cmd == 'on':
+        return cmd_on()
+    if cmd == 'off':
+        return cmd_off()
+    return cmd_status()
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:                          # noqa: BLE001 - see docstring
+        # The last rail. Nothing this tool does is worth failing a launch for,
+        # including a bug in this tool.
+        say(f'unexpected {type(e).__name__}: {e}')
+        sys.exit(0)

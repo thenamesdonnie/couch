@@ -361,7 +361,290 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (15 Aug 2026 ~02:15 — GAMESCOPE TRACK IS LIVE, the switcher floats over the game)
+## ▶ Resume here (22 Aug 2026 ~23:00 — END STATE: bare stock stack is the BEST SESSION ON RECORD; fix build and gamescope both benched with exact retest plans)
+
+**WHERE THINGS LANDED tonight, after a chaotic play test:** Donnie's final
+session (stock AppImage, NO gamescope wrap, 4K120 display, performance
+EPP, game-mode active) = **avg 60.0, 1% low 55.7 (previous best 49), five
+sub-50ms drops total, and the ~20s autosave metronome NOT VISIBLE in the
+data**. Donnie: "i didn't feel any hitches in that run. also it loaded a
+lot faster." The platform fixes alone (EPP + no compositor + quiet box +
+warm pipeline cache) carried most of the felt win.
+
+**CURRENT SWITCH STATE (all deliberate):**
+- `data/shadps4-local-build` ABSENT -> stock AppImage. The fault-widening
+  build is EXONERATED of tonight's crashes (all three were console/
+  gamescope bugs, see below) but its adoption case now needs a fair BARE
+  retest: one session with `touch ~/couch/data/shadps4-local-build`, no
+  other changes, compare bb-drop-report + feel vs tonight's baseline.
+- `data/gamescope-shadps4-enabled` ABSENT -> bare launches, resident rail
+  OFFLINE. gamescope 3.16.25 heap-corruption-aborted at its first-ever
+  4K120 session (see the 💥 block). Before re-enabling: headless soak at
+  -r 120 (rig exists: gamescope-wrap --backend headless --rate 120 +
+  emulator, hours), and/or try a newer gamescope, and/or run the wrap at
+  -r 60 as interim (rail back, smaller crash surface).
+
+**NEXT STEPS in order:** (1) gamescope-at-120 headless soak -> decide
+fix/upgrade/60Hz-interim; (2) bare fix-build session with Donnie ->
+adoption verdict; (3) if adopted: strip the three probes, upstream
+issue+PR (fault-widening + the write-path correctness gap + the 48k/s
+census numbers); (4) the two couchd replay tests owed (stale tap-resume,
+ER process leak - see 🐞 block); (5) game-launch should restore 4k120
+BEFORE reading the mode at launch (race documented below).
+
+**NEEDS DONNIE:** ReBAR + Above-4G in BIOS (NOTE: that reboot also resets
+performance EPP - rerun the tee one-liner after, or ask for the pinning
+unit); the bare fix-build session above; memtest is STILL never run.
+
+**Living outside this repo (committed nowhere, by convention):** the 22 Aug
+edits to `~/.local/bin/game-launch` (game-quiet hooks), `~/.local/bin/shadps4`
+(local-build flag + MangoHud + pin lever + bb-event-tail), `~/.local/bin/
+game-pids` (local-build first-token match), `~/.config/systemd/user/
+mode-keeper.service`, and the shadPS4 checkout `~/src/shadps4-dbg` (fault
+widening + 3 probes as uncommitted local diffs; audio-era work in `git
+stash`). Untracked here and deliberately left: shadow/ data churn, data/
+perf-logs + autosave-rig outputs, and kodi-addons/resource.uisounds.couch
+(predates 21 Aug, unknown owner - triage some quiet day).
+
+Full receipts: **docs/research/shadps4-autosave-fault-storm-20260822.md**
+(measurements, the falsified-then-inverted hypothesis, fix, A/B table,
+residual risks). The one-paragraph version: the autosave stall was the tip
+of a permanent **48,000 faults/s page-fault storm** (0.85 CPU cores burned
+all through gameplay - the emulator invalidates 8 BYTES per tracked-page
+write fault). Our fix: widen to an aligned 64KB window with a precise
+fallback (correctness-safe superset). A/B headless: faults 48k->1.4k/s,
+handler time 850->40ms/s, all autosave cycles clean (worst 19.5ms vs
+53-62ms stalls), steady 60.
+
+**TO GO LIVE (Donnie, one command):** `touch ~/couch/data/shadps4-local-build`
+then launch BB normally - the wrapper runs our fix build (same 0.17.0
+release, same config/saves). `rm` the flag = instant AppImage rollback.
+Judge: autosave blink gone? combat headroom better? any NEW visual
+weirdness (over-invalidation would look like texture flicker; none seen
+headless). bb-drop-report after the session as usual. THEN: strip the
+probes, upstream issue+PR (also report the write-path correctness gap the
+source dive found: file writes never download GPU-modified guest data).
+
+**💥 THIRD FAILURE (22:16) = GAMESCOPE 3.16.25 HEAP CORRUPTION AT 4K120,
+wrap BENCHED for now.** The emulog is unambiguous: gamescope aborted
+(glibc "malloc(): unsorted double linked list corrupted", exit -6
+SIGABRT) and gamescopereaper then killed the healthy emulator mid-
+autosave-write ("Parent of gamescopereaper was killed. Killing
+children."). Key context: tonight's sessions were the wrap's FIRST EVER
+at -r 120 / 4K120 output - every prior wrapped session actually ran at
+4K60 (the display kept falling back before mode-keeper existed). Fix
+build NOT implicated in this one. Save survived intact (sizes verified,
+backups present). Mitigation: data/gamescope-shadps4-enabled REMOVED -
+bare emulator until gamescope-at-120 is proven headless (repro rig:
+gamescope -r 120 + emulator + hours-long soak) or gamescope is
+upgraded/pinned differently; the resident rail is offline meanwhile.
+TO INVESTIGATE: (a) reproduce headless at -r 120, (b) try gamescope
+newer release, (c) consider -r 60 wrap on a 120Hz display as interim
+(rail back, no crash surface). Also retest the fault-widening build
+BARE - with gamescope out of the picture its play test is still owed.
+
+**⚡ ROOT CAUSE OF THE WHOLE 22 Aug EVENING (found 22:15, fixed live):
+game-pids was BLIND to the local fix build.** It matches shadPS4 by
+AppImage names (`Shadps4-sdl|mount_Shads`); the fix build's cmdline is
+`~/src/shadps4-dbg/build/shadps4` = no match = every safety system
+believed NO game was running during fix-build sessions. Consequences,
+all downstream of this one gap: the watcher's drift repair repeatedly
+routed the pad to Kodi and raised Kodi over a HEALTHY game ("went back
+to kodi after ~10s"); suspend/resume flows operated on an invisible
+session (wedge + double-launch = "crash" #1). FIXED in game-pids:
+exact-first-token match for the local binary (never substring - the
+pgrep-self-match rule), live-verified against a running session. The
+fault-widening build is EXONERATED and re-armed. LESSON for the file:
+any alternate emulator binary must be added to game-pids BEFORE its
+first live session.
+
+**🐞 TWO LIVE BUGS, 22 Aug 21:42 (Donnie: "blood borne had loaded but
+then elden ring appeared? out of nowbere") - replay tests owed:**
+(1) **couchd stale tap-resume**: at 21:42:44, one minute into a fresh
+shadps4 session, couchd classified a PS tap as tap-resume and
+launched+showed appid 1245620 using PAUSE STATE LEFT FROM 21 AUG
+(~22:35) - /tmp/game-suspended did NOT exist; the stale state lived in
+couchd's 36h-old process memory. The gesture engine must not carry a
+resumable appid across session boundaries / flag absence. Timestamps for
+the corpus: couchd.log 21:42:44.105-372, 22 Aug.
+(2) **ER quit leaked the game process**: eldenring.exe (pid 1015927)
+survived the 21 Aug ~22:54 "save and close" quit and sat windowless for
+22h49m; the stale resume then MAPPED it (instant appearance). The quit
+path's WM_DELETE-then-pkill believed it had won; it had not - Proton's
+wine tree needs a deeper liveness check. Cleared live via TERM (clean
+exit); BB session was untouched, game-launch focus re-asserted.
+ALSO: the TV-wake -> fast-launch race locked this session at 4K60 again
+(mode-keeper politely refused mid-game) - game-launch should restore the
+mode BEFORE reading it (needs a force/ordering tweak since the session
+flag already exists at that point).
+
+**Also shipped 22 Aug evening: GAME-MODE + performance EPP.** (1)
+`tools/game-quiet` (41 tests) + wiring in game-launch: every session now
+pauses the ACTIVE torrents (exact-set restore, manual pauses respected,
+qB 5.x stop/start dialect auto-detected, login success = SID cookie not
+body - this box's qB replies 204-empty) and stops whisper-asr, restoring
+both on quit; best-effort by contract, can never delay a launch. Live
+round-trip verified (22 torrents). (2) Donnie ran the performance-EPP
+one-liner (he called it "the rebar stuff" - ReBAR BIOS toggle is STILL
+pending, needs a reboot); EPP verified performance on all cores, RESETS
+AT REBOOT - offer the pinning unit if he likes it.
+
+Ops notes from the day: the session's BACKGROUND-task plumbing killed two
+rig runs deterministically (~273s) - run rigs FOREGROUND; the rig inhibits
+pad-home-watcher (its reconcile treats rig state as drift to repair) and
+Kodi joystick input; one leftover emulator survived the surgical teardown
+once - re-add a precise kill-belt if the rig is promoted from scratchpad.
+Isolated everything: live save/config verified untouched (mtimes 21 Aug),
+fresh backup at save-backups/2026-08-22-pre-autosave-work. E1 ladder also
+COMPLETE from last night (couchd/stage2/e1-results-20260821.md, k=3 green);
+udev re-arm paste is STILL PENDING with Donnie.
+
+## ▶ Previous resume block (21 Aug 2026 ~21:45 — BLOODBORNE COMBAT PERF PASS, the staged 15 Aug experiments finally ran)
+
+Donnie asked for Bloodborne "as optimised as possible in a fight / starting
+one". The 15 Aug experiment list was run tonight, headless (gamescope
+`--backend headless` + SDL_AUDIODRIVER=dummy, TV and Kodi untouched), with a
+web-research pass corroborating each lever first. Four ~100s boot tests, all
+clean, no strays. **PLAY-TESTED same night, Donnie: "frame drops are far
+less common now and i think just happen on new actions" - i.e. what's left
+is first-encounter pipeline compiles, which the new disk cache makes
+one-time-ever costs, so sessions keep smoothing out. TWO WRINKLES from the
+first launch: (1) the game presented so slowly (full shader recompile under
+the new patch set) that focus bounced to Kodi; PS press recovered it, and
+the pipeline cache should mostly cure the slow present - watch the next
+cold launch. (2) THE SILENT-SFX BUG APPEARED on that first session DESPITE
+the 0x204E flag being verified 01 at boot (both save copies, set by
+game-launch at 21:41:03) - so the flag workaround does NOT cover every
+trigger. Clean in-game-menu quit + relaunch was the fix attempt;
+outcome unconfirmed. If silence recurs on the upstream patch set, suspect
+the 227-poke Performance Patch (precedent: upstream's old fps patch broke
+Ebrietas sfx) and A/B against Bloodborne.xml.live-nexus-tasksplit.**
+
+**Live config now (`~/.local/share/shadPS4/config.json`, backup
+`config.json.pre-combat-tuning-20260821.bak`):**
+- `readbacks_mode` 1 -> 0. #4215: Relaxed degrades BB progressively as map
+  assets stream (60 -> 10-30 over a session) - a literal combat-drops bug.
+  WATCH FOR: the translucent ghost rectangles Relaxed was set for (seen by
+  eye on vanilla, never confirmed fixed). If they return, options are:
+  live with them / readbacks 2 (Precise, slower) / the Nexus "Vertex
+  Explosion Fix" mod (research says streaming corruption is what readbacks
+  actually covers in BB; costs face customisation).
+- `extra_dmem_in_mbytes` 0 -> 4096 (log-verified: direct mem 5.25 -> 9.25GB).
+  Needed by the upstream res patches' baked-in heap bumps.
+- `Log.filter` "Lib.AudioOut:debug" -> "" and `Log.sync` true -> false. The
+  audio-debug filter was for the solved sound bug; sync logging flushed on
+  the emitting thread and combat is an audio-event storm. Source-verified:
+  sync=false routes through spdlog's async sink.
+- `Vulkan.pipeline_cache_enabled` false -> true. Last session compiled
+  16,371 shaders/pipelines live with NOTHING persisted; this is the on-disk
+  store + boot-time WarmUp preload = the fight-start first-encounter hitch
+  fix. Proven across two boots: run N cache write, run N+1 "WarmUp:
+  Preloaded 24 pipelines", compiles 60 -> 8 on the same boot path. Known
+  rough edges are NVIDIA/macOS (#4805/#4878); if post-restart weirdness
+  ever appears, `rm -r ~/.local/share/shadPS4/cache/CUSA00900`.
+
+**Live patch set (`patches/shadPS4/Bloodborne.xml`) = the UPSTREAM file, fps
+patch OFF - and it BOOTS.** The 15 Aug boot crash was the 60 FPS++
+double-patch on the baked-60 eboot (and/or dmem=0), exactly as suspected:
+same file with fps off + dmem 4096 ran clean, 301 pokes applied. Enabled:
+{Performance Patch (the modern TaskSplit superset - upstream folded
+TaskSplit into it Feb 2026 with retuned values), Disable Dynamic Light
+Shadows, Resolution 2560x1440, 4k Light Grid (matches the 4K WINDOW, note
+says window res not render res), Skip Intro}. Combat ~30fps drops are
+CPU-bound light-grid/draw-call generation - these are the two patches aimed
+straight at that. **VISUAL TRADE DONNIE HASN'T SEEN: dynamic light shadows
+(torch enemies etc.) are OFF.** If he hates it, flip that one entry to
+isEnabled="false". Fallbacks in patches/shadPS4/: `.live-nexus-tasksplit`
+(today's conservative alternative: old nexus pack + standalone TaskSplit,
+also boot-tested), `.pre-combat-tuning-20260821.bak` (what was live before
+tonight).
+
+**CPU pinning lever, OFF by default** (in `~/.local/bin/shadps4`): #1542's
++17fps/5-core datum is Dec 2024 and the issue closed as fixed upstream, so
+it's an A/B knob only: `echo 0-4 > ~/couch/data/shadps4-pin-cores`, rm to
+undo. Affinity verified applying through the wrapper (cpus 0-7 physical,
+8-15 SMT twins).
+
+**Bonus: in-game trophies were silently broken** ("Couldn't extract trophy
+file", 34 sessions) - keys.json ReleaseTrophyKey was empty; filled from
+~/.config/couch/ps4-trophy-key. Log now: "Successfully extracted 65 trophy
+files". Vkvalidation_core=true is INERT (source-verified, layer never loads
+with validation off) - stop suspecting it.
+
+**FOR DONNIE'S FIRST SESSION:** fps counter is already on. Judge: (1)
+fight-start hitches (pipeline cache warm after ~1 session), (2) the
+progressive combat sag (readbacks fix), (3) ghost rectangles returning,
+(4) how the game looks without dynamic light shadows. Then A/B the pin
+file if drops persist.
+
+**PERF INSTRUMENTATION BUILT (21 Aug ~22:30, live from the next launch).**
+The tiny --show-fps counter is gone; the shadps4 wrapper now runs MangoHud
+(big fps + frame-time graph top-right, config
+~/couch/data/mangohud-shadps4.conf) logging every frame to
+~/couch/data/perf-logs/, plus tools/bb-event-tail stamping shadPS4's
+compile/error lines with wall time (shadPS4's log has none), and
+**tools/bb-drop-report** (44 tests) joins them and names each drop's cause:
+shader compile / GPU-bound / CPU-engine / unclear. FIRST REAL REPORT (the
+22:08 session, CPU pin ON): avg 60, 1% low 49, 11 drops = 3 compiles +
+**8 CPU/engine stalls on a ~20s CLOCK** (00:40, 01:01, 01:21, 01:42...) -
+suspicion: a periodic background task (docker healthcheck? poller)
+preempting the 5 pinned cores. Pin REMOVED after (Donnie: "made it worse");
+next unpinned session's report is the A/B. If the 20s ticker survives
+unpinned, hunt it - the period makes it findable. ALSO surveyed
+box interference: CPU EPP is balance_performance (gave Donnie the sudo
+one-liner for performance EPP - not yet run), and the ambush risks are
+qBittorrent+unpackerr IO, remote Jellyfin GPU transcodes (donflix tunnel),
+and whisper-asr GPU jobs. Proposed-not-built: game-mode in game-launch
+(pause torrents + stop whisper for the session).
+
+**THE 20s TICKER IS BLOODBORNE'S AUTOSAVE (caught live ~22:18).** 100s
+stakeout: every ~20.5s the SLSession thread unlinks backup0000/0010 and
+rewrites userdata0000 (1.3MB, grows with progress) and the 2-frame 34ms
+stall follows within a second, 5/5 matches. Research verdict: UNTRACKED
+upstream (no issue mentions it), no fsync in the emulator's save path
+(io_file Commit has zero callers), no async-save option, no patch exists;
+most plausible mechanism per source reading is guest-memory page-tracker
+faults during save serialization. Cheap discriminating test if ever
+chasing it: toggle the "Disable HTTP Requests" patch (only other periodic
+game-side activity). GOOD upstream-issue candidate - we have measurements.
+Do NOT get clever with the save path: the game deletes its backups before
+rewriting (#4803), a failed write there loses the safety net.
+
+**CONTROLLER LAG (~22:25) = the TV was on 4K60 all session.** The 4k120
+modeline had been hotplug-cleared earlier that day and tools/mode-keeper -
+built for exactly this - was NEVER RUNNING. Fixed twice over: its
+GAME_FLAGS watched /tmp/game-running which nothing writes (now includes
+/tmp/game-session, the real file; only the game-pids backstop had
+protected live games), and it now runs as user unit mode-keeper.service
+(enabled). Verified: refused to touch the mode mid-game, restored 4k120 8s
+after quit, Kodi bounced after. Remaining latency levers offered: USB-C
+cable to the pad (a few ms vs BT), and a wrap-off A/B session
+(rm ~/couch/data/gamescope-shadps4-enabled) to feel gamescope's ~1 frame.
+Bose-on-PC BT contention (the 14 Aug pad-lag cause) checked: not present.
+
+**BUG #9 SURFACED LIVE (~22:35, Elden Ring).** First Steam-title session
+since the perf work and PS tap pops Steam's BP overlay over the game -
+exactly the couch-legacy-bugs-open #9 gap: Steam hears raw guide presses
+on hidraw, and the guard's closer stays DISABLED (guard log: "guide press
+SKIPPED... 7 Aug suspend incident" x3 on his presses). Gestures themselves
+verified healthy in couchd's log (double-tap freeze/switcher, tap-resume,
+COUCHD_OWNS=gestures executing). shadPS4 titles never show it (Steam's
+menu opens behind gamescope). Workaround told to Donnie: close with
+B/circle, NEVER another PS press (that is also a gesture). Real fix =
+stage-2 input ownership (couchd/stage2/ is built: inputproc.py + tests,
+udev rules, INSTALL.md, E-runbook); next step is Donnie's ~10min sudo
+session then E2 per the plan at the bottom of this file. Do NOT re-enable
+the synthetic guide press. (vertex-explosion
+lines off models after a death/respawn - the thing Relaxed was masking).
+Fixed the keeper way: **Nexus Vertex Explosion Fix (mod 109) installed via
+bb-mod-install** after the game closed (a Monitor watched for quit; the
+installer's in-place `cp` is unsafe under a running game). 144 FaceGen
+parts files replaced, per-file backups, NOT a Reborne module. Trade: face
+customization disabled (standard hunter face). Revert:
+`bb-mod-install revert 'Vertex Explosion fix-109-1-0-1769210766'`.
+The game is no longer strictly vanilla - memory updated.
+
+## ▶ Previous resume block (15 Aug 2026 ~02:15 — GAMESCOPE TRACK IS LIVE, the switcher floats over the game)
 
 **The whole stage-3 arc shipped in one night, live-tested with Donnie.**
 (Ran CONCURRENTLY with the spotify/deck session below - its deck XML is
@@ -1721,10 +2004,17 @@ pad-record` = back to 4-Aug-green, and that line is cheat-sheet line 1):
    two unexplained regressions = auto-revert to shadow per charter.
 2. **Morning after any evening:** `~/couch/tools/shadow-diff` (offline,
    never touches the TV). First real run: VALID, 0 divergences.
-3. **Donnie's sudo session** (~10 min, `couchd/stage2/INSTALL.md`):
-   couchd-input group + system user, udev rule (staged `.off`), rollback
-   script + sudoers, inputproc.service, rollback REHEARSAL. Plus fix
-   pad-connect-daemon + tv-waker's any-`js*` checks (see Open decisions).
+3. **Donnie's sudo session — DONE 21 Aug 2026 ~22:50** (INSTALL.md steps
+   1-8, prompted by bug #9 surfacing on Elden Ring that evening). All
+   verified live: couchd-input user/group (ds2000 NOT in the fence),
+   rollback script root-owned + NOPASSWD proven by an actual rehearsal
+   (disarm -> .off -> re-arm), unit installed disabled, ACL probe
+   write+read both directions, rule armed RIG-SCOPED (de:ad:be:ef:fa:ce)
+   and confirmed NOT matching the real pad (event18 keeps
+   user:ds2000:rw- + uaccess; hidraw2 ACL intact; NB event20 is the
+   TOUCHPAD node - don't check ownership there). STILL TO DO from this
+   step: fix pad-connect-daemon + tv-waker's any-`js*` checks (see Open
+   decisions). Next: E1 fake-pad ladder (E-runbook.md, no sudo), then E2.
 4. Then E2 (Steam adopts the virtual pad; daytime, back up
    `~/.steam/debian-installation/config` first), then stage-2 flag day.
 

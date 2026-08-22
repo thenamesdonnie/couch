@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""Explain every frame drop in a Bloodborne session, in plain language.
+
+MangoHud already tells the room WHEN the picture hitched: the frame-time graph
+spikes and the fps number dips. It never says WHY, and on shadPS4 the why is
+almost always one of three very different things, each with a different fix:
+
+  * a shader/pipeline compile. The emulator meets a new effect (a new enemy's
+    fire, a new lamp) and has to build the code for it mid-frame. Costs one
+    ugly hitch, then never again on this save until the cache is cleared.
+    Nothing to fix, it fades on its own;
+  * the GPU running flat out. Real load, fixed by giving the card less to do
+    (resolution, upscaling, the extra sharpening pass);
+  * the emulator's own thread stalling. The GPU is idle and the picture still
+    waits. Not fixable from the graphics settings at all.
+
+Telling them apart by eye is impossible, so this tool joins the two logs the
+session already writes: MangoHud's per-frame CSV, and the timestamped event
+file bb-event-tail keeps beside it. It prints a per-incident verdict and one
+summary sentence.
+
+    bb-drop-report                     newest CSV + newest events file
+    bb-drop-report <csv> [<events>]    a specific pair
+    bb-drop-report --json              same data, machine readable
+
+THE CPU NUMBER IS A TRAP. MangoHud's cpu_load is the average across all 16
+hardware threads. A fully saturated 5-thread emulator reads about 30, which
+looks like an idle machine and is not one. So "CPU/engine" here is never
+decided by cpu_load; it is decided by the GPU being idle while the frame is
+late, which is the only honest signal a per-core-blind average leaves us.
+
+HOW THE TWO CLOCKS ARE JOINED. MangoHud's `elapsed` is nanoseconds since it
+started logging, with no wall clock anywhere in the file. The join is:
+
+    wall(row) = anchor + (row.elapsed - first_row.elapsed) / 1e9
+
+where anchor is the CSV file's birth time (`stat -c %W`; Python's st_birthtime
+does not exist on Linux), falling back to the events file's START line, then
+to mtime minus the session length. Birth time is when MangoHud created the
+file, which is a moment or two before the first logged frame, and the events
+file is stamped by a different process, so the joined clocks agree to roughly
+a second. Every attribution window here is therefore +/- 1.5s, deliberately
+loose, and the report says so out loud rather than pretending to millisecond
+precision it does not have.
+
+Layout: everything above main() is pure - it takes text and numbers and
+returns numbers, so the tests never read a live log or a live clock. Only
+read_session(), the newest-file pickers and main() touch the disk.
+
+Test seams (unset in normal operation):
+  BB_PERF_DIR      look for logs here instead of ~/couch/data/perf-logs
+  BB_CSV_ANCHOR    force the anchor epoch instead of asking stat
+"""
+import csv
+import io
+import json
+import os
+import statistics
+import subprocess
+import sys
+from dataclasses import dataclass, field, asdict
+
+DEFAULT_DIR = os.path.expanduser('~/couch/data/perf-logs')
+
+# --- detection -----------------------------------------------------------
+DROP_MULTIPLE = 2.0      # a frame twice the session's normal length is late
+DROP_FLOOR_MS = 25.0     # ...but never call anything under 25ms a drop, a 60fps
+                         #    session's median is ~16.7ms and small wobble is
+                         #    invisible on a television.
+MERGE_GAP_S = 1.0        # late frames closer together than this are one event
+# --- attribution ---------------------------------------------------------
+EVENT_WINDOW_S = 1.5     # clock skew between the two logs, see the docstring
+LOAD_WINDOW_S = 0.5      # a stall has few frames in it, widen a little to
+                         #    catch the load either side of it
+GPU_BOUND_PCT = 93.0     # at or above this the card is the bottleneck
+GPU_IDLE_PCT = 80.0      # below this the card was waiting on someone else
+PAIR_SKEW_WARN_S = 60.0  # further apart than this and the two files are
+                         #    probably not the same session
+
+
+def say(msg):
+    """Diagnostics go to stderr so --json stays clean on stdout."""
+    print(f'bb-drop-report: {msg}', file=sys.stderr, flush=True)
+
+
+class Usage(Exception):
+    pass
+
+
+# =========================================================================
+# pure logic (no disk, no clock)
+# =========================================================================
+@dataclass
+class Frame:
+    fps: float
+    frametime_ms: float
+    cpu_load: float
+    gpu_load: float
+    elapsed_ns: int
+    wall: float = 0.0        # filled in by anchor_frames()
+
+    @property
+    def began(self):
+        """When this frame started, i.e. when the picture last changed. A
+        drop's damage begins here, not at the moment it finally presented."""
+        return self.wall - self.frametime_ms / 1000.0
+
+
+@dataclass
+class Event:
+    ts: float
+    kind: str                # 'compile' or 'error'
+    line: str
+
+
+@dataclass
+class Events:
+    start: float = None
+    end: float = None
+    events: list = field(default_factory=list)
+    truncated: bool = False  # no END line: the session ended hard
+
+    @property
+    def compiles(self):
+        return [e for e in self.events if e.kind == 'compile']
+
+    @property
+    def errors(self):
+        return [e for e in self.events if e.kind == 'error']
+
+
+def _num(text, default=0.0):
+    """MangoHud leaves a column empty when a sensor is missing (the sample
+    session had no gpu name at all). An empty cell is not a zero reading, but
+    for load columns treating it as 0 would invent a CPU/engine verdict, so
+    callers pass the neutral value they want."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_csv(text):
+    """Parse a MangoHud per-frame log. Returns (sysinfo, frames).
+
+    Layout is two header pairs then the frames: a sysinfo header, its values,
+    then the per-frame header, then a row per frame. The per-frame header is
+    found by looking for its column names rather than by counting lines, so a
+    MangoHud version that adds a sysinfo field does not break us. Rows that
+    are short, unparsable, or a repeated header (a log that got appended to)
+    are skipped rather than fatal: one bad line must not lose a session.
+    """
+    rows = list(csv.reader(io.StringIO(text)))
+    hdr_i = None
+    for i, row in enumerate(rows[:10]):
+        if 'frametime' in row and 'elapsed' in row:
+            hdr_i = i
+            break
+    if hdr_i is None:
+        raise ValueError('no MangoHud frame header (frametime/elapsed) in this file')
+
+    sysinfo = {}
+    if hdr_i >= 2:
+        keys, vals = rows[hdr_i - 2], rows[hdr_i - 1]
+        sysinfo = {k: v for k, v in zip(keys, vals)}
+
+    header = rows[hdr_i]
+    col = {name: i for i, name in enumerate(header)}
+    need = ('fps', 'frametime', 'elapsed')
+    missing = [n for n in need if n not in col]
+    if missing:
+        raise ValueError(f'MangoHud log is missing column(s): {", ".join(missing)}')
+    width = max(col[n] for n in need) + 1
+
+    frames = []
+    for row in rows[hdr_i + 1:]:
+        if len(row) < width or row == header:
+            continue
+        try:
+            elapsed = int(float(row[col['elapsed']]))
+            ft = float(row[col['frametime']])
+        except (ValueError, IndexError):
+            continue
+        if ft <= 0:
+            continue
+        frames.append(Frame(
+            fps=_num(row[col['fps']], 1000.0 / ft),
+            frametime_ms=ft,
+            # A missing load reads as -1, "unknown", never as an idle 0.
+            cpu_load=_num(row[col['cpu_load']], -1.0) if 'cpu_load' in col else -1.0,
+            gpu_load=_num(row[col['gpu_load']], -1.0) if 'gpu_load' in col else -1.0,
+            elapsed_ns=elapsed,
+        ))
+    return sysinfo, frames
+
+
+def anchor_frames(frames, anchor):
+    """Give every frame a wall clock, see the docstring for the formula."""
+    if not frames:
+        return frames
+    first = frames[0].elapsed_ns
+    for f in frames:
+        f.wall = anchor + (f.elapsed_ns - first) / 1e9
+    return frames
+
+
+def parse_events(text):
+    """Parse a bb-event-tail file: START, stamped log lines, END.
+
+    A missing END is normal enough to be worth handling quietly: it means the
+    emulator (or the box) died before the tail could close the file, which is
+    itself a fact the report mentions.
+    """
+    ev = Events()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        head, _, rest = line.partition(' ')
+        if head == 'START':
+            ev.start = _num(rest, None) if rest else None
+            continue
+        if head == 'END':
+            ev.end = _num(rest, None) if rest else None
+            continue
+        try:
+            ts = float(head)
+        except ValueError:
+            continue
+        kind = 'compile' if 'Compiling' in rest else (
+            'error' if ('<Error>' in rest or '<Critical>' in rest) else None)
+        if kind is None:
+            continue
+        ev.events.append(Event(ts=ts, kind=kind, line=rest))
+    ev.truncated = ev.end is None
+    return ev
+
+
+def drop_threshold(frametimes):
+    """Target frame time is the session's own median, not 16.67: a session
+    capped at 30fps, or one that spent an hour in a menu, has a different
+    normal and we want drops relative to what the night actually looked like.
+    """
+    median = statistics.median(frametimes)
+    return median, max(DROP_MULTIPLE * median, DROP_FLOOR_MS)
+
+
+def session_stats(frames):
+    """Length, average fps and the 1% low (the number that actually describes
+    how a session felt: the average frame rate across the worst 1% of frames).
+    """
+    fts = [f.frametime_ms for f in frames]
+    span = sum(fts) / 1000.0
+    worst_n = max(1, len(fts) // 100)
+    worst = sorted(fts)[-worst_n:]
+    return {
+        'frames': len(frames),
+        'duration_s': span,
+        'avg_fps': (len(fts) / span) if span > 0 else 0.0,
+        'low_1pct_fps': 1000.0 / (sum(worst) / len(worst)),
+        'median_ms': statistics.median(fts),
+    }
+
+
+@dataclass
+class Incident:
+    start: float             # wall clock, when the picture froze
+    end: float               # wall clock, when it moved again
+    offset_s: float          # seconds into the session
+    duration_s: float
+    worst_ms: float
+    fps_floor: float
+    frames: int
+    gpu_load: float = -1.0   # mean over the incident +/- LOAD_WINDOW_S
+    cpu_load: float = -1.0   # reported only, never used to classify
+    compiles: int = 0
+    errors: list = field(default_factory=list)
+    cause: str = 'unclear'
+    evidence: str = ''
+
+
+def find_incidents(frames, threshold_ms, merge_gap_s=MERGE_GAP_S):
+    """Late frames, merged into incidents.
+
+    Merging matters because one shader compile can spread across several
+    consecutive late frames, and reporting those as five separate drops would
+    triple the count and make the report lie about how often the night broke.
+    Two late frames belong to the same incident when the second one starts
+    less than merge_gap_s after the first one finished.
+    """
+    if not frames:
+        return []
+    late = [f for f in frames if f.frametime_ms > threshold_ms]
+    if not late:
+        return []
+
+    groups, cur = [], [late[0]]
+    for f in late[1:]:
+        if f.began - cur[-1].wall <= merge_gap_s:
+            cur.append(f)
+        else:
+            groups.append(cur)
+            cur = [f]
+    groups.append(cur)
+
+    t0 = frames[0].began
+    out = []
+    for g in groups:
+        worst = max(f.frametime_ms for f in g)
+        start, end = g[0].began, g[-1].wall
+        out.append(Incident(
+            start=start,
+            end=end,
+            offset_s=start - t0,
+            duration_s=end - start,
+            worst_ms=worst,
+            fps_floor=1000.0 / worst,
+            frames=len(g),
+        ))
+    return out
+
+
+def mean_load(frames, lo, hi, attr):
+    """Mean of a load column over a wall-clock window, ignoring unknowns."""
+    vals = [getattr(f, attr) for f in frames
+            if lo <= f.wall <= hi and getattr(f, attr) >= 0]
+    return sum(vals) / len(vals) if vals else -1.0
+
+
+def classify(inc, frames, events, have_events=True):
+    """Decide what caused one incident, and fill in its evidence line.
+
+    Order is deliberate. A compile explains a hitch no matter what the load
+    numbers say (the GPU can look busy or idle while the emulator builds a
+    pipeline), so it is checked first and wins. Then a pegged GPU. Then an
+    idle GPU with no compile to blame, which is the emulator's own thread.
+    Anything left is called unclear rather than guessed at.
+    """
+    lo, hi = inc.start - EVENT_WINDOW_S, inc.end + EVENT_WINDOW_S
+    near = [e for e in events if lo <= e.ts <= hi] if have_events else []
+    inc.compiles = sum(1 for e in near if e.kind == 'compile')
+    inc.errors = [e.line for e in near if e.kind == 'error']
+    inc.gpu_load = mean_load(frames, inc.start - LOAD_WINDOW_S,
+                             inc.end + LOAD_WINDOW_S, 'gpu_load')
+    inc.cpu_load = mean_load(frames, inc.start - LOAD_WINDOW_S,
+                             inc.end + LOAD_WINDOW_S, 'cpu_load')
+
+    gpu_txt = f'GPU {inc.gpu_load:.0f}%' if inc.gpu_load >= 0 else 'GPU load unknown'
+    if inc.compiles:
+        inc.cause = 'shader compile'
+        n = inc.compiles
+        inc.evidence = f'{n} compile{"s" if n != 1 else ""} within 1.5s, {gpu_txt}'
+    elif inc.gpu_load >= GPU_BOUND_PCT:
+        inc.cause = 'GPU-bound'
+        inc.evidence = f'{gpu_txt}, card was flat out'
+    elif 0 <= inc.gpu_load < GPU_IDLE_PCT:
+        inc.cause = 'CPU/engine'
+        inc.evidence = f'{gpu_txt}, card was waiting'
+        if not have_events:
+            inc.evidence += ', no event log'
+    else:
+        inc.cause = 'unclear'
+        inc.evidence = gpu_txt + (', no event log' if not have_events else
+                                  ', no compile nearby')
+    if inc.errors:
+        inc.evidence += f', {len(inc.errors)} error line{"s" if len(inc.errors) != 1 else ""}'
+    return inc
+
+
+def mmss(seconds):
+    seconds = max(0.0, seconds)
+    return f'{int(seconds // 60):02d}:{int(seconds % 60):02d}'
+
+
+def plural(n, word):
+    return f'{n} {word}' if n == 1 else f'{n} {word}s'
+
+
+def human_duration(seconds):
+    m, s = divmod(int(round(seconds)), 60)
+    return f'{m}m {s:02d}s' if m else f'{s}s'
+
+
+def verdict(incidents, have_events):
+    """One sentence Donnie can act on (or ignore, which is also an action)."""
+    if not incidents:
+        return 'No drops worth the name in this session, the frame rate held.'
+    total = len(incidents)
+    counts = {}
+    for inc in incidents:
+        counts[inc.cause] = counts.get(inc.cause, 0) + 1
+    top = max(counts, key=lambda c: counts[c])
+    n = counts[top]
+    if top == 'shader compile':
+        return (f'{n}/{total} drops were one-time shader compiles, '
+                'these fade as the cache fills.')
+    if top == 'GPU-bound':
+        return (f'{n}/{total} drops were the graphics card running flat out, '
+                'only a lighter picture (lower resolution, less upscaling) buys those back.')
+    if top == 'CPU/engine':
+        return (f'{n}/{total} drops were the emulator itself stalling while the card '
+                'sat waiting, no graphics setting will fix those.')
+    tail = ('' if have_events else
+            ' No event log was read, so compiles could not be ruled in or out.')
+    return f'{n}/{total} drops have no clear cause in this log.{tail}'
+
+
+def build_report(csv_path, events_path, sysinfo, frames, ev, have_events,
+                 anchor_source, pair_skew=None):
+    """Everything the text and the JSON both need, computed once."""
+    stats = session_stats(frames)
+    median, threshold = drop_threshold([f.frametime_ms for f in frames])
+    incidents = find_incidents(frames, threshold)
+    for inc in incidents:
+        classify(inc, frames, ev.events if have_events else [], have_events)
+
+    counts = {}
+    for inc in incidents:
+        counts[inc.cause] = counts.get(inc.cause, 0) + 1
+
+    return {
+        'csv': csv_path,
+        'events': events_path if have_events else None,
+        'anchor_source': anchor_source,
+        'attribution': have_events,
+        'events_truncated': bool(have_events and ev.truncated),
+        'pair_skew_s': pair_skew,
+        'window_s': EVENT_WINDOW_S,
+        'session': stats,
+        'target_ms': median,
+        'threshold_ms': threshold,
+        'compiles_total': len(ev.compiles) if have_events else None,
+        'errors_total': len(ev.errors) if have_events else None,
+        'counts': counts,
+        'incidents': [asdict(i) for i in incidents],
+        'verdict': verdict(incidents, have_events),
+        'sysinfo': sysinfo,
+    }
+
+
+def render_text(rep):
+    """The report a human reads. No jargon walls, no em dashes."""
+    s = rep['session']
+    out = []
+    out.append('Bloodborne frame drop report')
+    out.append(f'  frames  {os.path.basename(rep["csv"])} ({s["frames"]} frames)')
+    if rep['attribution']:
+        out.append(f'  events  {os.path.basename(rep["events"])} '
+                   f'({plural(rep["compiles_total"], "compile")}, '
+                   f'{plural(rep["errors_total"], "error")})')
+    else:
+        out.append('  events  none found, so shader compiles could not be '
+                   'attributed to any drop')
+    out.append('')
+    out.append(f'Session {human_duration(s["duration_s"])}, '
+               f'average {s["avg_fps"]:.1f} fps, 1% low {s["low_1pct_fps"]:.1f} fps.')
+    out.append(f'Normal frame here is {rep["target_ms"]:.1f} ms (the session median), '
+               f'so anything over {rep["threshold_ms"]:.1f} ms counts as a drop.')
+    if rep['attribution']:
+        out.append(f'The two logs agree on time to about a second, so events are '
+                   f'matched to drops within {rep["window_s"]}s either side.')
+    if rep['events_truncated']:
+        out.append('The event log has no END line: the emulator or the box went '
+                   'down before it could close. Late drops may be under-explained.')
+    if rep['pair_skew_s'] is not None and abs(rep['pair_skew_s']) > PAIR_SKEW_WARN_S:
+        out.append(f'WARNING: these two files start {abs(rep["pair_skew_s"]):.0f}s apart. '
+                   'They may not be the same session, treat the causes below with care.')
+    out.append('')
+
+    incidents = rep['incidents']
+    if not incidents:
+        out.append('No drops found.')
+        out.append('')
+        out.append(f'Verdict: {rep["verdict"]}')
+        return '\n'.join(out)
+
+    parts = ', '.join(f'{n} {cause}' for cause, n in
+                      sorted(rep['counts'].items(), key=lambda kv: -kv[1]))
+    out.append(f'{plural(len(incidents), "drop")}: {parts}.')
+    out.append('')
+    out.append(f'  {"time":<7}{"length":<9}{"floor":<10}{"cause":<16}evidence')
+    for inc in incidents:
+        length = '{:.2f}s'.format(inc['duration_s'])
+        floor = '{:.0f} fps'.format(inc['fps_floor'])
+        out.append(f'  {mmss(inc["offset_s"]):<7}{length:<9}{floor:<10}'
+                   f'{inc["cause"]:<16}{inc["evidence"]}')
+
+    errored = [inc for inc in incidents if inc['errors']]
+    if errored:
+        out.append('')
+        out.append('Error lines beside drops (first few):')
+        shown = 0
+        for inc in errored:
+            for line in inc['errors']:
+                out.append(f'  {mmss(inc["offset_s"])}  {line[:140]}')
+                shown += 1
+                if shown >= 5:
+                    break
+            if shown >= 5:
+                break
+    out.append('')
+    out.append(f'Verdict: {rep["verdict"]}')
+    return '\n'.join(out)
+
+
+# =========================================================================
+# disk
+# =========================================================================
+def birth_time(path):
+    """File creation time. Python's os.stat has no st_birthtime on Linux, but
+    coreutils reads it straight out of the ext4 inode, so we shell out.
+    Returns 0.0 when the filesystem does not keep one (stat prints '-' or 0).
+    """
+    try:
+        out = subprocess.run(['stat', '-c', '%W', path], capture_output=True,
+                             text=True, timeout=5)
+        return float(out.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0.0
+
+
+def newest(directory, prefix, suffix):
+    hits = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    for name in names:
+        if name.startswith(prefix) and name.endswith(suffix):
+            p = os.path.join(directory, name)
+            try:
+                hits.append((os.path.getmtime(p), p))
+            except OSError:
+                continue
+    return max(hits)[1] if hits else None
+
+
+def read_session(csv_path, events_path):
+    """The one function that reads files. Returns everything build_report wants."""
+    with open(csv_path, encoding='utf-8', errors='replace') as fh:
+        sysinfo, frames = parse_csv(fh.read())
+    if not frames:
+        raise ValueError(f'{os.path.basename(csv_path)} has no frame rows in it')
+
+    ev, have_events = Events(), False
+    if events_path and os.path.exists(events_path):
+        with open(events_path, encoding='utf-8', errors='replace') as fh:
+            ev = parse_events(fh.read())
+        have_events = True
+
+    forced = os.environ.get('BB_CSV_ANCHOR')
+    if forced:
+        anchor, source = float(forced), 'BB_CSV_ANCHOR'
+    else:
+        anchor, source = birth_time(csv_path), 'file birth time'
+        if anchor <= 0 and ev.start:
+            anchor, source = ev.start, 'events START line'
+        if anchor <= 0:
+            span = sum(f.frametime_ms for f in frames) / 1000.0
+            anchor = os.path.getmtime(csv_path) - span
+            source = 'file mtime minus session length (rough)'
+    anchor_frames(frames, anchor)
+
+    skew = (anchor - ev.start) if (have_events and ev.start) else None
+    return sysinfo, frames, ev, have_events, source, skew
+
+
+def main(argv):
+    as_json = False
+    args = []
+    for a in argv:
+        if a == '--json':
+            as_json = True
+        elif a in ('-h', '--help'):
+            print(__doc__.strip())
+            return 0
+        elif a.startswith('-'):
+            raise Usage(f'unknown option {a}')
+        else:
+            args.append(a)
+    if len(args) > 2:
+        raise Usage('usage: bb-drop-report [csv] [events] [--json]')
+
+    directory = os.environ.get('BB_PERF_DIR') or DEFAULT_DIR
+    csv_path = args[0] if args else newest(directory, 'shadps4_', '.csv')
+    if not csv_path:
+        raise Usage(f'no MangoHud CSV (shadps4_*.csv) in {directory}')
+    events_path = args[1] if len(args) > 1 else newest(directory, 'events-', '.log')
+
+    sysinfo, frames, ev, have_events, source, skew = read_session(csv_path, events_path)
+    rep = build_report(csv_path, events_path, sysinfo, frames, ev, have_events,
+                       source, skew)
+    if as_json:
+        json.dump(rep, sys.stdout, indent=2)
+        sys.stdout.write('\n')
+    else:
+        print(render_text(rep))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Usage as exc:
+        say(str(exc))
+        sys.exit(2)
+    except (OSError, ValueError) as exc:
+        say(str(exc))
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)

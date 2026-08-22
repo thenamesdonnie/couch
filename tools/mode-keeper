@@ -45,7 +45,10 @@ MODELINE = ('1188.00 3840 4016 4104 4400 2160 2168 2178 2250 '
 RECLAIM_FROM = {'3840x2160', '4096x2160', '1920x1080'}
 COOLDOWN = 8.0
 POLL = 4.0
-GAME_FLAGS = ('/tmp/game-running', '/tmp/game-suspended')
+# /tmp/game-session is what game-launch ACTUALLY writes while a session
+# runs (found 21 Aug 2026: the original list named /tmp/game-running, a file
+# nothing creates - only the game-pids backstop was protecting live games).
+GAME_FLAGS = ('/tmp/game-session', '/tmp/game-running', '/tmp/game-suspended')
 
 
 def xrandr(*args, display=':0'):
