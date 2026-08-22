@@ -120,12 +120,80 @@ def tick(display, dry_run, last_fix, corrections):
     return now, corrections + (1 if ok else 0)
 
 
+def game_window_mapped(display=':0'):
+    """A game is (about to be) PRESENTING: a mapped window of a game class.
+
+    The launch assert must stop the instant this is true - a modeset under
+    a presenting fullscreen game has black-screened this box twice. Any
+    failure to answer counts as yes, same rule as game_running()."""
+    try:
+        from Xlib import display as xdisplay
+        d = xdisplay.Display(display)
+        root = d.screen().root
+        try:
+            for c in root.query_tree().children:
+                try:
+                    if c.get_attributes().map_state != 2:   # IsViewable
+                        continue
+                    cls = c.get_wm_class() or ('', '')
+                    low = (cls[0] or '').lower() + ' ' + (cls[1] or '').lower()
+                    if ('shadps4' in low or 'gamescope' in low
+                            or 'steam_app' in low):
+                        return True
+                except Exception:
+                    continue
+            return False
+        finally:
+            d.close()
+    except Exception:
+        return True
+
+
+def launch_assert(display, window_s, dry_run):
+    """Hold the mode at 4K120 through a launch's TV-wake hotplug.
+
+    THE RACE (21-22 Aug 2026, twice): launching from the phone wakes the
+    TV; the wake's hotplug re-enumerates the output and drops X to a 60Hz
+    EDID mode - but by then game-launch has written /tmp/game-session, so
+    the keeper's game_running() gate (correctly) refuses to touch the
+    display, and the whole session runs at 4K60 ("controller lag").
+
+    game-launch calls this at launch time, when IT knows nothing is
+    presenting yet: watch the output for window_s seconds, reapply the
+    mode every time the hotplug knocks it down, and stop dead the moment
+    a game window maps. The game flags are deliberately ignored here -
+    the caller owns the session and is vouching for the safe window."""
+    deadline = time.monotonic() + window_s
+    fixes = 0
+    while time.monotonic() < deadline:
+        if game_window_mapped(display):
+            print(f'launch-assert: game window mapped - stopping '
+                  f'({fixes} fix(es))', flush=True)
+            return 0
+        name, current = state(display)
+        if name and current != MODE and current in RECLAIM_FROM:
+            print(f'launch-assert: {name} on {current} - reasserting {MODE}',
+                  flush=True)
+            if reapply(name, display, dry_run):
+                fixes += 1
+        time.sleep(1.0)
+    print(f'launch-assert: window over ({fixes} fix(es))', flush=True)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--display', default=os.environ.get('DISPLAY', ':0'))
     p.add_argument('--once', action='store_true')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--launch-assert', type=float, metavar='SECONDS',
+                   default=None,
+                   help='hold the mode through a launch: reassert for this '
+                        'many seconds, ignoring game flags, stopping the '
+                        'moment a game window maps. For game-launch only.')
     args = p.parse_args()
+    if args.launch_assert is not None:
+        return launch_assert(args.display, args.launch_assert, args.dry_run)
 
     name, current = state(args.display)
     print(f'mode-keeper: {name or "no output"} currently {current or "?"}',
