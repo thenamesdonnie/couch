@@ -191,6 +191,90 @@ def test_unknown_command_is_an_error():
 
 
 # =========================================================================
+# transport, against a fake player
+# =========================================================================
+class FakePlayer:
+    """Stands in for Player: answers the mpv IPC surface pipd actually uses."""
+
+    def __init__(self):
+        self.kind = 'mpv'
+        self.sent = []
+        self.props = {'pause': False, 'time-pos': 12.0, 'duration': 60.0,
+                      'volume': 80.0, 'mute': False}
+
+    def alive(self):
+        return True
+
+    def command(self, *words):
+        self.sent.append(words)
+        if words[0] == 'get_property':
+            return self.props[words[1]]
+        if words[0] == 'set_property':
+            self.props[words[1]] = words[2]
+
+    def snapshot(self):
+        return {'paused': self.props['pause'],
+                'position': self.props['time-pos'],
+                'duration': self.props['duration'],
+                'volume': self.props['volume'],
+                'muted': self.props['mute']}
+
+
+def playing_daemon():
+    d = daemon()
+    d.player = FakePlayer()
+    return d
+
+
+def test_pause_and_play_are_explicit_never_a_toggle():
+    d = playing_daemon()
+    assert d.handle({'cmd': 'pause'})['paused'] is True
+    # A repeat must be a no-op that lands in the same state, not an undo.
+    assert d.handle({'cmd': 'pause'})['paused'] is True
+    assert d.handle({'cmd': 'play'})['paused'] is False
+
+
+def test_seek_is_relative_seconds():
+    d = playing_daemon()
+    d.handle({'cmd': 'seek', 'seconds': -10})
+    assert ('seek', -10.0, 'relative') in d.player.sent
+
+
+@pytest.mark.parametrize('bad', [{'seconds': 4000}, {'seconds': 'nan'},
+                                 {'seconds': float('nan')}])
+def test_a_silly_seek_is_refused(bad):
+    with pytest.raises(ValueError):
+        playing_daemon().handle({'cmd': 'seek', **bad})
+
+
+def test_volume_is_bounded():
+    d = playing_daemon()
+    assert d.handle({'cmd': 'volume', 'value': 35})['volume'] == 35.0
+    for bad in (-1, 101, float('inf')):
+        with pytest.raises(ValueError):
+            d.handle({'cmd': 'volume', 'value': bad})
+
+
+def test_mute_round_trips():
+    d = playing_daemon()
+    assert d.handle({'cmd': 'mute', 'value': True})['muted'] is True
+    assert d.handle({'cmd': 'mute', 'value': False})['muted'] is False
+
+
+def test_transport_without_a_player_is_an_error_not_a_crash():
+    for cmd in ('play', 'pause', 'seek', 'volume', 'mute'):
+        with pytest.raises(ValueError):
+            daemon().handle({'cmd': cmd})
+
+
+def test_status_carries_the_transport_state():
+    st = playing_daemon().handle({'cmd': 'status'})
+    assert st['paused'] is False and st['muted'] is False
+    assert st['position'] == 12.0 and st['duration'] == 60.0
+    assert st['volume'] == 80.0
+
+
+# =========================================================================
 # the X side, for real, on a throwaway Xvfb
 # =========================================================================
 @pytest.fixture

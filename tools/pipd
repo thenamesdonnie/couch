@@ -51,6 +51,7 @@ the phone lands at the same place on the TV at any resolution.
 """
 import argparse
 import json
+import math
 import os
 import shlex
 import signal
@@ -61,6 +62,7 @@ import threading
 import time
 
 SOCKET_PATH = '/tmp/couch-pip.sock'
+MPV_IPC_PATH = '/tmp/couch-pip-mpv.sock'
 OVERLAY_PROP = 'GAMESCOPE_EXTERNAL_OVERLAY'
 
 # Smallest picture worth having, and the largest before you may as well not be
@@ -219,11 +221,20 @@ class Overlay:
                 'transparent - it would cover the game with a black screen. '
                 'Refusing to map it.')
         colormap = self.root.create_colormap(visual, X.AllocNone)
+        # The pointer must never be seen on a television. The overlay covers
+        # the whole screen, so without its own cursor the desktop arrow shows
+        # wherever the pointer happens to sit the moment PiP starts - seen
+        # live over Bloodborne, 22 Aug. A 1x1 empty pixmap is the invisible
+        # cursor, set on both windows (mpv's own subwindows inherit it).
+        blank = self.root.create_pixmap(1, 1, 1)
+        cursor = blank.create_cursor(blank, (0, 0, 0), (0, 0, 0), 0, 0)
+        blank.free()
         # background_pixel 0 on an ARGB visual is fully transparent black.
         self.parent = self.root.create_window(
             0, 0, self.out_w, self.out_h, 0, 32, X.InputOutput, visual,
             background_pixel=0, border_pixel=0, colormap=colormap,
-            override_redirect=1, event_mask=X.StructureNotifyMask)
+            override_redirect=1, event_mask=X.StructureNotifyMask,
+            cursor=cursor)
         # An opaque fill instead of a player, so the overlay can be PROVED to
         # composite without a video decoder in the picture: capture the
         # compositor's own output and look for this colour. It is how the
@@ -241,7 +252,8 @@ class Overlay:
         self.child = self.parent.create_window(
             0, 0, w, h, 0, 32, X.InputOutput, visual,
             background_pixel=child_bg, border_pixel=0,
-            colormap=self.root.create_colormap(visual, X.AllocNone))
+            colormap=self.root.create_colormap(visual, X.AllocNone),
+            cursor=cursor)
         self._set_card(self.parent, OVERLAY_PROP, 1)
         self._set_card(self.parent, '_NET_WM_WINDOW_OPACITY', 0xffffffff)
         self.parent.set_wm_name('couch-pip')
@@ -297,9 +309,10 @@ class Player:
     how this was developed - mpv is not on this box yet.
     """
 
-    def __init__(self, kind, media, window_id, extra=()):
+    def __init__(self, kind, media, window_id, extra=(), ipc_path=MPV_IPC_PATH):
         self.kind, self.media, self.window_id = kind, media, window_id
         self.extra = list(extra)
+        self.ipc_path = ipc_path
         self.proc = None
 
     def start(self):
@@ -308,7 +321,8 @@ class Player:
         if self.kind != 'mpv':
             raise ValueError(f'unknown player {self.kind!r}')
         cmd = ['mpv', f'--wid={self.window_id}', '--no-osc', '--no-input-default-bindings',
-               '--loop', '--really-quiet', *self.extra, self.media]
+               '--loop', '--really-quiet', '--cursor-autohide=always',
+               f'--input-ipc-server={self.ipc_path}', *self.extra, self.media]
         try:
             self.proc = subprocess.Popen(cmd)
         except FileNotFoundError:
@@ -319,6 +333,55 @@ class Player:
 
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
+
+    def command(self, *words, timeout=0.5):
+        """One mpv IPC command, one answer. mpv interleaves property-change
+        events on the same stream, so the reply is the line carrying our
+        request_id, not the first line. Raises RuntimeError when there is no
+        player, the player will not answer, or it answers no."""
+        if self.kind != 'mpv' or not self.alive():
+            raise RuntimeError('no player to control')
+        rid = 71
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            try:
+                s.connect(self.ipc_path)
+                s.sendall((json.dumps({'command': list(words),
+                                       'request_id': rid}) + '\n').encode())
+                buf = b''
+                while True:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        raise RuntimeError('player closed the control pipe')
+                    buf += chunk
+                    lines = buf.split(b'\n')
+                    buf = lines.pop()
+                    for line in lines:
+                        try:
+                            reply = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if reply.get('request_id') != rid:
+                            continue
+                        if reply.get('error') != 'success':
+                            raise RuntimeError(
+                                f'player said no: {reply.get("error")}')
+                        return reply.get('data')
+            except (OSError, socket.timeout) as e:
+                raise RuntimeError(f'player is not answering ({e})')
+
+    def snapshot(self):
+        """Best-effort transport state for status(). {} when the player
+        cannot answer - a status must never fail because mpv is mid-load."""
+        out = {}
+        for prop, key in (('pause', 'paused'), ('time-pos', 'position'),
+                          ('duration', 'duration'), ('volume', 'volume'),
+                          ('mute', 'muted')):
+            try:
+                out[key] = self.command('get_property', prop)
+            except RuntimeError:
+                break  # one refusal means the rest will refuse too
+        return out
 
     def stop(self):
         if self.alive():
@@ -346,13 +409,20 @@ class PipDaemon:
     def status(self):
         x, y, w, h = self.overlay.geometry
         ow, oh = self.overlay.out_w, self.overlay.out_h
-        return {'ok': True, 'output': {'w': ow, 'h': oh},
-                'pixels': {'x': x, 'y': y, 'w': w, 'h': h},
-                'normalised': to_normalised(x, y, w, h, ow, oh),
-                'visible': self.visible, 'opacity': round(self.opacity, 4),
-                'player': self.args.player,
-                'playing': bool(self.player and self.player.alive()),
-                'media': self.args.media}
+        st = {'ok': True, 'output': {'w': ow, 'h': oh},
+              'pixels': {'x': x, 'y': y, 'w': w, 'h': h},
+              'normalised': to_normalised(x, y, w, h, ow, oh),
+              'visible': self.visible, 'opacity': round(self.opacity, 4),
+              'player': self.args.player,
+              'playing': bool(self.player and self.player.alive()),
+              'media': self.args.media}
+        if self.player is not None:
+            snap_ = self.player.snapshot() if hasattr(self.player, 'snapshot') else {}
+            for key, val in snap_.items():
+                if isinstance(val, float):
+                    val = round(val, 1)
+                st[key] = val
+        return st
 
     def apply(self, x, y, w, h, do_snap=True):
         ow, oh = self.overlay.out_w, self.overlay.out_h
@@ -414,6 +484,28 @@ class PipDaemon:
             self.overlay.set_visible(self.visible)
             return self.status()
 
+        if cmd in ('play', 'pause', 'seek', 'volume', 'mute'):
+            if self.player is None:
+                raise ValueError('no player to control')
+            if cmd in ('play', 'pause'):
+                # Explicit, never a toggle: a toggle races its own read-back
+                # (the spotify lesson) and a doubled tap would undo itself.
+                self.player.command('set_property', 'pause', cmd == 'pause')
+            elif cmd == 'seek':
+                seconds = float(msg.get('seconds', 0))
+                if not math.isfinite(seconds) or not -3600 <= seconds <= 3600:
+                    raise ValueError('seconds wants a number within an hour')
+                self.player.command('seek', seconds, 'relative')
+            elif cmd == 'volume':
+                value = float(msg.get('value', -1))
+                if not math.isfinite(value) or not 0 <= value <= 100:
+                    raise ValueError('volume wants 0..100')
+                self.player.command('set_property', 'volume', value)
+            else:
+                self.player.command('set_property', 'mute',
+                                    bool(msg.get('value', True)))
+            return self.status()
+
         if cmd == 'quit':
             self.stop.set()
             return {'ok': True, 'stopping': True}
@@ -452,7 +544,7 @@ class PipDaemon:
         ow, oh = self.overlay.out_w, self.overlay.out_h
         x, y, w, h = from_normalised(
             {'nx': self.args.nx, 'ny': self.args.ny, 'nw': self.args.nw,
-             'nh': None}, ow, oh)
+             'nh': self.args.nh}, ow, oh)
         x, y = snap(x, y, w, h, ow, oh)
         self.overlay.create(x, y, w, h)
         print(f'overlay up on {self.args.display or os.environ.get("DISPLAY")} '
@@ -490,6 +582,13 @@ class PipDaemon:
         # notice if a gamescope update makes it unnecessary.
         settle_until = time.monotonic() + 2.0
         next_reassert = 0.0
+        # The window starts 16:9 but the video may not be (classic Simpsons
+        # is 4:3, and mpv paints its own opaque letterbox - a black slab over
+        # the game). Once mpv has measured the file, adopt its shape. An
+        # explicit --nh is the caller saying they know better; leave it.
+        aspect_done = self.args.player != 'mpv' or self.args.nh is not None
+        aspect_deadline = time.monotonic() + 20.0
+        next_probe = 0.0
         try:
             while not self.stop.is_set():
                 now = time.monotonic()
@@ -497,12 +596,36 @@ class PipDaemon:
                     next_reassert = now + 0.25
                     with self.lock:
                         self.overlay.place(*self.overlay.geometry)
+                if not aspect_done and now >= next_probe:
+                    next_probe = now + 0.5
+                    aspect_done = (self._adopt_video_aspect()
+                                   or now > aspect_deadline)
                 if self.player.kind != 'none' and not self.player.alive():
                     print('player exited; stopping', flush=True)
                     break
                 time.sleep(0.1)
         finally:
             self.shutdown(sock)
+
+    def _adopt_video_aspect(self):
+        """Resize the window to the video's displayed shape, width kept.
+        True once adopted (or already right), False while mpv cannot say."""
+        try:
+            dw = self.player.command('get_property', 'dwidth')
+            dh = self.player.command('get_property', 'dheight')
+        except RuntimeError:
+            return False
+        if not dw or not dh:
+            return False
+        want = dw / dh
+        with self.lock:
+            x, y, w, h = self.overlay.geometry
+            if abs(w / h - want) > 0.02:
+                st = self.apply(x, y, w, w / want, do_snap=False)
+                p = st['pixels']
+                print(f'video is {dw}x{dh}; window reshaped to '
+                      f'{p["w"]}x{p["h"]}', flush=True)
+        return True
 
     def shutdown(self, sock):
         print('pipd stopping', flush=True)
@@ -545,6 +668,10 @@ def parse_args(argv=None):
     p.add_argument('--nx', type=float, default=0.66)
     p.add_argument('--ny', type=float, default=0.05)
     p.add_argument('--nw', type=float, default=0.30)
+    p.add_argument('--nh', type=float, default=None,
+                   help='height as a fraction of the output; omitted, the '
+                        'window starts 16:9 and then adopts the video\'s own '
+                        'shape once the player has measured it')
     p.add_argument('media', nargs='?', help='url or path for the player')
     return p.parse_args(argv)
 
