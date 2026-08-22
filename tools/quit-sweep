@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Verify that a quit actually killed the processes it set out to kill.
+
+    quit-sweep capture <roster-file> < pids-on-stdin   (or --pids "1 2 3")
+    quit-sweep verify <roster-file> [--grace 10]
+
+WHY THIS EXISTS (21-22 Aug 2026): Elden Ring's "save and close" quit
+believed it had won, and eldenring.exe survived for 22h49m, windowless.
+game-launch's close_games gates its kill sweep on game_running, which
+walks the LIVE process tree - and when Steam's reaper exits, surviving
+wine processes reparent away from it, the tree reads empty, and the
+sweep never fires. The stale process then poisoned everything downstream
+(couchd's world model, Steam's ledger, the 22 Aug 21:42 stale resume).
+
+So the contract becomes explicit: `capture` records every pid the quit
+intends to end, WITH ITS START TIME; `verify` runs after all the polite
+machinery and confirms each one is genuinely gone. A pid that is alive
+with the SAME start time is a leak: TERM, a grace, then KILL. A pid that
+is alive with a DIFFERENT start time was reused by some innocent process
+and is never touched (the pid-reuse rule, same as the rail teardown's
+cmdline check).
+
+Exit codes: 0 everything already dead, 1 leaks found (and cleaned or
+reported), 2 usage/roster problems. Output is one line per event, meant
+for game-launch's log.
+"""
+import argparse
+import os
+import signal
+import sys
+import time
+
+
+def starttime(pid):
+    """The kernel's start time for pid, or None if it does not exist.
+
+    Field 22 of /proc/<pid>/stat, parsed from after the last ')' because
+    comm may contain spaces and parentheses.
+    """
+    try:
+        with open(f'/proc/{pid}/stat', 'rb') as f:
+            raw = f.read().decode('ascii', 'replace')
+    except OSError:
+        return None
+    try:
+        rest = raw[raw.rindex(')') + 2:].split()
+        # rest[0] is field 3 (state); starttime is field 22 overall.
+        return int(rest[19])
+    except (ValueError, IndexError):
+        return None
+
+
+def comm(pid):
+    try:
+        with open(f'/proc/{pid}/comm', 'rb') as f:
+            return f.read().decode('ascii', 'replace').strip()
+    except OSError:
+        return '?'
+
+
+def capture(roster_path, pids):
+    """Record pid, start time and name for everything the quit must end."""
+    rows = []
+    for pid in pids:
+        st = starttime(pid)
+        if st is None:
+            continue  # already gone; nothing to verify later
+        rows.append(f'{pid} {st} {comm(pid)}')
+    tmp = roster_path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write('\n'.join(rows) + ('\n' if rows else ''))
+    os.replace(tmp, roster_path)
+    print(f'quit-sweep: captured {len(rows)} pid(s)')
+    return 0
+
+
+def load_roster(roster_path):
+    rows = []
+    try:
+        with open(roster_path) as f:
+            for line in f:
+                parts = line.split(None, 2)
+                if len(parts) >= 2:
+                    rows.append((int(parts[0]), int(parts[1]),
+                                 parts[2].strip() if len(parts) > 2 else '?'))
+    except (OSError, ValueError) as e:
+        print(f'quit-sweep: unreadable roster {roster_path}: {e}')
+        return None
+    return rows
+
+
+def survivors(rows):
+    """Roster entries still alive as the SAME process they were captured as."""
+    out = []
+    for pid, st, name in rows:
+        now = starttime(pid)
+        if now is None:
+            continue                    # dead: the quit worked on this one
+        if now != st:
+            print(f'quit-sweep: pid {pid} reused (was {name}); leaving it')
+            continue
+        out.append((pid, st, name))
+    return out
+
+
+def verify(roster_path, grace):
+    rows = load_roster(roster_path)
+    if rows is None:
+        return 2
+    live = survivors(rows)
+    if not live:
+        print(f'quit-sweep: clean ({len(rows)} captured, all gone)')
+        return 0
+    for pid, _, name in live:
+        print(f'quit-sweep: LEAK {pid} ({name}) survived the quit - TERM')
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        live = survivors(live)
+        if not live:
+            print('quit-sweep: leaks exited on TERM')
+            return 1
+        time.sleep(0.25)
+    for pid, _, name in live:
+        print(f'quit-sweep: LEAK {pid} ({name}) ignored TERM after {grace}s - KILL')
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return 1
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest='cmd', required=True)
+    c = sub.add_parser('capture')
+    c.add_argument('roster')
+    c.add_argument('--pids', default=None,
+                   help='space-separated; default reads stdin')
+    v = sub.add_parser('verify')
+    v.add_argument('roster')
+    v.add_argument('--grace', type=float, default=10.0)
+    args = p.parse_args(argv)
+    if args.cmd == 'capture':
+        raw = args.pids if args.pids is not None else sys.stdin.read()
+        try:
+            pids = [int(x) for x in raw.split()]
+        except ValueError:
+            print(f'quit-sweep: pids must be integers, got {raw!r}')
+            return 2
+        return capture(args.roster, pids)
+    return verify(args.roster, args.grace)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
