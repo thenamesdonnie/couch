@@ -28,6 +28,23 @@ auto-memory `homelab-usb-disk-dropout.md`.
 
 ## ▶ PICTURE-IN-PICTURE - a show over a game (added 9 Aug, NEEDS DONNIE)
 
+**FIRST LIVE RUN 22 Aug ~22:30, AND IT DID NOT NEED GAMESCOPE.** With the
+wrap benched, pipd ran straight on :0 over a bare Bloodborne session -
+xfwm4's compositor is ON (checked: /general/use_compositing true), so the
+ARGB overlay + mpv child composite exactly as designed. Screenshot-verified
+at native 4K: Simpsons top-right, game alive underneath, phone API live
+(`/api/pip` running:true). mpv IS installed now (0.37.0). Two findings:
+(1) classic Simpsons is 4:3 and the 16:9 default window shows opaque black
+pillars (mpv paints its own bg) - fixed live by placing with nh matching
+the aspect (nw .30 -> nh .40); the phone drag should learn the video's
+aspect or accept the bars. (2) the fullscreen overlay blocks xfwm4's
+fullscreen unredirect, so the game is COMPOSITED while PiP is up - MangoHud
+showed GPU 58->65%, max frametime 28.7ms during the title card; combat feel
+verdict is Donnie's. Launch used: `DISPLAY=:0 setsid tools/pipd --display :0
+--player-args '--hwdec=auto --no-sub' <file>`. Audio mixes both sources on
+the soundbar (undecided question still open). Stop = `{"cmd":"quit"}` on
+/tmp/couch-pip.sock.
+
 Built: `tools/pipd` (the overlay + control socket, 31 tests), `server/pip.js`
 + `/api/pip`, and the phone control in `web/src/lib/Pip.svelte` - a TV
 rectangle with a draggable picture inside it, live on the Games tab now.
@@ -361,7 +378,105 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (22 Aug 2026 ~23:00 — END STATE: bare stock stack is the BEST SESSION ON RECORD; fix build and gamescope both benched with exact retest plans)
+## ▶ Resume here (23 Aug 2026 ~00:20 — THE OVERNIGHT SHIFT: PiP is a real feature, four bugs fixed, two gamescope soaks in flight)
+
+Donnie went to bed ~22:45 after "it works really well except the mouse
+shows now and i can't control the media from the app", then "look in to
+what you can add or fix with this and with the bloodborne stuff and work
+until everything is fixed". Everything below is committed (8a9261b..
+426fb71) and tested; the TV never woke.
+
+**PiP IS NOW A COMPLETE PHONE FEATURE, running on BARE X11 (no gamescope
+needed).** The 9 Aug pipd ran unmodified on :0 over live Bloodborne -
+xfwm4's compositor is ON, so the ARGB overlay composites; screenshot-
+verified at native 4K. Tonight's additions: (1) mpv IPC + play/pause/
+seek/volume/mute on the socket, server routes, and a transport row +
+volume slider + time readout in the phone panel (explicit play/pause,
+never a toggle); (2) invisible cursor baked into both overlay windows
+(the desktop arrow appeared over the game - Donnie saw it); (3) the
+window auto-adopts the video's real shape (classic Simpsons is 4:3; the
+16:9 default drew opaque black pillars); (4) a 2s restack loop so a
+game-window raise can't bury the picture (Xvfb-tested); (5) START FROM
+THE PHONE (agent build, ab945ea): Films/TV picker (Kodi titles +
+Jellyfin path resolution - the library is all plugin:// URLs, paths come
+from one batched Jellyfin /Items call), POST /api/pip/start spawns pipd
+detached with double containment checks on the path, 409 when one is
+up; (6) /start reads the /tmp/game-gamescope display bridge first, so
+PiP lands on the nested display the day the rail returns. Suites: pipd
+41, server 101, all green. pipd is STOPPED right now; start one from
+the phone's Games tab.
+
+**NEEDS DONNIE (PiP):** the picker and transport by eye on the real
+iPhone (headless-verified only); the drag on iOS Safari (never tested
+on-device); whether game feel changes with a picture up (the overlay
+blocks xfwm4's fullscreen unredirect, so the game is COMPOSITED while
+PiP is up - MangoHud showed GPU 58->65% tonight); the audio question
+(both sources mix on the soundbar; mpv volume/mute is now on the phone
+panel, headphone routing still undecided).
+
+**THE 21:42 "ELDEN RING OUT OF NOWHERE" IS FIXED, and the todo's first
+read of it was WRONG.** The shadow log (couchd-20260822.jsonl, seq
+~111810) shows /tmp/game-suspended='1245620' ON DISK at the tap - 23h-
+old debris, not process memory; the resume path deletes the flag before
+SIGCONT, which is why a later check found it absent. Two fixes landed:
+(1) couchd (8a9261b, deployed + restarted): both tap-resume predicates
+veto a suspend flag that names a different game than the live session
+(foreign_suspend); three replay tests built from the shadow corpus.
+(2) The leak that CREATED the debris (af039a3): tools/quit-sweep (8
+tests) records every pid a quit intends to end (with start times,
+pid-reuse-safe) and verifies each died after the graces - TERM, 10s,
+KILL for survivors; wired into close_games in ~/.local/bin/game-launch
+(outside-repo edit, bash -n checked).
+
+**THE 4K60 LAUNCH RACE IS FIXED (ecca723).** mode-keeper grew
+--launch-assert: game-launch backgrounds it right after writing the
+session flag; it reasserts 4k120 through the TV-wake hotplug settle for
+15s, ignoring the game gate its caller vouches for, and stops dead if a
+game-class window maps. Dry-run verified on the live display;
+mode-keeper.service restarted. REAL verification = next phone launch
+with the TV asleep: /tmp/game-launch.log should show launch-assert
+lines and the session should hold 120Hz.
+
+**GAMESCOPE: TWO SOAKS RUNNING TONIGHT, verdicts land by ~05:00.**
+soak120-1 = stock 3.16.25, headless 3840x2160@120, isolated dbg-userdir,
+fake-pad in-game since 22:52, 3h; results in
+~/couch/data/gamescope-soak/. A chain script then runs soak120-2 with
+**~/src/gamescope-fix/build/src** (via GSWRAP_GAMESCOPE_DIR): that is
+3.16.25 + upstream 6ab4a7d cherry-picked (local commit e42aa76),
+"rendervulkan: bound FrameInfo_t layers behind a stack - a frame with
+enough planes could write past the array", which is the EXACT shape of
+the 22:16 heap corruption (first 4K120 session, rail overlay plane in
+frame, malloc corruption abort). Read the soak logs before touching the
+wrap flag. Decision tree: soak1 crashes + soak2 survives -> the fix is
+confirmed, run the wrap on the fix build (rail back); both survive ->
+headless doesn't repro the SDL-backend path, consider the fix build
+anyway (the bug is real upstream) or -r 60 interim; soak1 survives 3h
+is NOT proof of absence. Full master build is BLOCKED on bison (sudo
+apt install bison) - wlroots 0.20 needs xkbcommon>=1.8 built from wrap.
+Build recipe that works (worktrees): copy wayland/pixman wraps from
+~/src/gamescope/subprojects, apply the protocol/meson.build scanner
+patch, PKG_CONFIG_PATH=~/src/prefix/lib/pkgconfig:~/src/prefix/xwayland/
+usr/lib/x86_64-linux-gnu/pkgconfig, then the option set from
+~/src/gamescope/build/meson-logs/meson-log.txt (force_fallback_for=
+libliftoff,vkroots,wayland,pixman).
+
+**Upstream drafts WRITTEN (not filed, gated on the bare A/B):**
+docs/research/upstream-issue-draft-fault-storm.md, upstream-pr-draft-
+fault-widening.md, upstream-issue-draft-write-path-gap.md. Note in the
+PR draft: the fix-side "1.4k faults/s" is the optimistic end of the
+census spread (fix1c bursts to 5-6.7k/tick); the drafts claim the order
+of magnitude, which holds.
+
+**NEEDS DONNIE (sudo, ~2 min, plain commands):**
+- Pin performance EPP across reboots (staged tonight, mirrors couch-4k120):
+  sudo cp ~/couch/tools/systemd/couch-epp-performance.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now couch-epp-performance.service
+- For future gamescope-master builds: sudo apt install bison
+- Still standing: ReBAR + Above-4G in BIOS (rerun/verify EPP after - the
+  unit above now covers it), memtest never run, the stage-2 udev re-arm
+  paste, and the bare fix-build Bloodborne session (touch
+  ~/couch/data/shadps4-local-build, play, bb-drop-report).
+
+## ▶ Previous resume block (22 Aug 2026 ~23:00 — END STATE: bare stock stack is the BEST SESSION ON RECORD; fix build and gamescope both benched with exact retest plans)
 
 **WHERE THINGS LANDED tonight, after a chaotic play test:** Donnie's final
 session (stock AppImage, NO gamescope wrap, 4K120 display, performance
