@@ -61,6 +61,24 @@ export const AUTOROUTE_OFF = e.COUCH_AUTOROUTE_OFF || path.join(ROOT, 'data', 't
 // nothing here may treat a missing socket as a fault. See server/pip.js.
 export const PIP_SOCKET = e.COUCH_PIP_SOCKET || '/tmp/couch-pip.sock';
 
+// The daemon itself, and where its output goes when the phone starts it. pipd
+// is detached from this server on purpose (it must outlive a couch.service
+// restart), so its stdout is the only account of a start that went wrong.
+export const PIPD_BIN = e.COUCH_PIPD || path.join(ROOT, 'tools', 'pipd');
+export const PIP_LOG = e.COUCH_PIP_LOG || '/tmp/couch-pip.log';
+
+// Which X display the picture is drawn on. :0 is the desktop Kodi lives on,
+// which is where PiP runs today; when a game is wrapped in gamescope the
+// overlay belongs on gamescope's NESTED display instead (:1), so this is an
+// env knob rather than a constant. See tools/pipd's docstring.
+export const PIP_DISPLAY = e.COUCH_PIP_DISPLAY || ':0';
+
+// The only directory the phone is allowed to hand pipd a file from. Everything
+// the picker offers lives under it, and /api/pip/start refuses anything that
+// resolves outside it - the phone is not authenticated, so "any path on the
+// box" would be "read any file on the box out loud over the TV".
+export const MEDIA_ROOT = e.COUCH_MEDIA_ROOT || '/mnt/media';
+
 // couchd's status file, rewritten atomically every few seconds. Reading it is
 // the only contact this server has with the shadow daemon; its absence is a
 // normal state, never an error.

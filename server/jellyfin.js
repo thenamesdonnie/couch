@@ -254,6 +254,30 @@ export async function showEpisodes(seriesId) {
   return data.Items.map(slim);
 }
 
+// Where the files actually are, for a batch of item ids.
+//
+// This exists because of one awkward fact about this box: Kodi's video library
+// is fed entirely by the jellyfin-kodi addon, so every `file` Kodi reports is a
+// `plugin://plugin.video.jellyfin/...?id=<32 hex>` url and NOTHING in Kodi
+// knows the path on disk. Jellyfin does - /Items carries Path - and it takes a
+// comma separated id list, so a whole season of episodes costs one request.
+//
+// Anything Jellyfin does not know about is simply absent from the map; callers
+// decide what an unresolvable item means to them.
+export async function pathsFor(ids) {
+  const wanted = [...new Set((ids || []).filter(Boolean))];
+  const out = new Map();
+  // Chunked because this is a GET and the ids are 32 characters each: a whole
+  // movie library in one query string is a few kilobytes of url.
+  for (let i = 0; i < wanted.length; i += 100) {
+    const data = await jf('/Items', { ids: wanted.slice(i, i + 100).join(','), fields: 'Path' });
+    for (const item of data.Items || []) {
+      if (item.Id && item.Path) out.set(item.Id, item.Path);
+    }
+  }
+  return out;
+}
+
 export async function continueWatching() {
   if (!creds) creds = readCreds();
   const [resume, nextUp] = await Promise.all([

@@ -18,8 +18,9 @@
   import { api } from './state.svelte.js';
   import Icon from './Icon.svelte';
 
-  // pipd only exists while a game is wrapped in gamescope with a video over it,
-  // which is rare. Absent is the ordinary state and gets said plainly.
+  // pipd lives only as long as one picture, so absent is the ordinary state and
+  // gets said plainly. Since 22 Aug the phone can end that state itself: the
+  // picker below browses the video library and starts a daemon on what it picks.
   let pip = $state(null);
   let frame; // the TV rectangle, the reference for every drag
   let dragging = $state(false);
@@ -29,9 +30,18 @@
   let box = $state({ nx: 0.66, ny: 0.05, nw: 0.3, nh: 0.17 });
   let sizePct = $state(30);
   let opPct = $state(100);
+  let volPct = $state(100);
+  let voling = false; // a finger is on the volume slider
 
   const running = $derived(pip?.running === true);
   const visible = $derived(pip?.visible !== false);
+  // A daemon that reports paused is one that can be told to pause; an older
+  // pipd simply never grows the transport row.
+  const hasTransport = $derived(typeof pip?.paused === 'boolean');
+  const paused = $derived(pip?.paused === true);
+  const muted = $derived(pip?.muted === true);
+  const pos = $derived(typeof pip?.position === 'number' ? pip.position : null);
+  const dur = $derived(typeof pip?.duration === 'number' ? pip.duration : null);
   const mediaName = $derived(
     pip?.media ? decodeURIComponent(String(pip.media).split(/[/\\]/).pop() || '') : '',
   );
@@ -54,6 +64,7 @@
       sizePct = Math.round(n.nw * 100);
     }
     if (typeof d.opacity === 'number' && !fading) opPct = Math.round(d.opacity * 100);
+    if (typeof d.volume === 'number' && !voling) volPct = Math.round(d.volume);
   }
 
   // Raw fetch, not api(): the daemon is missing most evenings and a background
@@ -184,10 +195,109 @@
     try { adopt(await api(visible ? '/api/pip/hide' : '/api/pip/show', {})); } catch { /* toasted */ }
   }
 
+  // --- transport -----------------------------------------------------------
+  async function transport(path, body = {}) {
+    try { adopt(await api(`/api/pip/${path}`, body)); } catch { /* toasted */ }
+  }
+
+  let volTimer = null;
+  let volIdle = null;
+  function setVolume(ev) {
+    const value = Number(ev.target.value);
+    voling = true;
+    clearTimeout(volIdle);
+    volIdle = setTimeout(() => { voling = false; }, 700);
+    volPct = value;
+    clearTimeout(volTimer);
+    volTimer = setTimeout(() => transport('volume', { value }), 120);
+  }
+
+  // 22:10 for the sofa, 1:02:10 when a film ends up in the corner.
+  function fmt(s) {
+    const t = Math.max(0, Math.round(s));
+    const m = Math.floor(t / 60) % 60;
+    const sec = String(t % 60).padStart(2, '0');
+    const h = Math.floor(t / 3600);
+    return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+  }
+
   async function stop() {
-    if (!confirm('Close the picture? It cannot be opened again from the phone yet.')) return;
+    if (!confirm('Close the picture? You can put another one up from here after.')) return;
     try { adopt(await api('/api/pip/stop', {})); } catch { /* toasted */ }
     setTimeout(load, 400);
+  }
+
+  // --- the picker ----------------------------------------------------------
+  // Films are one flat list; shows are three steps (show, season, episode).
+  // Each step is fetched when it is opened rather than all at once, because a
+  // season of episodes costs the server a path lookup per episode and nobody
+  // browsing a list of show names needs any of them yet.
+  let picking = $state(false);
+  let lib = $state(null); // { movies, shows }
+  let libBusy = $state(false);
+  let kind = $state('films');
+  let filter = $state('');
+  let show = $state(null);
+  let seasons = $state(null);
+  let season = $state(null);
+  let episodes = $state(null);
+  let starting = $state(''); // the path being started, so its row can say so
+
+  const needle = $derived(filter.trim().toLowerCase());
+  const match = (t) => !needle || String(t).toLowerCase().includes(needle);
+  const films = $derived((lib?.movies || []).filter((m) => match(m.title)));
+  const shows = $derived((lib?.shows || []).filter((s) => match(s.title)));
+
+  async function openPicker() {
+    picking = true;
+    if (lib || libBusy) return;
+    libBusy = true;
+    // api() rather than a bare fetch here: unlike the background poll, this is
+    // a tap, and a library that will not load is worth a toast.
+    try { lib = await api('/api/pip/library'); } catch { picking = false; }
+    finally { libBusy = false; }
+  }
+
+  function closePicker() {
+    picking = false;
+    show = null;
+    season = null;
+  }
+
+  function back() {
+    if (season !== null) season = null;
+    else show = null;
+  }
+
+  async function openShow(s) {
+    show = s;
+    season = null;
+    episodes = null;
+    seasons = null;
+    try { seasons = (await api(`/api/pip/library/seasons?show=${s.id}`)).seasons; }
+    catch { show = null; }
+  }
+
+  async function openSeason(n) {
+    season = n;
+    episodes = null;
+    try { episodes = (await api(`/api/pip/library/episodes?show=${show.id}&season=${n}`)).episodes; }
+    catch { season = null; }
+  }
+
+  // The server holds this one open while pipd creates its overlay and forks a
+  // player, so it is a second or two, not a round trip. The row says "Starting"
+  // for the whole of it and every other row is disabled, because two pictures
+  // is a state with no way back from the phone.
+  async function startPip(path) {
+    if (!path || starting) return;
+    starting = path;
+    try {
+      adopt(await api('/api/pip/start', { path }));
+      closePicker();
+      filter = '';
+    } catch { /* the toast has it */ }
+    finally { starting = ''; }
   }
 </script>
 
@@ -200,10 +310,99 @@
   </div>
 
   {#if !running}
-    <p class="dim small note">
-      Nothing is floating over the TV. The little window turns up while a video is
-      playing over a game, and then you can drag it around from here.
-    </p>
+    {#if !picking}
+      <p class="dim small note">
+        Nothing is floating over the TV. Pick something and it turns up in the
+        corner of the screen, and then you can drag it around from here.
+      </p>
+      <button class="primary put" onclick={openPicker}>Put something on</button>
+    {:else}
+      <div class="row crumbs">
+        {#if show}
+          <button class="small" onclick={back} aria-label="Back">
+            <Icon name="back" size={14} />
+          </button>
+          <span class="grow small crumb">
+            {show.title}{season !== null ? `, season ${season}` : ''}
+          </span>
+        {:else}
+          <div class="row grow kinds">
+            <button class="small grow" class:primary={kind === 'films'}
+                    onclick={() => { kind = 'films'; }}>Films</button>
+            <button class="small grow" class:primary={kind === 'shows'}
+                    onclick={() => { kind = 'shows'; }}>TV shows</button>
+          </div>
+        {/if}
+        <button class="small" onclick={closePicker}>Cancel</button>
+      </div>
+
+      {#if libBusy}
+        <p class="dim small note">Reading the library.</p>
+      {:else if show && season === null}
+        {#if !seasons}
+          <p class="dim small note">Reading the seasons.</p>
+        {:else}
+          <div class="list" data-nopull>
+            {#each seasons as s (s.season)}
+              <button class="pick" onclick={() => openSeason(s.season)}>
+                <span class="grow">{s.label}</span>
+                <span class="dim small">{s.episodes}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {:else if show}
+        {#if !episodes}
+          <p class="dim small note">Reading the episodes.</p>
+        {:else}
+          <div class="list" data-nopull>
+            {#each episodes as e (e.id)}
+              <button class="pick" disabled={!e.path || !!starting} onclick={() => startPip(e.path)}>
+                <span class="mono small dim num">{e.episode}</span>
+                <span class="grow">{e.title}</span>
+                {#if starting === e.path}
+                  <span class="dim small">Starting</span>
+                {:else if !e.path}
+                  <span class="dim small">No file</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <input class="find" type="text" bind:value={filter}
+               placeholder={kind === 'films' ? 'Find a film' : 'Find a show'} />
+        <div class="list" data-nopull>
+          {#if kind === 'films'}
+            {#each films as m (m.id)}
+              <button class="pick" disabled={!m.path || !!starting} onclick={() => startPip(m.path)}>
+                <span class="grow">{m.title}</span>
+                {#if starting === m.path}
+                  <span class="dim small">Starting</span>
+                {:else if !m.path}
+                  <span class="dim small">No file</span>
+                {:else if m.year}
+                  <span class="dim small">{m.year}</span>
+                {/if}
+              </button>
+            {/each}
+            {#if !films.length}
+              <p class="dim small note">Nothing here by that name.</p>
+            {/if}
+          {:else}
+            {#each shows as s (s.id)}
+              <button class="pick" onclick={() => openShow(s)}>
+                <span class="grow">{s.title}</span>
+                {#if s.year}<span class="dim small">{s.year}</span>{/if}
+              </button>
+            {/each}
+            {#if !shows.length}
+              <p class="dim small note">Nothing here by that name.</p>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+    {/if}
   {:else}
     <div class="tv" bind:this={frame} data-nopull>
       <div
@@ -231,6 +430,28 @@
     <p class="hint dim small">
       {mediaName || 'Drag the small window to move it on the TV.'}
     </p>
+
+    {#if hasTransport}
+      <div class="row transport">
+        <button class="small" onclick={() => transport('seek', { seconds: -10 })}>-10s</button>
+        <button class="primary playpause" onclick={() => transport(paused ? 'play' : 'pause')}
+                aria-label={paused ? 'Play' : 'Pause'}>
+          <Icon name={paused ? 'play' : 'pause'} size={16} />
+        </button>
+        <button class="small" onclick={() => transport('seek', { seconds: 30 })}>+30s</button>
+        {#if pos !== null && dur !== null}
+          <span class="mono small dim time grow">{fmt(pos)} / {fmt(dur)}</span>
+        {/if}
+      </div>
+
+      <div class="row slider">
+        <span class="lab small dim">Vol</span>
+        <input class="grow" type="range" min="0" max="100" value={volPct} oninput={setVolume} />
+        <button class="small mute" class:primary={muted} onclick={() => transport('mute', { value: !muted })}>
+          {muted ? 'Muted' : 'Mute'}
+        </button>
+      </div>
+    {/if}
 
     <div class="corners">
       {#each CORNERS as c (c.where)}
@@ -315,6 +536,20 @@
     white-space: nowrap;
   }
 
+  .transport {
+    gap: 8px;
+    margin: 0 0 10px;
+  }
+  .playpause {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    padding: 8px 0;
+  }
+  .time { text-align: right; }
+  .mute { flex: none; width: 62px; }
+
   .corners {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -326,4 +561,40 @@
   .val { width: 38px; text-align: right; flex: none; }
 
   .close { width: 100%; margin-top: 12px; }
+
+  /* The picker. A phone-sized list: rows the width of the card, left aligned
+     (the global button centres its content, which reads as a dialog rather
+     than a list), and capped in height so a 90-title library scrolls inside
+     the card instead of pushing the rest of the tab off the screen. */
+  .put { width: 100%; margin-top: 12px; }
+  .crumbs { margin-bottom: 10px; }
+  .kinds { gap: 8px; }
+  .crumb {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .find { margin-bottom: 8px; }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 46vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .pick {
+    justify-content: flex-start;
+    text-align: left;
+    padding: 10px 12px;
+    flex: none;
+  }
+  .pick .grow {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .num { width: 22px; flex: none; text-align: right; }
 </style>

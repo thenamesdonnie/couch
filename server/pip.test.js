@@ -1,9 +1,12 @@
 // pip.js against stub daemons on temp sockets. The thing under test is not
 // really the happy path - it is the four ways pipd fails to be there, because
-// NOT RUNNING IS ITS NORMAL STATE (it only exists while a game is wrapped in
-// gamescope with a video over it). Every one of those has to reach the phone as
-// a calm 200 with running:false; a 500 would paint an error banner on a state
-// that is not an error.
+// NOT RUNNING IS ITS NORMAL STATE (it lives only as long as one picture). Every
+// one of those has to reach the phone as a calm 200 with running:false; a 500
+// would paint an error banner on a state that is not an error.
+//
+// The exception is /start, at the bottom: it is the one route that hands a path
+// to a process that reads files and shows them on a television, and the phone
+// is not authenticated. Most of its tests are about what it REFUSES.
 //
 // Every stub gets its own mkdtemp socket and is closed in the test that made
 // it, so nothing is left listening in /tmp.
@@ -15,7 +18,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { status, send, request, placeCommand, routes, _setPipSeams, PipDown } from './pip.js';
+import {
+  status, send, request, placeCommand, routes, _setPipSeams, PipDown,
+  resolveMedia, listEpisodes, PLAYER_ARGS,
+} from './pip.js';
 
 const STATUS_REPLY = {
   ok: true,
@@ -248,4 +254,200 @@ test('nonsense in a body is a 400 and never reaches the socket', async () => {
     assert.equal((await app.post('/api/pip/place', { nx: -1 })).status, 400);
     assert.deepEqual(stub.seen, []);
   } finally { await app.close(); await stub.close(); _setPipSeams(); }
+});
+
+// --- putting a picture up -------------------------------------------------
+// The phone is not authenticated, so /start is the one route here that could
+// do real harm: it hands a path to a process that reads files and puts them on
+// a television. Most of what follows is about the paths it must REFUSE.
+
+// A stand-in media library: a real directory with a real video file in it, so
+// realpath and stat have something true to say.
+function fakeLibrary() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'couch-pip-media-')));
+  fs.mkdirSync(path.join(root, 'tv', 'A Show', 'Season 5'), { recursive: true });
+  const episode = path.join(root, 'tv', 'A Show', 'Season 5', 'A Show - S05E02.mkv');
+  fs.writeFileSync(episode, 'not really a matroska');
+  fs.writeFileSync(path.join(root, 'tv', 'A Show', 'Season 5', 'A Show - S05E02.srt'), '1\n');
+  return { root, episode, close() { fs.rmSync(root, { recursive: true, force: true }); } };
+}
+
+// Records the spawn instead of performing it, and answers with something
+// child-process shaped (on/unref) so the caller cannot tell.
+function fakeSpawn(onCall = () => {}) {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    onCall();
+    return { pid: 4242, on() {}, unref() {} };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('a path outside the media library is refused, whatever shape it arrives in', () => {
+  const lib = fakeLibrary();
+  _setPipSeams({ mediaRoot: lib.root });
+  try {
+    // Somewhere else entirely.
+    assert.throws(() => resolveMedia('/etc/passwd'), RangeError);
+    // Traversal that LOOKS like it is inside: refused lexically, before the
+    // filesystem is consulted at all.
+    assert.throws(() => resolveMedia(`${lib.root}/../../etc/passwd`), RangeError);
+    assert.throws(() => resolveMedia(`${lib.root}/tv/../../etc/passwd`), RangeError);
+    // A relative path resolves against the server's cwd, which is not the
+    // library either.
+    assert.throws(() => resolveMedia('index.js'), RangeError);
+    // Empty and non-strings.
+    assert.throws(() => resolveMedia(''), RangeError);
+    assert.throws(() => resolveMedia(undefined), RangeError);
+    assert.throws(() => resolveMedia(42), RangeError);
+  } finally { _setPipSeams(); lib.close(); }
+});
+
+test('a symlink inside the library that points out of it is refused', () => {
+  // The lexical check passes here - the path really is under the root - so
+  // this is the case the second, post-realpath check exists for.
+  const lib = fakeLibrary();
+  const link = path.join(lib.root, 'escape.mkv');
+  fs.symlinkSync('/etc/passwd', link);
+  _setPipSeams({ mediaRoot: lib.root });
+  try {
+    assert.throws(() => resolveMedia(link), RangeError);
+  } finally { _setPipSeams(); lib.close(); }
+});
+
+test('a path inside the library that is not a playable video is refused', () => {
+  const lib = fakeLibrary();
+  _setPipSeams({ mediaRoot: lib.root });
+  try {
+    // Missing.
+    assert.throws(() => resolveMedia(path.join(lib.root, 'tv', 'nothing.mkv')),
+      (err) => err instanceof RangeError && /no file there/.test(err.message));
+    // A directory.
+    assert.throws(() => resolveMedia(path.join(lib.root, 'tv')),
+      (err) => err instanceof RangeError && /folder/.test(err.message));
+    // The subtitle sitting next to the episode.
+    assert.throws(() => resolveMedia(lib.episode.replace(/\.mkv$/, '.srt')),
+      (err) => err instanceof RangeError && /not a video/.test(err.message));
+    // ...and the one that is fine.
+    assert.equal(resolveMedia(lib.episode), lib.episode);
+  } finally { _setPipSeams(); lib.close(); }
+});
+
+test('POST /api/pip/start refuses a bad path with a 400 and never spawns anything', async () => {
+  const lib = fakeLibrary();
+  const gone = missingSocket();
+  const spawn = fakeSpawn();
+  _setPipSeams({ socketPath: gone.socketPath, mediaRoot: lib.root, spawn });
+  const app = await testServer();
+  try {
+    for (const bad of [undefined, '', '/etc/passwd', `${lib.root}/../../etc/passwd`,
+                       path.join(lib.root, 'tv'), lib.episode.replace(/\.mkv$/, '.srt')]) {
+      const res = await app.post('/api/pip/start', { path: bad });
+      assert.equal(res.status, 400, `${bad} answered ${res.status}`);
+      assert.ok((await res.json()).error, 'a 400 must say why');
+    }
+    assert.deepEqual(spawn.calls, [], 'nothing may be spawned for a refused path');
+  } finally { await app.close(); gone.close(); lib.close(); _setPipSeams(); }
+});
+
+test('POST /api/pip/start refuses with 409 while a picture is already up', async () => {
+  // Two daemons on one socket path is a hole with no way out from the phone:
+  // the second unlinks the first one's socket, and the first is then
+  // unreachable AND unkillable from here.
+  const lib = fakeLibrary();
+  const stub = await stubDaemon(() => STATUS_REPLY);
+  const spawn = fakeSpawn();
+  _setPipSeams({ socketPath: stub.socketPath, mediaRoot: lib.root, spawn });
+  const app = await testServer();
+  try {
+    const res = await app.post('/api/pip/start', { path: lib.episode });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /already/);
+    assert.equal(body.running, true);
+    assert.deepEqual(spawn.calls, [], 'the running daemon must not be trampled');
+    // Only the probe reached the socket; no start command was invented.
+    assert.deepEqual(stub.seen, [{ cmd: 'status' }]);
+  } finally { await app.close(); await stub.close(); lib.close(); _setPipSeams(); }
+});
+
+test('POST /api/pip/start spawns pipd detached and answers the new status', async () => {
+  const lib = fakeLibrary();
+  // The stub is silent until the spawn happens, so the route sees exactly what
+  // it sees in life: nothing there, then a daemon.
+  let up = false;
+  const stub = await stubDaemon(() => (up ? STATUS_REPLY : undefined));
+  const spawn = fakeSpawn(() => { up = true; });
+  _setPipSeams({
+    socketPath: stub.socketPath, mediaRoot: lib.root, spawn,
+    display: ':9', pipd: '/opt/pipd', logPath: path.join(lib.root, 'pip.log'),
+    timeoutMs: 80, pollMs: 10, startTimeoutMs: 2000,
+  });
+  const app = await testServer();
+  try {
+    const res = await app.post('/api/pip/start', { path: lib.episode });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.running, true);
+    assert.equal(body.started, lib.episode);
+
+    assert.equal(spawn.calls.length, 1);
+    const { cmd, args, opts } = spawn.calls[0];
+    assert.equal(cmd, '/opt/pipd');
+    assert.deepEqual(args, ['--display', ':9', '--socket', stub.socketPath,
+                            '--player-args', PLAYER_ARGS, lib.episode]);
+    // Detached, or the picture dies with the next couch.service restart.
+    assert.equal(opts.detached, true);
+    assert.equal(opts.env.DISPLAY, ':9');
+    // Never our own stdio: an inherited pipe keeps the daemon tied to us.
+    assert.notEqual(opts.stdio[1], 'inherit');
+  } finally { await app.close(); await stub.close(); lib.close(); _setPipSeams(); }
+});
+
+test('POST /api/pip/start reports a daemon that never comes up rather than claiming success', async () => {
+  const lib = fakeLibrary();
+  const gone = missingSocket();
+  const spawn = fakeSpawn(); // spawns "successfully", binds nothing
+  _setPipSeams({
+    socketPath: gone.socketPath, mediaRoot: lib.root, spawn,
+    logPath: path.join(lib.root, 'pip.log'), timeoutMs: 40, pollMs: 5, startTimeoutMs: 60,
+  });
+  const app = await testServer();
+  try {
+    const res = await app.post('/api/pip/start', { path: lib.episode });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error, /did not come up/);
+  } finally { await app.close(); gone.close(); lib.close(); _setPipSeams(); }
+});
+
+// --- the list the picker draws --------------------------------------------
+
+test('episodes carry the local path Kodi does not know, in episode order', async () => {
+  // Kodi's library here is fed by the jellyfin addon, so its `file` is a
+  // plugin:// url with the Jellyfin id in it and no path at all.
+  const asked = [];
+  _setPipSeams({
+    rpc: async () => ({
+      episodes: [
+        { episodeid: 2, title: 'Second', season: 5, episode: 2, runtime: 1374,
+          file: 'plugin://plugin.video.jellyfin/abc/?filename=b.mkv&id=' + 'b'.repeat(32) + '&mode=play' },
+        { episodeid: 1, title: 'First', season: 5, episode: 1, runtime: 1374,
+          file: 'plugin://plugin.video.jellyfin/abc/?filename=a.mkv&id=' + 'a'.repeat(32) + '&mode=play' },
+        { episodeid: 3, title: 'Unknown to jellyfin', season: 5, episode: 3, file: '' },
+      ],
+    }),
+    pathsFor: async (ids) => {
+      asked.push(...ids);
+      return new Map([['a'.repeat(32), '/mnt/media/tv/A/a.mkv'], ['b'.repeat(32), '/mnt/media/tv/A/b.mkv']]);
+    },
+  });
+  try {
+    const eps = await listEpisodes(30, 5);
+    assert.deepEqual(eps.map((e) => e.episode), [1, 2, 3], 'Kodi does not sort these');
+    assert.deepEqual(eps.map((e) => e.path),
+      ['/mnt/media/tv/A/a.mkv', '/mnt/media/tv/A/b.mkv', null]);
+    assert.equal(asked.length, 2, 'one batched lookup, ids only');
+  } finally { _setPipSeams(); }
 });
