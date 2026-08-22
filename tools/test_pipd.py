@@ -340,6 +340,29 @@ def test_moving_the_child_is_what_moves_the_picture(xvfb):
         ov.close()
 
 
+def test_the_overlay_reclaims_the_top_of_the_stack(xvfb):
+    """A game raise buries the picture on bare X11; restack_top unburies it.
+
+    query_tree lists children bottom-to-top, so 'last child' is 'on top'."""
+    ov = pipd.Overlay(xvfb)
+    try:
+        ov.create(100, 100, 600, 338)
+        X = ov.X
+        rival = ov.root.create_window(
+            0, 0, 800, 600, 0, ov.screen.root_depth, X.InputOutput,
+            X.CopyFromParent, background_pixel=0, override_redirect=1)
+        rival.map()
+        ov.dpy.sync()
+        order = ov.root.query_tree().children
+        assert order[-1].id == rival.id, 'the rival must start on top'
+        ov.restack_top()
+        order = ov.root.query_tree().children
+        assert order[-1].id == ov.parent.id, 'restack_top must win the stack'
+        rival.destroy()
+    finally:
+        ov.close()
+
+
 def test_opacity_is_written_where_gamescope_reads_it(xvfb):
     ov = pipd.Overlay(xvfb)
     try:
