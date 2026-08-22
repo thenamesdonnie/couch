@@ -1372,6 +1372,71 @@ def test_t5_a_suspend_inside_a_game_window_ends_the_window():
     assert rig.machine.regions['enforcement'] == 'none'
 
 
+BB_SESSION = {'launcher_pid': 2685994, 'mode': 'shadps4',
+              'appid': '/home/ds2000/games/ps4/CUSA00900/eboot.bin',
+              'raw': ('2685994 shadps4 '
+                      '/home/ds2000/games/ps4/CUSA00900/eboot.bin')}
+
+
+def test_a_foreign_suspend_flag_never_resumes_over_a_live_session():
+    """Replay of 22 Aug 2026 21:42:44 ("blood borne had loaded but then
+    elden ring appeared? out of nowbere").
+
+    One minute into a fresh Bloodborne session: /tmp/game-suspended still
+    said '1245620' from the PREVIOUS night (the ER quit leaked its whole
+    frozen wine tree and the flag with it), Steam's ledger still carried
+    the leaked pids, and a PS tap was classified tap-resume - couchd
+    launched and showed Elden Ring over the game Donnie was playing.
+    The world below is built from the shadow log of that pass. A suspend
+    flag that names a different game than the live session is debris and
+    must never be a resume target.
+    """
+    leaked = {1015591: 'T', 1015927: 'T', 1015945: 'T', 2686001: 'S'}
+    rig = Rig(session=BB_SESSION, suspended='1245620',
+              pid_states=leaked,
+              ledger={'1245620': (1015591, 1015927)},
+              joystick=False).settle()
+    k0 = 9000.0
+    _press(rig, k0)
+    got = rig.observe(button_down=False, press_duration=0.15)
+    assert rig.machine.regions['gesture'] != 'tap-resume', \
+        'instant resume path took the debris'
+    # ...and the deferred path when the double-tap window shuts:
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.15)
+    assert rig.machine.regions['gesture'] != 'tap-resume', \
+        'deferred resume path took the debris'
+    assert not find(got, 'launch', '1245620'), verbs(got)
+
+
+def test_a_foreign_suspend_flag_never_resumes_even_when_instant():
+    """The same debris with double_tap unbound (the instant-resume path)."""
+    binds = dict(DEFAULT_BINDINGS, double_tap='none')
+    rig = Rig(session=BB_SESSION, suspended='1245620',
+              pid_states={1015591: 'T'}, ledger={'1245620': (1015591,)},
+              joystick=False, bindings=binds).settle()
+    _press(rig, 9100.0)
+    got = rig.observe(button_down=False, press_duration=0.15)
+    assert rig.machine.regions['gesture'] != 'tap-resume'
+    assert not find(got, 'launch', '1245620'), verbs(got)
+
+
+def test_a_matching_suspend_flag_still_resumes_with_a_live_session():
+    """The control: the guard keys on the MISMATCH, not on the session.
+
+    A healthy suspend (flag == the session's own appid) resumes exactly
+    as before - this is the ordinary paused-game tap.
+    """
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    _press(rig, 9200.0)
+    rig.observe(button_down=False, press_duration=0.3)
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.3)
+    assert rig.machine.regions['gesture'] == 'tap-resume'
+    assert find(got, 'launch', APPID)
+
+
 def test_t5_a_tap_resume_supersedes_a_legacy_kodi_guard():
     """R7(d)'s mirror (15 Aug 2026, the wrapped-Bloodborne flap): a KODI
     guard spawned by the preceding suspend was still enforcing when the

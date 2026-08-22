@@ -601,6 +601,32 @@ def g_released_no_handoff(o):
     return not o.button_down and o.binding('hold') != 'suspend_to_kodi'
 
 
+def foreign_suspend(o):
+    """The suspend flag names a different game than the LIVE session.
+
+    22 Aug 2026 21:42, live: one minute into a fresh Bloodborne session a
+    PS tap resumed the previous night's Elden Ring. /tmp/game-suspended
+    ('1245620') and a fully frozen ER wine tree were 23-hour-old debris
+    from a quit that believed it had won (the leaked-process bug of the
+    same evening); the session flag named Bloodborne. Note the todo's
+    first read ("the flag did not exist, stale process memory") was wrong
+    - the shadow log shows the flag ON DISK all along; the resume path
+    then deleted it before anyone looked, which is what made process
+    memory look guilty.
+
+    A healthy suspend always writes the session's own appid (game-launch
+    writes "${appid:-game}"), so flag != live session appid is never a
+    state the console can reach on purpose - it is debris, and a tap must
+    belong to the game the player is actually playing. With no session
+    standing, any suspend flag is honoured exactly as before: that is the
+    ordinary resume-from-Kodi path, including the appid-less legacy
+    session shapes (sess_appid None never vetoes).
+    """
+    sess_appid = (o.session or {}).get('appid')
+    return (o.suspended_present and o.session_present
+            and bool(sess_appid) and o.suspended != sess_appid)
+
+
 def g_released_tap_resume(o):
     """A tap that resumes the paused game, NOW.
 
@@ -613,7 +639,7 @@ def g_released_tap_resume(o):
     resumes from there when the window shuts (g_tap_resume_due).
     """
     return (not o.button_down and gesture.is_tap(o.press_duration)
-            and o.suspended_present
+            and o.suspended_present and not foreign_suspend(o)
             and o.binding('double_tap') == 'none')
 
 
@@ -626,6 +652,7 @@ def g_tap_resume_due(o):
     window over the Kodi the player is looking at.
     """
     return (not o.button_down and o.suspended_present
+            and not foreign_suspend(o)
             and gesture.is_tap(o.press_duration)
             and gesture.double_tap_window_over(_since(o, 'gesture'),
                                                o.double_tap_seconds))
