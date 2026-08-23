@@ -131,8 +131,14 @@ def game_window_mapped(display=':0'):
         d = xdisplay.Display(display)
         root = d.screen().root
         try:
-            for c in root.query_tree().children:
+            # _NET_CLIENT_LIST, not query_tree (caught live 23 Aug: the
+            # dry-run sailed past a mapped fullscreen Bloodborne): xfwm4
+            # reparents every client into a class-less frame, so a toplevel
+            # walk sees frames and never a game's class.
+            prop = root.get_full_property(d.get_atom('_NET_CLIENT_LIST'), 0)
+            for wid in (prop.value if prop else []):
                 try:
+                    c = d.create_resource_object('window', int(wid))
                     if c.get_attributes().map_state != 2:   # IsViewable
                         continue
                     cls = c.get_wm_class() or ('', '')
@@ -149,8 +155,14 @@ def game_window_mapped(display=':0'):
         return True
 
 
+SAFE_MODE = '3840x2160'      # in the EDID; what every fallback session ran
+STABLE_S = 3.0               # the connector must hold still this long first
+VERIFY_S = 6.0               # how long a fresh 4k120 must survive to count
+
+
 def launch_assert(display, window_s, dry_run):
-    """Hold the mode at 4K120 through a launch's TV-wake hotplug.
+    """Hold the mode at 4K120 through a launch's TV-wake hotplug - but only
+    once the link has settled, and never leave a dead CRTC behind.
 
     THE RACE (21-22 Aug 2026, twice): launching from the phone wakes the
     TV; the wake's hotplug re-enumerates the output and drops X to a 60Hz
@@ -158,24 +170,59 @@ def launch_assert(display, window_s, dry_run):
     the keeper's game_running() gate (correctly) refuses to touch the
     display, and the whole session runs at 4K60 ("controller lag").
 
-    game-launch calls this at launch time, when IT knows nothing is
-    presenting yet: watch the output for window_s seconds, reapply the
-    mode every time the hotplug knocks it down, and stop dead the moment
-    a game window maps. The game flags are deliberately ignored here -
-    the caller owns the session and is vouching for the safe window."""
+    THE COUNTER-RACE (23 Aug 2026, the morning after this was built:
+    "this time i got black no signal"): the first version asserted the
+    hand-made modeline the moment it saw the fallback - which is MID-WAKE,
+    racing the TV's HDMI handshake. The sink rejected the stream, the
+    hotplug that followed cleared the modeline AND the CRTC (xrandr:
+    connected, no active mode at all), and the TV sat on "no signal".
+
+    So now: (1) the connector's reported state must be IDENTICAL for
+    STABLE_S before any fix - a wake's hotplug storm keeps resetting that
+    clock, so the assert naturally waits it out; (2) every fix is
+    VERIFIED for VERIFY_S - if the output drops or loses its active mode,
+    the sink said no: put the safe EDID mode back, say so loudly, and
+    stop trying for this launch (a 4K60 session beats a black one).
+    Stops dead the moment a game window maps, as before."""
     deadline = time.monotonic() + window_s
     fixes = 0
+    last_state, stable_since = None, time.monotonic()
     while time.monotonic() < deadline:
         if game_window_mapped(display):
             print(f'launch-assert: game window mapped - stopping '
                   f'({fixes} fix(es))', flush=True)
             return 0
         name, current = state(display)
-        if name and current != MODE and current in RECLAIM_FROM:
-            print(f'launch-assert: {name} on {current} - reasserting {MODE}',
+        now = time.monotonic()
+        if (name, current) != last_state:
+            last_state, stable_since = (name, current), now
+        settled = now - stable_since >= STABLE_S
+        if settled and name and current != MODE and current in RECLAIM_FROM:
+            print(f'launch-assert: {name} stable on {current} - '
+                  f'reasserting {MODE}', flush=True)
+            if not reapply(name, display, dry_run):
+                time.sleep(1.0)
+                continue
+            fixes += 1
+            if dry_run:
+                time.sleep(1.0)
+                continue
+            # The sink gets a vote. connected-with-no-active-mode is the
+            # black-screen signature; disconnected is the TV giving up.
+            verify_until = time.monotonic() + VERIFY_S
+            while time.monotonic() < verify_until:
+                time.sleep(1.0)
+                v_name, v_current = state(display)
+                if v_name is None or v_current is None:
+                    print(f'launch-assert: sink DROPPED after {MODE} - '
+                          f'reverting to {SAFE_MODE} and giving up',
+                          flush=True)
+                    xrandr('--output', name, '--mode', SAFE_MODE,
+                           display=display)
+                    return 1
+            print(f'launch-assert: {MODE} held for {VERIFY_S:.0f}s - good',
                   flush=True)
-            if reapply(name, display, dry_run):
-                fixes += 1
+            last_state, stable_since = None, time.monotonic()
         time.sleep(1.0)
     print(f'launch-assert: window over ({fixes} fix(es))', flush=True)
     return 0
