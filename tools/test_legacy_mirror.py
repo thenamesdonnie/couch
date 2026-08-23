@@ -792,15 +792,21 @@ def test_a_bigpicture_suspend_never_curtains(glaunch):
     _in_order(calls, 'pad_to_kodi', 'focus_kodi')
 
 
-def test_resume_shows_before_the_thaw_and_fades_after_focus(glaunch):
-    """The mirror image: curtain up before any thaw/window work (and before
-    clear_snaps deletes the very jpg it shows), fade only once focus_game
-    reported the game window focused."""
+def test_resume_shows_before_the_window_work_and_fades_after_focus(glaunch):
+    """The curtain covers every VISIBLE step of the resume and fades only
+    once focus_game reported the game window focused.
+
+    Since 23 Aug it is no longer first: the Kodi-side maximise animation
+    draws the same frame growing out of the paused card, and a curtain over
+    it would hide the one thing the player is watching. So the flag clear and
+    the thaw - both invisible - run underneath the animation, and the curtain
+    goes up after it, still before any WINDOW work and still before
+    clear_snaps deletes the jpg."""
     (glaunch.dir / 'game-suspended').write_text('367520\n')
     (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
     r = glaunch('resume_game\n', mode='resume')
     assert r.returncode == 0, r.stderr
-    _in_order(glaunch.calls(), 'curtain show', 'thaw', 'clear_snaps',
+    _in_order(glaunch.calls(), 'thaw', 'curtain show', 'clear_snaps',
               'show_frozen_game', 'pad_to_game', 'focus_game game',
               'curtain fade')
     assert any(i['verb'] == 'curtain_fade' for i in glaunch.intents())
@@ -1166,7 +1172,9 @@ def test_resume_converge_is_bounded_then_falls_back_to_bp(glaunch):
 
 def test_resume_flag_first_ordering_survives_the_converge(glaunch):
     """The reconcile-flip hard gate must not move: flag cleared before the
-    SIGCONTs, curtain shown before either, all with the converge in place."""
+    SIGCONTs, with the converge in place. The curtain now follows the thaw
+    rather than leading it (see the ordering test above), which changes
+    nothing about the gate itself - both halves are invisible."""
     (glaunch.dir / 'game-suspended').write_text('367520\n')
     (glaunch.dir / 'paused' / '367520__2000.jpg').write_bytes(b'jpg')
     body = ('cont_all() { rec thaw "flag=$([ -f "$SUSPENDED" ]'
@@ -1174,7 +1182,7 @@ def test_resume_flag_first_ordering_survives_the_converge(glaunch):
             'resume_game\n')
     r = glaunch(body, mode='resume')
     assert r.returncode == 0, r.stderr
-    _in_order(glaunch.calls(), 'curtain show', 'thaw flag=gone',
+    _in_order(glaunch.calls(), 'thaw flag=gone', 'curtain show',
               'show_frozen_game', 'pad_to_game', 'focus_game game',
               'curtain fade')
 
@@ -1257,7 +1265,11 @@ def test_close_ignored_sweep_never_sigkills_the_emulator():
     every in-game quit (shadPS4 ignores WM_DELETE while a game runs;
     caught live 15 Aug 2026)."""
     fn = _gl_fn('close_games')
-    assert "shad=\" $(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\\n' ' ') \"" in fn
+    # The pattern itself moved into EMU_PAT on 23 Aug (one place for every
+    # way the emulator can appear in a cmdline, after a local-build session
+    # went unrecognised); what this test guards is the FILTER, not where the
+    # pids come from.
+    assert 'shad=" $(pgrep -f "$EMU_PAT" | tr \'\\n\' \' \') "' in fn
     assert 'case "$shad" in *" $p "*) continue ;; esac' in fn
     # the kill loop runs on the filtered list, and only when it is non-empty
     assert 'scope=steam-only' in fn

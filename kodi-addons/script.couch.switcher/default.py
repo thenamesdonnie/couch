@@ -564,13 +564,25 @@ def main():
         notify("The couch server is not answering")
         return
 
-    # Kodi is what the dialog is drawn on, so offering to switch to it would
-    # be a no-op row. Everything else the server lists - games (titled
-    # "... paused" while frozen, exactly as the phone shows them), Big
-    # Picture, and the Desktop pseudo-entry - is a real destination.
-    rows = [w for w in wins if not w.get("kodi")]
+    # Kodi LEADS the list (23 Aug 2026). It used to be filtered out as a
+    # no-op row - the dialog is drawn on Kodi, and a switcher opened from a
+    # game has already suspended it, so "go to Kodi" was just Cancel. That
+    # reasoning held while the switcher was the double-tap; it stopped
+    # holding the moment the PS TAP became the switcher (Donnie, 23 Aug:
+    # "i'm supposed to be able to go to kodi from the switcher"). A menu of
+    # everywhere you can be that silently omits where you probably want to
+    # go is a menu you have to be told how to use, and the answer - press
+    # Back - is the one thing a player will not guess.
+    #
+    # It is not always a no-op either: from a gamescope-WRAPPED game the rail
+    # is composited over a game that still owns the screen, and there Kodi is
+    # a real destination. activate() routes both cases through the server's
+    # own activateWindow('kodi'), which suspends first if it has to and is
+    # idempotent when Kodi already has the screen.
+    rows = ([w for w in wins if w.get("kodi")]
+            + [w for w in wins if not w.get("kodi")])
     if not rows:
-        notify("Nothing else is running")
+        notify("Nothing is running")
         return
 
 

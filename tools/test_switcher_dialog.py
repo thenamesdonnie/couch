@@ -632,13 +632,18 @@ WINS = [{'id': '0x1', 'title': 'Big Picture', 'kodi': False},
         {'id': '0x2', 'title': 'Kodi', 'kodi': True}]
 
 
-def test_the_switch_row_holds_only_real_destinations():
+def test_the_switch_row_holds_destinations_with_kodi_leading():
     """Power moved OUT of this row on 8 Aug and into its own bar above it, so
     a destination list is destinations again. A power entry down here would
     now be a second way to do the same thing, one keypress from the row the
-    stick opens on."""
+    stick opens on.
+
+    Kodi leads the row since 23 Aug: it used to be filtered as a no-op (the
+    dialog is drawn on it), which was fair while the switcher was the
+    double-tap and unfair the moment the PS TAP became the switcher - the
+    player must not have to know that Back is how you reach Kodi."""
     out = _run_main(WINS, pick=lambda rows: -1)
-    assert [r['title'] for r in out['rows']] == ['Big Picture']
+    assert [r['title'] for r in out['rows']] == ['Kodi', 'Big Picture']
     assert not any(r.get('power') for r in out['rows'])
 
 
@@ -667,11 +672,21 @@ def test_every_bar_action_is_one_tvpoweroff_implements():
         assert '"%s":' % action in src, action
 
 
-def test_power_does_not_appear_when_there_is_nothing_to_switch_to():
-    """With no destinations the sheet does not open at all, exactly as
-    before - and it should not start opening just to offer power, because a
-    hold at home already reaches the same screen in one gesture."""
+def test_the_sheet_opens_on_kodi_alone_because_power_lives_here_now():
+    """With Kodi in the row there is always something to draw, and that is
+    deliberate: the power bar rides above this list, and since the 23 Aug
+    rebind (tap=switcher, hold=home) the tap is the ONLY gesture that reaches
+    it. Refusing to open with 'nothing to switch to' would strand the power
+    screen behind no gesture at all."""
     out = _run_main([{'id': '0x2', 'title': 'Kodi', 'kodi': True}],
-                    pick=lambda rows: 0)
+                    pick=lambda rows: -1)
+    assert [r['title'] for r in out['rows']] == ['Kodi']
+    assert out['builtins'] == [] and out['activated'] == []
+
+
+def test_an_empty_server_answer_still_opens_nothing():
+    """The genuine empty case - the server listed no windows at all - is
+    still a notification and no sheet."""
+    out = _run_main([], pick=lambda rows: 0)
     assert out['rows'] == []
     assert out['builtins'] == [] and out['activated'] == []
