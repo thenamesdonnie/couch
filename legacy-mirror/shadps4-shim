@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# shadPS4 (PS4 emulator) launcher, tuned for the television.
+#
+# With no argument it opens Big Picture mode: a controller-driven fullscreen
+# library of whatever decrypted game dumps live under ~/games/ps4 (add that
+# folder once in shadPS4's settings the first time). Pass a game folder (the
+# dump directory that holds eboot.bin) to boot straight into that game, which
+# is how the Kodi Games row will call it.
+#
+# Fullscreen is forced so it fills the TV. Game patches are left ON by default
+# (that is what applies the Bloodborne 60fps unlock); pass --show-fps if you
+# want the counter while testing.
+set -euo pipefail
+
+APP="$HOME/.local/share/shadps4/Shadps4-sdl.AppImage"
+
+# FAULT-WIDENING TEST BUILD (22 Aug 2026). Same 0.17.0 release as the
+# AppImage plus the 64KB fault-widening fix (docs/research/
+# shadps4-autosave-fault-storm-20260822.md: 48k->1.4k faults/s, autosave
+# stalls gone headless). Same config/saves/cache - only the binary differs.
+#   touch ~/couch/data/shadps4-local-build   to play on the fix build
+#   rm    ~/couch/data/shadps4-local-build   to go back to the AppImage
+LOCAL_BUILD="$HOME/src/shadps4-dbg/build/shadps4"
+if [ -e "$HOME/couch/data/shadps4-local-build" ] && [ -x "$LOCAL_BUILD" ]; then
+  APP="$LOCAL_BUILD"
+fi
+
+# CPU pinning lever (21 Aug 2026, off by default). shadPS4 #1542 measured
+# +17fps in Bloodborne's opening area from a 5-core affinity on a 5800X3D,
+# but that was Dec 2024 and upstream closed the issue as improved - so this
+# is an A/B knob, not a default. To try it:
+#   echo 0-4 > ~/couch/data/shadps4-pin-cores     (cpus 0-7 are the physical
+#   rm ~/couch/data/shadps4-pin-cores              cores; 8-15 their SMT twins)
+# Judge with --show-fps in the same area, pinned vs not.
+PIN_FILE="$HOME/couch/data/shadps4-pin-cores"
+PIN=()
+if [ -s "$PIN_FILE" ]; then
+  cpus="$(tr -d '[:space:]' < "$PIN_FILE")"
+  case "$cpus" in
+    *[!0-9,-]*|"") echo "shadps4: ignoring bad cpu list '$cpus' in $PIN_FILE" >&2 ;;
+    *) PIN=(taskset -c "$cpus") ;;
+  esac
+fi
+
+# AUDIO: MAKE THE EMULATOR OPEN 7.1, THEN FOLD IN PIPEWIRE, NOT IN SDL
+# (23 Aug 2026). Bloodborne opens Float_8CH on both ports. Whether that
+# becomes a good stereo mix depends on WHO folds it:
+#
+#   * SDL folds it, if the device it opens reports stereo. Its fold puts the
+#     LFE channel in at full level, and LFE is mastered ~10 dB down on the
+#     understanding that playback boosts it - so every LFE-heavy sound comes
+#     out ~10 dB hot. Live symptom: "crashing in to boxes is super loud,
+#     weapon attacks are pretty loud and the rest is normal", so turning SFX
+#     down left nothing audible but crates.
+#   * The SOUNDBAR folds it, if we just leave the card on 7.1. It gets a
+#     discrete LFE channel it does not reproduce well: "attacking now sounds
+#     completely flat".
+#   * PIPEWIRE folds it, if the emulator opened 8ch but the card is stereo.
+#     Proper coefficients, LFE attenuated the way the standard says. This is
+#     the one Donnie accepted ("yeah audio is better").
+#
+# SDL decides at OPEN time and never renegotiates, so the card must be on
+# surround for the open and back on stereo immediately after. Hence the
+# dance: flip to 7.1, launch, and a detached watcher flips back the moment
+# the emulator's 8ch stream exists. Everything about it is best-effort - no
+# pactl, no card, a failed flip, all just mean the old SDL fold, which is
+# merely unbalanced, never silent.
+CARD=alsa_card.pci-0000_09_00.1
+PROF_71=output:hdmi-surround71-extra2
+PROF_ST=output:hdmi-stereo-extra2
+
+audio_open_in_surround() {
+  command -v pactl >/dev/null 2>&1 || return 0
+  pactl list cards short 2>/dev/null | grep -q "$CARD" || return 0
+  pactl set-card-profile "$CARD" "$PROF_71" 2>/dev/null || return 0
+  (
+    # Back to stereo as soon as the 8ch stream is up - or after 60s whatever
+    # happens. A card LEFT on surround is the flat-attacks bug for every app
+    # on the box, so this restore must not depend on the emulator behaving.
+    for _ in $(seq 1 120); do
+      if pactl list sink-inputs 2>/dev/null \
+           | grep -qE "Sample Specification: .* 8ch"; then
+        break
+      fi
+      sleep 0.5
+    done
+    pactl set-card-profile "$CARD" "$PROF_ST" 2>/dev/null || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+if [ $# -eq 0 ]; then
+  audio_open_in_surround
+  exec ${PIN[@]+"${PIN[@]}"} "$APP" -b -f true
+else
+  game="$1"; shift
+  # PERF INSTRUMENTATION (21 Aug 2026, replaces the unreadably small
+  # --show-fps counter). MangoHud draws a TV-sized fps number + frame-time
+  # graph on the game and logs every frame's timing and cpu/gpu load to
+  # ~/couch/data/perf-logs/. bb-event-tail stamps shadPS4's shader-compile
+  # and error lines with wall time in the same folder; bb-drop-report joins
+  # the two and names the cause of each drop. Config (size, position, what
+  # is displayed): ~/couch/data/mangohud-shadps4.conf. To run bare, unset
+  # MANGOHUD here.
+  export MANGOHUD=1
+  export MANGOHUD_CONFIGFILE="$HOME/couch/data/mangohud-shadps4.conf"
+  "$HOME/couch/tools/bb-event-tail" $$ \
+    "$HOME/couch/data/perf-logs/events-$(date +%F_%H-%M-%S).log" \
+    >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  audio_open_in_surround
+  # exec keeps our pid, so $$ handed to the sidecar IS the emulator's pid.
+  exec ${PIN[@]+"${PIN[@]}"} "$APP" -f true -g "$game" "$@"
+fi
