@@ -82,6 +82,19 @@ HEADING = "Switch to"
 # invocation from throwing away the first dialog's focus.
 HOME = xbmcgui.Window(10000)
 LATCH = "couch.switcher.open"
+# The latch is cleared in a finally, which covers every way THIS script can
+# end - but not the ways Kodi can end the script: a skin reload, an addon
+# reload or a Python teardown kills the thread outright and the property is
+# left set forever, after which every PS double-tap is refused in silence
+# ("already open, ignoring re-trigger" - live, 23 Aug, wedged by a ReloadSkin
+# and only noticed because Donnie could not open the menu at all). So the
+# latch also carries the monotonic time it was taken, and one older than a
+# dialog could plausibly still be open is treated as the debris it is. The
+# window it actually guards - a burst of auto-repeat presses - is under a
+# second wide; the rest is the operator's own reading time, and re-triggering
+# a dialog he IS looking at merely redraws it.
+LATCH_AT = "couch.switcher.open.at"
+LATCH_STALE_S = 120.0
 
 ADDON = xbmcaddon.Addon()
 ADDON_PATH = ADDON.getAddonInfo("path")
@@ -589,11 +602,28 @@ def main():
         notify("Could not switch: %s" % e)
 
 
-if HOME.getProperty(LATCH) == "1":
+def latch_held():
+    """Is a dialog REALLY open, or is this the debris of a killed script?"""
+    if HOME.getProperty(LATCH) != "1":
+        return False
+    try:
+        age = time.monotonic() - float(HOME.getProperty(LATCH_AT))
+    except (TypeError, ValueError):
+        age = LATCH_STALE_S + 1          # no stamp at all: pre-fix debris
+    if age > LATCH_STALE_S:
+        xbmc.log("couch.switcher: stale latch (%.0fs), taking it" % age,
+                 xbmc.LOGWARNING)
+        return False
+    return True
+
+
+if latch_held():
     xbmc.log("couch.switcher: already open, ignoring re-trigger", xbmc.LOGINFO)
 else:
     HOME.setProperty(LATCH, "1")
+    HOME.setProperty(LATCH_AT, str(time.monotonic()))
     try:
         main()
     finally:
         HOME.clearProperty(LATCH)
+        HOME.clearProperty(LATCH_AT)
