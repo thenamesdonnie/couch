@@ -535,6 +535,11 @@ export async function activateWindow(id) {
       // the fixed sleep always did).
       await awaitGuardClaim(suspendStarted);
       await run(GUARD, ['kodi', '0']).catch(() => { /* nothing to supersede */ });
+    } else {
+      // No game to suspend, but a switcher-spawned kodi-guard may still be
+      // mid-window, and its invariant 2 would raise Kodi over the shown
+      // desktop. Same supersede as the plain-window path.
+      await run(GUARD, ['kodi', '0']).catch(() => { /* nothing to supersede */ });
     }
     return run('python3', [XINPUT, 'showdesktop']);
   }
@@ -569,5 +574,14 @@ export async function activateWindow(id) {
       return 'focusing';
     }
   }
+  // Every double-tap handoff spawns `steam-input-guard kodi 6`, and its
+  // invariant 2 raises Kodi over anything for the rest of that window. The
+  // game paths above supersede it through game-launch's own guard; this
+  // plain-window path did not, so picking "Steam" from the switcher lost
+  // the raise fight and bounced straight back to Kodi (seen live 23 Aug,
+  // raise-kodi(over Steam) in the guard log). A zero-length guard
+  // supersedes via the guard's SIGTERM handoff, same idiom as the desktop
+  // branch above.
+  await run(GUARD, ['kodi', '0']).catch(() => { /* no guard to supersede */ });
   return run('python3', [XINPUT, 'activate', id]);
 }

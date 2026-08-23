@@ -1,0 +1,25 @@
+# couchd stage 2 - the LATE half of the fence (found live, 23 Aug 2026).
+#
+# 72-couchd-own-dualsense.rules does TAG-="uaccess" believing that removes
+# the node from the uaccess builtin's queue. On this systemd it does not:
+# tags are STICKY (TAGS= keeps every tag ever set; TAG-= only edits
+# CURRENT_TAGS), and 73-seat-late.rules' TAG=="uaccess" matches the sticky
+# set. Verified with `udevadm test` on js1: CURRENT_TAGS=:seat: yet
+# "run: 'uaccess'" still fires, and the console ACL (user:ds2000:rw-) is
+# applied. That leaked js1 to Kodi next to the vpad = every press landed
+# twice (23 Aug evening).
+#
+# So: run AFTER 73 and strip the ACL the builtin just applied. RUN programs
+# execute in the order rules added them, which is why this must live in a
+# file numbered above 73 and cannot be a RUN+= in 72 (72's RUN would fire
+# BEFORE the uaccess builtin and be undone by it).
+#
+# setfacl -b drops only the extended ACL entries; root:couchd-input 0660
+# from 72 is untouched. Scoped exactly like 72's rules.
+#
+# Install:
+#   sudo cp ~/couch/couchd/stage2/74-couchd-fence-late.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+# Rollback is still: sudo couchd-input-release
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="aa:bb:cc:dd:ee:ff", RUN+="/usr/bin/setfacl -b $devnode"
+SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6*", RUN+="/usr/bin/setfacl -b $devnode"
