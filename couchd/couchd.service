@@ -39,20 +39,18 @@ RestartSec=10
 KillMode=mixed
 TimeoutStopSec=15
 
-# Hardening. couchd is a reader, so it can afford to be locked down hard.
+# Hardening - the MOUNT-SANDBOX half REMOVED at stage-2 flag day (23 Aug
+# 2026): in a USER manager, ProtectSystem/ProtectKernel*/ProtectControlGroups/
+# ProtectClock are implemented inside an implicit user namespace, and inside
+# that namespace the system user couchd-input (uid 994) is unmappable -
+# SO_PEERCRED on the supervisor socket read every inputproc connection as
+# uid 65534 (nobody) and peer_allowed refused the wire every 30s. The
+# no-namespace hardening below stays.
 NoNewPrivileges=yes
-# strict = the whole hierarchy read-only; the two ReadWritePaths below are the
-# only places couchd can write, which is the passivity claim made mechanical.
-ProtectSystem=strict
-ReadWritePaths=%h/couch/shadow /tmp
 # PrivateTmp MUST stay off: /tmp/game-session, /tmp/game-suspended,
 # /tmp/vpad.fifo and /tmp/steam-input-guard.pid are the shared truth it reads,
 # and /tmp/couchd.log is what the phone shows.
 PrivateTmp=no
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-ProtectClock=yes
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
