@@ -553,3 +553,39 @@ In rough order of value, from the survey:
   way to lose a maintainer.
 * **One title, one platform.** Bloodborne, Linux, RADV on RDNA4, signal-handler
   path. The `ENABLE_USERFAULTFD` path is untouched and untested.
+
+## FIRST LIVE RUN, 23 Aug ~22:05 - IT WORKS, ON BOTH AXES
+
+Donnie armed the v2 build himself and played ~15 minutes of Bloodborne:
+**"0 graphical issues and no fps hitches"**. Binary confirmed as v2 (the
+running process is the local build, and the census line carries the
+v2-only counters img_faults/claim_calls/claim_pages, which the dead v1
+probe never had).
+
+Measured over the 889s session, at the default 64KB claim window:
+
+| | stock baseline (22 Aug doc) | v2, live |
+|---|---|---|
+| faults/s | ~48,000 | **5,308** (9x fewer) |
+| fault time | ~85% of one core | **13.0% of one core** |
+| pages per mprotect | 1.0 | **12.8** |
+
+3.9% of faults (182,522 of 4,718,509) touched an image at all, so ~96%
+never needed the texture-cache lock - which is the separate lock-free
+check the design proposes, now with a number behind it.
+
+**And the rendering is clean**, which is the axis v1 failed. Fifteen
+minutes of play with no black entities and no multicoloured corpses,
+plus a title-screen capture where the Hunter renders in full colour and
+detail. That is the same scene class that showed the v1 corruption
+within minutes.
+
+**Honest caveats.** The 48k/s stock figure comes from the 22 Aug
+measurement, not from a controlled same-scene A/B run tonight, so the
+9x is indicative rather than defensible-for-upstream; `soak-v2.sh`
+exists to make it defensible. fault_ms is measured by our own probe,
+which adds two clock_gettime calls per fault, so it slightly
+over-reports its own cost. And the window has not been swept - Xenia
+measured 256KB as their sweet spot against our default 64KB, and at
+64KB we are claiming 12.8 of a possible 16 pages, so there may be more
+on the table (`SHADPS4_FAULT_CLAIM_WINDOW_KB`, no rebuild needed).
