@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""Record exactly what happens when a game closes.
+
+    quit-trace start --why power-menu-quit     (detaches, samples at 4Hz)
+    quit-trace mark wm-delete-asked windows=3  (from game-launch, timeline)
+    quit-trace done                            (close finished; tracer keeps
+                                                watching --post seconds for
+                                                late deaths, then summarises)
+    quit-trace report [trace.jsonl]            (human timeline, newest by
+                                                default, game-launch.log
+                                                say-lines merged in)
+
+WHY (23 Aug 2026, Donnie: "set something up so you can see exactly what
+happens when the game closes"): the 21 Aug Elden Ring quit leaked
+eldenring.exe for 22h49m and NOTHING recorded the death sequence - the
+only forensics were couchd's shadow log (which watches decisions, not
+process obituaries) and game-launch's say lines (which record what was
+ATTEMPTED, not what died). This tool records the other half: the process
+tree's actual states 4 times a second across the whole close, the
+windows, the flags, with game-launch's own steps as marks in the same
+timeline. One artifact per close in ~/couch/data/quit-traces/, with a
+digest the morning after a weird quit can be read from.
+
+What gets tracked: every pid in the quit roster (quit-sweep's capture),
+every process matching the game-world patterns (shadps4, gamescope,
+wine/.exe, pressure-vessel, Steam's reaper, steam_app), and every
+descendant of any of those - rebuilt each tick, so a process that
+REPARENTS AWAY mid-quit (the exact mechanism of the ER leak) stays
+tracked by its own identity instead of falling out of a tree walk.
+Kernel threads (empty cmdline) are never tracked, so 'reaper' can never
+match oom_reaper.
+
+The tracer is a bystander: it sends no signals, holds no locks, and
+dies on its own deadline (--max) even if nobody says done.
+"""
+import argparse
+import json
+import os
+import re
+import signal
+import sys
+import time
+
+OUT_DIR = os.path.expanduser('~/couch/data/quit-traces')
+CURRENT = '/tmp/quit-trace.current'
+PIDFILE = '/tmp/quit-trace.pid'
+DONEFLAG = '/tmp/quit-trace.done'
+SAY_LOG = '/tmp/game-launch.log'
+
+# What counts as game-world, by comm or first cmdline token. Matched against
+# OTHER processes read from /proc - the self-match trap does not apply, but
+# kernel threads (no cmdline) are excluded before matching.
+#
+# 'pressure-vessel' is deliberately NOT a seed (first smoke test, 23 Aug):
+# the idle Steam CLIENT's steamwebhelper tree also lives under an srt-bwrap
+# whose cmdline says pressure-vessel, and it flooded the report with a dozen
+# permanent "survivors". A GAME's pressure-vessel tree always descends from
+# Steam's reaper, so the reaper seed plus the descendant closure still
+# captures all of it; the client's web helper descends from steam itself and
+# now stays out of frame.
+PATTERNS = re.compile(
+    r'shadps4|gamescope|wine|steam_app|\.exe$|(^|/)reaper$',
+    re.IGNORECASE)
+
+FLAGS = ('/tmp/game-session', '/tmp/game-suspended', '/tmp/game-pids',
+         '/tmp/game-quit-roster', '/tmp/game-gamescope',
+         '/tmp/switcher-overlay')
+
+
+def read_stat(pid):
+    """(comm, state, ppid) from /proc/<pid>/stat, or None. Parsed from after
+    the last ')' because comm may contain anything."""
+    try:
+        with open(f'/proc/{pid}/stat', 'rb') as f:
+            raw = f.read().decode('ascii', 'replace')
+        comm = raw[raw.index('(') + 1:raw.rindex(')')]
+        rest = raw[raw.rindex(')') + 2:].split()
+        return comm, rest[0], int(rest[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def read_cmd(pid):
+    """First three argv words, or [] for a kernel thread / vanished pid."""
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            words = f.read().split(b'\0')
+        return [w.decode('utf-8', 'replace') for w in words[:3] if w]
+    except OSError:
+        return []
+
+
+def scan_procs():
+    """pid -> (comm, state, ppid) for every live process."""
+    out = {}
+    for d in os.listdir('/proc'):
+        if d.isdigit():
+            st = read_stat(int(d))
+            if st:
+                out[int(d)] = st
+    return out
+
+
+def tracked_set(procs, cmds, roster):
+    """The pids worth recording this tick. Pure, tested.
+
+    Roster pids, pattern matches (comm or first cmdline token; kernel
+    threads never match because their cmdline is empty and their comm is
+    not consulted), and the descendant closure of both - recomputed from
+    THIS tick's ppid map, so reparenting cannot lose anyone already
+    matched by identity."""
+    seeds = set()
+    for pid, (comm, _state, _ppid) in procs.items():
+        cmd = cmds.get(pid, [])
+        if not cmd:
+            continue  # kernel thread
+        if pid in roster or PATTERNS.search(comm) or PATTERNS.search(cmd[0]):
+            seeds.add(pid)
+    # Descendant closure over the ppid map.
+    children = {}
+    for pid, (_c, _s, ppid) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    out, queue = set(seeds), list(seeds)
+    while queue:
+        for kid in children.get(queue.pop(), []):
+            if kid not in out and cmds.get(kid):
+                out.add(kid)
+                queue.append(kid)
+    return out
+
+
+def read_windows():
+    """[[hex id, class]] of viewable toplevels on :0, or None if X is out of
+    reach. Best-effort by contract: a tracer must never die of an X error."""
+    try:
+        from Xlib import display as xdisplay
+        d = xdisplay.Display(os.environ.get('DISPLAY', ':0'))
+        try:
+            root = d.screen().root
+            # _NET_CLIENT_LIST, not query_tree: xfwm4 reparents every client
+            # into a class-less frame, so a toplevel walk sees only frames
+            # (the all-'?' first smoke test). The EWMH list is the clients
+            # themselves, with their real classes.
+            prop = root.get_full_property(
+                d.get_atom('_NET_CLIENT_LIST'), 0)
+            out = []
+            for wid in (prop.value if prop else []):
+                try:
+                    c = d.create_resource_object('window', int(wid))
+                    cls = c.get_wm_class() or ('', '')
+                    name = cls[1] or cls[0]
+                    if name:
+                        mapped = c.get_attributes().map_state == 2
+                        out.append([hex(int(wid)),
+                                    name if mapped else name + ' (unmapped)'])
+                except Exception:
+                    continue
+            return out
+        finally:
+            d.close()
+    except Exception:
+        return None
+
+
+def read_flags():
+    out = {}
+    for path in FLAGS:
+        try:
+            with open(path) as f:
+                out[os.path.basename(path)] = f.read().strip()[:120]
+        except OSError:
+            pass
+    return out
+
+
+def load_roster(path):
+    try:
+        with open(path) as f:
+            return {int(line.split()[0]) for line in f if line.split()}
+    except (OSError, ValueError):
+        return set()
+
+
+class Tracer:
+    """The sampling loop, synchronous and unit-testable; `start` daemonizes
+    around it. Emits JSONL: proc (a pid's identity, once), sample (states),
+    windows / flags (on change), mark (written by the CLI, not by us),
+    summary (the last line, always)."""
+
+    def __init__(self, path, why, roster_path, interval, post, max_s,
+                 done_flag=DONEFLAG):
+        self.path = path
+        self.why = why
+        self.roster_path = roster_path
+        self.interval = interval
+        self.post = post
+        self.max_s = max_s
+        self.done_flag = done_flag
+        self.seen = {}        # pid -> {comm, cmd, first, last, states:[(t, s)]}
+        self.last_windows = object()
+        self.last_flags = object()
+
+    def emit(self, rec):
+        with open(self.path, 'a') as f:
+            f.write(json.dumps(rec) + '\n')
+
+    def tick(self, now):
+        procs = scan_procs()
+        cmds = {pid: read_cmd(pid) for pid in procs}
+        roster = load_roster(self.roster_path)
+        live = tracked_set(procs, cmds, roster)
+        states = {}
+        for pid in sorted(live):
+            comm, state, ppid = procs[pid]
+            states[str(pid)] = state
+            rec = self.seen.get(pid)
+            if rec is None:
+                rec = {'comm': comm, 'cmd': cmds[pid], 'first': now,
+                       'last': now, 'states': [(now, state)]}
+                self.seen[pid] = rec
+                self.emit({'kind': 'proc', 't': round(now, 3), 'pid': pid,
+                           'comm': comm, 'ppid': ppid, 'cmd': cmds[pid],
+                           'roster': pid in roster})
+            rec['last'] = now
+            if rec['states'][-1][1] != state:
+                rec['states'].append((now, state))
+        self.emit({'kind': 'sample', 't': round(now, 3), 'states': states})
+        flags = read_flags()
+        if flags != self.last_flags:
+            self.last_flags = flags
+            self.emit({'kind': 'flags', 't': round(now, 3), 'flags': flags})
+        return states
+
+    def tick_windows(self, now):
+        wins = read_windows()
+        if wins is not None and wins != self.last_windows:
+            self.last_windows = wins
+            self.emit({'kind': 'windows', 't': round(now, 3), 'wins': wins})
+
+    def summarise(self, now):
+        procs = {}
+        survivors = []
+        for pid, rec in sorted(self.seen.items()):
+            gone = now - rec['last'] > self.interval * 2
+            entry = {'comm': rec['comm'], 'cmd': rec['cmd'],
+                     'first': round(rec['first'], 3),
+                     'states': [[round(t, 3), s] for t, s in rec['states']]}
+            if gone:
+                entry['died'] = round(rec['last'], 3)
+            else:
+                entry['survived'] = True
+                survivors.append(pid)
+            procs[str(pid)] = entry
+        self.emit({'kind': 'summary', 't': round(now, 3), 'why': self.why,
+                   'procs': procs, 'survivors': survivors})
+        return survivors
+
+    def run(self, clock=time.monotonic, wall=time.time, sleep=time.sleep):
+        t0 = clock()
+        self.emit({'kind': 'begin', 't': round(wall(), 3), 'why': self.why})
+        done_at = None
+        next_windows = 0.0
+        while True:
+            now = clock()
+            self.tick(wall())
+            if now >= next_windows:
+                next_windows = now + 1.0
+                self.tick_windows(wall())
+            if done_at is None and os.path.exists(self.done_flag):
+                done_at = now
+                self.emit({'kind': 'mark', 't': round(wall(), 3),
+                           'label': 'done-signal'})
+            if done_at is not None and now - done_at >= self.post:
+                break
+            if now - t0 >= self.max_s:
+                self.emit({'kind': 'mark', 't': round(wall(), 3),
+                           'label': 'max-deadline'})
+                break
+            sleep(self.interval)
+        return self.summarise(wall())
+
+
+# -- CLI ------------------------------------------------------------------
+def current_trace():
+    try:
+        with open(CURRENT) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def tracer_alive():
+    try:
+        with open(PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_start(args):
+    if tracer_alive():
+        # A self-exit tracer may already be running when close_games starts;
+        # its marks land in the running trace, which is the right behaviour.
+        print(f'quit-trace: already tracing {current_trace()}')
+        return 0
+    os.makedirs(args.out_dir, exist_ok=True)
+    path = os.path.join(
+        args.out_dir,
+        time.strftime('quit-%Y%m%d-%H%M%S') + f'-{args.why}.jsonl')
+    for f in (DONEFLAG,):
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+    if os.fork():
+        print(f'quit-trace: tracing -> {path}')
+        return 0
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    with open(CURRENT, 'w') as f:
+        f.write(path)
+    with open(PIDFILE, 'w') as f:
+        f.write(str(os.getpid()))
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        Tracer(path, args.why, args.roster, args.interval, args.post,
+               args.max).run()
+    finally:
+        for f in (CURRENT, PIDFILE, DONEFLAG):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+    os._exit(0)
+
+
+def cmd_mark(args):
+    path = current_trace()
+    if not path:
+        return 0  # no trace running; marks are always best-effort
+    fields = {}
+    for kv in args.fields:
+        k, _, v = kv.partition('=')
+        fields[k] = v
+    with open(path, 'a') as f:
+        f.write(json.dumps({'kind': 'mark', 't': round(time.time(), 3),
+                            'label': args.label, **fields}) + '\n')
+    return 0
+
+
+def cmd_done(_args):
+    if current_trace():
+        with open(DONEFLAG, 'w') as f:
+            f.write(str(time.time()))
+    return 0
+
+
+def say_lines(t_lo, t_hi):
+    """game-launch.log lines whose HH:MM:SS.mmm stamp falls in the window,
+    as (t, text). Stamps carry no date; anchor on t_lo's day and accept the
+    day either side, which survives a close that crosses midnight."""
+    out = []
+    try:
+        lines = open(SAY_LOG, errors='replace').read().splitlines()[-2000:]
+    except OSError:
+        return out
+    day = time.strftime('%Y-%m-%d', time.localtime(t_lo))
+    for line in lines:
+        m = re.match(r'(\d\d:\d\d:\d\d\.\d\d\d) (.*)', line)
+        if not m:
+            continue
+        for offset in (0, -86400, 86400):
+            try:
+                t = time.mktime(time.strptime(
+                    f'{day} {m.group(1)[:8]}', '%Y-%m-%d %H:%M:%S')) \
+                    + float(m.group(1)[8:]) + offset
+            except ValueError:
+                continue
+            if t_lo - 2 <= t <= t_hi + 2:
+                out.append((t, m.group(2)))
+                break
+    return out
+
+
+def cmd_report(args):
+    path = args.trace
+    if not path:
+        traces = sorted(
+            (os.path.join(args.out_dir, f) for f in os.listdir(args.out_dir)
+             if f.endswith('.jsonl')), key=os.path.getmtime)
+        if not traces:
+            print('no traces recorded yet')
+            return 1
+        path = traces[-1]
+    recs = []
+    with open(path) as f:
+        for line in f:
+            try:
+                recs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if not recs:
+        print(f'{path}: empty')
+        return 1
+    t0, t_end = recs[0]['t'], recs[-1]['t']
+    summary = next((r for r in reversed(recs) if r['kind'] == 'summary'), None)
+    events = []
+    for r in recs:
+        if r['kind'] == 'proc':
+            tag = ' [roster]' if r.get('roster') else ''
+            events.append((r['t'], f"+ {r['pid']} {r['comm']}{tag} "
+                                   f"({' '.join(r['cmd'])[:70]})"))
+        elif r['kind'] == 'mark':
+            extra = {k: v for k, v in r.items() if k not in ('kind', 't', 'label')}
+            events.append((r['t'], f"** {r['label']}"
+                                   + (f' {extra}' if extra else '')))
+        elif r['kind'] == 'flags':
+            events.append((r['t'], f"flags: {r['flags'] or '(none)'}"))
+        elif r['kind'] == 'windows':
+            events.append((r['t'], 'windows: '
+                           + (', '.join(c for _i, c in r['wins']) or '(none)')))
+    if summary:
+        for pid, p in summary['procs'].items():
+            for st_t, st in p['states'][1:]:
+                events.append((st_t, f"   {pid} {p['comm']}: -> {st}"))
+            if 'died' in p:
+                events.append((p['died'], f"- {pid} {p['comm']} gone"))
+    for t, text in say_lines(t0, t_end):
+        events.append((t, f"   say: {text}"))
+    print(f'{path}\n{"=" * 78}')
+    for t, text in sorted(events, key=lambda e: e[0]):
+        print(f'{t - t0:+8.2f}s  {text}')
+    if summary:
+        print('=' * 78)
+        if summary['survivors']:
+            print('SURVIVORS (alive when the trace ended):')
+            for pid in summary['survivors']:
+                p = summary['procs'][str(pid)]
+                print(f"  {pid} {p['comm']} ({' '.join(p['cmd'])[:70]})")
+        else:
+            print('CLEAN: every tracked process died before the trace ended.')
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('start')
+    s.add_argument('--why', default='quit')
+    s.add_argument('--roster', default='/tmp/game-quit-roster')
+    s.add_argument('--interval', type=float, default=0.25)
+    s.add_argument('--post', type=float, default=45.0,
+                   help='keep sampling this long after done (late deaths)')
+    s.add_argument('--max', type=float, default=240.0,
+                   help='hard deadline even if done never arrives')
+    s.add_argument('--out-dir', default=OUT_DIR)
+    m = sub.add_parser('mark')
+    m.add_argument('label')
+    m.add_argument('fields', nargs='*')
+    sub.add_parser('done')
+    r = sub.add_parser('report')
+    r.add_argument('trace', nargs='?')
+    r.add_argument('--out-dir', default=OUT_DIR)
+    args = p.parse_args(argv)
+    return {'start': cmd_start, 'mark': cmd_mark,
+            'done': cmd_done, 'report': cmd_report}[args.cmd](args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
