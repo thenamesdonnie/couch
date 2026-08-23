@@ -1,0 +1,28 @@
+# couchd stage 2 - give the DualSense to couchd-input, and to nobody else.
+# THE ARMED (flag day) VERSION, prepared 23 Aug 2026: the rig line is
+# commented, the real-pad pair is live. Install:
+#   sudo cp ~/couch/couchd/stage2/72-couchd-own-dualsense.rules.armed \
+#        /etc/udev/rules.d/72-couchd-own-dualsense.rules
+# Rollback is always: sudo couchd-input-release
+#
+# Priority 72 is load-bearing: it must run BEFORE 73-seat-late.rules queues
+# the uaccess builtin, so that TAG-="uaccess" actually removes the tag from
+# the queue rather than fighting an ACL that has already been applied.
+# (This is what beats InputPlumber's priority-96 + runtime-chmod race.)
+#
+# MODE is 0660, NOT 0640: evdev force-feedback playback is a write(), and
+# a read-only node makes every rumble upload fail somewhere confusing
+# hours later (SR2, finding F2/F12/F22).
+#
+# Ordering note: 71-dualsense-uaccess.rules currently ADDS uaccess for the
+# real pad. It runs first (71 < 72), so this file's TAG-= undoes it. Do not
+# renumber either file without re-checking that.
+#
+# The rig line, disarmed (E-ladder use only):
+#SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="de:ad:be:ef:fa:ce", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
+
+# THE REAL PAD (evdev + joystick, MAC-scoped) and its hidraw (which cannot
+# be MAC-scoped - no uniq exists in hidraw's sysfs ancestry - so it hides
+# EVERY DualSense on the box; the vpad is an X-Box 360 pad and is untouched).
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="aa:bb:cc:dd:ee:ff", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
+SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6*", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660"
