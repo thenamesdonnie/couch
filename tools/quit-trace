@@ -64,7 +64,7 @@ PATTERNS = re.compile(
 
 FLAGS = ('/tmp/game-session', '/tmp/game-suspended', '/tmp/game-pids',
          '/tmp/game-quit-roster', '/tmp/game-gamescope',
-         '/tmp/switcher-overlay')
+         '/tmp/switcher-overlay', '/tmp/pad-user-action')
 
 
 def read_stat(pid):

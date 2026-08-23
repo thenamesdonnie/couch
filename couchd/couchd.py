@@ -80,6 +80,11 @@ GUARD_BIN = '/home/ds2000/.local/bin/steam-input-guard'
 TMP_DIR = '/tmp'
 WATCHED_TMP = {'game-session', 'game-suspended', 'vpad.fifo',
                'steam-input-guard.pid', 'tv-wake-request',
+               # The phone's pad connect/disconnect breadcrumb (server
+               # sys.js writes it): observed so a 'pad-disconnected'
+               # transition sits next to its "that was Donnie" attribution
+               # in the same log. Nothing decides on it.
+               'pad-user-action',
                # the stage-3 wrap's bridges: game-launch writes the nested
                # display (":1") while a wrapped session runs; the overlay
                # switcher rail announces itself while it owns the pad.

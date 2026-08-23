@@ -154,8 +154,22 @@ function bluetooth(cmd) {
   });
 }
 
-export const padConnect = () => bluetooth('connect');
-export const padDisconnect = () => bluetooth('disconnect');
+// Attribution breadcrumb: couchd logs 'pad: present -> absent
+// (pad-disconnected)' identically whether Bluetooth dropped on its own or
+// Donnie pressed the button in this app - and on 23 Aug the morning's
+// forensics blamed the hardware for a disconnect he asked for. One file,
+// newest action wins; couchd watches it, quit-trace tapes it, and anyone
+// reading a pad transition correlates by the timestamp inside.
+const PAD_EVENT_FILE = '/tmp/pad-user-action';
+function padBreadcrumb(action) {
+  try {
+    fs.writeFileSync(PAD_EVENT_FILE,
+      `${new Date().toISOString()} ${action} via couch-app\n`);
+  } catch { /* attribution is best-effort, never blocks the action */ }
+}
+
+export const padConnect = () => { padBreadcrumb('connect'); return bluetooth('connect'); };
+export const padDisconnect = () => { padBreadcrumb('disconnect'); return bluetooth('disconnect'); };
 
 // --- TV and lights: shell out to the CLIs that already know the quirks. ---
 // Both are slow (the tv connect settles, lights rediscover every call), so
