@@ -437,7 +437,30 @@ mode-keeper.service restarted. REAL verification = next phone launch
 with the TV asleep: /tmp/game-launch.log should show launch-assert
 lines and the session should hold 120Hz.
 
-**GAMESCOPE: TWO SOAKS RUNNING TONIGHT, verdicts land by ~05:00.**
+**SOAK 1 VERDICT (01:52): stock 3.16.25 SURVIVED 3h in-game at 4K120
+headless - the crash does NOT reproduce on the headless backend in 3h.**
+That is the weak-evidence branch: it does not clear 3.16.25 (the live
+crash was on the SDL backend presenting a real 4K120 stream, which
+headless cannot exercise), it just means headless soaking cannot
+discriminate. Teardown clean (joystick + watcher restored). soak120-2
+(fix build, verified launching src/gamescope-fix/build) started 01:52:45.
+
+**SOAK 2 VERDICT (04:57): the FIX BUILD also SURVIVED 3h in-game at
+4K120 headless; chain exited 0, teardown clean both times, zero strays,
+MangoHud CSVs for both runs in data/gamescope-soak/.** Net: headless
+cannot reproduce the SDL-backend crash, so the soaks cannot discriminate
+- but the fix build is proven stable under everything headless can
+throw, and the bug it fixes is real upstream (an unbounded layer-array
+write, the exact malloc-corruption shape). RECOMMENDATION: when you
+want the rail back, run the wrap on the fix build for a supervised
+evening: `touch ~/couch/data/gamescope-fix-build` (the new lever in
+game-launch, logs "FIX BUILD e42aa76" at launch) then
+`touch ~/couch/data/gamescope-shadps4-enabled`. First crash = rm both,
+you are back to bare in one launch. The -r 60 interim remains the
+conservative alternative. Re-enabling is YOUR call - it risks a live
+session, and headless proved nothing about the crash path.
+
+**GAMESCOPE: TWO SOAKS RAN OVERNIGHT (both done by 05:00).**
 soak120-1 = stock 3.16.25, headless 3840x2160@120, isolated dbg-userdir,
 fake-pad in-game since 22:52, 3h; results in
 ~/couch/data/gamescope-soak/. A chain script then runs soak120-2 with
