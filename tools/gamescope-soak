@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# gamescope-at-4K120 heap-corruption soak (22 Aug 2026, overnight).
+#
+#   gamescope-soak.sh <label> [soak-seconds]
+#
+# The 22:16 live crash: gamescope 3.16.25 aborted (glibc "malloc(): unsorted
+# double linked list corrupted", SIGABRT) at its FIRST EVER -r 120 / 4K120
+# session, and gamescopereaper killed the healthy emulator. This rig re-runs
+# that shape headless for hours: same output size and rate as the crash
+# (3840x2160 @ 120), isolated userdir, fake pad driving real in-game
+# activity. Derived from autosave-rig.sh (same isolation + inhibitions).
+#
+# Fidelity caveat, on purpose: the crash was on gamescope's SDL backend
+# presenting to :0; this soak uses --backend headless (the only safe
+# overnight option - Kodi owns :0). A bug in the SDL presentation path
+# will not reproduce here; a general 4K120 compositor-loop bug will.
+#
+# Exit codes: 0 soak survived, 2 never reached in-game, 3 WRAP DIED.
+set -u
+
+LABEL="${1:?usage: gamescope-soak.sh <label> [soak-secs]}"
+IDLE="${2:-10800}"
+BASE=~/src/shadps4-dbg
+OUT="${RIG_OUT:-$HOME/couch/data/gamescope-soak}"
+KODI=http://localhost:8090/jsonrpc
+AUTH=kodi:$KODI_PASSWORD
+
+say() { echo "$(date +%H:%M:%S) soak: $*"; }
+kodi_joystick() {
+  curl -s -u $AUTH -H 'Content-Type: application/json' -d \
+    "{\"jsonrpc\":\"2.0\",\"method\":\"Settings.SetSettingValue\",\"params\":{\"setting\":\"input.enablejoystick\",\"value\":$1},\"id\":1}" $KODI >/dev/null
+}
+
+[ -e /tmp/game-session ] && { say "REFUSING: live game session"; exit 1; }
+[ -x "$BASE/build/shadps4" ] || { say "no build at $BASE/build/shadps4"; exit 1; }
+mkdir -p "$OUT"
+
+MHCONF=$OUT/.mangohud-soak.conf
+printf 'no_display\noutput_folder=%s\nautostart_log=1\nlog_duration=%s\nlog_interval=0\n' "$OUT" $((IDLE + 3600)) > "$MHCONF"
+
+say "fake pad up"
+~/couch/tools/fake-pad up > "$OUT/$LABEL.pad.log" 2>&1 &
+RIGPID=$!
+for i in $(seq 30); do grep -q "power_supply: present" "$OUT/$LABEL.pad.log" 2>/dev/null && break; sleep 1; done
+grep -q "power_supply: present" "$OUT/$LABEL.pad.log" || { say "fake pad failed"; kill $RIGPID 2>/dev/null; exit 1; }
+
+kodi_joystick false; say "kodi joystick disabled"
+systemctl --user stop pad-home.service && say "pad-home-watcher inhibited"
+
+cleanup() {
+  say "teardown"
+  [ -n "${WRAPPID:-}" ] && kill -TERM "$WRAPPID" 2>/dev/null
+  sleep 3
+  # Kill-belt (ops note 22 Aug: one emulator survived a surgical teardown):
+  # exact-first-token match for the local build, never a substring.
+  for p in $(pgrep -f "^$BASE/build/shadps4"); do kill -KILL "$p" 2>/dev/null; done
+  pgrep -x gamescope >/dev/null && pkill -TERM -x gamescope 2>/dev/null
+  ~/couch/tools/fake-pad quit >/dev/null 2>&1
+  kodi_joystick true; say "kodi joystick restored"
+  systemctl --user start pad-home.service && say "pad-home-watcher restored"
+}
+trap 'say "SIGNAL: got TERM"' TERM
+trap 'say "SIGNAL: got INT"' INT
+trap 'say "SIGNAL: got HUP"' HUP
+trap cleanup EXIT
+
+DBGLOG="$BASE/dbg-userdir/shadPS4/log/shad_log.txt"
+mkdir -p "$(dirname "$DBGLOG")"; : > "$DBGLOG"
+
+say "launching isolated emulator inside headless gamescope 3840x2160@120"
+XDG_DATA_HOME="$BASE/dbg-userdir" SDL_AUDIODRIVER=dummy \
+MANGOHUD=1 MANGOHUD_CONFIGFILE="$MHCONF" \
+GSWRAP_LOG="$OUT/$LABEL.gswrap.log" \
+~/couch/tools/gamescope-wrap --backend headless --output 3840x2160 --rate 120 -- \
+  "$BASE/build/shadps4" -f true -g /home/ds2000/games/ps4/CUSA00900/eboot.bin \
+  > "$OUT/$LABEL.emu.log" 2>&1 &
+WRAPPID=$!
+
+say "waiting for title screen"
+for i in $(seq 120); do
+  grep -q "GetGraphicsPipeline\|CompileModule" "$DBGLOG" 2>/dev/null && break; sleep 2
+done
+sleep 20
+say "pressing through menus"
+for i in $(seq 8); do
+  ~/couch/tools/fake-pad press cross >/dev/null 2>&1
+  sleep 5
+  if grep -q "savedata0/userdata0000" "$DBGLOG" 2>/dev/null; then break; fi
+done
+for i in $(seq 60); do
+  grep -q "savedata0/userdata0000" "$DBGLOG" 2>/dev/null && break; sleep 3
+done
+if ! grep -q "savedata0/userdata0000" "$DBGLOG" 2>/dev/null; then
+  say "FAILED to reach in-game (no savedata writes seen)"; exit 2
+fi
+
+START=$(date +%s)
+say "IN-GAME - soaking for $IDLE s with stick-wiggle activity, watching the wrap"
+END=$(( START + IDLE ))
+while [ "$(date +%s)" -lt "$END" ]; do
+  if ! kill -0 "$WRAPPID" 2>/dev/null; then
+    ALIVE=$(( $(date +%s) - START ))
+    say "WRAP DIED after ${ALIVE}s in-game - signatures follow"
+    grep -aiE 'malloc|corrupt|double free|abort|assert|signal|Killing' \
+      "$OUT/$LABEL.gswrap.log" "$OUT/$LABEL.emu.log" 2>/dev/null | tail -20
+    exit 3
+  fi
+  ~/couch/tools/fake-pad axis lx 1  >/dev/null 2>&1; sleep 1
+  ~/couch/tools/fake-pad axis lx 0  >/dev/null 2>&1; sleep 1
+  ~/couch/tools/fake-pad press circle >/dev/null 2>&1; sleep 1
+  ~/couch/tools/fake-pad axis lx -1 >/dev/null 2>&1; sleep 1
+  ~/couch/tools/fake-pad axis lx 0  >/dev/null 2>&1; sleep 1
+  ~/couch/tools/fake-pad press circle >/dev/null 2>&1; sleep 1
+done
+say "SOAK SURVIVED: $IDLE s in-game at 4K120 headless, wrap still alive"
+exit 0
