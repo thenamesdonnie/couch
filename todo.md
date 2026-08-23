@@ -414,6 +414,20 @@ PiP is up - MangoHud showed GPU 58->65% tonight); the audio question
 (both sources mix on the soundbar; mpv volume/mute is now on the phone
 panel, headphone routing still undecided).
 
+**CLOSE FORENSICS (23 Aug morning, Donnie: "set something up so you can
+see exactly what happens when the game closes"): tools/quit-trace
+(7a4ab4b, 11 tests) records every close** - process states at 4Hz
+(roster + game-world patterns + descendant closure, reparent-proof),
+EWMH windows, flag lifecycle, game-launch's steps as marks - one
+artifact per close in data/quit-traces/, `tools/quit-trace report` for
+the merged timeline + survivor list. Hooked in game-launch: close_games
+(commanded quits, marks at thaw/WM_DELETE/sweeps/emu TERM-KILL) AND
+each mode's self-exit detection (the path the ER leak used), done in
+the EXIT trap, 45s post-window for late deaths. Smoke-tested twice;
+first real artifact arrives with the next game quit. Traps learned:
+Steam's idle client tree must not seed the tracker (reaper's closure
+covers real games), and xfwm4 frames hide classes from toplevel walks.
+
 **THE 21:42 "ELDEN RING OUT OF NOWHERE" IS FIXED, and the todo's first
 read of it was WRONG.** The shadow log (couchd-20260822.jsonl, seq
 ~111810) shows /tmp/game-suspended='1245620' ON DISK at the tap - 23h-
