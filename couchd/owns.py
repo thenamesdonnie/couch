@@ -23,7 +23,13 @@ import re
 import time
 
 HOME = os.path.expanduser('~')
-DEFAULT_PATH = os.path.join(HOME, 'couch', 'couchd', 'owns.conf')
+# owns.conf lives NEXT TO THIS MODULE, and that is how it must be found:
+# inputproc runs as the system user couchd-input whose $HOME is /nonexistent
+# (deliberately - INSTALL.md step 1), so a HOME-based path resolved to a file
+# that can never exist and "absent = own nothing" silently ate the stage-2
+# flip (23 Aug: restart came up "grants input: False" with the conf armed).
+DEFAULT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'owns.conf')
 
 # couchd's heartbeat. A responsibility is only YIELDED by the legacy scripts
 # while the daemon that took it is demonstrably alive: `systemctl --user stop
