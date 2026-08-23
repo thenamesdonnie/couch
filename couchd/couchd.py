@@ -333,6 +333,10 @@ class Observed:
     double_tap_pending: bool = False       # ...and its double twin: a
     #                                        DOUBLE_TAP decided while the
     #                                        machine sat in idle throughout
+    tap_pending: bool = False              # ...and the single tap's: a TAP
+    #                                        whose press+release fell inside
+    #                                        one pass (~100ms taps vs ~100ms
+    #                                        passes - ordinary, not a stall)
 
     # The PS-button key bindings, as the addon's settings page left them.
     # BOTH stacks read the same file through ~/couch/couchd/gestureconf.py -
@@ -693,6 +697,23 @@ def g_released_double_coalesced(o):
             and o.double_tap_pending)
 
 
+def g_released_tap_coalesced(o):
+    """A whole SINGLE tap swallowed by one pass: press and release both
+    landed between two looks, the machine sat in idle, and the tap vanished.
+
+    Found live 23 Aug (stage-2 flip night), five taps eaten in a row at a
+    frozen Hollow Knight: human taps run 90-145ms and a pass costs 50-130ms,
+    so unlike the stall-only hold/double variants above this is a COIN FLIP
+    on every ordinary tap - the wire batches edges, the pass samples levels,
+    and a fast tap fits entirely inside the gap. Guarded on the tracker's
+    consumable tap marker (never press_duration alone - the stale-arming
+    lesson), and it lands in 'tap-wait', NOT straight at the tap's action:
+    tap-wait is where a seen tap goes, so the double-tap window, the deferred
+    resume (g_tap_resume_due) and the bound-tap fire (g_tap_window_fire) all
+    apply exactly as if the pass had caught the press."""
+    return not o.button_down and o.tap_pending
+
+
 def g_released_double(o):
     """The second half of a double-tap: released, itself a tap, and it began
     inside DOUBLE_TAP_S of the previous tap's release.
@@ -948,7 +969,12 @@ TRANSITIONS = {
                  # coalesced, decided by the tracker's consumable marker
                  # (see g_released_double_coalesced).
                  ('released_double_coalesced', 'double-tap',
-                  'ps-double-tap-coalesced')],
+                  'ps-double-tap-coalesced'),
+                 # ...and a whole SINGLE tap swallowed by ONE pass - not a
+                 # stall exotic like the two above but a coin flip on every
+                 # ordinary ~100ms tap (see g_released_tap_coalesced). It
+                 # resumes life in tap-wait, where a seen tap would be.
+                 ('released_tap_coalesced', 'tap-wait', 'ps-tap-coalesced')],
         # The hold is tried first, exactly as before; the long-hold tier below
         # it is unreachable unless `hold` is bound to Nothing (g_hold_fires /
         # g_long_hold_fires), so under the default bindings this list is the
@@ -3649,6 +3675,8 @@ class PadObserver:
         lambda self: self.tracker.hold_release_k is not None)
     double_tap_pending = property(
         lambda self: self.tracker.double_tap_k is not None)
+    tap_pending = property(
+        lambda self: self.tracker.tap_k is not None)
 
     @property
     def present(self):
@@ -4915,6 +4943,11 @@ class Couchd:
             # idle marker - the double is taken; the marker must not re-fire
             # it once the switcher decides and the region returns to idle.
             self.pad.tracker.consume_double_tap()
+        if region == 'gesture' and to == 'tap-wait':
+            # Same spend for the single-tap marker: the ordinary down->
+            # tap-wait walk and the coalesced idle->tap-wait jump both land
+            # here, and either way the tap is now in the window's hands.
+            self.pad.tracker.consume_tap()
 
     def _on_intent(self, intent):
         self.recent[intent.key] = time.monotonic()
@@ -5175,6 +5208,7 @@ class Couchd:
             double_armed=self.pad.double_armed,
             hold_release_pending=self.pad.hold_release_pending,
             double_tap_pending=self.pad.double_tap_pending,
+            tap_pending=self.pad.tap_pending,
             # Re-read every pass; gestureconf.load() is a stat() unless the
             # file changed, so a rebind takes effect on the next tick without
             # a restart, exactly as it does in the watcher.

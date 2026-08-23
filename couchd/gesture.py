@@ -290,6 +290,14 @@ class PressTracker:
         # serve here: it deliberately survives the release for explanation,
         # so an idle-state guard on it would re-fire forever.
         self.double_tap_k = None        # kernel ts of the last DOUBLE_TAP
+        # ...and the SINGLE tap's twin (23 Aug, stage-2 flip night): a TAP
+        # whose press and release both landed inside one pass. Human taps run
+        # 90-145ms and a pass costs 50-130ms, so this is not a stall exotic -
+        # it is a coin flip on every ordinary tap, and the eaten side used to
+        # leave the player mashing PS at a frozen game. Same contract as the
+        # markers above: cleared on the next press, on reset(), consumed by
+        # the region that takes it.
+        self.tap_k = None               # kernel ts of the last completed TAP
 
     # -- clock ------------------------------------------------------------
     def note_event(self, k, wall=None):
@@ -323,6 +331,7 @@ class PressTracker:
             self.long_hold_fired = False
             self.hold_release_k = None   # a new press supersedes the markers
             self.double_tap_k = None
+            self.tap_k = None
             self.presses += 1
             gap = (None if self.last_tap_ended_k is None
                    else k - self.last_tap_ended_k)
@@ -364,6 +373,7 @@ class PressTracker:
                 self.double_tap_k = k
                 return DOUBLE_TAP
             self.last_tap_ended_k = k
+            self.tap_k = k
             return TAP
         return None
 
@@ -428,6 +438,7 @@ class PressTracker:
         self.double_armed = False
         self.hold_release_k = None
         self.double_tap_k = None
+        self.tap_k = None
 
     def consume_hold_release(self):
         """The consumer (couchd's gesture region entering hold-fired or
@@ -439,3 +450,9 @@ class PressTracker:
         """Same contract as consume_hold_release, for the double marker:
         entering the double-tap state spends it, whichever edge got there."""
         self.double_tap_k = None
+
+    def consume_tap(self):
+        """Same contract again, for the single-tap marker: entering tap-wait
+        spends it, whether the machine walked there through 'down' or jumped
+        straight from idle off this marker."""
+        self.tap_k = None

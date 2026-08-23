@@ -2234,3 +2234,47 @@ def test_a_same_batch_freeze_still_iconifies_the_frozen_window():
         'are observed-state and this batch does the freezing itself')
     assert order.index(('iconify', APPID)) > order.index(('snapshot', APPID)), (
         'iconify frees the compositing pixmap the freeze-frame is read from')
+
+
+def test_a_whole_tap_swallowed_by_one_pass_still_resumes_the_game():
+    """Press AND release of an ordinary ~100ms tap inside one pass gap: the
+    machine sat in idle throughout and the tap used to vanish - five in a
+    row eaten live at a frozen Hollow Knight (23 Aug, stage-2 flip night).
+    Unlike the hold/double variants this needs no stall: human taps run
+    90-145ms and a pass costs 50-130ms, so the coin flips on every tap. The
+    tracker's consumable marker (tap_pending) carries the decision, and the
+    machine resumes life in tap-wait exactly as if it had seen the press."""
+    rig = Rig(session=SESSION, suspended=APPID, pid_states={200: 'T'},
+              joystick=True).settle()
+    got = rig.observe(button_down=False, press_duration=0.09,
+                      tap_pending=True)
+    assert rig.machine.regions['gesture'] == 'tap-wait', \
+        'the swallowed tap must land where a seen tap goes'
+    assert not find(got, 'launch'), 'the double-tap window still applies'
+    # the daemon consumes the marker on the tap-wait transition; the window
+    # then expires and the deferred resume fires exactly as for a seen tap
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.05, button_down=False,
+                      press_duration=0.09, tap_pending=False)
+    assert rig.machine.regions['gesture'] == 'tap-resume'
+    launch = find(got, 'launch')
+    assert launch and launch[0].args['mode'] == 'resume'
+    # ...and a spent marker must not re-fire from idle
+    rig.observe(button_down=False, press_duration=0.09, tap_pending=False)
+    rig.observe(button_down=False, press_duration=0.09, tap_pending=False)
+    assert rig.machine.regions['gesture'] == 'idle'
+
+
+def test_the_tracker_sets_and_spends_the_tap_marker():
+    """SR4: the marker is the tracker's decision, in kernel time - set at a
+    TAP, superseded by a new press, spent by consume_tap()."""
+    t = gesture.PressTracker()
+    t.feed(1000.0, 1, wall=500.0)
+    assert t.tap_k is None
+    t.feed(1000.1, 0, wall=500.1)
+    assert t.tap_k is not None, 'a completed tap arms the marker'
+    t.consume_tap()
+    assert t.tap_k is None
+    # a hold never arms it
+    t.feed(1002.0, 1, wall=502.0)
+    t.feed(1003.5, 0, wall=503.5)
+    assert t.tap_k is None
