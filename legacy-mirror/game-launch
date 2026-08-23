@@ -441,6 +441,26 @@ curtain_fade() {  # <subject> - dissolve to reveal whatever the shuffle put up
   return 0
 }
 
+curtain_hold() {  # <subject> - dissolve, but leave the daemon WARM (23 Aug 2026)
+  # The suspend arm's fade: the daemon stays resident, unmapped, with the
+  # freeze-frame still uploaded to the server, so resume_game's curtain_show
+  # of the same frame is a map+raise (a few ms) instead of the ~1.15s cold
+  # rebuild that used to run bare over the player-visible beat of the tap.
+  # The hold cannot leak: the daemon retires by itself when the suspended
+  # flag goes (resume, quit, different-game-picked all remove it), or after
+  # 4h, and a MAPPED curtain keeps the tool's normal watchdog either way.
+  # COUCH_CURTAIN_HOLD_FLAG rides along so the tool watches THIS script's
+  # flag file even when the test seam moves it.
+  [ "$CURTAIN_UP" = 1 ] || return 0
+  CURTAIN_UP=0
+  intent curtain_fade "${1:-transition}" wm_class=couch-curtain \
+    via=tools-curtain warm=true "mode=$MODE"
+  COUCH_CURTAIN_HOLD_FLAG="$SUSPENDED" \
+    timeout 5 "$CURTAIN" fade --hold >/dev/null 2>&1 || true
+  say "curtain faded (daemon left warm for the resume)"
+  return 0
+}
+
 curtain_clear() {  # <reason> - error paths: nothing may sit over a broken state
   [ -x "$CURTAIN" ] || return 0
   if [ "$CURTAIN_UP" != 1 ]; then
@@ -1086,8 +1106,9 @@ case "$MODE" in
     # Kodi has the screen now, so the frozen window can go. After snap_paused
     # above, which reads the compositing pixmap that iconifying frees.
     [ "$frozen" = 1 ] && hide_frozen_game "${appid:-game}"
-    # Kodi is focused and the frozen window is gone: dissolve to reveal it.
-    curtain_fade kodi
+    # Kodi is focused and the frozen window is gone: dissolve to reveal it -
+    # warm, so the coming resume's curtain is a map, not a rebuild.
+    curtain_hold kodi
     # 9>&- : the guard outlives us by seconds, and an inherited lock fd would
     # keep the session lock held for all of them. (Closing an unopened fd is a
     # no-op, so this is safe whether or not the lock was taken.)

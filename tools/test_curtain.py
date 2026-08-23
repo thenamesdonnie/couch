@@ -476,3 +476,166 @@ def test_fade_and_status_with_nothing_up(rig):
     assert rig.run('fade').returncode == 0
     assert rig.run('clear').returncode == 0
     assert rig.run('status').returncode != 0
+
+
+# =========================================================================
+# the warm hold: fade --hold keeps the daemon resident, unmapped, uploaded
+# =========================================================================
+def test_parse_fade_hold(curtain):
+    assert curtain.parse_args(['fade'])['hold'] is False
+    assert curtain.parse_args(['fade', '--hold'])['hold'] is True
+    opts = curtain.parse_args(['fade', '--hold', '--duration', '0.2'])
+    assert opts['hold'] is True and opts['duration'] == 0.2
+    with pytest.raises(curtain.Usage):
+        curtain.parse_args(['fade', '--hold', 'extra'])
+
+
+def _pause_flag(tmp_path):
+    flag = tmp_path / 'game-suspended'
+    flag.write_text('12345\n')
+    return flag
+
+
+def _warm_up(rig, frame, flag, timeout='20'):
+    """show + fade --hold, then assert the daemon really is warm: alive,
+    window still on the server but UNMAPPED, status honest about it."""
+    assert rig.run('show', frame, '--timeout', timeout).returncode == 0
+    r = rig.run('fade', '--hold', '--duration', '0.1',
+                extra_env={'COUCH_CURTAIN_HOLD_FLAG': str(flag)})
+    assert r.returncode == 0, r.stderr
+    wins = rig.windows()
+    assert len(wins) == 1, 'the warm daemon must keep its (unmapped) window'
+    assert wins[0][2].map_state == 0, 'warm means UNMAPPED - nothing on screen'
+    st = rig.status()
+    assert st['warm'] is True and st['mapped'] is False
+    pid = int(open(rig.pidfile()).read())
+    os.kill(pid, 0)                            # raises if the daemon died
+    return wins[0][0], st
+
+
+def test_fade_hold_leaves_a_warm_unmapped_daemon(rig, frame, tmp_path):
+    flag = _pause_flag(tmp_path)
+    _wid, st = _warm_up(rig, frame, flag)
+    assert st['image'] == frame and st['uploads'] == 1 and st['shows'] == 1
+    # The warm bound is the long one, not the mapped show's leftover.
+    assert st['remaining'] > 60
+
+
+def test_warm_reshow_is_a_map_not_an_upload(rig, frame, tmp_path):
+    """The feature: a show of the SAME image out of the hold maps the same
+    window without touching set_image (uploads stays 1), near-instantly."""
+    flag = _pause_flag(tmp_path)
+    wid, _ = _warm_up(rig, frame, flag)
+    start = time.time()
+    r = rig.run('show', frame, '--timeout', '8')
+    took = time.time() - start
+    assert r.returncode == 0, r.stderr
+    wins = rig.windows()
+    assert len(wins) == 1 and wins[0][0] == wid, 'window recreated, not reused'
+    assert wins[0][2].map_state == 2
+    st = rig.status()
+    assert st['uploads'] == 1, 'the warm path must not re-upload the pixmap'
+    assert st['shows'] == 2 and st['mapped'] is True and st['warm'] is False
+    assert took < 2.0, f'warm re-show took {took:.2f}s'
+    # The pixels really survived the hold: the gradient frame's centre is
+    # mid-grey, so an all-black window (a lost pixmap) fails loudly here.
+    assert max(rig.pixel(SCREEN_W // 2, SCREEN_H // 2)) > 60, \
+        'warm re-show came up black - the held pixmap is gone'
+
+
+def test_warm_reshow_regains_the_bounded_mapped_lifetime(rig, frame, tmp_path):
+    """The contract survives the hold: a curtain mapped OUT of the warm state
+    has exactly today's watchdog, not the hold's 4h bound."""
+    flag = _pause_flag(tmp_path)
+    _warm_up(rig, frame, flag)
+    assert rig.run('show', frame, '--timeout', '1').returncode == 0
+    assert rig.status()['remaining'] <= 1.01
+    assert rig.wait_gone(5) is not None, 'the re-shown curtain outlived its timeout'
+    assert not os.path.exists(rig.pidfile())
+
+
+def test_warm_show_of_a_different_image_reuploads(rig, frame, tall_frame,
+                                                  tmp_path):
+    flag = _pause_flag(tmp_path)
+    wid, _ = _warm_up(rig, frame, flag)
+    assert rig.run('show', tall_frame, '--timeout', '8').returncode == 0
+    wins = rig.windows()
+    assert len(wins) == 1 and wins[0][0] == wid and wins[0][2].map_state == 2
+    st = rig.status()
+    assert st['uploads'] == 2 and st['image'] == tall_frame
+    _assert_red_frame_on_black_bars(rig)
+
+
+def test_warm_show_of_a_rewritten_frame_reuploads(rig, frame, tmp_path):
+    """Same path, new content: the (mtime, size) signature must force the
+    honest re-read - a stale pixmap behind a fresh filename is a lie."""
+    flag = _pause_flag(tmp_path)
+    _warm_up(rig, frame, flag)
+    time.sleep(0.05)                           # a distinct mtime_ns
+    from_file = open(frame, 'rb').read()
+    with open(frame, 'wb') as f:
+        f.write(from_file)                     # same bytes, new mtime
+    assert rig.run('show', frame, '--timeout', '8').returncode == 0
+    assert rig.status()['uploads'] == 2
+
+
+def test_warm_daemon_dies_with_the_pause(rig, frame, tmp_path):
+    """died-with-the-pause: the flag it was told about disappearing IS the
+    teardown order, no caller needed."""
+    flag = _pause_flag(tmp_path)
+    _warm_up(rig, frame, flag)
+    os.remove(flag)
+    assert rig.wait_gone(4) is not None, 'warm daemon outlived its pause flag'
+    assert not os.path.exists(rig.pidfile())
+
+
+def test_fade_hold_without_a_pause_flag_retires_at_once(rig, frame, tmp_path):
+    """Holding for a pause that does not exist is the safe default: the warm
+    state begins, the first flag poll fails, the daemon retires."""
+    r = rig.run('show', frame, '--timeout', '20')
+    assert r.returncode == 0
+    missing = tmp_path / 'never-written-flag'
+    assert rig.run('fade', '--hold', '--duration', '0.1',
+                   extra_env={'COUCH_CURTAIN_HOLD_FLAG': str(missing)}
+                   ).returncode == 0
+    assert rig.wait_gone(4) is not None
+    assert not os.path.exists(rig.pidfile())
+
+
+def test_warm_daemon_respects_the_idle_cap(rig, frame, tmp_path):
+    """The belt behind died-with-the-pause: even with the flag still there,
+    the hold cannot outlive WARM_IDLE_MAX (shrunk to 1s via the seam)."""
+    flag = _pause_flag(tmp_path)
+    assert rig.run('show', frame, '--timeout', '20').returncode == 0
+    assert rig.run('fade', '--hold', '--duration', '0.1',
+                   extra_env={'COUCH_CURTAIN_HOLD_FLAG': str(flag),
+                              'COUCH_CURTAIN_WARM_MAX': '1'}
+                   ).returncode == 0
+    assert os.path.exists(flag)                # the pause is still on
+    start = time.time()
+    assert rig.wait_gone(5) is not None, 'warm daemon outlived its idle cap'
+    assert time.time() - start < 4.0
+    assert not os.path.exists(rig.pidfile())
+
+
+def test_clear_kills_a_warm_daemon(rig, frame, tmp_path):
+    """A quit game's frame must not linger: clear tears the hold down the
+    same way it tears a mapped curtain down."""
+    flag = _pause_flag(tmp_path)
+    _warm_up(rig, frame, flag)
+    assert rig.run('clear').returncode == 0
+    assert rig.windows() == []
+    assert rig.wait_gone(3) is not None
+    assert not os.path.exists(rig.pidfile())
+
+
+def test_plain_fade_still_exits_the_daemon(rig, frame, tmp_path):
+    """No --hold, no hold: the suspend arm asks for warmth explicitly and
+    every other fade keeps today's exit."""
+    flag = _pause_flag(tmp_path)
+    assert rig.run('show', frame, '--timeout', '20').returncode == 0
+    assert rig.run('fade', '--duration', '0.1',
+                   extra_env={'COUCH_CURTAIN_HOLD_FLAG': str(flag)}
+                   ).returncode == 0
+    assert rig.wait_gone(3) is not None
+    assert not os.path.exists(rig.pidfile())

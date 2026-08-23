@@ -34,6 +34,8 @@ tests and nothing calls it.
   curtain show <image.jpg> [--timeout 8]   map the overlay now (blocks until
                                            it is actually on screen)
   curtain fade [--duration 0.4]            fade it out and exit the daemon
+  curtain fade --hold [--duration 0.4]     fade it out but stay WARM: unmapped,
+                                           pixmap still uploaded (see below)
   curtain clear                            destroy it instantly
   curtain status                           what is up, and for how long
 
@@ -44,6 +46,31 @@ no input of its own and the room has no way to dismiss it. Two independent
 mechanisms enforce it - the loop's deadline check, and a SIGALRM one second
 later whose handler is os._exit(), because a dead client's windows are
 destroyed by the X server itself. SIGTERM/SIGINT tear down the same way.
+
+THE WARM HOLD (23 Aug 2026). A cold `show` of a 4K frame costs ~1.15s wall,
+~85% of it the banded PutImage upload (the server's 256KB max request length,
+128 requests; profiled 23 Aug: client-side marshalling is ~6ms of that
+second, the rest is server-side pixel work, and python-xlib 0.33 has no
+BIG-REQUESTS support to change the shape anyway - fewer, bigger requests
+would not move the bytes faster). During a pause that second lands exactly on
+the player-visible beat of the resume tap. `fade --hold` removes it: the
+suspend-side fade unmaps the window but keeps the daemon alive with the
+pixmap still on the server, so the resume's `show` of the SAME image (same
+path, same mtime+size as uploaded; a file deleted since upload still counts -
+the pixmap is those pixels) is a map+raise in a few ms. A `show` naming a
+different or changed image takes the normal upload path, and every `show` out
+of the hold re-arms exactly the mapped contract above.
+
+The hold does not weaken the contract, it re-scopes it: a MAPPED curtain
+keeps today's bounded lifetime to the letter, while the warm daemon is
+UNMAPPED - invisible and input-transparent, so 'stuck over the console' is
+not a state it can be in. Its own lifetime is still bounded three ways:
+it retires the moment the pause flag it was told about is gone
+(died-with-the-pause - the flag's remover is the resume/quit/close path, so
+a warm frame can never outlive the pause it belongs to), a hard idle cap
+(WARM_IDLE_MAX, 4h) enforced by the same loop deadline, and the same SIGALRM
+os._exit armed at that cap. `clear`, SIGTERM and a replacement `show` of a
+wedged daemon all behave exactly as they do today.
 
 COSMETIC CONTRACT, mirroring pause-snap exactly: every failure path here is a
 line on stderr and a non-zero exit that the caller throws away. A suspend
@@ -89,6 +116,15 @@ FADE_HZ = 60.0
 WATCHDOG_GRACE = 1.0                # SIGALRM lands this long after the deadline
 READY_WAIT = 6.0                    # how long `show` waits to see the window up
 POLL_MS = 25                        # fifo poll slice; also the deadline's resolution
+
+# The warm hold's bounds (see the docstring). Both are test seams the same way
+# COUCH_CURTAIN_DIR is: unset in normal operation.
+try:
+    WARM_IDLE_MAX = float(os.environ.get('COUCH_CURTAIN_WARM_MAX') or 4 * 3600)
+except ValueError:
+    WARM_IDLE_MAX = 4 * 3600.0
+WARM_FLAG_POLL_S = 1.0              # how often the warm loop stats the flag
+HOLD_FLAG = os.environ.get('COUCH_CURTAIN_HOLD_FLAG') or '/tmp/game-suspended'
 
 FFMPEG = '/usr/bin/ffmpeg'
 
@@ -194,9 +230,12 @@ def parse_args(argv):
                 'timeout': timeout, 'spin': spin}
     if cmd == 'fade':
         duration = option('--duration', DEFAULT_FADE, 0.0, 5.0)
+        hold = '--hold' in rest
+        if hold:
+            rest[:] = [a for a in rest if a != '--hold']
         if rest:
             raise Usage(f'fade takes no arguments (got {rest})')
-        return {'cmd': 'fade', 'duration': duration}
+        return {'cmd': 'fade', 'duration': duration, 'hold': hold}
     if cmd in ('clear', 'status'):
         if rest:
             raise Usage(f'{cmd} takes no arguments (got {rest})')
@@ -373,7 +412,9 @@ class Overlay:
         self.depth = 24
         self.mapped = False
         self.image = ''
+        self.image_sig = None       # (mtime_ns, size) of the file as uploaded
         self.shows = 0
+        self.uploads = 0            # set_image count; warm re-shows skip it
         self.spin = None
 
     # -- setup ----------------------------------------------------------
@@ -495,7 +536,26 @@ class Overlay:
                 except Exception:
                     pass
         self.image = path
-        self.shows += 1
+        try:
+            st = os.stat(path)
+            self.image_sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self.image_sig = None
+        self.uploads += 1
+
+    def image_matches(self, path):
+        """Is the uploaded pixmap already exactly this frame? Path identity
+        plus the file's (mtime_ns, size) as recorded at upload time - a path
+        whose content changed since must be re-read. A file DELETED since
+        upload still matches: the pixmap holds those pixels, and pause-snap
+        cleaning up its jpg does not change what this curtain would show."""
+        if path != self.image or self.pixmap is None or self.image_sig is None:
+            return False
+        try:
+            st = os.stat(path)
+        except OSError:
+            return True
+        return (st.st_mtime_ns, st.st_size) == self.image_sig
 
     def load_spinner(self, sp):
         """Pre-split the strip into per-frame BGRA byte blocks. The frames
@@ -546,6 +606,7 @@ class Overlay:
             self.mapped = True
         self.win.configure(stack_mode=self.X.Above)
         self.d.sync()
+        self.shows += 1
 
     def set_opacity(self, fraction):
         """_NET_WM_WINDOW_OPACITY, which xfwm4's compositor honours.
@@ -634,12 +695,14 @@ def arm_watchdog(seconds):
     signal.setitimer(signal.ITIMER_REAL, max(0.1, seconds + WATCHDOG_GRACE))
 
 
-def write_status(overlay, deadline):
+def write_status(overlay, deadline, warm=False):
     payload = {
         'pid': os.getpid(),
         'image': overlay.image,
         'shows': overlay.shows,
+        'uploads': overlay.uploads,
         'mapped': overlay.mapped,
+        'warm': bool(warm),
         'display': overlay.display_name,
         'screen': [overlay.w, overlay.h],
         'remaining': round(max(0.0, deadline - time.monotonic()), 2),
@@ -770,15 +833,30 @@ def loop(overlay, deadline, timeout):
         poller.register(rfd, select.POLLIN)
     buf = b''
     faded = False
+    # The warm-hold state (docstring: THE WARM HOLD). While warm['on'], the
+    # window is unmapped, the pixmap stays uploaded, and the daemon retires
+    # the moment warm['flag'] disappears - or when the (re-armed, WARM_IDLE_MAX)
+    # deadline runs out, whichever is first.
+    warm = {'on': False, 'flag': None, 'next_check': 0.0}
     next_spin = time.monotonic()
     try:
         while not STOPPING['now']:
             now = time.monotonic()
             left = deadline - now
             if left <= 0:
-                say(f'watchdog: {timeout:.1f}s up, tearing the curtain down '
-                    f'(nobody faded or cleared it)')
+                if warm['on']:
+                    say('warm hold: idle bound reached with the pause still '
+                        'on; retiring (nothing was on screen)')
+                else:
+                    say(f'watchdog: {timeout:.1f}s up, tearing the curtain '
+                        f'down (nobody faded or cleared it)')
                 break
+            if warm['on'] and now >= warm['next_check']:
+                warm['next_check'] = now + WARM_FLAG_POLL_S
+                if not (warm['flag'] and os.path.exists(warm['flag'])):
+                    say(f'warm hold: the pause is over ({warm["flag"]} is '
+                        f'gone); retiring')
+                    break
             wait_ms = min(POLL_MS, int(left * 1000) + 1)
             if overlay.spin:
                 if now >= next_spin:
@@ -797,9 +875,9 @@ def loop(overlay, deadline, timeout):
                 buf += chunk
                 while b'\n' in buf:
                     line, buf = buf.split(b'\n', 1)
-                    action, deadline = handle(
+                    action, deadline, timeout = handle(
                         overlay, line.decode('utf-8', 'replace').strip(),
-                        deadline)
+                        deadline, timeout, warm)
                     if action == 'fade':
                         faded = True
                     if action in ('fade', 'stop'):
@@ -817,26 +895,40 @@ def loop(overlay, deadline, timeout):
     return 0
 
 
-def handle(overlay, line, deadline):
-    """Returns (action, deadline). action is '' (carry on), 'stop' or 'fade'."""
+def handle(overlay, line, deadline, timeout, warm):
+    """Returns (action, deadline, timeout). action is '' (carry on), 'stop',
+    'fade', or 'hold' (fade done, staying warm). `warm` is the loop's
+    warm-state dict; show leaves it, `fade ... hold` enters it."""
     try:
         parts = shlex.split(line)
     except ValueError:
         parts = line.split()
     if not parts:
-        return '', deadline
+        return '', deadline, timeout
     cmd, args = parts[0], parts[1:]
     try:
         if cmd == 'show':
-            # Same window, new picture, new watchdog. The re-raise matters as
-            # much as the image: something may have stacked over us since.
-            overlay.set_image(args[0])
+            # Same window, new watchdog. The re-raise matters as much as the
+            # image: something may have stacked over us since. The same
+            # UNCHANGED picture is the warm path - the pixmap is already on
+            # the server, so this is a map+raise, no decode and no upload.
+            if not overlay.image_matches(args[0]):
+                overlay.set_image(args[0])
             overlay.show()
+            fresh = None
             if len(args) > 1:
-                deadline = time.monotonic() + float(args[1])
-                arm_watchdog(float(args[1]))
+                fresh = float(args[1])
+            elif warm['on']:
+                # A mapped curtain must never inherit the warm hold's long
+                # bound: a show with no explicit timeout gets the default.
+                fresh = DEFAULT_TIMEOUT
+            if fresh is not None:
+                timeout = fresh
+                deadline = time.monotonic() + fresh
+                arm_watchdog(fresh)
+            warm['on'] = False
             write_status(overlay, deadline)
-            return '', deadline
+            return '', deadline, timeout
         if cmd == 'fade':
             duration = float(args[0]) if args else DEFAULT_FADE
             # Never fade past the watchdog: the deadline is the promise, the
@@ -844,14 +936,30 @@ def handle(overlay, line, deadline):
             duration = max(0.0, min(duration,
                                     deadline - time.monotonic() - 0.05))
             overlay.fade(duration, stop=lambda: STOPPING['now'])
-            return 'fade', deadline
+            if len(args) > 1 and args[1] == 'hold' and not STOPPING['now']:
+                # Enter the warm hold: unmapped, pixmap kept, three bounds
+                # (flag gone / idle cap / SIGALRM at the cap) per the header.
+                bound = float(args[2]) if len(args) > 2 else WARM_IDLE_MAX
+                bound = max(1.0, bound)
+                warm.update(on=True,
+                            flag=args[3] if len(args) > 3 else HOLD_FLAG,
+                            next_check=0.0)
+                overlay.spin = None        # the spinner dies with the map
+                deadline = time.monotonic() + bound
+                timeout = bound
+                arm_watchdog(bound)
+                write_status(overlay, deadline, warm=True)
+                say(f'faded to warm hold ({overlay.image}); retiring when '
+                    f'{warm["flag"]} goes, or in {bound:.0f}s')
+                return 'hold', deadline, timeout
+            return 'fade', deadline, timeout
         if cmd == 'clear':
-            return 'stop', deadline
+            return 'stop', deadline, timeout
         if cmd == 'status':
-            write_status(overlay, deadline)
-            return '', deadline
+            write_status(overlay, deadline, warm=warm['on'])
+            return '', deadline, timeout
         if cmd == 'quit':
-            return 'stop', deadline
+            return 'stop', deadline, timeout
         say(f'bad command: {line}')
     except CurtainError as e:
         # A replacement image that will not load leaves the CURRENT frame up
@@ -859,7 +967,7 @@ def handle(overlay, line, deadline):
         say(f'{cmd}: {e}')
     except (IndexError, ValueError) as e:
         say(f'bad command: {line} ({e})')
-    return '', deadline
+    return '', deadline, timeout
 
 
 # =========================================================================
@@ -994,12 +1102,29 @@ def cmd_show(image, timeout, spin=None):
     return spawn(image, timeout, spin)
 
 
-def cmd_fade(duration):
+def cmd_fade(duration, hold=False):
     pid = daemon_pid()
     if not daemon_alive():
         clear_stale()
         say('no curtain is up (nothing to fade)')
         return 0                               # the wanted end state already holds
+    if hold:
+        # The bounds ride the FIFO line, not the daemon's environment: the
+        # daemon was spawned by some earlier `show` and this caller's seams
+        # (COUCH_CURTAIN_WARM_MAX / COUCH_CURTAIN_HOLD_FLAG) must still win.
+        if not fifo_send(f'fade {duration:.3f} hold {WARM_IDLE_MAX:.3f} '
+                         f'{shlex.quote(HOLD_FLAG)}'):
+            return cmd_clear()
+        # Bounded confirm that the screen is actually clear (warm status, or
+        # the daemon chose to die instead) - but never a hard dependency: if
+        # it is slow, its watchdog still has it, so 0 either way.
+        end = time.monotonic() + duration + 1.5
+        while time.monotonic() < end:
+            if read_status().get('warm') or not daemon_alive():
+                return 0
+            time.sleep(0.02)
+        say('curtain not warm after the fade window; its watchdog has it')
+        return 0
     if not fifo_send(f'fade {duration:.3f}'):
         return cmd_clear()
     # Bounded wait so callers can sequence on it, but never a hard dependency:
@@ -1061,7 +1186,7 @@ def main(argv):
     if cmd == 'show':
         return cmd_show(opts['image'], opts['timeout'], opts.get('spin'))
     if cmd == 'fade':
-        return cmd_fade(opts['duration'])
+        return cmd_fade(opts['duration'], opts.get('hold', False))
     if cmd == 'clear':
         return cmd_clear()
     return cmd_status()
