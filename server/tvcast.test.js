@@ -64,7 +64,7 @@ function rig(overrides = {}) {
       if (v instanceof Error) throw v;
       return v;
     },
-    playOnSession: async (sid, id) => { calls.push(`play:${sid}:${id}`); },
+    playOnSession: async (sid, id, ticks = 0) => { calls.push(`play:${sid}:${id}:${ticks}`); },
     sessionCommand: async (sid, cmd) => { calls.push(`cmd:${sid}:${cmd}`); },
     seekSession: async (sid, secs) => { calls.push(`seek:${sid}:${secs}`); },
     resolveItem: async (id) => ({ id, name: 'Test Film' }),
@@ -127,7 +127,7 @@ test('happy path: standby TV -> waking, launching, connecting, playing', async (
   assert.equal(s.item.name, 'Test Film');
   assert.ok(calls.includes('tvOn'));
   assert.ok(calls.includes('tvApp'));
-  assert.ok(calls.includes(`play:${WEBOS.Id}:${ITEM}`));
+  assert.ok(calls.includes(`play:${WEBOS.Id}:${ITEM}:0`));
   // the wake happened before the app launch, the app launch before the play
   assert.ok(calls.indexOf('tvOn') < calls.indexOf('tvApp'));
   assert.ok(calls.indexOf('tvApp') < calls.findIndex((c) => c.startsWith('play:')));
@@ -775,4 +775,26 @@ test('lights: jellyfin going dark keeps ownership but not the dim forever', asyn
   await cast._monitorTick();
   assert.ok(calls.includes('lights:restore'));
   assert.notEqual(cast.ownedPlayback(), null); // the TV is still ours; only the room came back
+});
+
+
+test('a cast resumes from the stored position, and fromStart overrides it', async () => {
+  const TICKS = 36_000_000_000; // an hour in
+  const { cast, calls, state } = rig({
+    resolveItem: async (id) => ({ id, name: 'Half-Watched Film', resumeTicks: TICKS }),
+  });
+  state.sessionsReplies = [[WEBOS]];
+  cast.start(ITEM);
+  await settle(cast);
+  assert.ok(calls.includes(`play:${WEBOS.Id}:${ITEM}:${TICKS}`),
+    'the resume point must ride the play command, or PlayNow wipes it');
+
+  cast.stop();
+  await settle(cast);
+  calls.length = 0;
+  state.sessionsReplies = [[WEBOS]];
+  cast.start(ITEM, { fromStart: true });
+  await settle(cast);
+  assert.ok(calls.includes(`play:${WEBOS.Id}:${ITEM}:0`),
+    'fromStart must begin at zero on purpose');
 });

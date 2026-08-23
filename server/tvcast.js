@@ -51,7 +51,7 @@ const DEFAULTS = {
   tvInputPc: () => sys.tv('hdmi1'),
   tvApp: () => sys.tvJellyfinApp(),
   sessions: () => jellyfin.activeSessions(),
-  playOnSession: (sid, itemId) => jellyfin.playOnSession(sid, itemId),
+  playOnSession: (sid, itemId, startTicks) => jellyfin.playOnSession(sid, itemId, startTicks),
   sessionCommand: (sid, cmd) => jellyfin.sessionCommand(sid, cmd),
   seekSession: (sid, secs) => jellyfin.seekSession(sid, secs),
   resolveItem: (id) => jellyfin.playableFor(id),
@@ -130,7 +130,7 @@ export function createTvCast(overrides = {}) {
     });
   }
 
-  function start(itemId) {
+  function start(itemId, { fromStart = false } = {}) {
     if (!d.configured()) {
       return { ok: false, code: 503, error: 'TV control is not configured on the box (tv.json missing)' };
     }
@@ -143,11 +143,11 @@ export function createTvCast(overrides = {}) {
     owned = null;
     stopMonitor();
     const token = ++runToken;
-    run(itemId, token).catch((e) => d.log('unhandled:', e));
+    run(itemId, token, fromStart).catch((e) => d.log('unhandled:', e));
     return { ok: true };
   }
 
-  async function run(itemId, token) {
+  async function run(itemId, token, fromStart = false) {
     const dead = () => token !== runToken;
     try {
       setStage('waking', { item: null });
@@ -199,7 +199,11 @@ export function createTvCast(overrides = {}) {
       }
       if (dead()) return;
 
-      await d.playOnSession(session.Id, target.id).catch((e) => {
+      // Resume where the viewer left off unless told otherwise: PlayNow
+      // with no start position begins at zero and OVERWRITES the stored
+      // resume point (23 Aug, a half-watched film lost its place).
+      const startTicks = fromStart ? 0 : (target.resumeTicks || 0);
+      await d.playOnSession(session.Id, target.id, startTicks).catch((e) => {
         throw new StageFail('playing', `Jellyfin refused the play command: ${e.message}`);
       });
       if (dead()) return;

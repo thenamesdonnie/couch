@@ -539,7 +539,7 @@ app.get('/api/tv/should-route', wrap(async (req, res) => {
 app.post('/api/tv/play', wrap(async (req, res) => {
   const id = String(req.body?.itemId || '');
   if (!/^[0-9a-f]{32}$/.test(id)) throw new Error('itemId required');
-  const r = tvcast.start(id);
+  const r = tvcast.start(id, { fromStart: req.body?.fromStart === true });
   if (!r.ok) { res.status(r.code).json({ error: r.error }); return; }
   return tvcast.status();
 }));

@@ -83,11 +83,12 @@ export function activeSessions() {
   return jf('/Sessions', { activeWithinSeconds: 120 });
 }
 
-export function playOnSession(sessionId, itemId) {
-  return jfPost(`/Sessions/${encodeURIComponent(sessionId)}/Playing`, {
-    playCommand: 'PlayNow',
-    itemIds: itemId,
-  });
+export function playOnSession(sessionId, itemId, startTicks = 0) {
+  const params = { playCommand: 'PlayNow', itemIds: itemId };
+  // Only when meaningful: a 0 tick is "from the start" either way, and some
+  // clients treat an explicit 0 differently from an absent parameter.
+  if (startTicks > 0) params.startPositionTicks = Math.floor(startTicks);
+  return jfPost(`/Sessions/${encodeURIComponent(sessionId)}/Playing`, params);
 }
 
 // Playstate commands ride POST /Sessions/{id}/Playing/{command} with an empty
@@ -115,18 +116,23 @@ export function seekSession(sessionId, seconds) {
 export async function playableFor(itemId) {
   if (!creds) creds = readCreds();
   const item = await jf(`/Users/${creds.userId}/Items/${itemId}`);
+  // The resume point rides along so the cast can START THERE. PlayNow with
+  // no startPositionTicks begins at zero AND overwrites the stored resume -
+  // found 23 Aug when a test cast of a half-watched film wiped its place.
+  const ticks = item.UserData?.PlaybackPositionTicks || 0;
   if (item.Type !== 'Series') {
     const ep = item.Type === 'Episode' && item.ParentIndexNumber !== undefined
       ? ` S${String(item.ParentIndexNumber).padStart(2, '0')}E${String(item.IndexNumber).padStart(2, '0')}`
       : '';
-    return { id: item.Id, name: `${item.SeriesName || item.Name}${ep}` };
+    return { id: item.Id, name: `${item.SeriesName || item.Name}${ep}`, resumeTicks: ticks };
   }
   const next = await jf('/Shows/NextUp', { userId: creds.userId, seriesId: itemId, Limit: 1 });
   const ep = next.Items?.[0];
-  if (!ep) return { id: item.Id, name: item.Name };
+  if (!ep) return { id: item.Id, name: item.Name, resumeTicks: ticks };
   return {
     id: ep.Id,
     name: `${item.Name} S${String(ep.ParentIndexNumber).padStart(2, '0')}E${String(ep.IndexNumber).padStart(2, '0')}`,
+    resumeTicks: ep.UserData?.PlaybackPositionTicks || 0,
   };
 }
 
