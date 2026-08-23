@@ -128,25 +128,62 @@ def is_black(path):
 KODI_SEND = '/usr/bin/kodi-send'
 
 
+# How long Kodi gets to decode the frame before the animation is armed. The
+# texture is loaded ASYNCHRONOUSLY (background="true"), and since the frame
+# went native (4K, ~340KB) the decode outlasts the animation's own 220ms
+# delay: the control turned visible with nothing to draw, the 620ms shrink
+# ran against an empty texture and the 1050ms fade-out then hid it, so the
+# minimise stopped being seen at all (Donnie, 23 Aug: "doesn't do the
+# minimise animation"). The maximise survived the same race only because it
+# holds its end state instead of fading.
+PRELOAD_SETTLE_S = 0.45
+
+
 def announce_pause(frame_path):
     """Tell the skin a suspend JUST happened, with the frame to fly.
 
     Home.xml animates this frame from fullscreen into the paused card (the
     PS5 minimise, Donnie 8 Aug 2026). Self-clearing via AlarmClock so a
     missed animation never leaves a stale overlay. Cosmetic: failures are a
-    log line, the suspend never waits."""
+    log line, the suspend never waits.
+
+    TWO STEPS, and the order is the whole point. The path goes first and on
+    its own, which is what starts Kodi's texture load; the trigger follows a
+    beat later from a DETACHED child, so the picture is ready when the
+    animation asks for it and the suspend still never waits on any of it.
+    (The old version fired all three actions as concurrent Popens, so the
+    trigger could even land before the path it was meant to animate.)
+
+    The same frame is also handed to the RESUME's control while we are here:
+    the maximise wants this identical image, and preloading it now means the
+    texture is long since decoded by the time the player taps to come back -
+    it costs the resume nothing, which a settle delay there would not."""
     if os.environ.get('PAUSE_SNAP_DIR'):
         return
     try:
         with open(os.devnull, 'wb') as null:
             for action in (
                     f'SetProperty(CouchJustPausedSnap,{frame_path},home)',
-                    'SetProperty(CouchJustPaused,1,home)',
-                    'AlarmClock(couchpauseclear,'
-                    'ClearProperty(CouchJustPaused,home),00:00:03,silent)'):
-                subprocess.Popen([KODI_SEND, '--action', action],
-                                 stdout=null, stderr=null, stdin=null,
-                                 start_new_session=True)
+                    f'SetProperty(CouchJustResumedSnap,{frame_path},home)'):
+                subprocess.run([KODI_SEND, '--action', action],
+                               stdout=null, stderr=null, stdin=null,
+                               timeout=3)
+            if os.environ.get('PAUSE_SNAP_DEFER_ANNOUNCE'):
+                # The caller draws a CURTAIN over this suspend (game-launch's
+                # switcher arm), and an animation armed now would play out
+                # underneath it and be over before the curtain lifted. The
+                # paths above are still set - that is the texture preload,
+                # and it is what makes the caller's later arming instant.
+                say('pause announce deferred to the caller (curtain up)')
+                return
+            arm = (f'sleep {PRELOAD_SETTLE_S}; '
+                   f'"{KODI_SEND}" --action '
+                   f'"SetProperty(CouchJustPaused,1,home)"; '
+                   f'"{KODI_SEND}" --action '
+                   f'"AlarmClock(couchpauseclear,'
+                   f'ClearProperty(CouchJustPaused,home),00:00:03,silent)"')
+            subprocess.Popen(['/bin/sh', '-c', arm], stdout=null, stderr=null,
+                             stdin=null, start_new_session=True)
     except (OSError, subprocess.SubprocessError) as e:
         say(f'pause announce not sent: {e}')
 

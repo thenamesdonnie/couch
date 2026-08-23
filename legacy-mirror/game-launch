@@ -367,8 +367,18 @@ PAUSE_SNAP=/home/ds2000/.local/bin/pause-snap
 snap_paused() {
   [ -x "$PAUSE_SNAP" ] || return 0
   intent snapshot "$1" via=pause-snap "reason=${2:-suspend}" "mode=$MODE"
-  PAUSE_SNAP_SRC=game-launch timeout 2 "$PAUSE_SNAP" "$1" "${2:-suspend}" \
-    >/dev/null 2>&1 || say "pause-snap: no frame for $1 (harmless)"
+  # DEFER_ANNOUNCE when this arm will raise a curtain: pause-snap preloads
+  # the frame's path but leaves the animation unarmed, and minimise_arm fires
+  # it as the curtain comes down (see both comments).
+  # A subshell, not an ${X:+VAR=1} expansion prefix: the shell only treats
+  # LITERAL word=value as an assignment, so an expanded one is run as a
+  # COMMAND (exit 127, pause-snap never invoked - live, 23 Aug, and silent
+  # because the failure branch only says "no frame").
+  (
+    export PAUSE_SNAP_SRC=game-launch
+    [ -n "$CURTAIN_PLANNED" ] && export PAUSE_SNAP_DEFER_ANNOUNCE=1
+    timeout 2 "$PAUSE_SNAP" "$1" "${2:-suspend}" >/dev/null 2>&1
+  ) || say "pause-snap: no frame for $1 (harmless)"
 }
 # A freeze-frame outlives its pause by nothing. No argument clears the lot,
 # which is what a quit (or a game swapped out from under a stale flag) wants.
@@ -490,6 +500,14 @@ maximise_start() {  # <frame> [subject] - fire the grow, if the room can see it
     *) say "maximise: Home is not on screen; the curtain carries it alone"
        return 0 ;;
   esac
+  # The path first and ON ITS OWN, then the trigger: the texture loads
+  # asynchronously, and a trigger racing ahead of its picture animates an
+  # empty control (pause-snap's PRELOAD_SETTLE_S comment has the full story -
+  # it is what stopped the minimise being seen at all). No settle delay is
+  # needed on THIS side because pause-snap set the very same path at suspend
+  # time, so Kodi decoded it minutes ago; this line is the belt for a resume
+  # whose suspend never announced, and Kodi caches by path so re-setting it
+  # costs nothing.
   "$KODI_SEND" --action "SetProperty(CouchJustResumedSnap,$frame,home)" \
     >/dev/null 2>&1 || return 0
   "$KODI_SEND" --action "SetProperty(CouchJustResumed,1,home)" >/dev/null 2>&1
@@ -501,6 +519,24 @@ maximise_start() {  # <frame> [subject] - fire the grow, if the room can see it
   say "maximise: the paused card is growing to fullscreen"
   intent maximise "${2:-game}" via=kodi-window-property window=home \
     reason=resume "frame=$frame"
+  return 0
+}
+
+minimise_arm() {  # the deferred half of pause-snap's announce
+  # Only for the curtained path: pause-snap set the frame's path (the texture
+  # preload) but was told to leave the trigger alone, because an animation
+  # armed while the curtain is up plays where nobody can see it. This arms it
+  # at the one right moment - the curtain is coming down onto a Kodi that is
+  # drawing the very same fullscreen frame, so the shrink appears to be the
+  # curtain's own.
+  [ -x "$KODI_SEND" ] || return 0
+  "$KODI_SEND" --action "SetProperty(CouchJustPaused,1,home)" >/dev/null 2>&1 \
+    || return 0
+  "$KODI_SEND" --action "AlarmClock(couchpauseclear,ClearProperty(CouchJustPaused,home),00:00:03,silent)" \
+    >/dev/null 2>&1
+  say "minimise: the frame is shrinking into the paused card"
+  intent minimise "${1:-game}" via=kodi-window-property window=home \
+    reason=suspend
   return 0
 }
 
@@ -523,12 +559,20 @@ curtain_hold() {  # <subject> - dissolve, but leave the daemon WARM (23 Aug 2026
   # 4h, and a MAPPED curtain keeps the tool's normal watchdog either way.
   # COUCH_CURTAIN_HOLD_FLAG rides along so the tool watches THIS script's
   # flag file even when the test seam moves it.
+  #
+  # <duration> (optional, $2): a dissolve is the right reveal when what is
+  # underneath DIFFERS from the curtain. When minimise_arm has just armed the
+  # shrink, Kodi underneath is drawing the identical fullscreen frame, so a
+  # slow dissolve only smears two copies of the same picture over the first
+  # third of the animation - the caller passes a near-instant duration there
+  # and the cut is invisible for exactly that reason.
   [ "$CURTAIN_UP" = 1 ] || return 0
   CURTAIN_UP=0
   intent curtain_fade "${1:-transition}" wm_class=couch-curtain \
     via=tools-curtain warm=true "mode=$MODE"
   COUCH_CURTAIN_HOLD_FLAG="$SUSPENDED" \
-    timeout 5 "$CURTAIN" fade --hold >/dev/null 2>&1 || true
+    timeout 5 "$CURTAIN" fade --hold ${2:+--duration "$2"} >/dev/null 2>&1 \
+    || true
   say "curtain faded (daemon left warm for the resume)"
   return 0
 }
@@ -1218,6 +1262,10 @@ case "$MODE" in
       # Before Kodi is raised over it. Not because it has to be - a covered
       # window still captures - but because the game is the only thing this
       # branch is sure about at this point.
+      # Decided before the snap so pause-snap knows whether to arm its own
+      # animation or leave it to minimise_arm below.
+      CURTAIN_PLANNED=
+      curtain_usable "${appid:-game}" && CURTAIN_PLANNED=1
       snap_paused "${appid:-game}" screen-switcher
       # Curtain up on that just-captured frame BEFORE the shuffle below (the
       # Kodi raise, the game iconify): the room keeps seeing the game, the
@@ -1237,7 +1285,17 @@ case "$MODE" in
     [ "$frozen" = 1 ] && hide_frozen_game "${appid:-game}"
     # Kodi is focused and the frozen window is gone: dissolve to reveal it -
     # warm, so the coming resume's curtain is a map, not a rebuild.
-    curtain_hold kodi
+    # The minimise is armed FIRST: Kodi is on top now, drawing the same
+    # fullscreen frame the curtain is showing, so the dissolve lands on an
+    # identical picture and the shrink that follows reads as one motion.
+    # Skipped when no curtain was planned - pause-snap armed its own.
+    if [ -n "$CURTAIN_PLANNED" ] && minimise_arm "${appid:-game}"; then
+      # Near-instant reveal onto the identical frame (see curtain_hold), so
+      # the whole 620ms shrink is seen rather than its tail.
+      curtain_hold kodi 0.05
+    else
+      curtain_hold kodi
+    fi
     # 9>&- : the guard outlives us by seconds, and an inherited lock fd would
     # keep the session lock held for all of them. (Closing an unopened fd is a
     # no-op, so this is safe whether or not the lock was taken.)
