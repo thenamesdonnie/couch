@@ -1032,7 +1032,17 @@ class InputProc:
                         event=('ps-double-tap'
                                if outcome == gesture.DOUBLE_TAP else 'ps-tap'),
                         held=self.tracker.press_duration, kernel_t=round(k, 6))
-            self.inject_tap()
+            # Re-inject ONLY when the gesture is unbound: pass-through is for
+            # taps nobody consumes. A BOUND tap is couchd's - re-injecting it
+            # too hands the same press to two consumers, and the second one
+            # is Steam's guide toggle (live 23 Aug: tap=home showed Kodi Home
+            # AND opened Big Picture's menu, first minutes of the stage-2
+            # flip). The hold path below always honoured its binding; this
+            # path was unconditional because the DEFAULT tap binding is
+            # 'none', so every rig run agreed with it.
+            if self.binding('double_tap' if outcome == gesture.DOUBLE_TAP
+                            else 'tap') == 'none':
+                self.inject_tap()
         elif outcome == gesture.HOLD_RELEASE:
             self.hold_pending = False
             if not (self._hold_reported or self._long_hold_reported):
@@ -1046,7 +1056,10 @@ class InputProc:
                 self.report('gesture', event='ps-tap',
                             held=self.tracker.press_duration,
                             kernel_t=round(k, 6), over_hold_threshold=True)
-                self.inject_tap()
+                # Same gate as the TAP arm: a bound tap is consumed by
+                # couchd, not replayed at Steam.
+                if self.binding('tap') == 'none':
+                    self.inject_tap()
                 return
             self.report('gesture', event='ps-hold-release',
                         held=self.tracker.press_duration, kernel_t=round(k, 6))

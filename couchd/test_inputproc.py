@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gesture
+import gestureconf
 import inputproc
 from inputproc import (A_CREATE, A_DESTROY, A_KEYS_UP, A_REUPLOAD, FF_SLOTS,
                        FFFull, FFMap, GONE, LOST, OWNED, Persistence)
@@ -785,3 +786,64 @@ def test_hold_tiers_are_binding_gated_the_way_couchd_gates_them():
     assert couchd.g_hold_fires(o) is False, (
         'couchd only fires a hold when one is bound - inputproc.poll_hold '
         'mirrors this, and on_guide re-injects the press when no tier fired')
+
+
+# =========================================================================
+# 23 Aug (stage-2 flip night): a BOUND tap must not be re-injected
+#
+# inject_tap() on the TAP arm was unconditional, which every rig run agreed
+# with because the DEFAULT tap binding is 'none'. The live box binds
+# tap=home, so the first minutes of the flip handed each tap to TWO
+# consumers: couchd showed Kodi Home and the replayed guide press toggled
+# Steam's Big Picture menu. The gate is the same one the hold path always
+# had: pass-through is only for gestures nobody consumes.
+# =========================================================================
+def _tap_proc(bindings):
+    """An InputProc skeleton: just enough state for on_guide's owning path."""
+    proc = inputproc.InputProc.__new__(inputproc.InputProc)
+    proc.own = True
+    proc.conf = gestureconf.GestureConfig(bindings=dict(
+        gestureconf.DEFAULT_BINDINGS, **bindings))
+    proc.tracker = gesture.PressTracker()
+    proc._hold_reported = False
+    proc._long_hold_reported = False
+    proc.hold_pending = False
+    proc.counts = dict(inputproc.COUNTS_ZERO) if hasattr(
+        inputproc, 'COUNTS_ZERO') else {
+        'in': 0, 'out': 0, 'dropped': 0, 'ff': 0,
+        'gesture': 0, 'reinjected': 0, 'write_failures': 0}
+    proc.pending = []
+    proc.gesture_at = 0.0
+    proc.report = lambda kind, **fields: None
+    proc.wire_press = lambda k, value: None
+    return proc
+
+
+def _tap(proc, k=1000.0):
+    proc.on_guide(k, 1, int(k), 0)
+    proc.on_guide(k + 0.12, 0, int(k), 120000)
+
+
+def test_bound_tap_is_not_reinjected_to_the_virtual_pad():
+    proc = _tap_proc({'tap': 'home'})
+    _tap(proc)
+    assert proc.counts['reinjected'] == 0, (
+        'a bound tap is couchd\'s; replaying it at the vpad hands the same '
+        'press to Steam\'s guide toggle as well (live, 23 Aug)')
+    assert not proc.pending
+
+
+def test_unbound_tap_still_passes_through():
+    proc = _tap_proc({'tap': 'none'})
+    _tap(proc)
+    assert proc.counts['reinjected'] == 1
+    assert proc.pending, 'the withheld chord must be queued for the vpad'
+
+
+def test_bound_double_tap_is_not_reinjected():
+    proc = _tap_proc({'tap': 'none', 'double_tap': 'switcher'})
+    _tap(proc, k=1000.0)
+    reinjected_after_first = proc.counts['reinjected']
+    _tap(proc, k=1000.3)   # inside the double window
+    assert proc.counts['reinjected'] == reinjected_after_first, (
+        'the second press of a bound double-tap must not reach the vpad')

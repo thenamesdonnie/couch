@@ -30,6 +30,20 @@ __all__ = ['FLAVOURS', 'flavour', 'profile_dir', 'userdata', 'addon_data',
 #: app id on Flathub. Not org.xbmc.Kodi, which 404s.
 FLATPAK_APP_ID = 'tv.kodi.Kodi'
 
+# Every '~' below means the CONSOLE OWNER's home, which is not always $HOME:
+# inputproc runs as system user couchd-input with HOME=/nonexistent (same
+# trap as owns.py's DEFAULT_PATH, found the same evening - it made inputproc
+# read default bindings, call tap unbound, and re-inject the guide press
+# Steam was never supposed to hear again). This module lives at
+# <home>/couch/couchd/, so the owner's home is two directories up.
+_HOME = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))
+
+
+def _expand(path):
+    return os.path.join(_HOME, path[2:]) if path.startswith('~/') \
+        else os.path.expanduser(path)
+
 #: profile root per flavour.
 FLAVOURS = {
     'apt': '~/.kodi',
@@ -38,8 +52,8 @@ FLAVOURS = {
 
 #: the choice (what the next launch will use) and the record (what the last
 #: launch actually used). Readers want the record.
-FLAVOUR_FILE = os.path.expanduser('~/couch/data/kodi-flavour')
-ACTIVE_FILE = os.path.expanduser('~/couch/data/kodi-flavour-active')
+FLAVOUR_FILE = _expand('~/couch/data/kodi-flavour')
+ACTIVE_FILE = _expand('~/couch/data/kodi-flavour-active')
 
 DEFAULT = 'apt'
 
@@ -79,7 +93,7 @@ def flavour(active=True):
 
 def profile_dir(name=None):
     """special://home for the given (or running) flavour, absolute."""
-    return os.path.expanduser(FLAVOURS[name or flavour()])
+    return _expand(FLAVOURS[name or flavour()])
 
 
 def userdata(name=None):
