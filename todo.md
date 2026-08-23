@@ -378,7 +378,107 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (23 Aug 2026 ~10:30 — STAGE 2 ARMED MID-FLIP; the afternoon of PiP controls, TV-cast resume fix, and the shell question)
+## ▶ Resume here (23 Aug 2026 ~22:30 — STAGE 2 IS LIVE; the shadPS4 fault fix works; the evening of six live bugs)
+
+**Nothing is mid-flight. Everything below is committed and running.**
+Donnie went to bed on a working console.
+
+**THE EXACT NEXT STEP, when the box is free (it can run unattended):**
+the controlled A/B for the shadPS4 fault-batching v2 patch, which is
+the last thing standing between it and an upstream PR:
+```
+cd ~/src/shadps4-dbg && ./soak-v2.sh stock 180 && ./soak-v2.sh v2 180 \
+  && ./score-frames.py soak-out/stock soak-out/v2
+```
+Foreground only; it refuses to start if a shadps4 is running. Then
+sweep `SHADPS4_FAULT_CLAIM_WINDOW_KB=16|64|256|1024` (no rebuild —
+Xenia measured 256KB as their sweet spot, we default to 64KB and are
+claiming 12.8 of a possible 16 pages). Design + results:
+`docs/research/fault-batching-redesign-20260823.md`.
+
+**STAGE 2 WENT LIVE ~18:39** (owns.conf = "gestures input"). couchd
+owns the pad, Steam never hears the guide press again, bug #9's whole
+mechanism is dead, and force feedback reaches the DualSense for the
+first time ("i felt one rumble on my controller for the first time").
+Panic lever unchanged: `sudo couchd-input-release`. Five levers now:
+gestures OWNED, input OWNED, reconcile/transitions/guard still legacy.
+
+**THE PS BUTTON WAS REBOUND** (Donnie's call: "i'm probably not going
+to be going to the home menu a lot as it's not actually a ps4"):
+tap = switcher, hold = home, double-tap = NOTHING. Unbinding the
+double-tap is what makes taps instant — no 350ms window to wait out —
+and Kodi now LEADS the switcher's list because the tap opens it.
+Settings page in Kodi changes any of this; old values backed up at
+`data/save-backups/switcher-settings.pre-tap-switcher.xml`.
+
+**SIX LIVE BUGS, all found by playing, all fixed and committed:**
+1. `e55f8e2` doubled input (sticky udev TAGS defeat TAG-="uaccess"; the
+   new 74-rule setfacl-strips the ACL *after* the uaccess builtin) +
+   the switcher's Steam row losing a raise fight with the kodi guard.
+2. `e2ae776`/`a862aba` owns.py and kodiprofile resolved paths under
+   `$HOME` while inputproc runs as couchd-input with HOME=/nonexistent
+   — so the flip was silently refused, and then bound taps were
+   replayed at the vpad and opened Big Picture's menu.
+3. `1805562` a ~100ms tap fits inside one decision pass, so press and
+   release landed between two looks and the tap VANISHED. The 5 Aug
+   coalesced fixes covered holds and double-taps, never the single tap.
+4. `80f21f2` the curtain had been crashing 25ms after every show since
+   a mangled edit ate `self.spin = None` — so the freeze-frame feature
+   has never once worked until tonight.
+5. `8b3cf47` Steam Input's mirror pad ("Microsoft X-Box 360 pad 0")
+   fed Kodi a second copy of every press; its js node is now fenced.
+6. `942752d` **THE BAD ONE — it cost a Bloodborne death.** couchd's pid
+   resolver knew only shadPS4's AppImage names, so a LOCAL-BUILD
+   session read as zero processes and the escape gesture took the
+   screen WITHOUT freezing the game. game-pids learned this on 22 Aug;
+   couchd's in-process copy never did. Both now share one predicate.
+
+**THE SUSPEND/RESUME IS A REAL ANIMATION NOW** (`2fff89f`, `4df3eae`,
+`eff106d`, `18df11b`, `fe7e812`): the paused card grows to fullscreen
+on resume (the PS5 maximise, mirroring the 14 Aug minimise), the warm
+curtain takes over the same frame in 54ms instead of rebuilding it in
+1.15s, and the whole resume is 1.66s with every millisecond animated.
+The minimise had ALSO been invisible since the frame went 4K — Kodi
+was still decoding the jpg when the animation ran — so the trigger now
+follows the path by 0.45s.
+
+**AUDIO, three variants heard and one kept** (`3598e37`): SDL's own
+7.1→stereo fold takes LFE at full level, so impacts came out ~10dB hot
+("crashing in to boxes is super loud"); leaving the card on 7.1 gives
+the soundbar a discrete LFE it can't reproduce ("completely flat");
+emulator opens 8ch + card on stereo puts the fold in PipeWire with
+proper coefficients — kept. The shim now does that dance itself.
+Separately, spotifyd's eARC crackle was its 16-bit output: `F32` fixed
+it, and `tools/spotify-heal` (`d79f002`) now restarts spotifyd when its
+websocket dies silently, as it had for 40 hours.
+
+**THE FAULT-STORM FIX, v2** (`276ab19`): v1 was killed today for
+corrupting rendering — it widened the *claim*, so guest RAM was
+declared authoritative over pages the GPU owned (black entities,
+multicoloured corpse). v2 widens only the *protection work*, never the
+claim, and only over pages provably identical in RAM and on the card,
+so that failure is unreachable by construction. Live: 5,308 faults/s
+against ~48,000 stock, fault time 13% of a core against ~85%, and 15
+minutes of clean play. **Donnie reports it "always smooth" where stock
+"didn't feel smooth at parts" — and the logs do NOT show that**
+(frametime, jitter, per-window variance and hitch rate are all
+statistically indistinguishable). Unresolved, and honestly so: either
+it is input latency / present pacing that MangoHud cannot see, or it
+is expectation. Worth measuring properly before any upstream claim.
+
+**NEEDS DONNIE:** bluetooth.ko rebuild for kernel 7.0.0-30 BEFORE the
+next reboot (or pin -29 in grub) — this has been owed all day; the
+`perf` confirmation of the fault cost model needs root:
+`sudo perf stat -e page-faults,syscalls:sys_enter_mprotect -p $(pgrep -f shadps4) -- sleep 10`;
+PiP scrubber on the real phone; the Big Picture shell experiment; 2001
+resume position if he remembers it; memtest still never run.
+
+**A Kodi restart is owed** (not urgent): the switcher's self-healing
+latch (`adc29b6`) is deployed but Python addons only load at start.
+The stale latch that wedged the double-tap tonight is already cleared
+by hand.
+
+## ▶ Previous (23 Aug 2026 ~10:30 — STAGE 2 ARMED MID-FLIP; the afternoon of PiP controls, TV-cast resume fix, and the shell question)
 
 **THE EXACT NEXT STEP: Donnie turns the pad ON (one PS press).** Then:
 (1) verify the fence on the real nodes: getfacl on the pad's event/js
