@@ -378,7 +378,61 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (23 Aug 2026 ~00:20 — THE OVERNIGHT SHIFT: PiP is a real feature, four bugs fixed, two gamescope soaks in flight)
+## ▶ Resume here (23 Aug 2026 ~07:45 — THE MORNING SHAKEDOWN: launch race + emu-matcher blindness both bit live and are fixed; tripwire A/B ran but is CONTAMINATED, rerun tonight)
+
+Donnie's first fix-build morning found three real bugs in an hour, all
+fixed and committed (970bcdb, 0833b1d; game-launch edits outside-repo):
+
+**1. Black/no signal at launch** = the overnight launch-assert setting
+4k120 MID-TV-WAKE, racing the HDMI handshake; the sink rejected it and
+the CRTC was left with no active mode. Fixed: launch-assert now needs 3s
+of link stability, verifies each fix for 6s, auto-reverts to 4K60 if the
+sink drops, and its game-window guard actually sees windows now
+(_NET_CLIENT_LIST, not toplevels - xfwm4 frames hid every class).
+
+**2. "shadps4 never appeared (60s)" tore down a HEALTHY session.**
+game-pids got the 22 Aug local-build fix but game-launch's OWN
+emu_running() and close_games kill sites still only knew the AppImage
+names. First live fix-build boot = cold shader recompile >60s, launcher
+gave up, trap removed the session flag and restored Kodi over the game,
+torrents came back mid-session, and the reconcilers kept yanking Donnie
+to Kodi. Fixed: ONE variable EMU_PAT in game-launch
+('Shadps4-sdl|mount_Shadps|^~/src/shadps4-dbg/build/shadps4'), used by
+all 7 sites. THE LESSON, now in full: a new emulator binary must be
+added to EVERY matcher - game-pids AND game-launch - before its first
+live session; grep for the old pattern, don't trust one fix.
+
+**3. quit-sweep false alarm + zombie bug** (from the first real traces):
+verify now gives stragglers 3s to die on their own (bb-event-tail's 2s
+poll lost the race and got called a LEAK), and zombies read as dead
+(verify used to TERM corpses and report leaks forever). The 07:29 quit
+trace reads CLEAN end to end - quit-trace works.
+
+**THE TRIPWIRE A/B (bb-drop-report, session 07:22-07:29): PROMISING BUT
+CONTAMINATED - do not call the verdict.** 6m53s, avg 60.0, 1% low 26.
+The 1% low is one 35s shader-compile storm at 01:51 (cold cache on the
+new binary, one-time) plus blips while the box was UNQUIET (bug 2 had
+resumed torrents+whisper for the first 4 minutes). The tail after 04:49
+was drop-free 60.0 ("smooth as butter"). THE HEADLINE: **no ~20s
+autosave cadence anywhere in the session** - the metronome the fix
+targets is absent. Save backed up pre-session
+(data/save-backups/2026-08-23-pre-tripwire-ab). TONIGHT: same flags
+(shadps4-local-build stays ON, cache now warm, box quiet), one proper
+session, then the adoption verdict + probe-strip + upstream.
+
+**PAD: the "lost control" at 07:28 was a real DISCONNECT** (couchd:
+pad-disconnected 07:28:20), on top of connect trouble pre-session.
+The patched bluetooth.ko for 7.0.0-29 looks intact (rebuilt 12 Aug),
+battery is the cheap suspect - BUT **kernel 7.0.0-30 is INSTALLED and
+waiting: the next reboot boots a STOCK bluetooth.ko and the pad
+reconnect bug returns. Rebuild the patch for -30 before/at next reboot
+(homelab-ps5-pad-bluetooth memory), or pin -29 in grub.**
+
+Room state on leaving: game quit cleanly (autosaved to the last ~20s),
+TV off (Donnie, manually), flags clean, torrents/whisper restored by
+the one-shot janitor, second quit-trace artifact archived.
+
+## ▶ Previous resume block (23 Aug 2026 ~00:20 — THE OVERNIGHT SHIFT: PiP is a real feature, four bugs fixed, two gamescope soaks in flight)
 
 Donnie went to bed ~22:45 after "it works really well except the mouse
 shows now and i can't control the media from the app", then "look in to
