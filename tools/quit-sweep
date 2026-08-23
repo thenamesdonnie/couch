@@ -32,10 +32,14 @@ import time
 
 
 def starttime(pid):
-    """The kernel's start time for pid, or None if it does not exist.
+    """The kernel's start time for pid, or None if it is gone OR a zombie.
 
     Field 22 of /proc/<pid>/stat, parsed from after the last ')' because
-    comm may contain spaces and parentheses.
+    comm may contain spaces and parentheses. A zombie (state Z) reads as
+    gone on purpose: it has already exited, holds nothing, and cannot be
+    signalled into being any more dead - counting it alive made verify
+    "TERM" a corpse and report a leak forever (found by the straggler
+    test, 23 Aug).
     """
     try:
         with open(f'/proc/{pid}/stat', 'rb') as f:
@@ -45,6 +49,8 @@ def starttime(pid):
     try:
         rest = raw[raw.rindex(')') + 2:].split()
         # rest[0] is field 3 (state); starttime is field 22 overall.
+        if rest[0] == 'Z':
+            return None
         return int(rest[19])
     except (ValueError, IndexError):
         return None
@@ -103,13 +109,26 @@ def survivors(rows):
     return out
 
 
-def verify(roster_path, grace):
+def verify(roster_path, grace, natural=3.0):
     rows = load_roster(roster_path)
     if rows is None:
         return 2
     live = survivors(rows)
     if not live:
         print(f'quit-sweep: clean ({len(rows)} captured, all gone)')
+        return 0
+    # A natural-death grace before any accusation (first live outing,
+    # 23 Aug: bb-event-tail's pipeline follows the emulator down on a 2s
+    # poll, and a zero-grace verify TERMed it ~1s early and cried QUIT
+    # LEAK over our own instrumentation). A real leak sits there for
+    # hours; a sibling cleaner needs a couple of seconds.
+    deadline = time.monotonic() + natural
+    while live and time.monotonic() < deadline:
+        time.sleep(0.25)
+        live = survivors(live)
+    if not live:
+        print(f'quit-sweep: clean (stragglers exited on their own '
+              f'within {natural:.0f}s)')
         return 0
     for pid, _, name in live:
         print(f'quit-sweep: LEAK {pid} ({name}) survived the quit - TERM')
@@ -143,6 +162,9 @@ def main(argv=None):
     v = sub.add_parser('verify')
     v.add_argument('roster')
     v.add_argument('--grace', type=float, default=10.0)
+    v.add_argument('--natural', type=float, default=3.0,
+                   help='seconds a survivor may die on its own before '
+                        'being called a leak')
     args = p.parse_args(argv)
     if args.cmd == 'capture':
         raw = args.pids if args.pids is not None else sys.stdin.read()
@@ -152,7 +174,7 @@ def main(argv=None):
             print(f'quit-sweep: pids must be integers, got {raw!r}')
             return 2
         return capture(args.roster, pids)
-    return verify(args.roster, args.grace)
+    return verify(args.roster, args.grace, args.natural)
 
 
 if __name__ == '__main__':

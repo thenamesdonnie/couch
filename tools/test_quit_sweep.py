@@ -65,7 +65,7 @@ def test_a_survivor_is_terminated_and_reported(tmp_path, child, capsys):
     p = child()
     roster = str(tmp_path / 'roster')
     qs.capture(roster, [p.pid])
-    rc = qs.verify(roster, grace=5.0)
+    rc = qs.verify(roster, grace=5.0, natural=0.2)
     assert rc == 1, 'a leak must be reported even when cleaned'
     assert p.wait(timeout=5) is not None
     out = capsys.readouterr().out
@@ -83,7 +83,7 @@ def test_a_term_ignorer_is_killed(tmp_path, capsys):
         assert p.stdout.readline().strip() == b'up'
         roster = str(tmp_path / 'roster')
         qs.capture(roster, [p.pid])
-        rc = qs.verify(roster, grace=1.0)
+        rc = qs.verify(roster, grace=1.0, natural=0.2)
         assert rc == 1
         assert p.wait(timeout=5) == -signal.SIGKILL
         assert 'KILL' in capsys.readouterr().out
@@ -123,3 +123,21 @@ def test_cli_capture_and_verify_round_trip(tmp_path, child):
     r = subprocess.run([tool, 'verify', roster, '--grace', '1'],
                        capture_output=True, text=True)
     assert r.returncode == 0 and 'clean' in r.stdout
+
+
+def test_a_straggler_that_dies_on_its_own_is_not_a_leak(tmp_path, capsys):
+    """bb-event-tail's shape (23 Aug, the first live trace): a sibling
+    cleaner on a 2s poll follows the game down moments after the roster
+    check starts. It must be given time to die untouched."""
+    p = subprocess.Popen(['sleep', '0.4'])
+    try:
+        roster = str(tmp_path / 'roster')
+        qs.capture(roster, [p.pid])
+        rc = qs.verify(roster, grace=1.0, natural=3.0)
+        assert rc == 0, 'a natural death within the grace is not a leak'
+        out = capsys.readouterr().out
+        assert 'stragglers' in out and 'LEAK' not in out
+    finally:
+        if p.poll() is None:
+            p.kill()
+        p.wait()
