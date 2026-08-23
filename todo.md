@@ -378,7 +378,72 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ STAGE 2 ACTIVATION IN FLIGHT (23 Aug ~09:00, Donnie: "i want to activate that now")
+## ▶ Resume here (23 Aug 2026 ~10:30 — STAGE 2 ARMED MID-FLIP; the afternoon of PiP controls, TV-cast resume fix, and the shell question)
+
+**THE EXACT NEXT STEP: Donnie turns the pad ON (one PS press).** Then:
+(1) verify the fence on the real nodes: getfacl on the pad's event/js
+devices must show group couchd-input rw, NO ds2000 ACL, and udevadm
+CURRENT_TAGS without uaccess; the vpad ('Microsoft X-Box 360 pad')
+appears; Steam adopts it (E2's essence). (2) The flip: edit
+couchd/owns.conf to COUCHD_OWNS="gestures input", then Donnie runs
+`sudo systemctl restart inputproc`. (3) Live checks: PS tap in a Steam
+title opens NO Steam menu; gestures flow via the wire
+(/tmp/couchd.log); press counter in shadow/inputproc-*.jsonl matches.
+Panic lever at any moment: `sudo couchd-input-release`.
+
+**Stage-1 state (all green, ~10:15):** armed rules live (0254174),
+inputproc enabled + running as a FORWARDER, evidence JSONL writing,
+EPP unit installed+enabled, bison in, ReBAR verified ON (16G BAR -
+memory corrected, Donnie had flipped it ~20 Aug). THE TRAP FOUND AND
+FIXED (717d707): couchd's user unit ran ProtectSystem=strict inside an
+implicit user namespace, so SO_PEERCRED read inputproc as nobody/65534
+and the supervisor wire flapped every 30s - mount-sandbox options
+removed, wire authenticates as couchd-input and holds. Pre-flight also
+done: watcher reconciles from its PermissionError branch, Steam config
+backed up (data/steam-config-backups/2026-08-23-pre-stage2), vpad
+invisible to all DualSense-scoped checks. Deviations Donnie authorized:
+E2 folded into first live minutes; psfuzz/chaos port (F21) skipped.
+
+**The five owns.conf levers after today: gestures OWNED, input OWNED,
+reconcile/transitions/guard still legacy.** Next after input settles:
+reconcile (gate: run the differ over the shadow archive for the "clean
+evening" evidence + Donnie's daytime yes), then transitions (7 yield
+sites in game-launch already built), guard last (it shrinks once Steam
+stops hearing guide presses).
+
+**Also this session (all committed d465c02..717d707):**
+- **TV-cast resume bug fixed:** Play on TV used PlayNow with no start
+  ticks - started at zero AND WIPED the item's stored resume point.
+  Casts now resume; fromStart:true overrides. COST: Donnie's 2001: A
+  Space Odyssey position was wiped by the verification cast before the
+  bug was understood (recover: his memory of the position -> set via
+  API, or root ssh to dns2's nightly backup). See the new
+  couch-tv-cast memory - the whole cast + HDR-auto-route feature had
+  no memory and even Donnie forgot it exists.
+- **PiP got proper media control:** absolute seek in pipd (45 tests), a
+  real draggable scrubber on the phone (Playing.svelte's pointer idiom,
+  400ms held-position after release because mpv answers seeks stale),
+  and "Play as PiP" on every library item (film button + episode-row
+  buttons, /api/pip/start {itemId} through the same containment; server
+  107 tests).
+- **Pad attribution:** app-initiated connect/disconnect writes
+  /tmp/pad-user-action; couchd watches it, quit-trace tapes it (the
+  morning's "pad disconnected" was Donnie pressing the app's button).
+- **The shell question (decision brewing, nothing built):** Donnie
+  watches media on the TV's native Jellyfin app anyway; his lean is
+  Big Picture as pad shell + TV apps for media/YouTube + phone as
+  glue. Offered: the BP weekend experiment (BB as non-Steam shortcut
+  with artwork). The "LIBRARY: BROWSING IS NOT FINISHED" section below
+  likely becomes wontfix if BP sticks.
+
+**NEEDS DONNIE (beyond the pad-on):** bluetooth.ko rebuild for kernel
+7.0.0-30 BEFORE the next reboot (stock module = pad reconnect bug
+returns; or pin -29 in grub); one clean Bloodborne session for the
+tripwire verdict (flag armed, cache warm); PiP scrubber/picker on the
+real phone; the BP experiment yes/no; 2001 resume position if he
+remembers it; memtest still never run.
+
+## ▶ Previous (23 Aug ~09:00 — STAGE 2 ACTIVATION IN FLIGHT, Donnie: "i want to activate that now")
 
 Pre-flight COMPLETE this session: watcher reconciles from its
 PermissionError branch (the SR4 patch, outside-repo), Steam config
