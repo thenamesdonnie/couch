@@ -65,9 +65,12 @@ The hold does not weaken the contract, it re-scopes it: a MAPPED curtain
 keeps today's bounded lifetime to the letter, while the warm daemon is
 UNMAPPED - invisible and input-transparent, so 'stuck over the console' is
 not a state it can be in. Its own lifetime is still bounded three ways:
-it retires the moment the pause flag it was told about is gone
-(died-with-the-pause - the flag's remover is the resume/quit/close path, so
-a warm frame can never outlive the pause it belongs to), a hard idle cap
+it retires once the pause flag it was told about is gone and a short grace
+has passed (died-with-the-pause; the grace is there because the flag's
+remover is the resume path itself, which clears it BEFORE the SIGCONTs and
+only reaches its curtain_show a beat later - retiring on the bare
+disappearance threw the frame away milliseconds before its one use, measured
+live at the full 1155ms cold cost), a hard idle cap
 (WARM_IDLE_MAX, 4h) enforced by the same loop deadline, and the same SIGALRM
 os._exit armed at that cap. `clear`, SIGTERM and a replacement `show` of a
 wedged daemon all behave exactly as they do today.
@@ -124,6 +127,13 @@ try:
 except ValueError:
     WARM_IDLE_MAX = 4 * 3600.0
 WARM_FLAG_POLL_S = 1.0              # how often the warm loop stats the flag
+# How long a warm daemon outlives its pause flag. game-launch clears the flag
+# at the START of a resume and shows the curtain a beat later, so retiring on
+# the bare disappearance threw the frame away just before its one use.
+try:
+    WARM_FLAG_GRACE_S = float(os.environ.get('COUCH_CURTAIN_WARM_GRACE') or 20)
+except ValueError:
+    WARM_FLAG_GRACE_S = 20.0
 HOLD_FLAG = os.environ.get('COUCH_CURTAIN_HOLD_FLAG') or '/tmp/game-suspended'
 
 FFMPEG = '/usr/bin/ffmpeg'
@@ -837,7 +847,7 @@ def loop(overlay, deadline, timeout):
     # window is unmapped, the pixmap stays uploaded, and the daemon retires
     # the moment warm['flag'] disappears - or when the (re-armed, WARM_IDLE_MAX)
     # deadline runs out, whichever is first.
-    warm = {'on': False, 'flag': None, 'next_check': 0.0}
+    warm = {'on': False, 'flag': None, 'next_check': 0.0, 'gone_at': None}
     next_spin = time.monotonic()
     try:
         while not STOPPING['now']:
@@ -854,9 +864,24 @@ def loop(overlay, deadline, timeout):
             if warm['on'] and now >= warm['next_check']:
                 warm['next_check'] = now + WARM_FLAG_POLL_S
                 if not (warm['flag'] and os.path.exists(warm['flag'])):
-                    say(f'warm hold: the pause is over ({warm["flag"]} is '
-                        f'gone); retiring')
-                    break
+                    # ...but NOT instantly. The flag's removal is the FIRST
+                    # act of a resume, not its last: game-launch clears it
+                    # before the SIGCONTs (the reconcile-flip ordering rule)
+                    # and only reaches its curtain_show a beat later - so an
+                    # immediate retirement here killed the warm pixmap
+                    # milliseconds before the one show it exists for, and the
+                    # resume paid the full ~1.15s cold rebuild anyway
+                    # (measured live, 23 Aug: 1155ms). The grace covers the
+                    # rest of a resume and no more; the daemon still cannot
+                    # outlive the pause by anything a player would notice.
+                    if warm['gone_at'] is None:
+                        warm['gone_at'] = now
+                        say(f'warm hold: {warm["flag"]} is gone (a resume is '
+                            f'starting); holding {WARM_FLAG_GRACE_S:.0f}s more')
+                    elif now - warm['gone_at'] >= WARM_FLAG_GRACE_S:
+                        say('warm hold: the pause is over and nobody came '
+                            'for the frame; retiring')
+                        break
             wait_ms = min(POLL_MS, int(left * 1000) + 1)
             if overlay.spin:
                 if now >= next_spin:

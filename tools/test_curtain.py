@@ -496,10 +496,16 @@ def _pause_flag(tmp_path):
     return flag
 
 
-def _warm_up(rig, frame, flag, timeout='20'):
+def _warm_up(rig, frame, flag, timeout='20', grace=None):
     """show + fade --hold, then assert the daemon really is warm: alive,
-    window still on the server but UNMAPPED, status honest about it."""
-    assert rig.run('show', frame, '--timeout', timeout).returncode == 0
+    window still on the server but UNMAPPED, status honest about it.
+
+    `grace` shrinks WARM_FLAG_GRACE_S for the daemon this spawns - it is read
+    from the environment at import, so it can only be set on the `show` that
+    starts the process, never on the later fade."""
+    env = {} if grace is None else {'COUCH_CURTAIN_WARM_GRACE': str(grace)}
+    assert rig.run('show', frame, '--timeout', timeout,
+                   extra_env=env).returncode == 0
     r = rig.run('fade', '--hold', '--duration', '0.1',
                 extra_env={'COUCH_CURTAIN_HOLD_FLAG': str(flag)})
     assert r.returncode == 0, r.stderr
@@ -581,24 +587,43 @@ def test_warm_show_of_a_rewritten_frame_reuploads(rig, frame, tmp_path):
 
 def test_warm_daemon_dies_with_the_pause(rig, frame, tmp_path):
     """died-with-the-pause: the flag it was told about disappearing IS the
-    teardown order, no caller needed."""
+    teardown order, no caller needed - after the resume grace."""
     flag = _pause_flag(tmp_path)
-    _warm_up(rig, frame, flag)
+    _warm_up(rig, frame, flag, grace=1)
     os.remove(flag)
-    assert rig.wait_gone(4) is not None, 'warm daemon outlived its pause flag'
+    assert rig.wait_gone(6) is not None, 'warm daemon outlived its pause flag'
     assert not os.path.exists(rig.pidfile())
+
+
+def test_the_flag_grace_outlives_the_resume_that_clears_it(rig, frame,
+                                                           tmp_path):
+    """THE reason the grace exists (live, 23 Aug): game-launch removes the
+    suspended flag as its FIRST act of a resume and only reaches curtain_show
+    a beat later. Retiring on the bare disappearance destroyed the warm pixmap
+    milliseconds before its one use and the resume paid the full cold cost."""
+    flag = _pause_flag(tmp_path)
+    _warm_up(rig, frame, flag, grace=10)
+    os.remove(flag)                            # the resume starts here
+    time.sleep(2.0)                            # ...and takes a moment
+    pid = int(open(rig.pidfile()).read())
+    os.kill(pid, 0)                            # still warm, still holding
+    t0 = time.monotonic()
+    assert rig.run('show', frame, '--timeout', '20').returncode == 0
+    assert time.monotonic() - t0 < 1.0, 'the show after the flag went was cold'
+    assert rig.status()['mapped'] is True
 
 
 def test_fade_hold_without_a_pause_flag_retires_at_once(rig, frame, tmp_path):
     """Holding for a pause that does not exist is the safe default: the warm
     state begins, the first flag poll fails, the daemon retires."""
-    r = rig.run('show', frame, '--timeout', '20')
+    r = rig.run('show', frame, '--timeout', '20',
+                extra_env={'COUCH_CURTAIN_WARM_GRACE': '1'})
     assert r.returncode == 0
     missing = tmp_path / 'never-written-flag'
     assert rig.run('fade', '--hold', '--duration', '0.1',
                    extra_env={'COUCH_CURTAIN_HOLD_FLAG': str(missing)}
                    ).returncode == 0
-    assert rig.wait_gone(4) is not None
+    assert rig.wait_gone(6) is not None
     assert not os.path.exists(rig.pidfile())
 
 
