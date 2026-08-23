@@ -378,7 +378,24 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (23 Aug 2026 ~07:45 — THE MORNING SHAKEDOWN: launch race + emu-matcher blindness both bit live and are fixed; tripwire A/B ran but is CONTAMINATED, rerun tonight)
+## ▶ STAGE 2 ACTIVATION IN FLIGHT (23 Aug ~09:00, Donnie: "i want to activate that now")
+
+Pre-flight COMPLETE this session: watcher reconciles from its
+PermissionError branch (the SR4 patch, outside-repo), Steam config
+backed up (data/steam-config-backups/2026-08-23-pre-stage2), couchd
+supervisor socket verified listening, panic lever NOPASSWD verified,
+pad-connect/tv-waker verified vpad-safe (vpad = 'Microsoft X-Box 360
+pad', invisible to every DualSense-scoped check and to the udev fence).
+Armed rules file committed: couchd/stage2/72-...rules.armed (0254174).
+WAITING ON DONNIE'S 3 SUDO LINES (stage 1: cp rules + udev reload +
+enable inputproc, then pad off/on), THEN my forwarder verification
+(getfacl + CURRENT_TAGS + evidence JSONL + Steam-adopts-vpad = E2's
+essence), THEN the flip (owns.conf gains input + sudo restart
+inputproc). Panic lever at any moment: sudo couchd-input-release.
+Declared deviations, Donnie-authorized: E2 folded into first live
+minutes; psfuzz/chaos port (F21) skipped.
+
+## ▶ Previous (23 Aug 2026 ~07:45 — THE MORNING SHAKEDOWN: launch race + emu-matcher blindness both bit live and are fixed; tripwire A/B ran but is CONTAMINATED, rerun tonight)
 
 Donnie's first fix-build morning found three real bugs in an hour, all
 fixed and committed (970bcdb, 0833b1d; game-launch edits outside-repo):
