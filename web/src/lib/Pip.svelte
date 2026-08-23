@@ -32,6 +32,12 @@
   let opPct = $state(100);
   let volPct = $state(100);
   let voling = false; // a finger is on the volume slider
+  let scrubbing = $state(false); // ...or on the seek bar
+  let scrubPct = $state(0);
+  // Held for a moment after a release: mpv's absolute seek is asynchronous, so
+  // the status that comes straight back still reports the OLD position and the
+  // thumb would snap backwards for one poll. Cleared once the daemon agrees.
+  let heldPos = $state(null);
 
   const running = $derived(pip?.running === true);
   const visible = $derived(pip?.visible !== false);
@@ -42,6 +48,14 @@
   const muted = $derived(pip?.muted === true);
   const pos = $derived(typeof pip?.position === 'number' ? pip.position : null);
   const dur = $derived(typeof pip?.duration === 'number' ? pip.duration : null);
+  const seekable = $derived(pos !== null && dur !== null && dur > 0);
+  // Where the finger is, in seconds, while it is down.
+  const scrubSecs = $derived((scrubPct / 100) * (dur || 0));
+  // The position the bar draws: the finger while dragging, the spot just
+  // seeked to for the settle window after a release, otherwise the daemon's.
+  const shownPos = $derived(scrubbing ? scrubSecs : (heldPos ?? pos ?? 0));
+  const pct = $derived(dur ? Math.max(0, Math.min(100, (shownPos / dur) * 100)) : 0);
+  const displayPct = $derived(scrubbing ? scrubPct : pct);
   const mediaName = $derived(
     pip?.media ? decodeURIComponent(String(pip.media).split(/[/\\]/).pop() || '') : '',
   );
@@ -79,7 +93,7 @@
   onMount(() => {
     load();
     const t = setInterval(() => {
-      if (document.visibilityState === 'visible' && !dragging) load();
+      if (document.visibilityState === 'visible' && !dragging && !scrubbing) load();
     }, 4000);
     return () => clearInterval(t);
   });
@@ -199,6 +213,66 @@
   async function transport(path, body = {}) {
     try { adopt(await api(`/api/pip/${path}`, body)); } catch { /* toasted */ }
   }
+
+  // The seek bar. Same shape as the Playing tab's scrubber, and for the same
+  // reasons: a native <input type=range> has no touch-action, so a vertical
+  // wobble scrolls the page instead of seeking, its thumb is a tiny target, and
+  // its value is rewritten from underneath by every status poll. This owns the
+  // pointer (setPointerCapture), draws the finger's position rather than the
+  // daemon's, and the 4s poll is held off while it is down, exactly as sizing,
+  // fading and voling hold off the sliders.
+  const pctAt = (ev, el) => {
+    const r = el.getBoundingClientRect();
+    return Math.max(0, Math.min(100, ((ev.clientX - r.left) / r.width) * 100));
+  };
+
+  // A live seek at most every 300ms, so the picture scrubs ALONG with the drag
+  // (mpv redraws where you are going) without a socket round trip per pixel.
+  const SEEK_MS = 300;
+  let seekTimer = null;
+  let heldTimer = null;
+  function liveSeek() {
+    if (seekTimer) return;
+    seekTimer = setTimeout(() => {
+      seekTimer = null;
+      if (scrubbing) transport('seek', { to: scrubSecs });
+    }, SEEK_MS);
+  }
+
+  function seekDown(ev) {
+    if (!seekable) return;
+    ev.currentTarget.setPointerCapture(ev.pointerId);
+    scrubbing = true;
+    scrubPct = pctAt(ev, ev.currentTarget);
+    liveSeek();
+  }
+  function seekMove(ev) {
+    if (!scrubbing) return;
+    scrubPct = pctAt(ev, ev.currentTarget);
+    liveSeek();
+  }
+  function seekUp(ev) {
+    if (!scrubbing) return;
+    scrubPct = pctAt(ev, ev.currentTarget);
+    const to = scrubSecs;
+    scrubbing = false;
+    if (seekTimer) { clearTimeout(seekTimer); seekTimer = null; }
+    seekSettle(to, { to });
+  }
+
+  // Hold the asked-for spot, seek, then read the daemon again once mpv has
+  // actually moved. Without the re-read the bar would sit on a stale position
+  // until the 4s poll came round, which reads as the seek not having worked.
+  async function seekSettle(target, body) {
+    heldPos = Math.max(0, Math.min(dur ?? Infinity, target));
+    clearTimeout(heldTimer);
+    await transport('seek', body);
+    heldTimer = setTimeout(async () => { await load(); heldPos = null; }, 400);
+  }
+
+  // The -10s/+30s buttons move off wherever the picture actually is, so they
+  // get the same settle treatment as a released thumb.
+  const nudge = (seconds) => seekSettle((shownPos ?? 0) + seconds, { seconds });
 
   let volTimer = null;
   let volIdle = null;
@@ -432,16 +506,41 @@
     </p>
 
     {#if hasTransport}
+      {#if seekable}
+        <div
+          class="seekbar"
+          class:dragging={scrubbing}
+          data-nopull
+          onpointerdown={seekDown}
+          onpointermove={seekMove}
+          onpointerup={seekUp}
+          onpointercancel={seekUp}
+          role="slider"
+          tabindex="0"
+          aria-label="Seek the picture"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={Math.round(displayPct)}
+        >
+          <div class="seektrack">
+            <div class="seekfill" style:width={displayPct + '%'}></div>
+            <div class="seekthumb" style:left={displayPct + '%'}></div>
+          </div>
+        </div>
+        <div class="row times mono small">
+          <span>{fmt(shownPos)}</span>
+          <span class="grow"></span>
+          <span class="dim">{fmt(dur)}</span>
+        </div>
+      {/if}
+
       <div class="row transport">
-        <button class="small" onclick={() => transport('seek', { seconds: -10 })}>-10s</button>
+        <button class="small grow" onclick={() => nudge(-10)}>-10s</button>
         <button class="primary playpause" onclick={() => transport(paused ? 'play' : 'pause')}
                 aria-label={paused ? 'Play' : 'Pause'}>
           <Icon name={paused ? 'play' : 'pause'} size={16} />
         </button>
-        <button class="small" onclick={() => transport('seek', { seconds: 30 })}>+30s</button>
-        {#if pos !== null && dur !== null}
-          <span class="mono small dim time grow">{fmt(pos)} / {fmt(dur)}</span>
-        {/if}
+        <button class="small grow" onclick={() => nudge(30)}>+30s</button>
       </div>
 
       <div class="row slider">
@@ -547,8 +646,44 @@
     width: 52px;
     padding: 8px 0;
   }
-  .time { text-align: right; }
   .mute { flex: none; width: 62px; }
+
+  /* The seek bar, same construction as the Playing tab's: a thin track inside
+     a tall padded touch target, and touch-action:none set in CSS rather than
+     when the gesture starts, because iOS reads it once, at the first touch. */
+  .seekbar {
+    position: relative;
+    padding: 14px 0 12px;
+    margin: 0 2px;
+    touch-action: none;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .seektrack {
+    position: relative;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--raise);
+  }
+  .seekfill {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+  .seekthumb {
+    position: absolute;
+    top: 50%;
+    width: 16px; height: 16px;
+    margin: -8px 0 0 -8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  }
+  /* Never a transition while dragging: the thumb has to track the finger. */
+  .seekbar.dragging .seekthumb { transform: scale(1.35); }
+  .times { margin: 0 2px 10px; }
 
   .corners {
     display: grid;

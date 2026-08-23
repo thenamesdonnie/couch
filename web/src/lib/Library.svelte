@@ -146,6 +146,8 @@
   }
 
   async function openDetail(item) {
+    pipNote = '';
+    clearTimeout(pipNoteTimer);
     const cached = detailCache.get(item.id);
     if (cached) {
       detail = item;
@@ -202,6 +204,44 @@
       oncast?.();
     } finally {
       casting = false;
+    }
+  }
+
+  // Putting something in the corner of the TV instead of on all of it. The
+  // server resolves the Jellyfin id to a real file itself, so the phone only
+  // ever hands over the id it already has.
+  //
+  // A raw fetch, not api(): "there is already a picture up" comes back as a
+  // 409, which is a thing to say plainly in the sheet, not an error banner
+  // across the top of the app.
+  let pipBusyId = $state('');
+  let pipNote = $state('');
+  let pipNoteTimer = null;
+
+  function sayPip(text) {
+    pipNote = text;
+    clearTimeout(pipNoteTimer);
+    pipNoteTimer = setTimeout(() => { pipNote = ''; }, 6000);
+  }
+
+  async function playAsPip(item) {
+    if (pipBusyId) return;
+    pipBusyId = item.id;
+    pipNote = '';
+    try {
+      const res = await fetch('/api/pip/start', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: item.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) sayPip('There is already a picture on the TV. Close that one from the Games tab first.');
+      else if (!res.ok) sayPip(data.error || 'That would not start as a picture.');
+      else sayPip('The picture is up on the TV. Move it and control it from the Games tab.');
+    } catch {
+      sayPip('That would not start as a picture.');
+    } finally {
+      pipBusyId = '';
     }
   }
 
@@ -362,6 +402,11 @@
             <button class="tvhdr" disabled={casting} onclick={() => (tvItem = detail)}>
               {detail.type === 'Series' ? 'Next up in HDR' : 'Play in HDR'}
             </button>
+            {#if detail.type === 'Movie'}
+              <button class="pipact" disabled={!!pipBusyId} onclick={() => playAsPip(detail)}>
+                {pipBusyId === detail.id ? 'Starting' : 'Play as PiP'}
+              </button>
+            {/if}
             <button disabled={casting} onclick={() => trailer(detail)}>Trailer</button>
           </div>
           {#if arrInfo?.inArr && !arrInfo.uhd}
@@ -394,6 +439,7 @@
           {/if}
         </div>
       </div>
+      {#if pipNote}<p class="pipnote small">{pipNote}</p>{/if}
       {#if detail.overview}<p class="overview small dim" use:panYIfScrollable>{detail.overview}</p>{/if}
       {#if detail.type === 'Series'}
         {#if !episodes}
@@ -412,14 +458,20 @@
           {/if}
           <div class="list eplist" use:panYIfScrollable>
             {#each (seasons.find(([sn]) => sn === season)?.[1] ?? seasons[0]?.[1] ?? []) as e (e.id)}
-              <button class="epi" class:seen={e.played} onclick={() => cast(e)} disabled={casting}>
-                <span class="grow">
-                  <span class="ename">{epLabel(e)} · {e.name}</span>
-                  {#if e.resumeSecs}<span class="esub dim small">in progress</span>{/if}
-                </span>
-                {#if e.fourK}<span class="epi4k mono">4K</span>{/if}
-                <span class="go" class:seenicon={e.played}><Icon name={e.played ? "check" : "play"} size={14} /></span>
-              </button>
+              <div class="eprow">
+                <button class="epi" class:seen={e.played} onclick={() => cast(e)} disabled={casting}>
+                  <span class="grow">
+                    <span class="ename">{epLabel(e)} · {e.name}</span>
+                    {#if e.resumeSecs}<span class="esub dim small">in progress</span>{/if}
+                  </span>
+                  {#if e.fourK}<span class="epi4k mono">4K</span>{/if}
+                  <span class="go" class:seenicon={e.played}><Icon name={e.played ? "check" : "play"} size={14} /></span>
+                </button>
+                <button class="pipact eppip" disabled={!!pipBusyId} onclick={() => playAsPip(e)}
+                        aria-label="Play in the corner of the TV">
+                  {pipBusyId === e.id ? '...' : 'PiP'}
+                </button>
+              </div>
             {/each}
           </div>
         {/if}
@@ -733,6 +785,35 @@
     color: var(--accent);
     border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   }
+  /* Putting it in the corner instead of on the whole screen: a quiet action
+     next to the loud ones, and on an episode row a small square at the end
+     rather than a second full-width target. */
+  .pipact {
+    font-size: 12px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--raise);
+    color: var(--muted);
+    border: 1px solid var(--line);
+  }
+  .eprow { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .eprow .epi { flex: 1 1 auto; min-width: 0; }
+  .eppip {
+    flex: 0 0 auto;
+    width: 46px;
+    padding: 8px 0;
+    text-align: center;
+    justify-content: center;
+  }
+  .pipnote {
+    margin: 4px 0 0;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--accent-tint);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
   .uhdchip {
     font-size: 11px;
     font-weight: 600;

@@ -458,6 +458,116 @@ test('POST /api/pip/start reports a daemon that never comes up rather than claim
   } finally { await app.close(); gone.close(); lib.close(); _setPipSeams(); }
 });
 
+// --- starting from a Jellyfin id ------------------------------------------
+// The Library tab knows items, not files, so /start takes an id too and looks
+// the path up. The id is a second door onto the same spawn, so the tests below
+// are mostly about it having the same lock on it.
+
+const ITEM_ID = 'c'.repeat(32);
+
+test('POST /api/pip/start takes a Jellyfin item id and plays the file behind it', async () => {
+  const lib = fakeLibrary();
+  let up = false;
+  const stub = await stubDaemon(() => (up ? STATUS_REPLY : undefined));
+  const spawn = fakeSpawn(() => { up = true; });
+  const asked = [];
+  _setPipSeams({
+    socketPath: stub.socketPath, mediaRoot: lib.root, spawn,
+    display: ':9', pipd: '/opt/pipd', logPath: path.join(lib.root, 'pip.log'),
+    timeoutMs: 80, pollMs: 10, startTimeoutMs: 2000,
+    bridgePath: path.join(lib.root, 'no-bridge'),
+    pathsFor: async (ids) => { asked.push(...ids); return new Map([[ITEM_ID, lib.episode]]); },
+  });
+  const app = await testServer();
+  try {
+    const res = await app.post('/api/pip/start', { itemId: ITEM_ID });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).started, lib.episode);
+    assert.deepEqual(asked, [ITEM_ID], 'one lookup, the id it was given');
+    assert.equal(spawn.calls[0].args.at(-1), lib.episode);
+  } finally { await app.close(); await stub.close(); lib.close(); _setPipSeams(); }
+});
+
+test('POST /api/pip/start refuses an item Jellyfin has no file for, and one that is not an id', async () => {
+  const lib = fakeLibrary();
+  const gone = missingSocket();
+  const spawn = fakeSpawn();
+  _setPipSeams({
+    socketPath: gone.socketPath, mediaRoot: lib.root, spawn,
+    pathsFor: async () => new Map(),
+  });
+  const app = await testServer();
+  try {
+    let res = await app.post('/api/pip/start', { itemId: ITEM_ID });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /no file/);
+    // Not an id at all: refused by its shape, before Jellyfin is asked.
+    for (const bad of ['../../etc/passwd', 'abc', 42, '']) {
+      res = await app.post('/api/pip/start', { itemId: bad });
+      assert.equal(res.status, 400, `${bad} answered ${res.status}`);
+    }
+    // And a body naming both, which would mean guessing which was meant.
+    res = await app.post('/api/pip/start', { itemId: ITEM_ID, path: lib.episode });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /not both/);
+    assert.deepEqual(spawn.calls, [], 'nothing may be spawned for a refused item');
+  } finally { await app.close(); gone.close(); lib.close(); _setPipSeams(); }
+});
+
+test('a path Jellyfin hands back from OUTSIDE the media library is still refused', async () => {
+  // The containment check is the gate, not the picker: Jellyfin is a source of
+  // paths, not of trust, and a library rooted somewhere unexpected (or an item
+  // whose Path is /etc/passwd) must not walk straight through it.
+  const lib = fakeLibrary();
+  const gone = missingSocket();
+  const spawn = fakeSpawn();
+  _setPipSeams({
+    socketPath: gone.socketPath, mediaRoot: lib.root, spawn,
+    pathsFor: async () => new Map([[ITEM_ID, '/etc/passwd']]),
+  });
+  const app = await testServer();
+  try {
+    const res = await app.post('/api/pip/start', { itemId: ITEM_ID });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /not in the media library/);
+    assert.deepEqual(spawn.calls, []);
+  } finally { await app.close(); gone.close(); lib.close(); _setPipSeams(); }
+});
+
+// --- seeking --------------------------------------------------------------
+
+test('seek carries an absolute {to} for the scrubber and a relative {seconds} for the buttons', async () => {
+  const stub = await stubDaemon(() => STATUS_REPLY);
+  _setPipSeams({ socketPath: stub.socketPath });
+  const app = await testServer();
+  try {
+    assert.equal((await app.post('/api/pip/seek', { to: 300 })).status, 200);
+    assert.equal((await app.post('/api/pip/seek', { seconds: -30 })).status, 200);
+    // 0 is a real destination (the start of the film), not a missing field.
+    assert.equal((await app.post('/api/pip/seek', { to: 0 })).status, 200);
+    assert.deepEqual(stub.seen, [
+      { cmd: 'seek', to: 300 },
+      { cmd: 'seek', seconds: -30 },
+      { cmd: 'seek', to: 0 },
+    ]);
+  } finally { await app.close(); await stub.close(); _setPipSeams(); }
+});
+
+test('seek refuses a body naming neither, both, or nonsense, and none of them reach the socket', async () => {
+  const stub = await stubDaemon(() => STATUS_REPLY);
+  _setPipSeams({ socketPath: stub.socketPath });
+  const app = await testServer();
+  try {
+    for (const body of [{}, { to: 300, seconds: -30 }, { to: 'the end' }, { to: -1 },
+                        { to: 86401 }, { to: Infinity }, { seconds: 7200 }]) {
+      const res = await app.post('/api/pip/seek', body);
+      assert.equal(res.status, 400, `${JSON.stringify(body)} answered ${res.status}`);
+      assert.ok((await res.json()).error, 'a 400 must say why');
+    }
+    assert.deepEqual(stub.seen, []);
+  } finally { await app.close(); await stub.close(); _setPipSeams(); }
+});
+
 // --- the list the picker draws --------------------------------------------
 
 test('episodes carry the local path Kodi does not know, in episode order', async () => {

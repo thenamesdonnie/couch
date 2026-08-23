@@ -298,6 +298,27 @@ export function resolveMedia(input) {
   return real;
 }
 
+// The two ways the phone names what to play. A raw path comes from the picker
+// on the Games tab, which already carries one for every row; an itemId comes
+// from the Library tab, which only ever knows Jellyfin ids. Both end up in the
+// SAME resolveMedia gate - Jellyfin is a source of paths, not of trust, and a
+// library rooted somewhere unexpected must not become a way past containment.
+const JF_ID_EXACT = /^[0-9a-f]{32}$/;
+
+export async function mediaFor(body = {}) {
+  const raw = typeof body.path === 'string' ? body.path.trim() : '';
+  const id = body.itemId === undefined || body.itemId === null ? '' : String(body.itemId).trim();
+  if (raw && id) throw new RangeError('give either a file or a library item, not both');
+  if (!raw && !id) throw new RangeError('a file to play is required');
+  if (!id) return resolveMedia(raw);
+
+  if (!JF_ID_EXACT.test(id.toLowerCase())) throw new RangeError('that is not a library item id');
+  const found = await seams.pathsFor([id.toLowerCase()]);
+  const media = found?.get?.(id.toLowerCase()) || null;
+  if (!media) throw new RangeError('the library has no file for that one');
+  return resolveMedia(media);
+}
+
 // The picture belongs on whichever display is actually presenting: the
 // bridge's nested display while a wrap is live, the ordinary one otherwise.
 export function pipDisplay() {
@@ -405,7 +426,7 @@ routes.get('/library/episodes', answer(async (req, res) => {
 // second one unlinks the first one's socket and the first one is then
 // unreachable and unkillable from here.
 routes.post('/start', answer(async (req) => {
-  const media = resolveMedia(req.body?.path);
+  const media = await mediaFor(req.body ?? {});
   const before = await status();
   if (before.running) throw new PipBusy('a picture is already on the TV, close that one first');
   spawnPipd(media);
@@ -445,8 +466,25 @@ routes.post('/hide', answer(async () => send({ cmd: 'hide' })));
 routes.post('/play', answer(async () => send({ cmd: 'play' })));
 routes.post('/pause', answer(async () => send({ cmd: 'pause' })));
 
+// Two spellings, and exactly one per request. {seconds:-10} is the nudge the
+// -10s/+30s buttons send; {to:843.2} is where the scrubber's thumb was let go.
+// Accepting both in one body would mean guessing which the phone meant, and a
+// guess here moves the picture to the wrong place in a film.
 routes.post('/seek', answer(async (req) => {
-  const seconds = Number(req.body?.seconds);
+  const body = req.body ?? {};
+  const wantsAbsolute = body.to !== undefined && body.to !== null;
+  const wantsRelative = body.seconds !== undefined && body.seconds !== null;
+  if (wantsAbsolute && wantsRelative) throw new RangeError('seek takes to or seconds, not both');
+  if (!wantsAbsolute && !wantsRelative) throw new RangeError('seek needs to (absolute) or seconds (relative)');
+
+  if (wantsAbsolute) {
+    const to = Number(body.to);
+    if (!Number.isFinite(to) || to < 0 || to > 86400) {
+      throw new RangeError('to must be a number of seconds within a day');
+    }
+    return send({ cmd: 'seek', to });
+  }
+  const seconds = Number(body.seconds);
   if (!Number.isFinite(seconds) || Math.abs(seconds) > 3600) {
     throw new RangeError('seconds must be a number within an hour either way');
   }
