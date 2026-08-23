@@ -106,3 +106,54 @@ upstream-worthy on its own.
   GuestFaultSignalHandler / UpdatePageWatchers, buffer_cache.cpp
   ResolveOverlaps (the session-growth term), texture_cache.cpp
   InvalidateMemory (global mutex), file_system.cpp write().
+
+## 23 Aug 2026, 21:00 - THE FIX BUILD CORRUPTS RENDERING. DO NOT SEND THE PR.
+
+Donnie, live, on the fix build: "lots of entities are straight black",
+and this morning "i killed a guy and he was multicoloured". Both
+sightings are on the fault-widening build, which has been armed since
+this morning and has never been played for long before today.
+
+**Evidence** (`evidence-fault-widening-black-entities-20260823.png`, a
+native-4K capture of the live window, validated fresh and 93.5%
+non-black before reading): the player character, his weapon and two
+large props render near-black while the environment around them is
+correct. Measured mean luminance 8-10 against 47-51 for correctly
+textured geometry in the same frame - about 5x darker - with hundreds
+of distinct values and no pixels at true zero. So this is LIT geometry
+wearing a black or missing albedo, not a solid fill and not a capture
+artifact.
+
+**Mechanism, and it is the patch's own claim that is wrong.** The
+widening replaces `InvalidateMemory(addr, 8)` with
+`InvalidateMemory(AlignDown(addr, 64KB), 64KB)` on every guest write
+fault, and the comment calls this "semantics identical to upstream".
+That is true only of the IsMapped fallback. Invalidating MORE than the
+guest actually wrote is not conservative here: an invalidate tells the
+rasterizer that guest RAM is authoritative for that range, so a window
+that happens to span memory the GPU owns (a render target, a texture
+the game never writes from the CPU) forces a re-upload of stale or
+zeroed guest memory over GPU-produced content. Zeros read as BLACK;
+uninitialised bytes read as the MULTICOLOURED corpse from the morning.
+One mechanism, both symptoms.
+
+**Ruled out:** missing mod assets. The live log's file-not-found set
+(menu/.gfx, m24/m27_9999.tpf.dcx, parts/lg_a_*.partsbnd.dcx) is the
+same set present in the 22-23 Aug STOCK overnight soak logs, so it is
+longstanding and unrelated.
+
+**State:** `data/shadps4-local-build` renamed to
+`.disabled-20260823-corruption`, so the next launch is the stock
+AppImage. Re-arm with `touch ~/couch/data/shadps4-local-build`.
+
+**What this costs:** the autosave-metronome verdict is not simply
+"pending" any more. The fix as written is not viable at any
+performance win, so `upstream-pr-draft-fault-widening.md` must NOT be
+sent. The idea can survive - batching faults is still the right
+instinct - but it needs a window that cannot cover GPU-owned memory
+(track which pages the rasterizer actually owns, or widen only within
+the mapping the faulting address belongs to AND only over pages with
+no GPU-side authority). That is a redesign, not a tweak.
+
+**Still unproven:** that stock renders this same scene correctly. That
+A/B is one launch away and is the first thing to do.
