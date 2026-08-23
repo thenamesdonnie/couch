@@ -508,10 +508,19 @@ class PipDaemon:
                 # (the spotify lesson) and a doubled tap would undo itself.
                 self.player.command('set_property', 'pause', cmd == 'pause')
             elif cmd == 'seek':
-                seconds = float(msg.get('seconds', 0))
-                if not math.isfinite(seconds) or not -3600 <= seconds <= 3600:
-                    raise ValueError('seconds wants a number within an hour')
-                self.player.command('seek', seconds, 'relative')
+                # Two spellings: {'seconds': -10} nudges relative (the
+                # +-buttons), {'to': 843.2} lands absolute (the scrubber).
+                if 'to' in msg:
+                    to = float(msg['to'])
+                    if not math.isfinite(to) or not 0 <= to <= 86400:
+                        raise ValueError('to wants seconds within a day')
+                    self.player.command('seek', to, 'absolute')
+                else:
+                    seconds = float(msg.get('seconds', 0))
+                    if not math.isfinite(seconds) \
+                            or not -3600 <= seconds <= 3600:
+                        raise ValueError('seconds wants a number within an hour')
+                    self.player.command('seek', seconds, 'relative')
             elif cmd == 'volume':
                 value = float(msg.get('value', -1))
                 if not math.isfinite(value) or not 0 <= value <= 100:

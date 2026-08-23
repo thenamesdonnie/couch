@@ -247,6 +247,18 @@ def test_a_silly_seek_is_refused(bad):
         playing_daemon().handle({'cmd': 'seek', **bad})
 
 
+def test_seek_to_lands_absolute():
+    d = playing_daemon()
+    d.handle({'cmd': 'seek', 'to': 843.2})
+    assert ('seek', 843.2, 'absolute') in d.player.sent
+
+
+@pytest.mark.parametrize('bad', [-1, 90000, float('nan')])
+def test_a_silly_absolute_seek_is_refused(bad):
+    with pytest.raises(ValueError):
+        playing_daemon().handle({'cmd': 'seek', 'to': bad})
+
+
 def test_volume_is_bounded():
     d = playing_daemon()
     assert d.handle({'cmd': 'volume', 'value': 35})['volume'] == 35.0
