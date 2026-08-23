@@ -23,3 +23,13 @@
 # Rollback is still: sudo couchd-input-release
 SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="aa:bb:cc:dd:ee:ff", RUN+="/usr/bin/setfacl -b $devnode"
 SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6*", RUN+="/usr/bin/setfacl -b $devnode"
+
+# Steam Input's MIRROR pad (23 Aug, first Steam title post-flip): while a
+# game session lives, Steam wraps our vpad and presents its own copy
+# ("Microsoft X-Box 360 pad 0"), and Kodi - the only js* consumer on this
+# box - heard BOTH, one press moving two places. Games, SDL and Steam all
+# read the event node, so fencing the js node ALONE silences the copy for
+# Kodi and changes nothing for the game. Our vpad is exempt by its phys
+# (py-evdev-uinput); the cost is that a real Microsoft-named X-Box pad's js
+# node would be hidden from Kodi too, which this console does not own.
+SUBSYSTEM=="input", KERNEL=="js*", ATTRS{name}=="Microsoft X-Box 360 pad*", ATTRS{phys}!="py-evdev-uinput", TAG-="uaccess", OWNER="root", GROUP="couchd-input", MODE="0660", RUN+="/usr/bin/setfacl -b $devnode"
