@@ -374,8 +374,9 @@ class Overlay:
         self.mapped = False
         self.image = ''
         self.shows = 0
+        self.spin = None
 
-    # -- setup ----------------------------------------------------------        self.spin = None
+    # -- setup ----------------------------------------------------------
 
     def open(self):
         from Xlib import display, X
