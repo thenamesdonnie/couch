@@ -1583,11 +1583,11 @@ def _suspend_intents(o, appid, running, reason, defer_handoff):
     else:
         return []           # no live game, not Big Picture: nothing meaningful
     if not defer_handoff:
-        out += _handoff_intents(o, appid, reason)
+        out += _handoff_intents(o, appid, reason, freezing=bool(running))
     return out
 
 
-def _handoff_intents(o, appid, reason):
+def _handoff_intents(o, appid, reason, freezing=False):
     """Kodi gets the pad, the screen, and a guard window. The three of them
     always travel together; the watcher's handoff_to_kodi() is this.
 
@@ -1623,7 +1623,16 @@ def _handoff_intents(o, appid, reason):
                           _pred('steam menu not routed', 6.0),
                           requires=('gesture',), cooldown=GUIDE_TOGGLE_COOLDOWN))
     frozen = bool(o.pids_known and o.frozen_pids)
-    if appid and appid != 'bigpicture' and (o.suspended_present or frozen) \
+    # `freezing` is the batch talking about itself: when the freeze intent
+    # travels in THIS handoff, the observed flags above are still false at
+    # decision time and the iconify was silently dropped - leaving the frozen
+    # window mapped, Steam's focus routing flapping over it every few hundred
+    # ms, and Steam Input's mirror pad (js4, 'X-Box 360 pad 0') feeding Kodi
+    # a second copy of every press next to the vpad (live, 23 Aug, Hollow
+    # Knight). Legacy's handoff_to_kodi always iconified on this path; this
+    # restores that parity.
+    if appid and appid != 'bigpicture' \
+            and (o.suspended_present or frozen or freezing) \
             and (o.suspended or appid) != 'bigpicture':
         # ...on the same cadence as the route/show it travels with: one
         # decision, one cooldown (T4-3).
@@ -1727,7 +1736,10 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
             requires=('gesture', 'session'), cooldown=3.0))
         handed = True
     if handed:
-        out += _handoff_intents(o, appid, reason)
+        # Same self-knowledge as _suspend_intents: when this batch carries
+        # the freeze, the observed flags cannot vouch for the iconify yet.
+        out += _handoff_intents(o, appid, reason,
+                                freezing=bool(o.session_present and running))
     else:
         # Nothing to suspend, but the dialog still needs a visible Kodi -
         # including on the way back from the desktop, which is where this

@@ -367,8 +367,8 @@ def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
     order = [(i.verb, i.subject) for i in got]
     assert order == [('freeze', APPID), ('set_flag', 'suspended'),
                      ('snapshot', APPID), ('route_pad', 'kodi'),
-                     ('show', 'kodi'), ('spawn_guard', 'kodi'),
-                     ('show_switcher', 'tv')]
+                     ('show', 'kodi'), ('iconify', APPID),
+                     ('spawn_guard', 'kodi'), ('show_switcher', 'tv')]
     assert find(got, 'freeze')[0].args['pids'] == [200, 201]
     assert find(got, 'show_switcher')[0].args['suspended_first'] is True
     rig.observe()
@@ -740,8 +740,8 @@ def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
     got = reconcile(o)
     assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
                           ('snapshot', APPID), ('route_pad', 'kodi'),
-                          ('show', 'kodi'), ('spawn_guard', 'kodi'),
-                          ('show_switcher', 'tv')]
+                          ('show', 'kodi'), ('iconify', APPID),
+                          ('spawn_guard', 'kodi'), ('show_switcher', 'tv')]
     # not the hold's deferred handoff: a switcher hands off at once, exactly
     # as the double-tap one always has
     assert find(got, 'show_switcher')[0].reason == 'gesture:ps-hold-switcher'
@@ -2212,3 +2212,25 @@ TestConsoleModel.settings = settings(
 
 if __name__ == '__main__':
     raise SystemExit(pytest.main([__file__, '-q']))
+
+
+def test_a_same_batch_freeze_still_iconifies_the_frozen_window():
+    """23 Aug, first Steam title after the stage-2 flip: the tap's handoff
+    checked the OBSERVED frozen flags, which are still false in the batch
+    that itself carries the freeze - so the iconify was dropped, the frozen
+    window stayed mapped, Steam's focus routing flapped over it, and Steam
+    Input's mirror pad fed Kodi a second copy of every press. The batch
+    knows it is freezing; the iconify must ride along."""
+    o = make_obs(session=SESSION, pid_states={200: 'S'}, joystick=False,
+                 regions={'gesture': 'tap-fired', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'game'},
+                 top_name='Hollow Knight', top_class='steam_app_367520',
+                 bindings=bind(tap='home'))
+    got = action_intents(o, 'tap', APPID, [200], defer_handoff=False)
+    order = verbs(got)
+    assert ('freeze', APPID) in order
+    assert ('iconify', APPID) in order, (
+        'the handoff dropped the iconify because suspended_present/frozen '
+        'are observed-state and this batch does the freezing itself')
+    assert order.index(('iconify', APPID)) > order.index(('snapshot', APPID)), (
+        'iconify frees the compositing pixmap the freeze-frame is read from')
