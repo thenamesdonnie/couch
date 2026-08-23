@@ -158,6 +158,30 @@ REAPER = 'reaper SteamLaunch'
 GUIDE_SENT = 'Guide button sent to JS'
 GUIDE_SKIPPED = 'Guide button skipped due to length'
 SHAD = re.compile(r'Shadps4-sdl|mount_Shadps')
+# ...and the LOCAL BUILD, which is not an AppImage and so carries none of the
+# names above (23 Aug 2026, live, and it cost Donnie a Bloodborne death).
+# game-pids learned this on 22 Aug when the same blindness let Kodi be raised
+# over a healthy session; couchd's in-process port of that logic did NOT, and
+# a resolver that cannot see the game reports zero pids - so the escape
+# gesture's `if session and running` freeze branch never ran, the switcher
+# took the screen, and Bloodborne played on underneath it with the pad still
+# pointed at it. A game the safety systems cannot see is worse than no game.
+#
+# Anchored, never substring: `pgrep -f` matching its own argv is how this
+# family of checks bites back (the pgrep-self-match rule), so the cmdline
+# must START with the binary or BE it.
+SHAD_LOCAL = '/home/ds2000/src/shadps4-dbg/build/shadps4'
+
+
+def is_emulator_cmd(cmd):
+    """Does this cmdline name the shadPS4 emulator, in any of its shapes?
+
+    One predicate, so the AppImage names and the local build can never drift
+    apart again - and testable without a process table.
+    """
+    return bool(SHAD.search(cmd)
+                or cmd == SHAD_LOCAL
+                or cmd.startswith(SHAD_LOCAL + ' '))
 
 
 # =========================================================================
@@ -4150,7 +4174,7 @@ class PidObserver:
                     except Exception:
                         cmd = ''
                     self._cmd_cache[pid] = (info['create_time'], cmd)
-                if REAPER in cmd or SHAD.search(cmd):
+                if REAPER in cmd or is_emulator_cmd(cmd):
                     roots.add(pid)
         except Exception as e:
             self.src.touch(False, f'{type(e).__name__}: {e}')

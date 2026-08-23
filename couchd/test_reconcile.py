@@ -2278,3 +2278,48 @@ def test_the_tracker_sets_and_spends_the_tap_marker():
     t.feed(1002.0, 1, wall=502.0)
     t.feed(1003.5, 0, wall=503.5)
     assert t.tap_k is None
+
+
+def test_the_local_emulator_build_is_seen_as_the_game():
+    """23 Aug, live, and it cost a Bloodborne death: the pid resolver knew
+    only the AppImage names, so a LOCAL-BUILD session read as zero processes.
+    The escape gesture's freeze branch is `if session and running`, so with
+    running empty the switcher took the screen and the game played on
+    underneath it with the pad still pointed at it.
+
+    game-pids learned this on 22 Aug; couchd's in-process port did not, which
+    is exactly why the shapes now live behind ONE predicate."""
+    from couchd import is_emulator_cmd, SHAD_LOCAL
+    assert is_emulator_cmd(SHAD_LOCAL)
+    assert is_emulator_cmd(
+        f'{SHAD_LOCAL} -f true -g /home/ds2000/games/ps4/CUSA00900/eboot.bin')
+    # the AppImage shapes still match
+    assert is_emulator_cmd('/tmp/.mount_Shadps4abc/AppRun')
+    assert is_emulator_cmd('/home/ds2000/Apps/Shadps4-sdl.AppImage')
+    # ...and nothing else does. The last one is the pgrep-self-match trap:
+    # a command that merely MENTIONS the binary is not the binary.
+    assert not is_emulator_cmd('/usr/bin/kodi.bin')
+    assert not is_emulator_cmd('')
+    assert not is_emulator_cmd(f'tail -F {SHAD_LOCAL}.log')
+    assert not is_emulator_cmd(f'grep -n x {SHAD_LOCAL}')
+
+
+def test_a_running_local_build_is_frozen_by_the_switcher_gesture():
+    """The failure end to end: session live, emulator processes present, the
+    switcher gesture MUST freeze before it takes the screen."""
+    o = make_obs(session={'launcher_pid': 111, 'mode': 'shadps4',
+                          'appid': '/home/ds2000/games/ps4/CUSA00900/eboot.bin',
+                          'raw': '111 shadps4 eboot.bin'},
+                 pid_states={900: 'S'}, joystick=False,
+                 regions={'gesture': 'tap-fired', 'session': 'active',
+                          'input_ownership': 'game', 'foreground': 'game'},
+                 top_name='shadPS4', top_class='shadps4',
+                 bindings=bind(tap='switcher'))
+    got = action_intents(o, 'tap', '/home/ds2000/games/ps4/CUSA00900/eboot.bin',
+                         [900], defer_handoff=False)
+    order = verbs(got)
+    assert ('freeze', '/home/ds2000/games/ps4/CUSA00900/eboot.bin') in order, (
+        'the switcher took the screen without freezing the game: %s' % order)
+    assert order.index(('freeze',
+                        '/home/ds2000/games/ps4/CUSA00900/eboot.bin')) \
+        < order.index(('show_switcher', 'tv')), 'freeze before the dialog'
