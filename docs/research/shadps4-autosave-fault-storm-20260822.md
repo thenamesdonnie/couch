@@ -157,3 +157,9 @@ no GPU-side authority). That is a redesign, not a tweak.
 
 **Still unproven:** that stock renders this same scene correctly. That
 A/B is one launch away and is the first thing to do.
+
+### A/B CONFIRMED, 23 Aug ~21:05
+Donnie, on the stock AppImage, same game, same area: "yeah colours are
+back". So the corruption is the fix build's and only the fix build's -
+the last unproven step above is now proven, and the ruling stands
+without qualification.
