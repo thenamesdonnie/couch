@@ -44,6 +44,24 @@ AUTH=kodi:$KODI_PASSWORD
 LOG="${GAME_LAUNCH_LOG:-/tmp/game-launch.log}"
 SESSION="${GAME_SESSION_FILE:-/tmp/game-session}"     # "<launcher pid> <mode> <appid>" while a session runs
 SUSPENDED="${GAME_SUSPENDED_FILE:-/tmp/game-suspended}" # "<appid>" or "bigpicture" while a game is frozen
+# Close forensics (23 Aug 2026): quit-trace records the process tree's
+# actual death sequence - states at 4Hz, windows, flags - around every game
+# close, commanded or self-inflicted, one artifact per close in
+# ~/couch/data/quit-traces (read with: quit-trace report). Every call here
+# is best-effort by contract: forensics must never delay or fail a close.
+QT=/home/ds2000/couch/tools/quit-trace
+qtrace() { "$QT" "$@" >>"$LOG" 2>&1 || true; }
+# Every way the emulator can appear in a cmdline, in ONE place (23 Aug 2026).
+# The 22 Aug lesson said "any alternate emulator binary must be added to
+# game-pids BEFORE its first live session" - game-pids was fixed, but
+# emu_running() and the close_games kill sites still knew only the AppImage
+# names, so the first live fix-build session took >60s to present (cold
+# shader recompile), emu_running never went true, the launcher declared
+# "shadps4 never appeared" and its trap tore down a HEALTHY session (flag
+# gone, Kodi restored over the game, torrents back). The anchor on the
+# local build is exact-first-token, never substring (the pgrep-self-match
+# rule).
+EMU_PAT='Shadps4-sdl|mount_Shadps|^/home/ds2000/src/shadps4-dbg/build/shadps4'
 
 say() { echo "$(date +%H:%M:%S.%3N) $*" >> "$LOG"; }
 
@@ -441,6 +459,60 @@ curtain_fade() {  # <subject> - dissolve to reveal whatever the shuffle put up
   return 0
 }
 
+# The PS5 MAXIMISE (23 Aug 2026), the mirror of pause-snap's minimise: Kodi
+# grows the freeze-frame out of the paused card's rect back to fullscreen
+# (620ms, skin.couch Home.xml), and the WARM curtain then takes over the same
+# image at the same size - the growth, the window shuffle and the game read as
+# one continuous surface instead of a card, a gap, and a game.
+#
+# ONLY when Kodi Home is what the room is actually looking at. Resumed from
+# the phone with the desktop up, or from a Kodi sub-window, the animation
+# draws where nobody can see it and waiting out its 620ms would be pure added
+# latency on exactly the path this is meant to shorten.
+#
+# The wait is not dead time: the flag clear and the SIGCONTs run underneath it
+# (both window-free, so nothing visible happens during them), which is why
+# maximise_start and maximise_wait are two calls rather than one.
+KODI_SEND="${KODI_SEND_BIN:-/usr/bin/kodi-send}"
+MAXIMISE_MS=620                 # must match the skin animation's time=
+MAXIMISE_AT=
+
+maximise_start() {  # <frame> [subject] - fire the grow, if the room can see it
+  local frame="$1" win
+  MAXIMISE_AT=
+  [ -n "$frame" ] || return 0
+  [ -x "$KODI_SEND" ] || return 0
+  win="$(curl -s -m 2 -u "$AUTH" -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"GUI.GetProperties","params":{"properties":["currentwindow"]}}' \
+    "$JSON" 2>/dev/null)" || return 0
+  case "$win" in
+    *'"id":10000'*) ;;
+    *) say "maximise: Home is not on screen; the curtain carries it alone"
+       return 0 ;;
+  esac
+  "$KODI_SEND" --action "SetProperty(CouchJustResumedSnap,$frame,home)" \
+    >/dev/null 2>&1 || return 0
+  "$KODI_SEND" --action "SetProperty(CouchJustResumed,1,home)" >/dev/null 2>&1
+  # Self-clearing, exactly as pause-snap arms its own: an interrupted resume
+  # must never leave a stale fullscreen frame sitting over Home.
+  "$KODI_SEND" --action "AlarmClock(couchresumeclear,ClearProperty(CouchJustResumed,home),00:00:03,silent)" \
+    >/dev/null 2>&1
+  MAXIMISE_AT=$(_ms)
+  say "maximise: the paused card is growing to fullscreen"
+  intent maximise "${2:-game}" via=kodi-window-property window=home \
+    reason=resume "frame=$frame"
+  return 0
+}
+
+maximise_wait() {  # sleep out whatever is left of the grow, never more
+  local left
+  [ -n "$MAXIMISE_AT" ] || return 0
+  left=$(( MAXIMISE_MS - ( $(_ms) - MAXIMISE_AT ) ))
+  [ "$left" -gt 0 ] || return 0
+  sleep "$(awk "BEGIN{printf \"%.3f\", $left/1000}")"
+  return 0
+}
+
 curtain_hold() {  # <subject> - dissolve, but leave the daemon WARM (23 Aug 2026)
   # The suspend arm's fade: the daemon stays resident, unmapped, with the
   # freeze-frame still uploaded to the server, so resume_game's curtain_show
@@ -512,7 +584,7 @@ show_frozen_game() {
 # shadPS4 runs from an AppImage: the runtime process keeps the .AppImage name in
 # its argv, and the real emulator binary runs out of the /tmp/.mount_Shadps* the
 # AppImage mounts. Either match means the emulator is up.
-emu_running() { pgrep -f 'Shadps4-sdl|mount_Shadps' >/dev/null; }
+emu_running() { pgrep -f "$EMU_PAT" >/dev/null; }
 
 # Big Picture titles its window only in _NET_WM_NAME (the UTF-8 one); the
 # legacy WM_NAME is empty, so this must read the modern property.
@@ -775,6 +847,12 @@ focus_game_when_mapped() {
 # on quit get their chance; only a game that ignores the ask gets killed.
 close_games() {
   local why="${1:-quit}"
+  # The recorder first, so even the flag-clearing at the top is on tape. If
+  # a self-exit tracer is already rolling, start is a no-op and the marks
+  # below land in that running trace - the right behaviour when a phone quit
+  # races a game that is already dying.
+  qtrace start --why "close-$why"
+  qtrace mark close-games-begin "why=$why"
   # Flag first here too (resume_game explains the rule). This close thaws the
   # game and then gives it up to ~17 seconds to save, and the WHOLE of that
   # used to run with the suspended flag still set - the widest
@@ -786,8 +864,17 @@ close_games() {
   clear_snaps
   intent clear_flag suspended reason=games-closed "why=$why"
   cont_all
+  qtrace mark thawed
   sleep 1
   game_pids | tr '\n' ' ' > /tmp/game-pids
+  # The post-quit liveness contract (21-22 Aug: eldenring.exe survived a
+  # "save and close" for 22h49m because the kill sweep gates on the live
+  # process TREE, and Steam's reaper exiting reparents survivors out of
+  # it). Record every pid this quit intends to end, with start times; the
+  # verify at the bottom confirms each one actually died.
+  /home/ds2000/couch/tools/quit-sweep capture /tmp/game-quit-roster \
+    --pids "$(cat /tmp/game-pids 2>/dev/null)" >>"$LOG" 2>&1
+  qtrace mark roster-captured "pids=$(wc -w < /tmp/game-pids 2>/dev/null)"
   # The WM_DELETE ask and its 8s grace exist for Steam games and Big
   # Picture. An emulator-only session goes straight to shadPS4's own
   # SIGTERM branch below: the ask reached the emulator's window tonight
@@ -796,7 +883,7 @@ close_games() {
   # dead seconds on the way out (15 Aug 2026, Donnie: "quitting the game
   # takes quite a while").
   local shad_q p_q steam_present=0
-  shad_q=" $(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ') "
+  shad_q=" $(pgrep -f "$EMU_PAT" | tr '\n' ' ') "
   for p_q in $(cat /tmp/game-pids 2>/dev/null); do
     case "$shad_q" in *" $p_q "*) ;; *) steam_present=1; break ;; esac
   done
@@ -840,6 +927,7 @@ for w in targets:
 d.sync()
 print(f"asked {len(targets)} window(s) to close")
 EOF
+  qtrace mark wm-delete-asked
   # Same 8s save-on-quit grace (deliberate), 0.25s grain: a game that closes
   # in 200ms used to cost a full second of discretization per stage.
   for _ in $(seq 32); do game_running || break; sleep 0.25; done
@@ -852,7 +940,7 @@ EOF
     # its own branch.
     local doomed shad p
     doomed="$(game_pids)"
-    shad=" $(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ') "
+    shad=" $(pgrep -f "$EMU_PAT" | tr '\n' ' ') "
     local keep=''
     for p in $doomed; do
       case "$shad" in *" $p "*) continue ;; esac
@@ -861,6 +949,7 @@ EOF
     doomed="${keep# }"
     if [ -n "$doomed" ]; then
       say "close ignored, force killing"
+      qtrace mark steam-sweep-sigkill "pids=$doomed"
       intent kill all "pids:=$(_jnums "$doomed")" resolver=game-pids \
         signal=SIGKILL reason=close-ignored "why=$why" scope=steam-only
       for p in $doomed; do kill -9 "$p" 2>/dev/null; done
@@ -885,9 +974,10 @@ EOF
   if emu_running; then
     say "closing shadps4"
     intent quit shadps4 \
-      "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
+      "pids:=$(_jnums "$(pgrep -f "$EMU_PAT" | tr '\n' ' ')")" \
       resolver=pgrep signal=SIGTERM scope=shadps4 "reason=$why"
-    pkill -TERM -f 'Shadps4-sdl|mount_Shadps'
+    qtrace mark emu-sigterm
+    pkill -TERM -f "$EMU_PAT"
     # 6s was not a considered number and shutdown does real work (flushing the
     # save, closing the audio device). 30s costs nothing on a quit nobody is
     # waiting on, and a SIGKILL is what leaves the game believing it crashed.
@@ -895,14 +985,35 @@ EOF
     if emu_running; then
       say "shadps4 IGNORED SIGTERM after 30s - force killing. NEXT LAUNCH WILL START DIRTY"
       intent kill shadps4 \
-        "pids:=$(_jnums "$(pgrep -f 'Shadps4-sdl|mount_Shadps' | tr '\n' ' ')")" \
+        "pids:=$(_jnums "$(pgrep -f "$EMU_PAT" | tr '\n' ' ')")" \
         resolver=pgrep signal=SIGKILL reason=term-ignored
-      pkill -KILL -f 'Shadps4-sdl|mount_Shadps'
+      pkill -KILL -f "$EMU_PAT"
+      qtrace mark emu-sigkill
     else
       say "shadps4 exited under its own power (clean)"
+      qtrace mark emu-exit-clean
     fi
   fi
+  # The other half of the roster contract: everything captured above must
+  # now be genuinely dead, whatever the tree walk thinks. Survivors are
+  # leaks (TERM, 10s, KILL - pid-reuse-safe via start times) and get said
+  # loudly; this is what turns the next Elden Ring quit leak from a 22h
+  # invisible poisoning of every watcher into one log line and a cleanup.
+  if [ -s /tmp/game-quit-roster ]; then
+    if ! /home/ds2000/couch/tools/quit-sweep verify /tmp/game-quit-roster \
+        --grace 10 >>"$LOG" 2>&1; then
+      say "QUIT LEAK detected and cleaned - see quit-sweep lines above"
+      qtrace mark quit-leak-cleaned
+      intent kill leak reason=quit-leak-sweep resolver=quit-roster
+    else
+      qtrace mark sweep-verified-clean
+    fi
+    rm -f /tmp/game-quit-roster
+  fi
   say "games closed"
+  # The recorder keeps watching --post seconds past this point, which is
+  # where a late reaper or lingering gamescope would show itself.
+  qtrace done
 }
 
 # Resuming feels sluggish (~2s) and nobody has measured WHERE that goes: the
@@ -946,16 +1057,26 @@ resume_focus_converge() {  # <want: game|emu>
 resume_game() {
   RESUME_T0=$(_ms); RESUME_LAST=$RESUME_T0
   local was; was="$(cat "$SUSPENDED" 2>/dev/null)"
-  # Curtain BEFORE the thaw and the window work, on this pause's OWN frame
-  # only (frame_is_this_pause; a mismatch means skip the curtain entirely).
-  # Must run before the rm/clear_snaps below: the freshness check reads the
-  # flag's mtime, and the show is synchronous, so by the time clear_snaps
-  # deletes the jpg the daemon has already read it into its pixmap.
+  # The frame is resolved FIRST, whoever ends up drawing it: freshness is
+  # read from the suspended flag's mtime (frame_is_this_pause), and the flag
+  # is removed a few lines below. A mismatch means no animation and no
+  # curtain - an honest quick shuffle beats a wrong frozen frame.
+  #
+  # Since 23 Aug the curtain no longer goes up first. The Kodi-side
+  # maximise (see maximise_start) draws the same frame growing out of the
+  # paused card, and a curtain raised over it would hide the only animation
+  # the player came here to see. So: fire the grow, do the window-FREE half
+  # of the resume underneath it (flag, SIGCONTs - nothing visible), wait out
+  # the remainder of the 620ms, and only then raise the curtain, at the exact
+  # size and image the animation just landed on. With Home not on screen
+  # maximise_start does nothing, maximise_wait returns at once, and this is
+  # bit-for-bit the old order: curtain, then the shuffle beneath it.
   local frame=
   if curtain_usable "${was:-game}"; then
     if frame="$(_snap_frame "${was:-game}")" && frame_is_this_pause "$frame"; then
-      curtain_show "${was:-game}" "$frame" resume
+      maximise_start "$frame" "${was:-game}"
     else
+      frame=
       say "curtain: no fresh freeze-frame for ${was:-game}; honest shuffle instead"
     fi
   fi
@@ -980,6 +1101,14 @@ resume_game() {
   phase flag-cleared
   cont_all
   phase thawed
+  # The grow has had the flag clear and the SIGCONTs for free; sit out
+  # whatever is left of it, then take the screen over at the size it ended
+  # on. Nothing below here is invisible, so this is the last safe moment.
+  maximise_wait
+  phase maximised
+  [ -n "$frame" ] && curtain_show "${was:-game}" "$frame" resume
+  # After the curtain is up, not before: the warm daemon already holds these
+  # pixels on the server, and a cold one read the file synchronously above.
   clear_snaps "$was"
   # Map the game's window back before anything tries to raise it: the suspend
   # iconified it to drop its stuck pointer grab, and focus_game only ever looks
@@ -1234,10 +1363,31 @@ yield_to_couchd transitions request_tv_wake tv via=tv-wake-request-flag \
 # launcher's flag with it.
 echo "$$ $MODE $APPID" > "$SESSION"
 intent set_flag session "value=$$ $MODE $APPID" "launcher=$$" reason=launch
+# MODE ASSERT (22 Aug 2026): the TV wake requested above hotplugs the output
+# and drops X to a 60Hz EDID mode - and with the session flag now written,
+# mode-keeper's game gate (correctly) refuses to fix it, so the whole session
+# runs at 4K60 (the "controller lag" evenings, twice). This launch owns the
+# safe window: nothing is presenting yet, so hold 4k120 through the hotplug
+# settle, stopping the instant a game window maps. Backgrounded and
+# best-effort; it must never delay the launch. 40s not 15 (23 Aug): the
+# assert now waits for 3s of link stability and verifies each fix for 6s,
+# and the wake hotplug itself lands 5-10s in - 15s could expire mid-settle.
+/home/ds2000/couch/tools/mode-keeper --launch-assert 40 >>"$LOG" 2>&1 &
+# GAME MODE (22 Aug 2026): quiet the session's ambush sources - pause the
+# active torrents, stop the whisper transcriber - and restore exactly what
+# was changed on the way out (see restore_on_exit). Backgrounded and
+# best-effort by design: a game-quiet failure must never delay or fail a
+# launch, and the tool itself exits 0 on every operational error.
+[ -x /home/ds2000/couch/tools/game-quiet ] && \
+  { /home/ds2000/couch/tools/game-quiet on >>"$LOG" 2>&1 & }
 # The session flag is OURS either way - this shell's lifetime IS the session,
 # and a launcher that stopped clearing its own flag would orphan every session
 # it ran. Only the pad-and-screen handover is the `transitions` responsibility.
 restore_on_exit() {
+  # Game-mode restore runs on BOTH ownership paths - quieting is this
+  # launcher's own doing, not a couchd responsibility.
+  [ -x /home/ds2000/couch/tools/game-quiet ] && \
+    { /home/ds2000/couch/tools/game-quiet off >>"$LOG" 2>&1 & }
   yield_to_couchd transitions route_pad kodi via=kodi-jsonrpc "mode=$MODE" && {
     intent show kodi via=xlib-restack "mode=$MODE" yielded=true owner=couchd
     say "restored (trap): yielded to couchd (transitions)"
@@ -1248,7 +1398,11 @@ restore_on_exit() {
   curtain_fade
   say "restored (trap)"
 }
-trap '[ "$(cut -d" " -f1 "$SESSION" 2>/dev/null)" = "$$" ] && { rm -f "$SESSION"; intent clear_flag session reason=launcher-exit "launcher=$$"; }; restore_on_exit' EXIT
+# Forensics epilogue, OUTSIDE restore_on_exit: the couchd-yield path returns
+# early from it, and the recorder must be told the launcher is gone on every
+# path. No tracer running = both are silent no-ops.
+finish_trace() { qtrace mark launcher-exit "mode=$MODE"; qtrace done; }
+trap '[ "$(cut -d" " -f1 "$SESSION" 2>/dev/null)" = "$$" ] && { rm -f "$SESSION"; intent clear_flag session reason=launcher-exit "launcher=$$"; }; restore_on_exit; finish_trace' EXIT
 
 yield_to_couchd transitions route_pad game via=kodi-jsonrpc "mode=$MODE" \
   || pad_to_game
@@ -1285,6 +1439,9 @@ case "$MODE" in
       curtain_fade
       while game_running; do sleep 3; done
       say "ended"
+      # The game just died on its own terms - the ER-leak path. Record the
+      # aftermath: what remains, what the teardown and the trap do to it.
+      qtrace start --why steam-self-exit
     fi
     ;;
   bigpicture)
@@ -1312,6 +1469,7 @@ case "$MODE" in
       say "game outlived big picture (appid ${APPID:-unknown})"
       while game_running; do adopt_appid; sleep 3; done
       say "game ended"
+      qtrace start --why bp-game-self-exit
     fi
     ;;
   shadps4)
@@ -1388,6 +1546,15 @@ BBFLAG
       case "$_gsmode" in [0-9]*x[0-9]*) ;; *) _gsmode=3840x2160 ;; esac
       case "$_gsrate" in [0-9]|[0-9][0-9]|[0-9][0-9][0-9]) ;; *) _gsrate=120 ;; esac
       say "gamescope wrap ON: output $_gsmode@$_gsrate (rm ~/couch/data/gamescope-shadps4-enabled to disable)"
+      # FIX-BUILD LEVER (23 Aug 2026): touch ~/couch/data/gamescope-fix-build
+      # to run the wrap on ~/src/gamescope-fix - 3.16.25 plus the upstream
+      # FrameInfo_t layer-bounds cherry-pick (e42aa76), the prime suspect fix
+      # for the 22 Aug 4K120 heap-corruption abort; both overnight 23 Aug
+      # soaks green on it. rm the flag = stock 3.16.25.
+      if [ -f /home/ds2000/couch/data/gamescope-fix-build ]; then
+        export GSWRAP_GAMESCOPE_DIR=/home/ds2000/src/gamescope-fix/build/src
+        say "gamescope wrap: FIX BUILD e42aa76 (rm ~/couch/data/gamescope-fix-build for stock)"
+      fi
     fi
     if [ "$_gs_on" = 1 ]; then
       # -f: gamescope's SDL window fullscreens itself; without it the game
@@ -1476,6 +1643,7 @@ GSDISP
       curtain_fade
       while emu_running; do sleep 3; done
       say "shadps4 ended"
+      qtrace start --why shadps4-self-exit
     fi
     # The resident rail goes down FIRST, before gamescope's own teardown:
     # its window is the kind of lingering client the 3.16.25 teardown
@@ -1502,6 +1670,7 @@ GSDISP
         sleep 1; _t=$((_t+1))
         if [ $_t -ge 8 ]; then
           say "gamescope lingered ${_t}s after the emulator ended - closing it"
+          qtrace mark gamescope-lingered "seconds=$_t"
           kill -TERM "$_gspid" 2>/dev/null
           break
         fi
