@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""Restart spotifyd when its Spotify session has died but the unit is green.
+
+    spotify-heal [--dry-run] [-v]
+
+THE PROBLEM. spotifyd holds one long-lived websocket ("dealer") session to
+Spotify. When that session drops it usually redials within a minute, but
+twice now it has not: the process stays up, systemd keeps showing
+`active (running)`, and the box simply vanishes from the Spotify app's
+device list. On 22 Aug 2026 it died at 00:45 and sat there for FORTY HOURS
+until a hand-typed `systemctl --user restart spotifyd` brought it back in
+one second. Nothing about the unit's state says any of this happened; the
+only witness is the journal.
+
+    2026-08-22T00:45:30 [ERROR] Connection to server closed.
+    2026-08-22T02:48:03 [WARN]  Websocket peer does not respond.
+    2026-08-23T18:21:49 (nothing at all, for 40 hours)
+
+HOW IT DECIDES. The journal is a stream of connection-state events, and the
+question is only ever "which kind came LAST". A death marker (websocket
+failed / peer does not respond / connection closed) that is the last word,
+and has been the last word for five minutes, means dead. Anything after it
+that could only have been logged over a working session - `Authenticated
+as`, a non-empty `active device`, a track load, a session update - means
+alive, and a `Started spotifyd.service` line or a change of PID resets the
+whole question because that is a different process's history.
+
+WHAT IT DELIBERATELY WILL NOT DO:
+
+  * probe zeroconf/mDNS to test health. A same-host mDNS query on this box
+    answers from the local cache and says yes long after Spotify has stopped
+    seeing us. It is the most tempting check and it lies.
+  * read anything into the MPRIS name being absent. spotifyd only registers
+    org.mpris.MediaPlayer2.spotifyd.instance<pid> while a phone is actually
+    driving it, so no MPRIS name is the NORMAL idle state, not a death.
+    MPRIS is used here for exactly one thing, in the other direction:
+    PlaybackStatus == Playing is an absolute veto on restarting.
+  * heal a fresh wound. spotifyd does redial by itself - 21 Aug, dead at
+    18:27:37, back at 18:28:29 - so a death younger than DEAD_AFTER is
+    "settling" and gets left alone.
+  * heal twice in a row without pausing. One restart per COOLDOWN, so a
+    spotifyd that is broken in some way a restart cannot fix produces a
+    handful of log lines rather than a restart every five minutes.
+
+`Connecting to AP` is treated as neither: it is spotifyd DIALLING, not
+spotifyd connected, and a reconnect that hangs half way logs exactly that
+and then nothing. It clears no death; the `Authenticated as` line one
+second behind it does.
+
+An empty `active device is <>` is also neither. It is the idle broadcast,
+and it is logged both by a healthy session and on the way out of a broken
+one, so it is not allowed to vote. The bias is deliberate: a needless
+restart of an idle speaker costs one second and nobody notices, and the
+failure it guards against cost forty hours of the thing not working.
+
+Env seams (for the tests, and for a dry run against a copy):
+  SPOTIFY_HEAL_UNIT     unit to watch/restart (default spotifyd.service)
+  SPOTIFY_HEAL_LOG      the log (default ~/couch/data/spotify-heal.log)
+  SPOTIFY_HEAL_STATE    heal-cooldown state file (default beside the log)
+  SPOTIFY_HEAL_WINDOW   journalctl --since window (default -7 days)
+
+Run:  couchd/.venv/bin/python -m pytest tools/test_spotify_heal.py -q
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from collections import namedtuple
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser('~')
+UNIT = os.environ.get('SPOTIFY_HEAL_UNIT') or 'spotifyd.service'
+LOG = (os.environ.get('SPOTIFY_HEAL_LOG')
+       or os.path.join(HOME, 'couch', 'data', 'spotify-heal.log'))
+STATE = (os.environ.get('SPOTIFY_HEAL_STATE')
+         or os.path.join(HOME, 'couch', 'data', 'spotify-heal.state'))
+WINDOW = os.environ.get('SPOTIFY_HEAL_WINDOW') or '-7 days'
+
+# How long a death has to be the last word before we believe it. spotifyd's
+# own self-recoveries in this journal took 52s and 33 minutes; five minutes
+# sits above the fast one and well under any human noticing.
+DEAD_AFTER = 300.0
+# One restart per this long. A restart that does not fix it must not become
+# a loop.
+COOLDOWN = 900.0
+
+MPRIS_PREFIX = 'org.mpris.MediaPlayer2.spotifyd'
+MPRIS_PATH = '/org/mpris/MediaPlayer2'
+PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player'
+
+# The session is gone or going. Matched case-insensitively, as substrings,
+# because spotifyd's wording varies with which layer noticed.
+DEATH = (
+    'websocket peer does not respond',
+    'websocket connection failed',
+    'connection to server closed',
+    'error while closing websocket',
+    'connection to spotify failed',
+)
+# Lines that CANNOT be produced without a working session to Spotify.
+LIFE = (
+    'authenticated as',
+    'session update:',
+    'with spotify uri',           # "[INFO] Loading <track> with Spotify URI <>"
+)
+# A different process's history. Everything before one of these is dropped.
+RESET = (
+    'started spotifyd.service',
+    'stopping spotifyd.service',
+)
+
+ACTIVE_DEVICE = re.compile(r'active device is <([^>]*)>', re.I)
+# "2026-08-21T18:27:37+01:00 donniespc spotifyd[2830]: [ERROR] ..."
+JOURNAL_LINE = re.compile(
+    r'^(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:[+-]\d\d:?\d\d|Z))\s+'
+    r'\S+\s+(?P<who>[\w.-]+)(?:\[(?P<pid>\d+)\])?:\s*(?P<msg>.*)$')
+
+Event = namedtuple('Event', 'when kind text pid')
+Verdict = namedtuple('Verdict', 'state since marker')
+Plan = namedtuple('Plan', 'action reason notable')
+
+
+def say(msg, notable=True):
+    """One line to stdout (the journal, via the service) and, when it is worth
+    keeping, to the log. A quiet run every five minutes for weeks must not
+    grow a file, so only the notable lines are written down."""
+    line = f'{time.strftime("%Y-%m-%d %H:%M:%S")} spotify-heal: {msg}'
+    print(line, flush=True)
+    if not notable:
+        return
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, 'a') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass                              # a log we cannot write is not worth
+        #                                   skipping a heal over
+
+
+# ======================================================================
+# The decision. Pure functions from here to run() - no journalctl, no dbus,
+# no systemctl, so the tests can put any history in front of them.
+# ======================================================================
+
+def classify(text):
+    """'death' | 'life' | 'reset' | None for one journal message.
+
+    None is a real answer and the common one: most of spotifyd's chatter
+    (volume updates, context warnings, the empty active-device broadcast)
+    says nothing about whether the session is up, and lines that say nothing
+    must not be allowed to vote."""
+    low = text.lower()
+    if any(m in low for m in RESET):
+        return 'reset'
+    if any(m in low for m in DEATH):
+        return 'death'
+    if any(m in low for m in LIFE):
+        return 'life'
+    m = ACTIVE_DEVICE.search(text)
+    if m:
+        # A named device means Spotify is talking to us right now. The empty
+        # <> is the idle broadcast and abstains - see the module docstring.
+        return 'life' if m.group(1).strip() else None
+    return None
+
+
+def parse_journal(text):
+    """journalctl -o short-iso output -> [Event], oldest first.
+
+    Unparseable lines (the `-- Boot ... --` separators, wrapped output) are
+    skipped rather than guessed at."""
+    events = []
+    for line in text.splitlines():
+        m = JOURNAL_LINE.match(line.strip())
+        if not m:
+            continue
+        try:
+            when = datetime.fromisoformat(m.group('ts'))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.astimezone()
+        msg = m.group('msg')
+        kind = classify(msg)
+        # The user manager's own "Started spotifyd.service" lines are the
+        # authoritative reset; spotifyd's own lines carry the pid.
+        pid = int(m.group('pid')) if m.group('pid') else None
+        who = m.group('who')
+        if who != 'spotifyd':
+            pid = None
+            if kind != 'reset':
+                continue                  # nothing else systemd says is evidence
+        if kind is None:
+            continue
+        events.append(Event(when, kind, msg, pid))
+    return events
+
+
+def judge(events, now, dead_after=DEAD_AFTER):
+    """Verdict from a history: 'alive', 'dead', 'settling' or 'unknown'.
+
+    Only the LAST event that means anything counts, because a session that
+    died and came back is alive and a session that came back and died is
+    dead. Everything before a reset (a restart, or a new pid appearing) is
+    another process's story and is thrown away."""
+    live = []
+    last_pid = None
+    for ev in events:
+        if ev.kind == 'reset':
+            live = []
+            last_pid = None
+            continue
+        if ev.pid is not None and last_pid is not None and ev.pid != last_pid:
+            live = []                     # respawned without us seeing the unit
+            #                               line: the old death is not ours
+        if ev.pid is not None:
+            last_pid = ev.pid
+        live.append(ev)
+    if not live:
+        return Verdict('unknown', None, None)
+    last = live[-1]
+    if last.kind == 'life':
+        return Verdict('alive', last.when, last.text)
+    age = (now - last.when).total_seconds()
+    if age < dead_after:
+        return Verdict('settling', last.when, last.text)
+    return Verdict('dead', last.when, last.text)
+
+
+def plan(verdict, playing, last_heal, now, cooldown=COOLDOWN):
+    """What to do about a verdict. `playing` is the MPRIS veto, `last_heal` a
+    datetime or None."""
+    if verdict.state != 'dead':
+        return Plan('none', verdict.state, False)
+    if playing:
+        # Music is coming out of the speakers. Whatever the journal thinks,
+        # it is working, and a restart would cut the track off.
+        return Plan('none', 'playing', True)
+    if last_heal is not None:
+        since = (now - last_heal).total_seconds()
+        if since < cooldown:
+            return Plan('none', 'cooldown', True)
+    return Plan('heal', 'dead', True)
+
+
+# ======================================================================
+# The world.
+# ======================================================================
+
+def run(cmd, timeout=20):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def journal(unit=UNIT, window=WINDOW):
+    out = run(['journalctl', '--user', '-u', unit, '--since', window,
+               '--no-pager', '-o', 'short-iso'])
+    return out.stdout
+
+
+def is_playing():
+    """True only if spotifyd has an MPRIS player AND it says Playing. Any
+    doubt - no name, a hung dbus, a reply we cannot read - is False, because
+    the absent name is the normal idle case and treating it as 'playing'
+    would disable the watchdog entirely."""
+    try:
+        names = run(['busctl', '--user', 'list', '--no-legend'], timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in names.stdout.splitlines():
+        name = line.split()[0] if line.split() else ''
+        if not name.startswith(MPRIS_PREFIX):
+            continue
+        try:
+            prop = run(['busctl', '--user', 'get-property', name, MPRIS_PATH,
+                        PLAYER_IFACE, 'PlaybackStatus'], timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if 'playing' in prop.stdout.lower():
+            return True
+    return False
+
+
+def read_state():
+    try:
+        with open(STATE) as f:
+            raw = json.load(f).get('last_heal')
+        return datetime.fromisoformat(raw) if raw else None
+    except (OSError, ValueError, AttributeError, json.JSONDecodeError):
+        return None
+
+
+def write_state(when):
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        tmp = STATE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'last_heal': when.isoformat()}, f)
+        os.replace(tmp, STATE)
+    except OSError:
+        pass
+
+
+def ago(when, now):
+    if when is None:
+        return 'never'
+    secs = int((now - when).total_seconds())
+    if secs < 90:
+        return f'{secs}s ago'
+    if secs < 5400:
+        return f'{secs // 60}m ago'
+    return f'{secs / 3600:.1f}h ago'
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--dry-run', action='store_true',
+                    help='decide and report, restart nothing')
+    ap.add_argument('-v', '--verbose', action='store_true',
+                    help='say something even when all is well')
+    args = ap.parse_args(argv)
+
+    now = datetime.now(timezone.utc).astimezone()
+    events = parse_journal(journal())
+    verdict = judge(events, now)
+    playing = is_playing() if verdict.state == 'dead' else False
+    step = plan(verdict, playing, read_state(), now)
+
+    where = f'last {verdict.state} marker {ago(verdict.since, now)}'
+    if verdict.marker:
+        where += f': {verdict.marker.strip()}'
+
+    if step.action == 'heal':
+        say(f'DEAD - {where}. Restarting {UNIT}.')
+        if args.dry_run:
+            say('dry run, not restarting.')
+            return 0
+        out = run(['systemctl', '--user', 'restart', UNIT], timeout=60)
+        if out.returncode == 0:
+            write_state(now)
+            say(f'healed: restarted {UNIT}.')
+        else:
+            say(f'restart FAILED rc={out.returncode}: '
+                f'{(out.stderr or out.stdout).strip()}')
+        return 0
+
+    if step.reason == 'playing':
+        say(f'dead by the journal but MPRIS says Playing - leaving it alone '
+            f'({where}).')
+    elif step.reason == 'cooldown':
+        say(f'still dead but healed within the last {int(COOLDOWN // 60)}m - '
+            f'holding off ({where}).')
+    elif args.verbose:
+        say(f'{verdict.state}: {where}.', notable=False)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

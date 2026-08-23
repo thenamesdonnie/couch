@@ -1,0 +1,18 @@
+[Unit]
+Description=Restart spotifyd when its Spotify session has died but the unit is green
+Documentation=file:///home/ds2000/couch/tools/spotify-heal
+
+[Service]
+Type=oneshot
+# -v so every run leaves its verdict in THIS unit's journal (one short line
+# per five minutes, and spotifyd's own journal stays clean). The log file at
+# ~/couch/data/spotify-heal.log only gets the notable ones.
+ExecStart=/usr/bin/python3 %h/couch/tools/spotify-heal -v
+# It reads the journal and may restart a sibling unit; nothing here is
+# urgent enough to compete with a game or with playback.
+Nice=10
+
+# Install (no sudo, this is a user unit):
+#   cp ~/couch/systemd/spotify-heal.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now spotify-heal.timer

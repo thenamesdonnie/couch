@@ -1,0 +1,15 @@
+[Unit]
+Description=Check every 5 minutes that spotifyd's Spotify session is still alive
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# The check is cheap and the window it guards is hours long; let it drift a
+# little rather than land on the same second as every other user timer.
+AccuracySec=30s
+
+[Install]
+# NOT graphical-session.target: with lightdm autologin on this box that
+# target never fires for the user manager, and units wanted by it silently
+# never start. timers.target is what the other user timers here use.
+WantedBy=timers.target
