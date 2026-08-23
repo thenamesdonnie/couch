@@ -753,5 +753,23 @@
 			<animation effect="zoom" start="0,0,1920,1080" end="1040,360,780,439" time="620" delay="220" tween="cubic" easing="inout">Visible</animation>
 			<animation effect="fade" start="100" end="0" time="260" delay="1050">Visible</animation>
 		</control>
+
+		<!-- ...and the PS5 MAXIMISE, the mirror (Donnie, 23 Aug): on resume,
+		     game-launch sets CouchJustResumed(Snap) and the freeze-frame
+		     grows OUT of the paused card back to fullscreen, where the
+		     curtain (the same image) and then the game itself take over -
+		     visually one continuous surface. No fade-out: it HOLDS until
+		     the game window covers Kodi; the property self-clears in 3s so
+		     a later return to Home is not sitting under a stale frame. -->
+		<control type="image">
+			<left>0</left>
+			<top>0</top>
+			<width>1920</width>
+			<height>1080</height>
+			<texture background="true">$INFO[Window(home).Property(CouchJustResumedSnap)]</texture>
+			<aspectratio>stretch</aspectratio>
+			<visible>!String.IsEmpty(Window(home).Property(CouchJustResumed))</visible>
+			<animation effect="zoom" start="1040,360,780,439" end="0,0,1920,1080" time="620" tween="cubic" easing="inout">Visible</animation>
+		</control>
 	</controls>
 </window>
