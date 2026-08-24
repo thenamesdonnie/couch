@@ -378,7 +378,75 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (23 Aug 2026 ~22:30 — STAGE 2 IS LIVE; the shadPS4 fault fix works; the evening of six live bugs)
+## ▶ Resume here (24 Aug 2026 ~12:00 — BLOODBORNE ENHANCED INSTALLED; its settings system fully reverse-engineered; NEEDS DONNIE in-game)
+
+**Nothing is mid-flight. No repo code changed this session** — this was a
+mod install plus an investigation. The console is exactly as 23 Aug left it.
+
+**THE EXACT NEXT STEP is unchanged from last session** (this session did
+not touch it): the controlled A/B for the shadPS4 fault-batching v2 patch,
+```
+cd ~/src/shadps4-dbg && ./soak-v2.sh stock 180 && ./soak-v2.sh v2 180 \
+  && ./score-frames.py soak-out/stock soak-out/v2
+```
+See the 23 Aug block below for the full framing.
+
+**BLOODBORNE ENHANCED 0.11.2-fix9 IS INSTALLED** (Nexus mod 19), on top of
+the vanilla + Vertex Explosion fix stack. It is a *gameplay* mod: boss
+rematches, quick-warp to bosses, vial/bullet restock, lamp menus, big QoL
+set. 2422 files replaced (per-file backups), 40 added.
+Revert: `bb-mod-install revert BloodborneEnhanced-0.11.2-fix9`.
+**NOT PLAY-TESTED.** It is the newest variable since the 21-22 Aug stable
+baseline, so it is suspect #1 if a crash or an audio regression appears.
+
+**Install trap, recorded so it is never re-derived:** the archive holds TWO
+`dvdroot_ps4` trees (`GAME FILES/` = the mod, `OPTIONAL CHEATS/gems/` = a
+replacement gameparam, all-gems cheat). `bb-mod-install` refuses to guess
+and errors "multiple dvdroot_ps4 folders". Fix: extract only
+`bb_enhanced_0.11.2-fix9/GAME FILES/*`, re-zip that subtree, install that.
+
+**FULL SETTINGS ANALYSIS:
+`docs/research/bloodborne-enhanced-settings-20260824.md`** — all 51 settings
+with their live values, verified by parsing the *installed*
+`common.emevd.dcx` (event 10008400) and cross-checking the mod's own
+settings.json: **zero mismatches**. Includes a working Python DCX+EMEVD
+parser, the flag encoding, and the parameter-table recipe.
+
+Headline findings:
+- **46 of 51 are toggleable in-game** at the **Doll** in the Hunter's Dream
+  under **"Enhanced Features"**. The Windows .NET tools are not needed.
+- **5 need file-level editing** (Spawn Iosefka Lamp, Advance the Cycle,
+  Temporary Stocked Shop, Unlock All Lamps, Activate All Shortcuts) — all
+  already correct for a first playthrough, so **no file editing is owed**.
+- **Lamp Kindling is a sub-mode of Auto Refill, not a replacement.** The
+  restock event gates on the Auto Refill *Enabled* flag first; disabling
+  Auto Refill makes kindling silently do nothing. Set BOTH to use kindling.
+- **Kindle level is stored PER LAMP** (event parameterised, 126 lamp
+  initialisations, 2 bits each). The two "global counters" that look like
+  the kindle store are scratch registers for current vial/bullet counts.
+- A **native Linux settings editor is feasible and was proven, not built**:
+  DCX is plain zlib and every edit is a same-length int swap. Round-trip
+  returned a byte-identical payload. Offered to Donnie, not taken up.
+
+**▶ NEEDS DONNIE — in-game, at the Doll, whenever he next plays.** These
+are decisions he made this session; none are applied yet:
+1. **Quick Warp to Boss → OFF.** His call: start without it, flip it on if
+   runbacks start grating. Safe to toggle mid-playthrough (menu option only,
+   no save-state effect). `Quick Warp to Boss Prompt` becomes inert; leave it.
+2. **Auto Refill → leave ON** (already on). He raised "20 vials after every
+   death feels OP"; the researched answer is that **vanilla already refills
+   to 20 from storage after every death**, so the mod removes farming, not
+   difficulty. The real change is economic: it deletes the vial echo sink
+   (180 echoes early → 900 in NG+), so he will run slightly over-levelled.
+   Agreed plan: start generous, flip **Lamp Kindling ON** later if the vial
+   economy feels weightless.
+3. **Worth flipping early:** `Prime Hunter's Mark: Enhanced Features` → ON,
+   so the settings menu opens anywhere instead of Doll-only.
+4. **Considered, his call, not decided:** turning OFF `Lamp Menu: Level Up /
+   Workshop / Storage / Messengers` so the Hunter's Dream stays the hub the
+   game was written around. Keep `Lamp Menu: Warp` on either way.
+
+## ▶ Previous (23 Aug 2026 ~22:30 — STAGE 2 IS LIVE; the shadPS4 fault fix works; the evening of six live bugs)
 
 **Nothing is mid-flight. Everything below is committed and running.**
 Donnie went to bed on a working console.
