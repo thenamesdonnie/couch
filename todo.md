@@ -382,6 +382,12 @@ working UI blind):
 
 **Nothing is mid-flight. No repo code changed this session** — this was a
 mod install plus an investigation. The console is exactly as 23 Aug left it.
+Committed: `8860383` (this block + the research doc). **Deliberately left
+uncommitted, unchanged by this session and inherited from 23 Aug:** the
+untracked runtime artefacts under `data/` (perf-logs, save-backups,
+gamescope-soak, quit-traces, autosave-rig) and the `shadow/*.jsonl` logs.
+They are not in `.gitignore`, so they will keep showing in `git status` —
+standing tidy-up, not a blocker.
 
 **THE EXACT NEXT STEP is unchanged from last session** (this session did
 not touch it): the controlled A/B for the shadPS4 fault-batching v2 patch,
