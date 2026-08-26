@@ -2323,3 +2323,96 @@ def test_a_running_local_build_is_frozen_by_the_switcher_gesture():
     assert order.index(('freeze',
                         '/home/ds2000/games/ps4/CUSA00900/eboot.bin')) \
         < order.index(('show_switcher', 'tv')), 'freeze before the dialog'
+
+
+# =========================================================================
+# tap-as-switcher: the press must not resume the game it just paused
+# =========================================================================
+TAP_SWITCHER = dict(DEFAULT_BINDINGS, tap='switcher', double_tap='none')
+
+
+def test_a_tap_that_opens_the_switcher_does_not_then_resume_the_game():
+    """Donnie, 24 Aug 2026: "stop when i'm on a game it keeps switching to
+    kodi and stuff and sometimes when i go off a game it's just sat open".
+
+    Both are one bug, and it arrived with the 23 Aug rebind that moved the
+    switcher onto the TAP and unbound the double-tap.
+
+    A tap on a running game fires the bound `switcher` action: freeze, flag,
+    snapshot, hand the pad and screen to Kodi, open the dialog. That action
+    sets /tmp/game-suspended - and 350ms later g_tap_resume_due looked at the
+    world, saw a paused game and a tap, and resumed it. THE SAME PRESS. The
+    game came back on top of the switcher that was still opening, which is
+    exactly what the room saw: a flip to Kodi and straight back, and a dialog
+    left sitting open underneath, discovered whenever the game finally exited.
+
+    Live evidence, shadow/couchd-20260823.jsonl at 22:07:10:
+
+        .156 gesture idle -> down        ps-press
+        .207 gesture down -> tap-wait    ps-tap-noop
+        .207 freeze/set_flag/.../show_switcher      gesture:ps-tap
+        .558 gesture tap-wait -> tap-resume  paused-tap-window-expired
+        .558 launch resume + show game          gesture:tap-resume
+       1.249 show_switcher CONFIRMED - foreground already back on the game
+
+    gesture.paused_tap_decision has always said an unpaused tap never reaches
+    the deferral at all; this pins couchd to that.
+    """
+    rig = Rig(session=SESSION, pid_states={200: 'S', 201: 'S'}, joystick=False,
+              bindings=TAP_SWITCHER,
+              top_name='Bloodborne', top_class='steam_app_367520').settle()
+    k0 = 12800.0
+    got = _tap(rig, k0)
+    # the tap IS the switcher now, so it acts at once
+    assert find(got, 'show_switcher'), 'the tap should open the switcher'
+    assert find(got, 'freeze'), 'and suspend the game first'
+    assert rig.machine.regions['gesture'] == 'tap-wait'
+
+    # ...and now the world reports what that batch just did. press_duration
+    # is carried the way the real tracker carries it: a completed press stays
+    # readable until the next one (gesture.Tracker.reset is the only thing
+    # that clears it), which is exactly why a level-based reader can walk the
+    # tap paths again on a later pass.
+    extra = []
+    for _ in range(6):
+        got = rig.observe(dt=0.2, suspended=APPID, press_duration=0.08,
+                          pid_states={200: 'T', 201: 'T'})
+        assert not find(got, 'launch'), (
+            'the press resumed the game it had just paused: %s' % verbs(got))
+        extra += got
+    assert rig.machine.regions['gesture'] != 'tap-resume'
+    # And the press must go quiet rather than park somewhere that keeps
+    # re-deciding: the route out of 'tap-wait' with the double-tap unbound is
+    # now the plain expiry, tap-wait -> tap-fired -> idle.
+    assert rig.machine.regions['gesture'] == 'idle', rig.machine.regions
+    assert not find(extra, 'show_switcher'), (
+        'the switcher was asked for twice: %s' % verbs(extra))
+    assert not find(extra, 'freeze'), 'and the game was frozen twice'
+
+
+def test_a_tap_on_an_already_paused_game_still_resumes_it():
+    """The other half, and the reason the deferral cannot simply be deleted:
+    a tap is how you get back INTO a paused game."""
+    rig = Rig(session=SESSION, suspended=APPID,
+              pid_states={200: 'T', 201: 'T'}, joystick=True,
+              bindings=TAP_SWITCHER).settle()
+    got = _tap(rig, 13000.0)
+    assert find(got, 'launch'), 'a tap on a paused game must resume it'
+    assert find(got, 'launch')[0].reason == 'gesture:tap-resume'
+    assert not find(got, 'show_switcher'), 'and must not re-open the switcher'
+
+
+def test_the_deferred_resume_still_works_when_the_double_tap_is_bound():
+    """With something to escalate to, the paused tap waits out the window and
+    resumes when it shuts - gesture.paused_tap_decision's 'defer'. That path
+    is untouched, and this is the test that says so."""
+    rig = Rig(session=SESSION, suspended=APPID,
+              pid_states={200: 'T', 201: 'T'}, joystick=True,
+              bindings=dict(DEFAULT_BINDINGS, tap='none',
+                            double_tap='switcher')).settle()
+    got = _tap(rig, 13200.0)
+    assert not find(got, 'launch'), 'a second tap may still be coming'
+    assert rig.machine.regions['gesture'] == 'tap-wait'
+    got = rig.observe(dt=DOUBLE_TAP_S + 0.1, press_duration=0.08)
+    assert find(got, 'launch'), 'the window shut with no second tap: resume'
+    assert find(got, 'launch')[0].reason == 'gesture:tap-resume'

@@ -613,17 +613,24 @@ def _run_main(windows, pick):
     _xbmc.rpc.clear()
     orig = (dflt.get_windows, dflt.select_window, dflt.activate, dflt.notify)
     dflt.get_windows = lambda: windows
-    dflt.select_window = lambda rows: (_run_main.rows.append(rows) or
-                                       pick(rows))
+    # **kw, not a fixed signature: main() hands select_window the prefetched
+    # appid and Spotify status as keywords (24 Aug 2026), and this seam should
+    # not have to be edited every time another decoration joins them - it is
+    # here to capture the ROWS and answer the pick.
+    dflt.select_window = lambda rows, **kw: (
+        _run_main.rows.append(rows) or _run_main.kwargs.update(kw) or
+        pick(rows))
     dflt.activate = lambda wid: activated.append(wid)
     dflt.notify = lambda *_a, **_k: None
     _run_main.rows = []
+    _run_main.kwargs = {}
     try:
         dflt.main()
     finally:
         (dflt.get_windows, dflt.select_window, dflt.activate,
          dflt.notify) = orig
     return {'rows': _run_main.rows[0] if _run_main.rows else [],
+            'kwargs': dict(_run_main.kwargs),
             'activated': activated, 'builtins': list(_xbmc.builtins),
             'rpc': list(_xbmc.rpc)}
 
@@ -690,3 +697,73 @@ def test_an_empty_server_answer_still_opens_nothing():
     out = _run_main([], pick=lambda rows: 0)
     assert out['rows'] == []
     assert out['builtins'] == [] and out['activated'] == []
+
+
+# =========================================================================
+# the prefetch (24 Aug 2026)
+# =========================================================================
+def test_the_decorations_are_fetched_alongside_the_window_list():
+    """Donnie, 24 Aug 2026: "make it instant".
+
+    The suspended appid and the Spotify status used to run nose to tail
+    AFTER the window list, and only the list decides anything - the other two
+    just dress the sheet. They now start before it and are collected after,
+    so their cost overlaps the one call that cannot be avoided.
+
+    What this pins is the CONTRACT, not the threading: whatever main() worked
+    out is what select_window is handed, so nobody can quietly put the
+    in-line fetches back and have the dialog pay for them twice.
+    """
+    orig = (dflt._suspended_appid, dflt._spotify_status)
+    dflt._suspended_appid = lambda: '367520'
+    dflt._spotify_status = lambda: {'active': True, 'track': 'Vespertine'}
+    try:
+        out = _run_main(WINS, pick=lambda rows: -1)
+    finally:
+        (dflt._suspended_appid, dflt._spotify_status) = orig
+    assert out['kwargs']['appid'] == '367520'
+    assert out['kwargs']['spotify'] == {'active': True, 'track': 'Vespertine'}
+
+
+def test_a_decoration_that_throws_costs_the_decoration_and_nothing_else():
+    """A prefetch is a decoration. The sheet it dresses is the room's only
+    way out of a game, so a raising endpoint has to land as the default -
+    the same sheet you get when the endpoint is simply absent."""
+    orig = (dflt._suspended_appid, dflt._spotify_status)
+
+    def boom():
+        raise RuntimeError('server went away')
+
+    dflt._suspended_appid = boom
+    dflt._spotify_status = boom
+    try:
+        out = _run_main(WINS, pick=lambda rows: -1)
+    finally:
+        (dflt._suspended_appid, dflt._spotify_status) = orig
+    assert out['kwargs'] == {'appid': '', 'spotify': {}}
+    assert [r['title'] for r in out['rows']] == ['Kodi', 'Big Picture']
+
+
+def test_a_decoration_that_hangs_does_not_hang_the_sheet():
+    """The deadline is the same one the in-line call already carried; what
+    changed is that missing it costs the decoration instead of the open."""
+    import threading
+    import time as _time
+    orig = (dflt._spotify_status, dflt.MEDIA_TIMEOUT)
+    started = threading.Event()
+
+    def never():
+        started.set()
+        _time.sleep(30)          # daemon thread; the run must not wait for it
+
+    dflt._spotify_status = never
+    dflt.MEDIA_TIMEOUT = 0.2
+    began = _time.monotonic()
+    try:
+        out = _run_main(WINS, pick=lambda rows: -1)
+    finally:
+        (dflt._spotify_status, dflt.MEDIA_TIMEOUT) = orig
+    assert started.wait(2), 'the prefetch never ran'
+    assert _time.monotonic() - began < 5, 'the sheet waited for the hang'
+    assert out['kwargs']['spotify'] == {}
+    assert [r['title'] for r in out['rows']] == ['Kodi', 'Big Picture']

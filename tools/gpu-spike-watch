@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Catch the mystery GPU-100% episodes in the act (26 Aug 2026).
+
+Donnie, mid-Bloodborne: GPU pinned at 100% (usual 50-60%) with frametime
+chaos, during ordinary gameplay - no load, no death, no warp. The MangoHud
+log for the first episode shows presents at up to 4372fps with the card at
+max clocks and 176W, which says SOMETHING free-ran the presenter, but not
+what. Remote analysis is exhausted; per-process attribution only exists in
+the moment, via each DRM client's cumulative engine time in /proc/fdinfo.
+
+Passive: polls gpu_busy_percent every 2s. On >=THRESH for >=HOLD seconds it
+writes one snapshot (per-process GPU-time deltas over 3s, clocks, power,
+census-probe log rate) to data/perf-logs/gpu-spike-<ts>.txt, then re-arms
+after the episode ends. Runs for MAX_H hours, then exits on its own.
+"""
+import os, time, glob, sys, collections
+
+THRESH, HOLD, MAX_H = 90, 4, 6
+OUT = '/home/ds2000/couch/data/perf-logs'
+BUSY = glob.glob('/sys/class/drm/card*/device/gpu_busy_percent')[0]
+SCLK = BUSY.replace('gpu_busy_percent', 'pp_dpm_sclk')
+LOG = os.path.expanduser('~/.local/share/shadPS4/log/shad_log.txt')
+
+def busy():
+    try: return int(open(BUSY).read())
+    except (OSError, ValueError): return -1
+
+def sclk():
+    try:
+        for l in open(SCLK):
+            if '*' in l: return l.strip()
+    except OSError: pass
+    return '?'
+
+def gpu_time_by_proc():
+    """client-id -> (comm, ns of gfx engine time). Deduped per DRM client."""
+    out = {}
+    for fd in glob.glob('/proc/[0-9]*/fdinfo/*'):
+        try:
+            txt = open(fd).read()
+        except OSError:
+            continue
+        if 'drm-engine-gfx' not in txt: continue
+        cid = comm = ns = None
+        for l in txt.splitlines():
+            if l.startswith('drm-client-id'): cid = l.split(':')[1].strip()
+            elif l.startswith('drm-engine-gfx'): ns = int(l.split(':')[1].strip().split()[0])
+        try: comm = open(fd.split('/fdinfo')[0] + '/comm').read().strip()
+        except OSError: comm = '?'
+        if cid and ns is not None: out[cid] = (comm, ns)
+    return out
+
+def census_rate():
+    try:
+        sz = os.path.getsize(LOG); time.sleep(1)
+        return os.path.getsize(LOG) - sz
+    except OSError: return -1
+
+def snapshot():
+    ts = time.strftime('%Y%m%d-%H%M%S')
+    a = gpu_time_by_proc(); time.sleep(3); b = gpu_time_by_proc()
+    lines = [f'gpu-spike snapshot {ts}', f'busy: {busy()}%', f'sclk: {sclk()}',
+             f'shad_log bytes/s (census chatter): {census_rate()}']
+    agg = collections.Counter()
+    for cid, (comm, ns2) in b.items():
+        ns1 = a.get(cid, (comm, ns2))[1]
+        agg[comm] += ns2 - ns1
+    lines.append('gfx-engine time over 3s, by process:')
+    for comm, d in agg.most_common():
+        lines.append(f'  {comm:<20s} {d/3e7:6.1f}% of one engine')
+    p = f'{OUT}/gpu-spike-{ts}.txt'
+    open(p, 'w').write('\n'.join(lines) + '\n')
+    print(f'captured {p}', flush=True)
+
+deadline = time.time() + MAX_H * 3600
+hot_since = None
+print(f'armed: >= {THRESH}% for {HOLD}s trips a snapshot; exits in {MAX_H}h', flush=True)
+while time.time() < deadline:
+    v = busy()
+    if v >= THRESH:
+        if hot_since is None: hot_since = time.time()
+        elif time.time() - hot_since >= HOLD:
+            snapshot()
+            while busy() >= THRESH and time.time() < deadline: time.sleep(2)
+            hot_since = None
+    else:
+        hot_since = None
+    time.sleep(2)
+print('watch window over, exiting', flush=True)

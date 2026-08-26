@@ -70,7 +70,10 @@ except Exception as _e:  # noqa: BLE001
         except OSError:
             return None
 
-API = "http://localhost:8790"
+#: The couch server. 127.0.0.1 rather than "localhost": one fewer resolver
+#: step for an address that cannot change, and the same string is handed to
+#: Kodi as the prefix of every thumbnail URL below.
+API = "http://127.0.0.1:8790"
 
 LIST_TIMEOUT = 3      # the server answers in ~100ms; anything slower is broken
 ACT_TIMEOUT = 20      # activating suspends a game first, which takes a moment
@@ -136,6 +139,9 @@ MEDIA_ID = 9020
 PROP_SPOTIFY = "couch.spotify"
 PROP_SPOTIFY_LABEL = "couch.spotify.label"
 MEDIA_TIMEOUT = 2     # status is ~3 local busctl calls behind the server
+#: host_read's own default. Named here because the prefetch has to wait on the
+#: thread rather than on the read, and the two deadlines must not drift apart.
+HOST_READ_TIMEOUT = 3.0
 
 # The pills draw icons, not words (Donnie's call, 15 Aug - the opposite of
 # the power bar's rule, and rightly: pause/previous/next ARE the three
@@ -455,7 +461,48 @@ def animated_dialog():
         return True
 
 
-def select_window(rows):
+class Prefetch:
+    """A decoration being fetched off the main thread.
+
+    Donnie, 24 Aug 2026: "can we optimise the shit out of the switcher menu.
+    make it instant". Three round trips used to run nose to tail before the
+    window was even asked for - the window list, the suspended appid and the
+    Spotify status - and only the first of them decides anything. The other
+    two only dress the sheet, and neither depends on the other, so they now
+    run alongside the list instead of behind it. Measured on an idle console
+    they are cheap (6ms each); the one that is not is /api/spotify with a live
+    phone session, which is three busctl calls deep in the server and was
+    charged to the dialog's open every single time.
+
+    `get_windows` stays on the calling thread on purpose: it is the only one
+    whose failure is not a decoration, and main() owes the room a notification
+    when it fails.
+
+    A prefetch NEVER raises and never blocks past its deadline. Whatever is
+    not back by then is simply not drawn, which is the same sheet you get when
+    the endpoint is missing - the pre-existing degraded case, not a new one.
+    """
+
+    def __init__(self, fetch, default=None):
+        self.value = default
+        self._thread = threading.Thread(target=self._run, args=(fetch,),
+                                        daemon=True,
+                                        name="couch-switcher-prefetch")
+        self._thread.start()
+
+    def _run(self, fetch):
+        try:
+            self.value = fetch()
+        except Exception as e:  # noqa: BLE001 - a decoration must never cost the dialog
+            xbmc.log("couch.switcher: prefetch failed: %s" % e,
+                     xbmc.LOGWARNING)
+
+    def get(self, timeout):
+        self._thread.join(timeout)
+        return self.value
+
+
+def select_window(rows, appid=None, spotify=None):
     """Ask the room where to go. Returns select()'s contract: a row index,
     len(rows) for Cancel, -1 for dismissed."""
     labels = [pretty_title(str(w.get("title") or w.get("id")))
@@ -473,8 +520,9 @@ def select_window(rows):
         return xbmcgui.Dialog().select(HEADING, labels)
     try:
         dlg.rows = rows
-        dlg.appid = pausedframe.session_appid(rows, fallback=_suspended_appid())
-        dlg.spotify = _spotify_status()
+        dlg.appid = pausedframe.session_appid(
+            rows, fallback=appid if appid is not None else _suspended_appid())
+        dlg.spotify = spotify if spotify is not None else _spotify_status()
         dlg.doModal()
         if dlg.power:
             # A power action was picked, so there is no window to switch to.
@@ -511,6 +559,29 @@ def pretty_title(title):
     if not m:
         return title
     return re.sub(r"\s*<[^>]*>", "", m.group(1)).strip()
+
+
+# WHERE THE OPEN ACTUALLY GOES, measured 24 Aug 2026 (kodi.log TIMING lines,
+# console idle): ~85ms of Kodi spinning up a fresh interpreter for this
+# script, then ~58ms in get_windows below, then ~16ms building and showing
+# the window. Two things were tried against the first two and are recorded
+# here so nobody spends the afternoon again:
+#
+#   * <reuselanguageinvoker> is INERT on this path. Kodi does not reuse the
+#     interpreter for a script launched with Addons.ExecuteAddon, which is how
+#     couchd opens the switcher - a marker stashed on `sys` came back unset on
+#     five consecutive opens. See the note in addon.xml.
+#   * replacing urllib with a raw socket saved 5ms, not the 65 the theory
+#     predicted, because the time is NOT in urllib. /api/windows costs a flat
+#     ~54ms whenever the server's 600ms window cache is cold, which it always
+#     is by the time you press the button: the server shells out to
+#     `python3 xinput.py windows` to walk X, and that subprocess IS the 58ms.
+#     A bespoke HTTP client in the room's only escape hatch from a game is not
+#     worth 5ms, so it went back to urllib.
+#
+# The remaining lever is therefore the server's, not this file's: making the
+# window walk not a per-call subprocess. That is a real change to a tool with
+# many callers and it is not attempted here.
 
 
 def _spotify_status():
@@ -557,6 +628,11 @@ def notify(line):
 
 
 def main():
+    # Off first, so they ride alongside the window list rather than behind it.
+    # See Prefetch: neither of these decides anything, and neither depends on
+    # the other or on the list.
+    appid = Prefetch(_suspended_appid, default="")
+    spotify = Prefetch(_spotify_status, default={})
     try:
         wins = get_windows()
     except (urllib.error.URLError, OSError, ValueError) as e:
@@ -586,7 +662,13 @@ def main():
         return
 
 
-    choice = select_window(rows)
+    # Both deadlines are what these calls already cost themselves when they
+    # ran in line (MEDIA_TIMEOUT for Spotify, a host_read's own timeout for
+    # the flag), so nothing waits longer than it used to - it just waits
+    # concurrently, and the sheet draws without whatever did not arrive.
+    choice = select_window(rows,
+                           appid=appid.get(HOST_READ_TIMEOUT),
+                           spotify=spotify.get(MEDIA_TIMEOUT))
     if isinstance(choice, tuple) and choice[0] == "power":
         action = choice[1]
         xbmc.log("couch.switcher: power action %r -> %s"

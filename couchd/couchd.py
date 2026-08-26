@@ -679,12 +679,34 @@ def g_released_tap_resume(o):
 def g_tap_resume_due(o):
     """The deferred resume's window ran out with no second tap.
 
-    The suspended flag is re-read HERE rather than remembered from the press:
-    a reconcile, the phone or a guard repair may have resumed the game inside
-    those 350ms, and resuming a game that is already running would raise a
-    window over the Kodi the player is looking at.
+    ONLY REACHABLE WITH THE DOUBLE-TAP BOUND, and that is the whole guard.
+    This is the 'defer' arm of gesture.paused_tap_decision, which returns
+    'resume' outright when there is nothing to escalate to - so with the
+    double-tap unbound the paused tap has already resumed at the release edge
+    (g_released_tap_resume) and there is nothing left for this to do.
+
+    Without that condition it did something much worse than nothing, because
+    it is level-based and the world it reads is one this machine just changed
+    (Donnie, 24 Aug 2026: "it keeps switching to kodi and stuff and sometimes
+    when i go off a game it's just sat open"). Since the 23 Aug rebind put the
+    switcher on the TAP, a tap on a RUNNING game fires freeze + set_flag
+    suspended + show kodi + show_switcher; 350ms later this guard saw a tap
+    and a paused game - the paused game its own press had just made - and
+    resumed it, raising the game back over a switcher that was still opening.
+    That is both halves of the report: the flip to Kodi and straight back, and
+    a dialog left open underneath, found whenever the game finally exited.
+    Live shape in shadow/couchd-20260823.jsonl at 22:07:10, pinned in
+    test_reconcile.test_a_tap_that_opens_the_switcher_does_not_then_resume_the_game.
+
+    The suspended flag is still re-read HERE rather than remembered from the
+    press: a reconcile, the phone or a guard repair may have resumed the game
+    inside those 350ms, and resuming a game that is already running would
+    raise a window over the Kodi the player is looking at. Re-reading was
+    never the mistake; re-reading it as if this machine had not just written
+    it was.
     """
     return (not o.button_down and o.suspended_present
+            and o.binding('double_tap') != 'none'
             and not foreign_suspend(o)
             and gesture.is_tap(o.press_duration)
             and gesture.double_tap_window_over(_since(o, 'gesture'),
@@ -4191,11 +4213,30 @@ class PidObserver:
         states = {}
         for pid in sorted(out):
             st = procs.get(pid, {}).get('status') or ''
+            if st == psutil.STATUS_ZOMBIE:
+                # ZOMBIES ARE NOT GAME PIDS (26 Aug 2026). A zombie has no
+                # address space and no threads: SIGSTOP does nothing to it and
+                # it can NEVER reach 'T'. It is still walked above, because a
+                # zombie's children are real - it is only excluded from the
+                # answer.
+                #
+                # Left in, one zombie anywhere in the tree is fatal to the
+                # whole suspend contract: running_pids counts everything that
+                # is not 'T', so all_frozen can never go true, and the freeze
+                # effect ("all game pids in state T") is verdicted `missed`
+                # forever. Donnie, 26 Aug: "i'm trying to get on to bloodborne
+                # through the ps tap and it keeps taking me back to kodi with
+                # no control of kodi" - freeze missed 7/7 that afternoon while
+                # two zombies left by the bb-event-tail sidecar sat in the
+                # tree. The emulator was being stopped correctly the whole
+                # time; only the verification was impossible, and everything
+                # downstream then treated a good suspend as a failed one.
+                continue
             states[pid] = 'T' if st == psutil.STATUS_STOPPED else \
                 {'sleeping': 'S', 'running': 'R', 'disk-sleep': 'D',
-                 'zombie': 'Z', 'idle': 'I'}.get(st, st[:1].upper() or '?')
+                 'idle': 'I'}.get(st, st[:1].upper() or '?')
         changed = states != self.states
-        self.states, self.tree = states, sorted(out)
+        self.states, self.tree = states, sorted(states)
         self.launcher_alive = (psutil.pid_exists(launcher_pid)
                                if launcher_pid else None)
         self.src.touch(True, f'{len(states)} pid(s)')

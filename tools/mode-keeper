@@ -22,6 +22,10 @@ WHAT IT DELIBERATELY WILL NOT DO:
     a presenting fullscreen game is the same family of move as toggling the
     compositor under one, which has black-screened a game on this box twice.
     A game that is running gets left alone, full stop.
+  * touch anything while Kodi is PLAYING something (25 Aug 2026). A modeset
+    makes Kodi reset its audio sink, which skips frames and desyncs the audio
+    of whatever is on screen - and 4K120 buys a 60fps-at-most video nothing at
+    all. See playback_running(). The mode is re-claimed as soon as it stops.
   * fight a deliberate choice. It only acts when the current mode is one of
     the EDID defaults, so setting 1080p by hand stays set.
   * thrash. One correction per COOLDOWN at most, and it counts them, so a
@@ -30,13 +34,19 @@ WHAT IT DELIBERATELY WILL NOT DO:
 Kodi enumerates display modes once at startup, so if this corrects the mode
 while Kodi is running, Kodi's own idea of the mode list can be stale. That is
 better than sitting at 60Hz, but it is why a restart via tools/kodi-restart
-is worth doing if playback looks wrong afterwards.
+is worth doing if playback looks wrong afterwards. (25 Aug 2026: "playback
+looks wrong afterwards" turned out to have a sharper cause than a stale mode
+list - see playback_running.)
 """
 import argparse
+import base64
+import json
 import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 MODE = '4k120'
 MODELINE = ('1188.00 3840 4016 4104 4400 2160 2168 2178 2250 '
@@ -69,6 +79,63 @@ def state(display=':0'):
             current = line.split()[0]
             break
     return name, current
+
+
+def playback_running():
+    """Never change the mode under a PLAYING video.
+
+    Donnie, 25 Aug 2026, on why he had given up on our YouTube and gone to the
+    television's own app: "it was skipping seconds and going really fast and
+    idk if the audio was even synced".
+
+    A modeset raises an X RandR event, and Kodi answers that event by
+    re-enumerating its audio devices and RESETTING the sink. Straight from
+    kodi.log, the two lines always arrive together:
+
+        WinSystemX11::RefreshWindow - failed to query xrandr
+        ValidateOutputDevices: audio output device setting has been updated
+          from 'PULSE:Default' to 'ALSA:default|...'
+
+    Mid-playback that resets the audio clock; Kodi's video clock is slaved to
+    it, so the picture skips frames to catch up and the audio lands wherever it
+    lands. EIGHT of those resets fell in the five minutes around 20:20 on 25
+    Aug, one per correction this keeper made - which is exactly when he was
+    trying to watch something. The module docstring already suspected the shape
+    of this ("worth a restart if playback looks wrong afterwards"); this is the
+    same observation with the cause attached and the correction withheld.
+
+    And the correction buys NOTHING while a video plays. Films and YouTube are
+    60fps at the very most, so the EDID 4K60 the TV fell back to already has a
+    slot for every frame they contain. The mode is re-claimed the moment
+    playback stops. Deferring costs nothing; correcting costs the video.
+
+    Doubt counts as YES (leave the display alone), the same rule as
+    game_running - with one deliberate exception: a REFUSED connection means
+    Kodi is not running, and a Kodi that is not running is certainly not
+    playing. Without that carve-out a box with Kodi stopped would sit at 60Hz
+    forever.
+    """
+    try:
+        import couchenv
+        url = couchenv.kodi_url()
+        auth = couchenv.kodi_auth()
+    except Exception:
+        return True                     # cannot ask = do not disturb
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1,
+                       'method': 'Player.GetActivePlayers'}).encode()
+    req = urllib.request.Request(url, data=body, headers={
+        'content-type': 'application/json',
+        'authorization': 'Basic ' + base64.b64encode(auth.encode()).decode()})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return bool(json.loads(r.read()).get('result'))
+    except urllib.error.URLError as e:
+        # ConnectionRefusedError is Kodi being down, which is a real answer.
+        if isinstance(getattr(e, 'reason', None), ConnectionRefusedError):
+            return False
+        return True
+    except Exception:
+        return True
 
 
 def game_running():
@@ -110,6 +177,10 @@ def tick(display, dry_run, last_fix, corrections):
     if game_running():
         print(f'{current} but a game is running - leaving the display alone',
               flush=True)
+        return last_fix, corrections
+    if playback_running():
+        print(f'{current} but something is playing - deferring (a modeset '
+              f'resets Kodi\'s audio sink mid-video)', flush=True)
         return last_fix, corrections
     now = time.monotonic()
     if now - last_fix < COOLDOWN:

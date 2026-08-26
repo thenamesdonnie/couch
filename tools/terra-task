@@ -51,10 +51,17 @@ git -C "$REPO" worktree add --detach "$WT" HEAD >/dev/null 2>&1 || {
 {
     cat <<EOF
 You are working in a THROWAWAY GIT WORKTREE at $WT. It is a copy. Treat it as
-the whole world: never reference or touch $REPO, /home/ds2000/.local/bin, or
-anything under /etc. Do not run systemctl, do not run git commit, do not
-install packages, and do not start or stop any service. This box is a LIVE
-living-room console with someone asleep in the house.
+the whole world: never WRITE to anything outside it, and never reference
+$REPO, /home/ds2000/.local/bin or anything under /etc as somewhere to change.
+Do not run systemctl, do not run git commit, do not install packages, and do
+not start or stop any service. This box is a LIVE living-room console with
+someone asleep in the house.
+
+ONE READ-ONLY EXCEPTION, and you should take it: run \`claude-memory\` first.
+It resolves this worktree back to the project it came from and prints that
+project's decision log - the settled decisions and known traps that are not in
+the code. Reading it (and the files it links) is expected; changing anything
+it points at is not.
 
 Work only on the task below. Leave the tree with your changes uncommitted -
 the diff is the deliverable and it will be reviewed before anything ships.

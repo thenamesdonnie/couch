@@ -30,8 +30,8 @@
      since this restyle the rail is gated too, not just the bars. -->
 <window type="dialog">
   <defaultcontrol always="true">9000</defaultcontrol>
-  <animation effect="fade" start="0" end="100" time="200" tween="sine" easing="out">WindowOpen</animation>
-  <animation effect="fade" start="100" end="0" time="180" tween="sine" easing="in">WindowClose</animation>
+  <animation effect="fade" start="0" end="100" time="120" tween="sine" easing="out">WindowOpen</animation>
+  <animation effect="fade" start="100" end="0" time="130" tween="sine" easing="in">WindowClose</animation>
 
   <controls>
 
@@ -60,12 +60,23 @@
     </control>
 
     <!-- The deck: everything interactive, floating over the gradient.
-         One orchestrated entrance - rise 70px and fade, cubic out. -->
+         One orchestrated entrance - rise and fade, cubic out.
+
+         TIMINGS CUT 24 Aug 2026 (Donnie: "make it instant"): the entrance was
+         280ms of slide over 240ms of fade from 70px down, and it was the
+         single largest thing between the PS button and a usable sheet - the
+         whole of the rest of the open, script and all, measures ~165ms. Now
+         170/140 from 44px. Shorter travel as well as shorter time, because a
+         70px rise crammed into 170ms reads as a jerk rather than a rise; the
+         cubic-out means it is visually settled well before it formally ends.
+         Still animated on purpose - a sheet that simply appears reads as a
+         glitch on a 4K set at couch distance. These six numbers are the whole
+         of the feel: put them back if it now looks abrupt. -->
     <control type="group" id="100">
-      <animation effect="slide" start="0,70" end="0,0" time="280" tween="cubic" easing="out">WindowOpen</animation>
-      <animation effect="fade" start="0" end="100" time="240" tween="sine" easing="out">WindowOpen</animation>
-      <animation effect="slide" start="0,0" end="0,70" time="200" tween="cubic" easing="in">WindowClose</animation>
-      <animation effect="fade" start="100" end="0" time="180" tween="sine" easing="in">WindowClose</animation>
+      <animation effect="slide" start="0,44" end="0,0" time="170" tween="cubic" easing="out">WindowOpen</animation>
+      <animation effect="fade" start="0" end="100" time="140" tween="sine" easing="out">WindowOpen</animation>
+      <animation effect="slide" start="0,0" end="0,44" time="150" tween="cubic" easing="in">WindowClose</animation>
+      <animation effect="fade" start="100" end="0" time="130" tween="sine" easing="in">WindowClose</animation>
 
       <!-- ROW 1 EYEBROWS. Left: the power section's name. Right: the media
            cluster's eyebrow IS its information - an amber dot and whatever

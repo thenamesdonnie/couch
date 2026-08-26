@@ -378,7 +378,334 @@ working UI blind):
   under the live instance after a watchdog double-relaunch race (19:33
   today) - if kodi.log looks stale, read /proc/$(pgrep -x kodi.bin)/fd/8.
 
-## ▶ Resume here (24 Aug 2026 ~12:00 — BLOODBORNE ENHANCED INSTALLED; its settings system fully reverse-engineered; NEEDS DONNIE in-game)
+## ▶ Also 24 Aug (~17:50) — Codex is a /codex skill now, and it finds the right memory by itself
+
+`~/.claude/skills/codex/` writes up the three proven shapes (no-repo consult,
+blind adversarial review + adjudication, worktree-fenced terra task) with the
+exact invocations, verified against CLI 0.144.6.
+
+**The routing fix that mattered:** `~/.codex/AGENTS.md` hardcoded venue-finder's
+memory path, so a Codex session pointed at couch had no memory at all. It now
+tells Codex to run **`claude-memory`** (new, `~/.local/bin`, so it is on PATH
+and inside the nightly backup). That resolves the Claude Code memory dir for
+whatever directory it is in - **and through a git worktree back to the origin
+repo**, which is the case that matters here: `tools/terra-task` hands Codex a
+throwaway worktree under `/tmp`, and naive `$PWD` mangling finds nothing there.
+Proven end to end: codex run with `-C /tmp/wt-probe` resolved to couch and read
+the index.
+
+`tools/terra-task`'s fence had to change with it - it said "never reference
+/home/ds2000/.local/bin", which forbade exactly what AGENTS.md now asks for.
+It now says never WRITE outside the worktree, with one named read-only
+exception.
+
+Measured while validating (in the skill's traps): `codex exec` defaults to
+`reasoning effort: none` - pin `-c model_reasoning_effort=high` for reviews;
+there is a ~4.3k token floor per invocation; and piping `codex exec` into
+`head` SIGPIPEs the run so the `-o` file never lands.
+
+## ▶ Resume here (26 Aug 2026 ~22:20 — marathon handoff: sounds, switcher, codex, zombie pids, lamp saga, companion)
+
+Three-day session (24-26 Aug). Everything below "Previous" blocks is detailed
+per-track; this is the pickup order:
+
+1. **[A] MemoryMax for claude-sessions** — a claude.exe hit 20.8GB and OOM'd
+   the box mid-game (26 Aug 16:19). `systemctl --user edit claude-sessions.service`
+   → `[Service]` `MemoryMax=8G` `MemorySwapMax=2G`, then daemon-reload.
+2. **BB crash to triage on next play**: emulator died SILENTLY mid-load of
+   m23 (descent below the cathedral, ~20:12 26 Aug; no OOM/segfault/Critical;
+   save intact + backup matches). One-off until it repeats; if it repeats at
+   the same descent: `tools/bb-bisect clean` (full vanilla) to cross, then
+   re-install per the lamp-saga config. Needs BB_BISECT_STAGE re-extracted
+   (see tools/bb-bisect header).
+3. **gpu-spike mystery**: watcher self-expires ~04:30; check
+   `data/perf-logs/gpu-spike-*.txt`. If empty and the frametime graph stays
+   noisy: presentMode Mailbox→Fifo in shadPS4 config (free-run during loads
+   measured: 4372fps presents, 176W).
+4. Bloodborne companion service: ledger `docs/research/bloodborne-progress.md`
+   (update EVERY milestone), crib `...-nudge-guide-SPOILERS.md` (never quote).
+   He is post-Gascoigne, in Cathedral Ward, descending toward m23.
+
+Deliberately uncommitted, standing convention: `data/`, `shadow/`,
+`recordings/` runtime artefacts. `data/bb-mod-backups-copy/` (325MB) and
+`data/bb-emevd-backups/` are the lamp-saga safety nets - do not clean.
+
+## ▶ Previous: 26 Aug evening — THE LAMP SAGA + the companion service (game-side, all documented elsewhere)
+
+Bloodborne lamps died; a 7-round bisect convicted the mod's talk scripts;
+Enhanced now runs MINUS script/. Full story + tools:
+`docs/research/bloodborne-lamp-saga-20260826.md`. Donnie's playthrough now
+has a spoiler-free nudge service: rules + progress in
+`docs/research/bloodborne-progress.md`, assistant-only crib in
+`...-nudge-guide-SPOILERS.md` (never quote it to him). Memory:
+bloodborne-companion.
+
+Open engineering tails from tonight:
+- [A] **MemoryMax for claude-sessions.service** — a claude.exe hit 20.8GB and
+  OOM'd the box at 16:19 mid-game. My tooling must not be able to do that.
+- [B] GPU-100% mystery during normal gameplay - `tools/gpu-spike-watch`
+  armed (self-expires); snapshot lands in data/perf-logs/gpu-spike-*.txt.
+  If nothing trips, consider presentMode Mailbox->Fifo (free-run during
+  loads confirmed: 4372fps presents, 176W).
+- [B] Why the mod's talk scripts break lamps NOW when they worked 24-25 Aug
+  (suspect: stuck talk-flow flag from the freeze/OOM day; save-flag reader
+  exists: bb-investigation/bb_eventflags.py, slots 12411=170, 12100=50).
+- [B] bb-bisect.sh + the extracted mod staging live in the SESSION SCRATCHPAD
+  (/tmp) - copy to the repo if they should survive a reboot.
+- [B] game-launch quit under a timeout that expires leaves an orphan whose
+  restore_on_exit later yanks the screen to Kodi - twice tonight. Guard it.
+
+## ▶ LIVE INCIDENT 26 Aug ~15:45 — "it keeps taking me back to kodi with no control of kodi" — ROOT CAUSE: zombies in game-pids
+
+Donnie, mid-Bloodborne: "i'm trying to get on to bloodborne through the ps tap
+and it keeps taking me back to kodi with no control of kodi". Room stranded.
+
+**Recovered live** with `game-launch focus` (game was running the whole time,
+just buried). Then found the cause.
+
+**THE FREEZE HAS BEEN FAILING 100% OF THE TIME TODAY.** Effect verdicts for
+`freeze`, by day: 21 Aug `confirmed=7`; 22 Aug `confirmed=4 missed=1`; 23 Aug
+`confirmed=20 missed=4`; **26 Aug `missed=6`, zero confirmed.**
+
+`game-pids` was returning SEVEN pids for the session: the emulator, two
+`tools/bb-event-tail` shells, its `tail -F` and `grep`, a `sleep 2` (a new pid
+every two seconds) - and **two ZOMBIES**. couchd predicts a freeze with "all
+game pids in state T"; a zombie is `Z` forever, so that prediction was
+**structurally unsatisfiable** and every suspend was verdicted `missed`.
+
+The consequence chain, all visible in `shadow/couchd-20260826.jsonl` around
+15:43-15:45: tap fires the full switcher batch (set_flag/route_pad/show/
+iconify/spawn_guard/show_switcher all CONFIRMED) but the game is never really
+suspended, so it keeps re-mapping its window over Kodi (the endless
+`RUNNING -> MISSING_WINDOW -> RUNNING` flap every ~4s) and the pad drifts back
+to it (`input_ownership: kodi -> game (joystick-disabled)`). Net effect for the
+room: Kodi on screen, switcher up, pad answering to a hidden game.
+
+The 22 Aug first-miss lines up with the local dbg build landing - the
+`shadps4` wrapper spawns `bb-event-tail` beside the emulator with `$$`, so the
+sidecar and everything it leaks lands inside the session tree.
+
+**FIXED** in `~/.local/bin/game-pids`: zombies are walked but excluded from the
+answer (and from the exit code). Verified against the live broken session -
+seven pids became one. Backup of the original in the session scratchpad.
+
+**STILL OPEN:**
+- [A] **Donnie has not re-tested the PS tap yet.** The freeze is now
+  *satisfiable*; whether the whole tap experience is right needs his hands.
+- [B] `bb-event-tail` should not be in the session tree at all - it is a
+  diagnostic sidecar and it leaks zombies. Either exclude our own tooling in
+  game-pids (the standing todo item "exclude transient reaper children that
+  are not games", now proven real) or have the wrapper start it outside the
+  reaper tree. Killing it live cleaned 4 of the 7 pids.
+- [B] No unit test for the zombie exclusion - game-pids reads /proc directly
+  and has no seam. Verified live instead. Add a seam when it is next touched.
+- [B] Honest note on yesterday's `g_tap_resume_due` fix: it did NOT cause this,
+  but it removed the accident that was HIDING it. The old self-resume bounced
+  him back into the game 350ms after every tap, which papered over a freeze
+  that was already failing. Correct fix, uncomfortable timing.
+
+## ▶ Previous (24 Aug 2026 ~13:20 — THE SWITCHER'S SELF-RESUME BUG IS DEAD, and the open is measured end to end)
+
+Donnie: "can we optimise the shit out of the switcher menu. make it instant
+and stop when i'm on a game it keeps switching to kodi and stuff and
+sometimes when i go off a game it's just sat open".
+
+**The last two are ONE bug and it is fixed.** `couchd/couchd.py`
+`g_tap_resume_due` now also requires `binding('double_tap') != 'none'`.
+couchd restarted, fix live, 1411 tests pass.
+
+### The bug
+
+Since the 23 Aug rebind (`tap=switcher`, `double_tap=none`) a tap on a
+RUNNING game fires the bound switcher action - freeze, set the suspended
+flag, hand pad and screen to Kodi, open the dialog. 350ms later
+`g_tap_resume_due` re-read the world, saw "a tap, and a paused game", and
+resumed it. **The same press.** The game came back on top of the switcher
+that was still opening.
+
+That is both halves of the report: the flip to Kodi and straight back, and a
+sheet left open underneath, discovered whenever the game finally exited.
+Nothing ever closes that dialog, so it just sat there.
+
+Live shape, `shadow/couchd-20260823.jsonl` at 22:07:10 (there are dozens):
+
+```
+.156 gesture idle -> down          ps-press
+.207 gesture down -> tap-wait      ps-tap-noop
+.207 freeze/set_flag/.../show_switcher        gesture:ps-tap
+.558 gesture tap-wait -> tap-resume  paused-tap-window-expired
+.558 launch resume + show game            gesture:tap-resume
+1.249 show_switcher CONFIRMED - foreground already back on the game
+```
+
+The guard was level-based over a world **this machine had just changed**.
+`gesture.paused_tap_decision` has always said an unpaused tap never reaches
+the deferral at all, and that the deferral only exists when there is a
+double-tap to escalate to; with it unbound the paused tap already resumes at
+the release edge (`g_released_tap_resume`). So the fix restores the intended
+pairing rather than inventing a new rule. Re-reading the flag was never the
+mistake - re-reading it as if we had not just written it was.
+
+Pinned by three new tests in `couchd/test_reconcile.py` (the bug, the
+still-must-work paused tap, and the deferred resume with the double-tap
+bound). The bug test reproduces the live log exactly before the fix.
+
+### Speed: what it actually costs, measured
+
+`kodi.log` TIMING lines off an instrumented deployed copy, console idle:
+
+| phase | before | after |
+| --- | --- | --- |
+| Kodi spins up a fresh interpreter | ~85ms | ~85ms |
+| `get_windows` | ~63ms | ~58ms |
+| suspended appid + Spotify status | ~12ms serial | ~0ms (alongside) |
+| build + show the window | ~16ms | ~16ms |
+| **to window created** | **165-205ms** | **144-168ms** |
+| entrance animation | 280ms slide / 240ms fade | 170 / 140 |
+
+So ~445ms to a settled sheet, now ~310ms. The animation was the biggest
+single item and is six numbers in the window XML if it now reads abrupt.
+
+**Two things tried and REJECTED, recorded so nobody spends the afternoon
+again** (both written up in `default.py` above `get_windows` and in
+`addon.xml`):
+
+- `<reuselanguageinvoker>` is **inert on this path**. Kodi does not reuse the
+  interpreter for a script launched with `Addons.ExecuteAddon`, which is how
+  couchd opens the switcher. Proven, not assumed: a marker stashed on `sys`
+  came back unset on five consecutive opens.
+- Replacing urllib with a raw socket saved **5ms, not the 65 the theory
+  predicted**, because the time is not in urllib. `/api/windows` costs a flat
+  ~54ms whenever the server's 600ms window cache is cold, which it always is
+  by the time you press the button: `server/screen.js` shells out to
+  `python3 xinput.py windows` and that subprocess IS the 58ms. A bespoke HTTP
+  client in the room's only escape hatch from a game is not worth 5ms, so it
+  went back.
+
+**The remaining lever is the server's, not the addon's:** making the window
+walk not a per-call subprocess (~54ms, every open). Not attempted - it is a
+real change to a tool with many callers. The tempting shortcut, having couchd
+warm `/api/windows` concurrently with the addon launch, is NOT safe as it
+stands: the warm would observe the world ~85ms earlier than the addon's own
+call, i.e. possibly before the iconify lands, and the 600ms cache would then
+serve that stale list to the sheet.
+
+### Two things found on the way
+
+- **`tools/gesture-sweep` refuses to run on Donnie's bindings.** It preflights
+  "bindings are not the defaults" and stops. His console has not been on the
+  default vocabulary since 23 Aug, so the one rig that drives real gestures
+  through the live daemon has not covered his actual configuration - and this
+  bug lived exactly there. Worth a `--bindings-as-configured` mode.
+- **A transient Kodi wedge, new to me:** `Addons.ExecuteAddon` returned OK and
+  no script ran at all - not ours, not `script.globalsearch` - while the GUI
+  stayed fully responsive to JSON-RPC (windows activated, sounds played). The
+  Python invoker alone was dead. `tools/kodi-restart` cleared it. If the
+  switcher is ever "not opening" and kodi.log shows nothing, suspect this
+  before the addon.
+
+### Verified live, not asserted
+
+Switcher opened, navigated (row -> power bar -> back), a power action
+dispatched (`quit` -> tvpoweroff -> "nothing to quit", Steam's 7 processes
+untouched, no session flags), and a row pick activated
+(`activating 0x5400002 (Kodi)`), latch cleared each time. couchd restarted
+into `mode: acting, owns: ['gestures']`, inputproc untouched, Kodi joystick
+still enabled.
+
+**NEEDS DONNIE:** the fix is proven in the model and the daemon is running it,
+but nobody has tapped a real PS button over a real game since. That is the
+test that matters. Also: if part of "it keeps switching to kodi" is
+*accidental* taps, that is a separate thing and a settings choice, not a bug -
+with `tap=switcher` any brush of the PS button leaves the game. Moving the
+switcher back to the double-tap is one settings page away, at the cost of
+350ms on a paused-game resume. Uncommitted; say the word.
+
+## ▶ Previous (24 Aug 2026 ~12:30 — UI SOUNDS ARE LIVE: the console has its own noises)
+
+Donnie: "can we add a noise to navigating the menu and selecting a game pls".
+**Done and verified on the live sink; nothing is mid-flight.**
+
+The surprise going in: **Kodi was already making a noise.** GUI sounds were on
+(`guisoundmode=1`, "only when playback stopped") with the stock
+`resource.uisounds.kodi` selected, and recording the HDMI monitor while
+sending `Input.Right` caught six clean blips at -13.7 dBFS against a -91 dBFS
+silent control. So this was never "add sound", it was "the stock set is a
+mixed bag and has nothing to say about launching a game": its cursor peaks at
+-15 dBFS and its *select* at -27, i.e. the confirmation you most want to hear
+is the quietest thing in the pack.
+
+Also found: seven hand-made wavs had been sitting in
+`kodi-addons/resource.uisounds.couch/resources/` since **11 Aug**, untracked,
+with **no `addon.xml` and no `sounds.xml`** — so Kodi could never have loaded
+them and nobody had ever heard them. They were a good coherent family, ~10 dB
+too quiet.
+
+What is live now:
+
+- **`resource.uisounds.couch`** is a real, enabled addon and is the selected
+  sound skin (`lookandfeel.soundskin`, survives a Kodi restart). It ships
+  `addon.xml`, `resources/sounds.xml`, an icon, and seven wavs.
+- **`tools/make-uisounds`** GENERATES those wavs from parameters — length,
+  fundamental, glide, envelope, peak dBFS, harmonics — measured off the 11 Aug
+  originals. "Make select warmer" or "the tick is too loud" is now a number to
+  change, not a re-synthesis. `--check` regenerates to a temp dir and diffs.
+  The 11 Aug originals live in `docs/reference/uisounds-originals-20260811/`
+  with a table of what changed and why.
+- **Mapping** (`resources/sounds.xml`): cursor.wav on up/down/left/right,
+  select.wav on select, back.wav on parentdir/previousmenu/back, error.wav on
+  error. `in.wav`/`out.wav` ship but are **deliberately unmapped** — Kodi fires
+  the action sound AND the window activate/deactivate sound, so wiring the
+  swoosh pair means every step back makes two noises at once. The commented
+  block in that file says so.
+- **Selecting a game plays launch.wav** — a 750ms swell rising 1512→1934 Hz —
+  from `_launch_sound()` in `copacetic-helper-patches/games.py`, one statement
+  before the `game-launch` handoff. Kodi's own select click fires first from
+  the button press and the two are MEANT to overlap: the click is the button,
+  the swell is the console taking the machine away. launch.wav ramps in over
+  its first 240ms exactly so the click lands in front of it. The Library tile
+  is not a launch and stays silent.
+
+Levels, deliberately staged: cursor -16 dBFS (it fires on every d-pad step, so
+it has to read as texture), back -12, select/error -10, in/launch -8.
+
+**Verified live, not asserted** (recorded off
+`alsa_output.pci-0000_09_00.1.hdmi-stereo-extra2.monitor` and FFT'd):
+- nav ticks are OURS, not stock — 1605 Hz, peak exactly -16.0 dBFS (stock's is
+  a 15ms broadband click); back came back at 773 Hz / -12.0 dBFS.
+- one tick per press: onsets 576ms apart for a 0.6s press loop (the detector
+  splits each 55ms tone into a 24ms pair, that is the gate, not a double).
+- **the launch swell fired through the real plugin route**: 728ms, peak -8.0
+  dBFS, 1512→1852 Hz. To get that without starting a game, the DEPLOYED
+  `games.py` had `LAUNCHER` swapped to `/bin/true`, Kodi restarted, the route
+  driven with `Addons.ExecuteAddon` (`Files.GetDirectory` rejects a plugin://
+  with "Invalid params"), then `tools/deploy-addons` + restart put the real
+  launcher back — **confirmed restored**, no stale `/tmp/game-session` or
+  `/tmp/game-suspended`, no plugin errors in kodi.log.
+
+Traps banked for next time:
+- a new addon dropped into the profile comes up **`enabled: false`**, and
+  `Settings.SetSettingValue` on `lookandfeel.soundskin` then **returns `true`
+  and silently does nothing**. `Addons.SetAddonEnabled` first, then set it.
+- `tools/deploy-addons` copies whole trees, so keeping the source wavs beside
+  the generated ones would have shipped a second identical-looking set into
+  the profile — a trap for whoever next debugs "why is the tick quiet". Hence
+  `docs/reference/`.
+
+Tests: `tools/test_games_launch_sound.py` (8 cases — the sound plays, it plays
+BEFORE the handoff, the Library tile is silent, and a missing sound set / a
+throwing audio device / an old Kodi with no `playSFX` each still launch the
+game). `couchd/.venv/bin/pytest tools/test_games_launch_sound.py
+tools/test_games_paused_tile.py -q` → 14 passed.
+
+**NEEDS DONNIE:** it is all measured, none of it is *judged* — nobody has
+heard this set on the soundbar. A preview mp3 of the whole family (including
+the click+swell overlap as it really happens) was sent in chat. If the tick is
+too loud, too quiet, too high or too plasticky, it is one number in
+`tools/make-uisounds` then `tools/deploy-addons` + `tools/kodi-restart`.
+Uncommitted; say the word.
+
+## ▶ Previous (24 Aug 2026 ~12:00 — BLOODBORNE ENHANCED INSTALLED; its settings system fully reverse-engineered; NEEDS DONNIE in-game)
 
 **Nothing is mid-flight. No repo code changed this session** — this was a
 mod install plus an investigation. The console is exactly as 23 Aug left it.

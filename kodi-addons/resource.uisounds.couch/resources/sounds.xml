@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Couch UI sounds: which action makes which noise.
+
+     Kodi plays these itself, in the GUI audio engine, so they obey
+     Settings > System > Audio > "GUI sounds volume" and they are silenced
+     during playback (guisoundmode = 1, "only when playback stopped") - a
+     tick over a film would be wrong and we get that for free.
+
+     The wavs come from couch/tools/make-uisounds. Only wav is supported.
+
+     ONE SOUND PER PRESS is the rule here. Kodi fires both the action sound
+     and any window activate/deactivate sound, so mapping `parentdir` to
+     back.wav AND a window deactivate to out.wav means every step back makes
+     two noises on top of each other. `in`/`out` are therefore shipped but
+     left unmapped below; see the commented block. -->
+<sounds>
+  <actions>
+    <!-- Navigation. cursor.wav is deliberately the quietest thing in the
+         set: it fires on every d-pad step, so it wants to read as texture. -->
+    <action>
+      <name>left</name>
+      <file>cursor.wav</file>
+    </action>
+    <action>
+      <name>right</name>
+      <file>cursor.wav</file>
+    </action>
+    <action>
+      <name>up</name>
+      <file>cursor.wav</file>
+    </action>
+    <action>
+      <name>down</name>
+      <file>cursor.wav</file>
+    </action>
+
+    <!-- Confirmation. Selecting a GAME plays launch.wav instead, from
+         copacetic-helper-patches/games.py - that one is an event, not a
+         click, and Kodi has no action name for "a game started". -->
+    <action>
+      <name>select</name>
+      <file>select.wav</file>
+    </action>
+
+    <!-- Going back: the same idea as select, gliding down instead. -->
+    <action>
+      <name>parentdir</name>
+      <file>back.wav</file>
+    </action>
+    <action>
+      <name>previousmenu</name>
+      <file>back.wav</file>
+    </action>
+    <action>
+      <name>back</name>
+      <file>back.wav</file>
+    </action>
+
+    <action>
+      <name>error</name>
+      <file>error.wav</file>
+    </action>
+  </actions>
+
+  <windows>
+    <!-- Nothing mapped on purpose.
+
+         `startup` is left out because the console's Kodi is restarted by
+         tools/kodi-restart and by the crash loop, and a fanfare on a silent
+         repair is the wrong signal. `notification` is left out because Kodi
+         pops notifications for library scans and addon updates on its own
+         schedule, which would be a noise nobody asked for.
+
+         To enable the enter/leave swoosh pair, uncomment this and pick the
+         windows you actually want it on - remembering that back.wav above
+         will play at the same time as out.wav:
+
+         <window>
+           <name>videos</name>
+           <activate>in.wav</activate>
+           <deactivate>out.wav</deactivate>
+         </window>
+    -->
+  </windows>
+</sounds>

@@ -62,6 +62,10 @@ OWN_ADDONS = [
     'service.couch.autoroute',
     'context.couch.playontv',
     'script.tvpoweroff',
+    # The GUI sound set. Copied like the rest: Kodi caches the wavs it has
+    # loaded, and the setting that selects it (lookandfeel.soundskin) names
+    # the addon id, so it has to be a real installed addon and not a path.
+    'resource.uisounds.couch',
 ]
 
 #: symlinked, not copied

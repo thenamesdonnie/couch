@@ -463,6 +463,37 @@ def _ps4_games():
     return out  # (title, eboot, art, thumb, last); merged + sorted in games_route
 
 
+#: The rising swell that plays when a game is handed the machine (Donnie,
+#: 24 Aug 2026). It is a resource in our own sound set rather than a file
+#: beside this one because the set is designed together and levelled together
+#: - see couch/tools/make-uisounds.
+LAUNCH_SFX = ('special://home/addons/resource.uisounds.couch/'
+              'resources/launch.wav')
+
+
+def _launch_sound():
+    """Play the launch swell, if the sound set is installed.
+
+    Kodi's own `select` action sound fires first, from the button press, and
+    the two are MEANT to overlap: the click is the button, the swell is the
+    console taking the machine away from you. launch.wav ramps in over its
+    first 240ms precisely so the click lands in front of it rather than on
+    top of it.
+
+    Deliberately silent on failure. This runs one statement before the
+    handoff to game-launch, and no missing wav, no sound skin and no audio
+    device is a reason for a game not to start.
+    """
+    try:
+        import xbmc
+        import xbmcvfs
+        path = xbmcvfs.translatePath(LAUNCH_SFX)
+        if os.path.exists(path):
+            xbmc.playSFX(path)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
 def games_route(info, params):
     handle = int(sys.argv[1])
 
@@ -489,6 +520,7 @@ def games_route(info, params):
         # also hides the Kodi -> Big Picture flip until the curtain takes
         # over. The alarm self-clears it so a failed launch cannot strand a
         # black home screen.
+        _launch_sound()
         try:
             import xbmc
             xbmcgui.Window(10000).setProperty('CouchLaunching', '1')

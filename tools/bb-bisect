@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Bloodborne Enhanced bisect harness (26 Aug 2026, the lamp saga).
+#   bb-bisect.sh install <category...>   copy those mod categories into the dump
+#   bb-bisect.sh clean                   restore EVERY category to vanilla
+#   bb-bisect.sh status                  which categories are currently modded
+set -euo pipefail
+MOD="${BB_BISECT_STAGE:?set BB_BISECT_STAGE to the extracted mod dvdroot_ps4 (unzip the archive in ~/fileshare/bloodborne-mods; see docs/research/bloodborne-lamp-saga-20260826.md)}"
+VAN="/home/ds2000/couch/data/bb-mod-backups-copy/BloodborneEnhanced-0.11.2-fix9/files"
+ADDED="/home/ds2000/couch/data/bb-mod-backups-copy/BloodborneEnhanced-0.11.2-fix9/added.txt"
+GAME="/home/ds2000/games/ps4/CUSA00900/dvdroot_ps4"
+case "${1:?install|clean|status}" in
+  install)
+    shift
+    for cat in "$@"; do
+      [ -d "$MOD/$cat" ] || { echo "no such category: $cat"; exit 1; }
+      (cd "$MOD/$cat" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+        rel="${rel#./}"; mkdir -p "$GAME/$cat/$(dirname "$rel")"
+        cp "$MOD/$cat/$rel" "$GAME/$cat/$rel"
+      done
+      echo "installed: $cat ($(find "$MOD/$cat" -type f | wc -l) files)"
+    done ;;
+  clean)
+    # restore every overwritten file to vanilla, remove every added file
+    (cd "$VAN" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+      rel="${rel#./}"; cp "$VAN/$rel" "$GAME/$rel"
+    done
+    while IFS= read -r rel; do [ -n "$rel" ] && rm -f "$GAME/$rel"; done < "$ADDED"
+    find "$GAME" -type d -empty -delete 2>/dev/null || true
+    echo "clean: full vanilla restored" ;;
+  status)
+    for cat in chr event map menu msg param parts script sfx; do
+      [ -d "$MOD/$cat" ] || continue
+      probe=$(cd "$MOD/$cat" && find . -type f -print -quit); probe="${probe#./}"
+      if cmp -s "$MOD/$cat/$probe" "$GAME/$cat/$probe" 2>/dev/null; then echo "  MODDED   $cat"
+      else echo "  vanilla  $cat"; fi
+    done ;;
+esac
