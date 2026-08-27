@@ -22,6 +22,14 @@ before answering any game question. Update this file at every milestone.
 - Checkpoint: OLD YHARNAM entered (via the Cathedral Ward descent). The
   m23 silent crash did NOT repeat on the same hallway; bb-crash-watch
   armed for any future death (see todo.md item 2).
+- 27 Aug: went to Old Yharnam, fought BSB (died, then the m23 wedge - see
+  Tech state). Told BSB is optional; routed him back to Cathedral Ward for
+  the emblem-gated main path. Now in Cathedral Ward (m24_00 confirmed from
+  the emulator log), killed a hostile HUNTER enemy there with the help of a
+  summoned NPC (his first co-op summon). Standing at door NPCs ("bless us
+  with blood") - the send system is open and he has been told sends carry
+  stakes and to report each one. Combat taught: parry-into-visceral is the
+  answer to hunters; close the distance against firearms.
 - Nudges given on Old Yharnam arrival: confirm the Alfred first-talk near
   the Old Yharnam route was done (accept cooperation); the hostile hunter
   in Old Yharnam is a no-deadline choice, nothing mechanical lost either
