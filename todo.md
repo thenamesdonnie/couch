@@ -409,19 +409,34 @@ there is a ~4.3k token floor per invocation; and piping `codex exec` into
 Three-day session (24-26 Aug). Everything below "Previous" blocks is detailed
 per-track; this is the pickup order:
 
-1. **[A] MemoryMax for claude-sessions** — a claude.exe hit 20.8GB and OOM'd
-   the box mid-game (26 Aug 16:19). `systemctl --user edit claude-sessions.service`
-   → `[Service]` `MemoryMax=8G` `MemorySwapMax=2G`, then daemon-reload.
-2. **BB crash to triage on next play**: emulator died SILENTLY mid-load of
-   m23 (descent below the cathedral, ~20:12 26 Aug; no OOM/segfault/Critical;
-   save intact + backup matches). One-off until it repeats; if it repeats at
-   the same descent: `tools/bb-bisect clean` (full vanilla) to cross, then
-   re-install per the lamp-saga config. Needs BB_BISECT_STAGE re-extracted
-   (see tools/bb-bisect header).
-3. **gpu-spike mystery**: watcher self-expires ~04:30; check
-   `data/perf-logs/gpu-spike-*.txt`. If empty and the frametime graph stays
-   noisy: presentMode Mailbox→Fifo in shadPS4 config (free-run during loads
-   measured: 4372fps presents, 176W).
+1. **[A] MemoryMax for claude-sessions — DONE 26 Aug 23:07**: drop-in
+   `~/.config/systemd/user/claude-sessions.service.d/memory.conf` sets
+   MemoryHigh=6G MemoryMax=8G MemorySwapMax=2G (High kept below Max so the
+   throttle phase exists; overrides the unit's own 12G/16G rail). Verified
+   applied to the LIVE cgroup without a restart.
+2. **BB crash: watcher ARMED 26 Aug 23:09** — `tools/bb-crash-watch` +
+   user unit `bb-crash-watch.service` (enabled, running, armed on the live
+   session). Trigger: emulator gone while /tmp/game-session persists (clean
+   quit removes the flag FIRST, seconds before death - verified ordering in
+   game-launch's EXIT trap l.1463). Snapshot → `data/quit-traces/crash-<ts>/`
+   (shad_log + emulator + launcher log tails, kernel journal, save
+   mtimes+md5s, newest perf CSV tail, core locations). Validated with a
+   dummy proc: crash fires, clean quit doesn't. CORES: no coredumpctl on
+   this box; apport writes unpackaged-binary cores to
+   `/var/lib/apport/coredump` gated on ulimit (verified live) - the shadps4
+   wrapper now sets `ulimit -c unlimited`, effective from the NEXT launch
+   (the 23:02 session predates it). A 450KB test core sits in that dir
+   (root-owned dir): `sudo rm /var/lib/apport/coredump/core._tmp_claude*bbcw-dummy*`.
+   If it repeats at the m23 descent: `tools/bb-bisect clean` (full vanilla)
+   to cross, then re-install per the lamp-saga config. Needs BB_BISECT_STAGE
+   re-extracted (see tools/bb-bisect header).
+3. **gpu-spike mystery — the watcher DID catch it**: 9 snapshots 20:00-20:13
+   in `data/perf-logs/gpu-spike-*.txt`. In-game pattern: busy% swings
+   12→100 while shadPS4:Main's gfx-engine share stays FLAT at ~58-66% and
+   census chatter ~0 - no second process is eating the GPU. Oddest file:
+   20:13:47, ~95s AFTER the crash - busy 94% at 3328MHz with NO shadPS4
+   alive and every listed client at 0%. presentMode Mailbox→Fifo still the
+   next lever (free-run during loads measured: 4372fps presents, 176W).
 4. Bloodborne companion service: ledger `docs/research/bloodborne-progress.md`
    (update EVERY milestone), crib `...-nudge-guide-SPOILERS.md` (never quote).
    He is post-Gascoigne, in Cathedral Ward, descending toward m23.

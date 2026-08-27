@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# bb-crash-watch — passive crash-scene recorder for shadPS4 sessions (26 Aug 2026).
+#
+# Why: the emulator died SILENTLY mid-load of m23 (~20:12 26 Aug) and the scene
+# was lost - no log tail, no save fingerprint, nothing to compare a repeat
+# against. This watcher sits armed and snapshots the scene the moment the
+# emulator dies while the session flag says it shouldn't have.
+#
+# Trigger semantics (from game-launch's own ordering):
+#   - clean quit: game-launch removes /tmp/game-session FIRST, then asks the
+#     emulator to exit (8-30s of save-on-quit grace between the two).
+#   - crash: the emulator vanishes while the flag still exists; the launcher's
+#     EXIT trap removes the flag a few seconds LATER when its poll notices.
+# So: emulator gone + flag present = crash. Both gone inside one 0.5s poll is
+# near-impossible on a clean quit (the graces are seconds long), so that case
+# is still snapshotted, verdict "ambiguous".
+#
+# Snapshot -> ~/couch/data/quit-traces/crash-<ts>/ :
+#   meta.txt, shad_log tail, emulator stdout/stderr tail, game-launch log tail,
+#   kernel journal tail, core-dump situation (apport box, no coredumpctl),
+#   save file mtimes+md5s, newest perf CSV tail.
+#
+# One snapshot per session: after firing it waits for a NEW session before
+# re-arming. Runs as the user unit bb-crash-watch.service.
+#
+# Test seams (never used in production):
+#   BBCW_SESSION_FILE, BBCW_EMU_PAT, BBCW_OUT_DIR, BBCW_POLL, BBCW_SAVE_DIR
+set -u
+
+SESSION="${BBCW_SESSION_FILE:-/tmp/game-session}"
+# Same pattern game-launch's emu_running() uses (its EMU_PAT). The pattern
+# lives in a variable, not argv, so pgrep -f cannot self-match this script.
+EMU_PAT="${BBCW_EMU_PAT:-Shadps4-sdl|mount_Shadps|^/home/ds2000/src/shadps4-dbg/build/shadps4}"
+OUT_DIR="${BBCW_OUT_DIR:-$HOME/couch/data/quit-traces}"
+POLL="${BBCW_POLL:-0.5}"
+# Seconds of a completely frozen emulator log, with the process alive and NOT
+# suspended, before we call it a hang. 90s is well past the longest legitimate
+# load on this box and past any switcher round trip.
+HANG_SECS="${BBCW_HANG_SECS:-90}"
+SAVE_DIR="${BBCW_SAVE_DIR:-$HOME/.local/share/shadPS4/home/1000/savedata/CUSA00900/SPRJ0005}"
+SHAD_LOG="$HOME/.local/share/shadPS4/log/shad_log.txt"
+EMU_LOG=/tmp/shadps4-launch.log
+LAUNCH_LOG=/tmp/game-launch.log
+PERF_DIR="$HOME/couch/data/perf-logs"
+
+log() { echo "$(date '+%F %T') $*"; }
+
+emu_pids() { pgrep -f "$EMU_PAT" 2>/dev/null; }
+
+# Only shadps4-mode sessions concern this watcher; Steam has its own forensics.
+session_is_shadps4() {
+  [ -f "$SESSION" ] && [ "$(cut -d' ' -f2 "$SESSION" 2>/dev/null)" = "shadps4" ]
+}
+
+# A clean emulator shutdown dumps its shader cache on the way out. 27 Aug: all
+# three captures so far were CLEAN quits misfiled as crashes, because the flag
+# ordering assumed below does not hold on every quit path - the launcher's EXIT
+# trap can clear the flag well after the emulator is gone. This marker is the
+# discriminator that actually works.
+exited_clean() {
+  [ -f "$SHAD_LOG" ] || return 1
+  tail -n 40 "$SHAD_LOG" 2>/dev/null | grep -q "Cache dumped"
+}
+
+snapshot() {
+  local verdict="$1" sess="$2" pids="$3" cwds="$4"
+  local ts dir prefix
+  ts="$(date +%Y%m%d-%H%M%S)"
+  case "$verdict" in
+    hang) prefix=hang ;;
+    *)    prefix=crash ;;
+  esac
+  dir="$OUT_DIR/$prefix-$ts"
+  mkdir -p "$dir"
+
+  # THREAD TABLE (27 Aug): the single most useful artefact of the Old Yharnam
+  # wedge - 91 threads in futex_wait with one game worker spinning is what
+  # proved the GAME had stalled while the emulator stayed healthy. Only
+  # meaningful while the process still exists, i.e. the hang verdict.
+  for p in $pids; do
+    [ -d "/proc/$p" ] || continue
+    { echo "=== thread table for pid $p"
+      for t in /proc/$p/task/*; do
+        [ -d "$t" ] || continue
+        printf "%s %-18s state=%s wchan=%s\n" "$(basename "$t")" \
+          "$(cat "$t/comm" 2>/dev/null)" \
+          "$(awk '{print $3}' "$t/stat" 2>/dev/null)" \
+          "$(cat "$t/wchan" 2>/dev/null)"
+      done
+    } >> "$dir/threads.txt" 2>/dev/null
+  done
+
+  {
+    echo "bb-crash-watch snapshot $ts"
+    echo "verdict: $verdict"
+    echo "session (as armed): $sess"
+    echo "emulator pids (as armed): $pids"
+    echo "emulator cwds (as armed): $cwds"
+    echo "session file now: $([ -f "$SESSION" ] && cat "$SESSION" || echo GONE)"
+  } > "$dir/meta.txt"
+
+  [ -f "$SHAD_LOG" ] && tail -n 200 "$SHAD_LOG" > "$dir/shad_log.tail.txt" 2>/dev/null
+  [ -f "$EMU_LOG" ] && tail -n 100 "$EMU_LOG" > "$dir/shadps4-launch.tail.txt" 2>/dev/null
+  [ -f "$LAUNCH_LOG" ] && tail -n 120 "$LAUNCH_LOG" > "$dir/game-launch.tail.txt" 2>/dev/null
+
+  journalctl -k -n 150 --no-pager > "$dir/journal-kernel.tail.txt" 2>&1
+
+  # Core-dump situation. This box routes cores through apport (no
+  # systemd-coredump); for the unpackaged emulator binary apport falls back to
+  # writing a plain core into the process CWD, gated on the process's core
+  # ulimit (the shadps4 wrapper sets it unlimited since 26 Aug).
+  {
+    if command -v coredumpctl >/dev/null 2>&1; then
+      coredumpctl list --no-pager 2>&1 | tail -n 20
+    else
+      echo "coredumpctl not installed (apport box: core_pattern -> apport,"
+      echo "unpackaged binaries fall back to a plain core in the process cwd)"
+    fi
+    echo "--- /var/lib/apport/coredump (verified 26 Aug: this is where apport"
+    echo "    writes unpackaged-binary cores, gated on the process core ulimit):"
+    ls -la /var/lib/apport/coredump/ 2>/dev/null || echo "(empty or unreadable)"
+    echo "--- /var/crash:"
+    ls -la /var/crash/ 2>/dev/null || echo "(empty or unreadable)"
+    for d in $cwds; do
+      echo "--- cores in emulator cwd $d:"
+      ls -la "$d"/core* 2>/dev/null || echo "(none)"
+    done
+  } > "$dir/coredumps.txt"
+
+  {
+    echo "save files under $SAVE_DIR (mtime + md5):"
+    for f in "$SAVE_DIR"/userdata0000 "$SAVE_DIR"/backup0000; do
+      if [ -f "$f" ]; then
+        echo "$(stat -c '%y %s' "$f")  $(md5sum "$f")"
+      else
+        echo "MISSING: $f"
+      fi
+    done
+  } > "$dir/saves.txt" 2>&1
+
+  local csv
+  csv="$(ls -t "$PERF_DIR"/shadps4_*.csv 2>/dev/null | head -1)"
+  if [ -n "$csv" ]; then
+    { echo "newest perf csv: $csv ($(stat -c %y "$csv"))"; tail -n 60 "$csv"; } \
+      > "$dir/perf.tail.txt" 2>&1
+  fi
+
+  log "SNAPSHOT ($verdict) -> $dir"
+}
+
+log "armed: session=$SESSION pat=$EMU_PAT poll=${POLL}s"
+
+state=idle          # idle -> armed -> (fired) -> idle
+armed_sess=""       # session file content when armed
+armed_pids=""       # emulator pids when armed
+armed_cwds=""       # their cwds (where an apport fallback core would land)
+fired_sess=""       # session already snapshotted; don't fire twice for it
+last_log_sz=""      # emulator log size, for the hang watch
+log_still_since=0   # $SECONDS when the log last changed size
+
+while :; do
+  if session_is_shadps4; then
+    sess="$(cat "$SESSION" 2>/dev/null)"
+    pids="$(emu_pids | tr '\n' ' ')"
+    if [ "$state" = idle ] && [ -n "$pids" ] && [ "$sess" != "$fired_sess" ]; then
+      state=armed; armed_sess="$sess"; armed_pids="$pids"
+      last_log_sz=""; log_still_since="$SECONDS"
+      armed_cwds=""
+      for p in $pids; do
+        c="$(readlink "/proc/$p/cwd" 2>/dev/null)" && armed_cwds="$armed_cwds $c"
+      done
+      armed_cwds="$(echo "$armed_cwds" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+      log "armed on session: $sess (pids: $pids)"
+    elif [ "$state" = armed ] && [ -z "$pids" ]; then
+      # Emulator gone, flag still here. Give one grace beat in case a different
+      # matching process is mid-spawn (relaunch race), then judge it.
+      sleep 1
+      if [ -z "$(emu_pids)" ]; then
+        if exited_clean; then
+          log "disarmed: emulator exited cleanly (shader cache dumped), no snapshot"
+        else
+          snapshot crash "$armed_sess" "$armed_pids" "$armed_cwds"
+        fi
+        fired_sess="$armed_sess"; state=idle
+      fi
+    elif [ "$state" = armed ] && [ -n "$pids" ]; then
+      # HANG WATCH (27 Aug): the Old Yharnam wedge never killed the emulator -
+      # it kept flipping frames and counting play time for four minutes while
+      # the game's loader sat dead, so the death trigger above never fired and
+      # the scene was only captured because Donnie was awake to ask. A frozen
+      # log while the process lives is the signature.
+      sz="$(stat -c %s "$SHAD_LOG" 2>/dev/null || echo 0)"
+      if [ "$sz" != "$last_log_sz" ]; then
+        last_log_sz="$sz"; log_still_since="$SECONDS"
+      elif [ $((SECONDS - log_still_since)) -ge "$HANG_SECS" ]; then
+        # A SUSPENDED game writes no log either - that is the console's own
+        # freeze (switcher/PS tap), not a fault. Any pid in state T disqualifies.
+        susp=0
+        for p in $pids; do
+          case "$(awk '{print $3}' "/proc/$p/stat" 2>/dev/null)" in T|t) susp=1 ;; esac
+        done
+        if [ "$susp" = 1 ]; then
+          log_still_since="$SECONDS"
+        else
+          snapshot hang "$armed_sess" "$pids" "$armed_cwds"
+          fired_sess="$armed_sess"; state=idle
+        fi
+      fi
+    elif [ "$state" = armed ] && [ "$sess" != "$armed_sess" ]; then
+      # Flag rewritten under us (new launcher took over): re-arm on it.
+      state=idle
+    fi
+  else
+    if [ "$state" = armed ]; then
+      # Flag gone. Clean quit removes the flag seconds BEFORE the emulator
+      # dies, so pids should still be alive; if they vanished in the same
+      # poll window, record it anyway as ambiguous.
+      if [ -z "$(emu_pids)" ]; then
+        snapshot ambiguous "$armed_sess" "$armed_pids" "$armed_cwds"
+        fired_sess="$armed_sess"
+      else
+        log "disarmed: flag removed first (clean quit path), emulator still up"
+      fi
+      state=idle
+    fi
+  fi
+  sleep "$POLL"
+done
