@@ -22,6 +22,23 @@ before answering any game question. Update this file at every milestone.
 - Checkpoint: OLD YHARNAM entered (via the Cathedral Ward descent). The
   m23 silent crash did NOT repeat on the same hallway; bb-crash-watch
   armed for any future death (see todo.md item 2).
+- 28 Aug: **BLOOD-STARVED BEAST DEAD.** Post-BSB chain is now LIVE and he
+  has been briefed on it: Snatchers spawn in Yharnam/Cathedral Ward, dying
+  to one = Hypogean Gaol, explore it fully WEARING A HEALING CHURCH CHEST
+  PIECE (Adella only responds then), and the Gaol has the back door into
+  Old Yharnam behind Djura. **DEADLINE: all of it before Rom** (Gaol lamp
+  breaks, Adella gone). Healing Church Workshop door also unlocks on this
+  kill. Bosses so far: Cleric Beast, Gascoigne, Witch of Hemwick, BSB.
+- 28 Aug: **Witch of Hemwick DEAD** (fought at 0 Insight, so no Mad Ones -
+  told him this deliberately before he went). Rune Workshop Tool obtained,
+  rune equipping unlocked. Boss kill = +1 Insight, so the Doll animates
+  again. Told about the Hemwick crossroads obelisk being a later-return
+  landmark. The "hunter tied to a chair" was a CORPSE holding the Rune
+  Workshop Tool - resolved, nothing missed. An NPC in a wheelchair pointed
+  him to the Healing Church Workshop; gave him the §127 nudge (the
+  drop-down inside the tower to the Abandoned Old Workshop, which players
+  routinely never find - holds cord A [ending-relevant], Doll set, Small
+  Hair Ornament, Old Hunter Bone). NOT time-limited.
 - 27 Aug: went to Old Yharnam, fought BSB (died, then the m23 wedge - see
   Tech state). Told BSB is optional; routed him back to Cathedral Ward for
   the emblem-gated main path. Now in Cathedral Ward (m24_00 confirmed from
