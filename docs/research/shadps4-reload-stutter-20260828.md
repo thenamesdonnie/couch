@@ -110,6 +110,39 @@ cause here - measure before touching.
 - **The death-reload trigger appears to be an original finding.** Nothing in
   their tracker connects this to dying, the sky, or clouds.
 
+## What actually shipped (28 Aug 07:24)
+
+Built and committed on branch `tc-gc-probe` as `1fdc058`, in
+`~/src/shadps4-dbg`. Probes A + B and Fix 1 landed together; C, D and E were
+not built (only needed if A/B fails to settle H1).
+
+- Census line now carries `tc_num_registered`, `tc_occupied_buckets`,
+  `tc_gc_visits`, `tc_gc_skips`, `tc_gc_frees`, `tc_immortal`. Computed on the
+  render thread once per 60 flips. **Nothing added to the fault path.**
+- Fix 1 is behind `SHADPS4_TC_GC_FIX`, **default ON**, with a 256-image visit
+  cap so charging on frees alone cannot turn one pass into a full-LRU scan.
+- `ForEachItemBelowStoppable` added because the existing early-out has never
+  worked (see the upstream trait bug, now documented in `lru_cache.h`).
+
+Levers, both in `~/.local/bin/shadps4`:
+- `touch ~/couch/data/shadps4-gc-fix-off` -> upstream control arm.
+- `rm ~/couch/data/shadps4-local-build` -> back to the stock AppImage entirely.
+Rollback binaries: `data/shadps4-binary-backups-v2-e4b6c51` (pre-fix) and
+`-1fdc058` (this build).
+
+**The read, next session:** play, die, keep playing. Then compare against the
+A/B table above.
+- **H1 proven** if the control arm shows `tc_gc_frees` ~0 while `tc_gc_visits`
+  climbs ~10/submit and `tc_immortal` >= 10.
+- **Fix works** if post-death `img_faults/s` stays near the 2-3/s floor instead
+  of stepping to ~27/s, and the choppiness does not arrive.
+- **Fix is irrelevant** if `tc_immortal` is small or `tc_gc_frees` was never ~0.
+  Then H1 is wrong and probe C (top-N offenders by fault_hits) is the next move,
+  because that is the one that separates real invalidation from re-labelling.
+
+Not yet play-tested. First suspect if anything visual or performance-related
+changes for the worse.
+
 ## The plan
 
 **Probes only first, no behaviour change.** Nothing new in the signal handler;

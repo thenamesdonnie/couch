@@ -8,6 +8,11 @@ before answering any game question. Update this file at every milestone.
 - Nudges are DIRECTIONS + DEADLINES only ("talk to X before killing Y").
   Never outcomes, never reasons, never trajectory answers ("will X happen
   to this character" is refused on principle).
+- **ASSUME VANILLA (28 Aug).** "What's this attack / door / thing" is
+  CURIOSITY, not a bug report. Answer it as normal game content (wiki
+  lookup is fine). Do NOT audit mod files, the save or the emulator log
+  unless HE frames it as broken, or it cannot be vanilla. His words:
+  "bloodborne is full of mysteries and im just curious".
 - No-stakes choices get "follow your gut, nothing mechanical hinges".
 - He reports sends/choices AFTER making them; assistant confirms whether
   anything needs flagging, still without outcomes.
@@ -76,8 +81,13 @@ before answering any game question. Update this file at every milestone.
   bb-durability-patch.py; backup data/bb-param-backups/). Effective NEXT
   launch. NOTE: a bb-bisect param reinstall WIPES this - re-run the patch
   after any param category install.
-- Debug emulator build, 1440p internal, Fifo-vs-Mailbox present question
-  open (Mailbox free-runs during loads).
+- Debug emulator build, 1440p internal (he has explicitly refused 1080p),
+  Fifo-vs-Mailbox present question open (Mailbox free-runs during loads).
+- 28 Aug 07:24: emulator REBUILT with the texture-cache GC census + budget fix
+  (shadps4-dbg `1fdc058`, see shadps4-reload-stutter-20260828.md). Aimed at the
+  death-reload choppiness. NOT play-tested - first suspect if anything looks or
+  runs worse. Kill switches: `touch ~/couch/data/shadps4-gc-fix-off` for the
+  control arm, `rm ~/couch/data/shadps4-local-build` for the stock AppImage.
 - OPEN MYSTERY: GPU pins 100% (usual 50-60%) with frametime chaos during
   normal gameplay; first episode min 62-64 of the 18:42 session; MangoHud
   showed presents up to 4372fps at max clocks/176W. tools/gpu-spike-watch
