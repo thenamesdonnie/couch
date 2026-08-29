@@ -374,21 +374,38 @@ def unlock_state(serial):
     """Earned trophies for a serial: {trophy id: unlock epoch (0 if unknown)}.
 
     shadPS4 records unlocks by rewriting its OWN extracted copy of the trophy
-    XML under game_data/<serial>/TrophyFiles/*/Xml, marking each earned entry
-    with an unlockstate/timestamp attribute. Nothing on this box has earned a
-    trophy yet, so the exact attribute names are read defensively: if the
-    format changes this is the one function to fix, and until then everything
-    simply reports locked.
+    XML, marking each earned entry with an unlockstate/timestamp attribute.
+    The attribute names are still read defensively: if the format changes this
+    is the one function to fix.
+
+    PATH TRAP (fixed 29 Aug 2026). This build writes
+    `home/<user>/trophy/NPWR#####_00.xml` - named by the **NP communication
+    id**, NOT the serial - and `game_data/<serial>/` does not exist at all.
+    The filter below only accepted paths containing the serial, so every real
+    unlock file was skipped. Worse, the skip happened BEFORE the `.xml` test,
+    so the files never reached `unknown` either and the diagnostic said
+    "no shadPS4 unlock data" with no paths to chase. Symptom: Donnie earned 11
+    trophies in Bloodborne and the Kodi shelf sat at 0/40 with fresh,
+    correct-looking, entirely empty JSON - nothing stale, so no amount of
+    restarting Kodi would ever have helped.
+
+    `np_comm_id()` returns BYTES; it must be decoded before the `in path`
+    test or this raises TypeError into a caller that does not catch it.
     """
     roots = [os.path.join(SHADPS4, 'game_data', serial),
              os.path.join(SHADPS4, 'trophy')]
     roots += glob.glob(os.path.join(SHADPS4, 'home', '*', 'trophy'))
+    npid = np_comm_id(game_dir(serial))
+    if isinstance(npid, bytes):
+        npid = npid.decode('ascii', 'ignore')
     seen, unknown = {}, []
     for root in roots:
         for dirpath, _dirs, files in os.walk(root):
             for fn in files:
                 path = os.path.join(dirpath, fn)
-                if serial not in path and os.path.basename(root) != serial:
+                if (serial not in path
+                        and os.path.basename(root) != serial
+                        and not (npid and npid in path)):
                     continue
                 if not fn.lower().endswith('.xml'):
                     unknown.append(path)
