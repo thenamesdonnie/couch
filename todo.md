@@ -404,7 +404,114 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (26 Aug 2026 ~22:20 — marathon handoff: sounds, switcher, codex, zombie pids, lamp saga, companion)
+## ▶ Resume here (29 Aug 2026 ~22:00 — sol reviews landed, trophies fixed, two emulator fixes armed, sounds waiting on Donnie)
+
+### ▶▶ DONNIE'S TO-DO (only he can do these)
+
+1. **`sudo systemctl restart inputproc.service`** — the input-ownership fix is
+   COMMITTED AND ON DISK but pid 1161 is still running 27 Aug code. It is a
+   SYSTEM unit, so it needs his password. **Do it at the TV, not from work**:
+   that process holds the exclusive grab on the only controller. Panic lever
+   `sudo couchd-input-release`. Every inputproc restart also deafens flatpak
+   Kodi until `peripheral.joystick` is addon-bounced — the assistant can do
+   that bounce over Kodi's API afterwards, no sudo needed.
+2. **Pick UI sounds** from the audition page (link in chat; page source
+   `scratchpad/ui-sound-audition.html`, Kenney CC0 packs downloaded). One
+   filename per slot: cursor / select / back / error / launch.
+3. Still outstanding from 26 Aug:
+   `sudo rm /var/lib/apport/coredump/core._tmp_claude*bbcw-dummy*`
+
+### 1. couchd: the four sol findings — FIXED, LIVE except inputproc (`9d11873`)
+
+Two read-only gpt-5.6-sol reviews (`docs/audits/*-20260829-*`), adjudicated
+against the code before anything was applied. Codex wrote the fix in a fenced
+worktree over two rounds; round 1 introduced a switcher double-fire and its own
+test pollution, both caught by running the suite and both fixed in round 2.
+
+- **Input ownership was cached at startup** — `grants_input()` ran once, so
+  removing `input` from `owns.conf` did NOTHING to a running inputproc. It
+  presented as a *selectively dead PS button*, not a dead service. Now a
+  continuous interlock (one cached `stat()` per pass) + the existing 30s
+  supervisor lease; release ungrabs, re-acquire takes a FRESH BTN_MODE baseline.
+- **Configured timings never reached couchd's classifier** — `PressTracker()`
+  built with no args. Now configured, and only updated between presses.
+- **The PS-button switcher raised Kodi with nothing over it** for the addon's
+  own measured 1.3-1.5s startup. The frozen game now covers Kodi and the swap
+  happens on POSITIVE confirmation of the dialog window. **The wait is bounded
+  (`SWITCHER_REVEAL_GRACE = 6.0`) — that bound and its test are mine, added
+  because unbounded it suppressed the only net that rescues the screen.**
+- **A retiring launcher stamped on the next launch's curtain** — the EXIT trap
+  guarded the session flag by ownership but called `restore_on_exit`
+  unconditionally. Deployed to `~/.local/bin/game-launch` (backup in
+  `data/legacy-bin-backups/`); repo copy and live copy verified identical.
+
+Live tree: **1434 tests pass, 0 fail.** couchd restarted, healthy, `acting`.
+
+### 2. shadPS4 texture-cache GC — ARMED BUT THE FIX DOES NOT WORK (`1fdc058`)
+
+H1 is **PROVEN** by the census: `tc_gc_frees` frozen at 51272 for an entire
+session while `tc_gc_visits` climbs 15,360 per tick and `tc_immortal` = 430.
+The collector visits ~15k textures/sec, skips 99.9%, frees nothing, ever.
+**But my Fix 1 (charge the budget on frees only) changed nothing** — visits
+rise by exactly 256/flip, i.e. the visit cap is being hit every pass, so the
+code runs and does not help. Capping the wasted walk was the wrong lever.
+**Next lever is probe C** (top-N offenders by `fault_hits`), which separates
+real invalidation from re-labelling. Kill switches:
+`touch data/shadps4-gc-fix-off` (control arm), `rm data/shadps4-local-build`
+(stock AppImage). Doc: `docs/research/shadps4-reload-stutter-20260828.md`.
+
+### 3. shadPS4 audio: the OpenAL queue ratchet — FIXED, ARMED, UNCONFIRMED (`47b62e9`)
+
+The crackle had been logging itself **21,455 times, 21,425 at `queued: 1`**.
+`Initialize()` primes 5 blocks (~27ms); `Output()` reclaims ALL processed
+buffers but queues at most ONE, so every late call permanently costs depth and
+nothing rebuilds it. Only recreating the port resets it — hence "restarting the
+emulator fixes it". `BUFFER_QUEUE_THRESHOLD` existed for this and was never
+referenced. Now tops back up to a fixed target with silence (self-limiting).
+**NOT confirmed to be Donnie's crackle.** Discriminator, 5 seconds, when it is
+audibly crackling: **drop the emulator volume slider to 50%.** Instant fix =
+clipping (Main+BGM summed with no float limiter); no change = the queue.
+Doc: `docs/research/shadps4-audio-queue-ratchet-20260829.md`.
+
+### 4. Trophy shelf — FIXED (`15956d1`), now reads 11/40
+
+`tools/ps4-trophies` globbed the right directory then discarded every file:
+the filter needed the SERIAL in the path, but shadPS4 writes
+`home/<user>/trophy/NPWR05818_00.xml`, named by the **NP comm id**.
+`game_data/<serial>/` does not exist on this build at all. The skip also ran
+before the `.xml` test so nothing reached `unknown` — the diagnostic said "no
+unlock data" with no paths, which read as "no trophies earned yet" for weeks.
+**Not a cache fault**: the JSON was fresh, correct-looking and empty.
+`np_comm_id()` returns BYTES — decode before comparing or it raises TypeError.
+
+### 5. Frame rate: UNRESOLVED — do not assert either way
+
+Measured **188,951 frames, median 60.0 fps** (p5 59.9, p95 60.2) and MangoHud
+counts emulator presents, not display refreshes. BUT the current session's log
+applies five patches and **no 60fps patch**. Unreconciled. **Decisive test not
+run: launch with `--show-fps`** (counts game frames). I asserted "not 60fps"
+from a config file, then flip-flopped on a log line from an OLD session —
+`shad_log.txt` is APPEND-MODE and 684k lines deep, **always bound a grep to the
+current session.** The 28 Aug cutscene-hang "known 60fps issue" call is
+withdrawn and back to open.
+
+### 6. Bloodborne companion — ledger is current
+
+`docs/research/bloodborne-progress.md`, updated every milestone this session.
+He is post-Amelia (night), in the Forbidden Woods, level 43, Saw Cleaver +6.
+**Standing rule tightened: never SAY "that's vanilla / not a bug" — he asked
+twice.** Housing: Adella + Arianna + Lonely Old Dame at the chapel, the
+Narrow-minded Man at Iosefka's. Open: the beggar (fight or leave, clock is the
+Blood Moon), the woods sweep under the agreed tiered-hint protocol, and
+**Eileen's next beat at the Grand Cathedral after Rom is MINE to raise.**
+The Old Hunters DLC IS installed (`/home/ds2000/games/ps4/bloodborne/DLC`).
+
+Deliberately uncommitted, standing convention: `data/`, `shadow/`,
+`recordings/` runtime artefacts. **Also inherited-uncommitted and NOT mine:**
+`tools/game-quiet` + `tools/test_game_quiet.py` (+344 lines, a third
+ambush-noise source) — predates this session, left alone deliberately.
+
+## ▶ Previous (26 Aug 2026 ~22:20 — marathon handoff: sounds, switcher, codex, zombie pids, lamp saga, companion)
 
 Three-day session (24-26 Aug). Everything below "Previous" blocks is detailed
 per-track; this is the pickup order:
