@@ -70,18 +70,44 @@ queue.
   only. But the audio thread runs plain `SCHED_OTHER` with no realtime priority
   (Linux RT setup is unimplemented), so it is fully exposed to contention.
 
-## Correction: BLOODBORNE IS NOT RUNNING AT 60FPS
+## The frame rate: UNRESOLVED, and I got this badly wrong twice
 
-Both 60fps entries in `patches/shadPS4/Bloodborne.xml` are `isEnabled="false"`.
-The five enabled patches are Skip Intro, Performance Patch, Disable Dynamic
-Light Shadows, 4k Light Grid, and Resolution Patch 2560x1440. `-f true` in the
-launcher is `--fullscreen` (`main.cpp`), and the launcher comment claiming game
-patches apply a 60fps unlock is **stale**.
+**Do not repeat either of my confident claims here.** The honest state:
 
-Consequence: the 28 Aug cutscene-hang diagnosis ("known 60fps issue") was built
-on a false premise and must be discarded. The forensics stand (game threads
-including Havok spinning while the emulator stayed healthy); the attribution
-does not.
+**Measured, and it is the strongest evidence we have:** the newest MangoHud
+capture is **188,951 frames, median 60.0 fps, p5 59.9, p95 60.2**. MangoHud
+hooks the swapchain, so that is 60 *presents per second* from the emulator, not
+display refreshes. Donnie also insists from feel that it is 60 and that he would
+know the difference - which for an action game is a reliable instrument.
+
+**Also true:** the CURRENT session's log applies exactly five patches - Skip
+Intro, Performance Patch, Disable Dynamic Light Shadows, 4k Light Grid,
+Resolution 2560x1440 - and **no 60fps patch**. Both 60fps entries in the live
+`Bloodborne.xml` are `isEnabled="false"`.
+
+These are not obviously compatible and I could not reconcile them. The one
+reading where both hold is that shadPS4's presenter runs at display rate
+decoupled from game logic (the Fifo-vs-Mailbox question is already open in
+`bloodborne-progress.md`). Unverified.
+
+**The mistakes, recorded so they are not repeated:**
+1. I asserted "not 60fps" from a config file without measuring, when the
+   measurement was already in `data/perf-logs` and I had analysed that very
+   file earlier the same day.
+2. I then retracted that based on a `60 FPS (With Deltatime)` line in the log -
+   which is at line 134,496 of a 684,054-line **append-mode** log, i.e. an old
+   session. Always bound a shad_log grep to the current session.
+3. `-f true` IS `--fullscreen` (verified in `main.cpp`); that part stands. The
+   launcher comment attributing a 60fps unlock to game patches is at best
+   imprecise.
+
+**Decisive test not yet run:** launch with `--show-fps`, which counts game
+frames rather than presents.
+
+**Consequence for the 28 Aug cutscene hang:** I told Donnie to discard the
+"known 60fps issue" explanation because 60fps was off. That reasoning is void.
+The 60fps association is back to being an open possibility, neither confirmed
+nor excluded.
 
 ## sol review error worth recording
 
