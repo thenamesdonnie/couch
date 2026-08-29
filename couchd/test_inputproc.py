@@ -24,11 +24,19 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# gestureconf imports this worktree's kodiprofile under a process-global name.
+# Preserve the collector's prior cache so later test modules resolve their own.
+_PREVIOUS_KODIPROFILE = sys.modules.get('kodiprofile')
 import gesture
 import gestureconf
 import inputproc
 from inputproc import (A_CREATE, A_DESTROY, A_KEYS_UP, A_REUPLOAD, FF_SLOTS,
                        FFFull, FFMap, GONE, LOST, OWNED, Persistence)
+if _PREVIOUS_KODIPROFILE is None:
+    sys.modules.pop('kodiprofile', None)
+else:
+    sys.modules['kodiprofile'] = _PREVIOUS_KODIPROFILE
+del _PREVIOUS_KODIPROFILE
 
 VPAD_PATH = os.path.expanduser('~/.local/bin/vpad')
 
@@ -847,3 +855,96 @@ def test_bound_double_tap_is_not_reinjected():
     _tap(proc, k=1000.3)   # inside the double window
     assert proc.counts['reinjected'] == reinjected_after_first, (
         'the second press of a bound double-tap must not reach the vpad')
+
+
+# =========================================================================
+# Continuous input ownership interlock
+# =========================================================================
+class _OwnershipWire:
+    def __init__(self, connected=True):
+        self.connected = connected
+        self.msgs = []
+
+    def send(self, kind, **fields):
+        self.msgs.append((kind, fields))
+        return True
+
+
+class _OwnershipPad:
+    def __init__(self, active=()):
+        self.active = list(active)
+        self.grabs = 0
+        self.ungrabs = 0
+
+    def grab(self):
+        self.grabs += 1
+
+    def ungrab(self):
+        self.ungrabs += 1
+
+    def active_keys(self):
+        return list(self.active)
+
+
+def _ownership_proc(tmp_path, own=True, connected=True):
+    args = inputproc.parse_args(['--log-dir', str(tmp_path),
+                                 '--no-ownership-assert'])
+    args.own_input = own
+    proc = inputproc.InputProc(args)
+    proc.wire = _OwnershipWire(connected)
+    proc.phys = _OwnershipPad()
+    proc.phys_path = '/dev/input/event-test'
+    proc.grabbed = own
+    return proc
+
+
+def test_withdrawing_input_clears_the_press_and_ungrabs_immediately(
+        tmp_path, monkeypatch):
+    proc = _ownership_proc(tmp_path)
+    proc.tracker.feed(1000.0, 1)
+    proc.hold_pending = True
+    proc.pending.append((1.0, gesture.EV_KEY, gesture.BTN_MODE, 1))
+    monkeypatch.setattr(inputproc, 'grants_input', lambda: False)
+
+    proc.sync_ownership(50.0)
+
+    assert proc.own is False and proc.grabbed is False
+    assert proc.phys.ungrabs == 1
+    assert not proc.pending and not proc.hold_pending
+    assert proc.tracker.button_down is False
+
+
+def test_supervisor_loss_releases_only_after_the_existing_lease(
+        tmp_path, monkeypatch):
+    proc = _ownership_proc(tmp_path, connected=False)
+    monkeypatch.setattr(inputproc, 'grants_input', lambda: True)
+
+    proc.sync_ownership(100.0)
+    proc.sync_ownership(100.0 + inputproc.SUPERVISOR_LEASE_S - 0.01)
+    assert proc.own is True
+    proc.sync_ownership(100.0 + inputproc.SUPERVISOR_LEASE_S)
+    assert proc.own is False and proc.phys.ungrabs == 1
+
+
+def test_reacquire_requires_both_interlocks_and_ignores_a_held_baseline(
+        tmp_path, monkeypatch):
+    proc = _ownership_proc(tmp_path, own=False, connected=False)
+    proc.phys.active = [gesture.BTN_MODE]
+    monkeypatch.setattr(inputproc, 'grants_input', lambda: True)
+
+    proc.sync_ownership(10.0)
+    assert proc.own is False and proc.phys.grabs == 0
+    proc.wire.connected = True
+    proc.sync_ownership(11.0)
+    assert proc.own is True and proc.grabbed is True
+    assert proc._guide_baseline_down is True
+
+    before = list(proc.wire.msgs)
+    proc.on_guide(2000.0, 0, 2000, 0)
+    assert proc._guide_baseline_down is False
+    assert proc.tracker.press_duration is None
+    assert [m for m in proc.wire.msgs[len(before):] if m[0] == 'press'] == []
+
+    proc.on_guide(2001.0, 1, 2001, 0)
+    proc.on_guide(2001.1, 0, 2001, 100000)
+    assert [f['value'] for k, f in proc.wire.msgs if k == 'press'] == [1, 0]

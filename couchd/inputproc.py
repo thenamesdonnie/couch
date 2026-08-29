@@ -75,6 +75,10 @@ SUPERVISOR_SOCK = os.path.join(SHADOW_DIR, 'couchd.sock')
 # Not a timeout on the wire itself - once running, a couchd restart is just a
 # reconnect and the pad never notices. This is the startup interlock only.
 SUPERVISOR_WAIT_S = 5.0
+# Match the ownership lease the legacy stack already gives couchd. A brief
+# supervisor restart must not flap the physical grab, but a daemon that stays
+# gone must not leave input owned by nobody.
+SUPERVISOR_LEASE_S = ownsconf.HEARTBEAT_MAX_AGE
 
 PAD_NAME = 'DualSense Wireless Controller'
 PAD_UNWANTED = re.compile(r'Motion|Touchpad', re.I)
@@ -579,6 +583,8 @@ class InputProc:
         self.degraded = None
         self._next_scan = 0.0
         self._next_health = time.monotonic() + HEALTH_SECONDS
+        self._wire_lost_at = None
+        self._guide_baseline_down = False
 
     # -- evidence ---------------------------------------------------------
     def report(self, kind, **fields):
@@ -883,12 +889,9 @@ class InputProc:
                             'why': 'ownership-assert', 'node': path})
         self.phys, self.phys_path = dev, path
         if self.own:
-            try:
-                dev.grab()
-                self.grabbed = True
-            except OSError as e:
-                say(f'EVIOCGRAB refused on {path}: {e} - NOT owning')
+            if not self._grab_with_baseline():
                 dev.close()
+                self.phys_path = None
                 self.phys = None
                 return False
         say(f'physical pad {path} '
@@ -900,6 +903,95 @@ class InputProc:
         # is the only channel that can tell it a controller exists at all.
         self.wire_pad('attached', node=path, grabbed=self.grabbed)
         return True
+
+    def _grab_with_baseline(self):
+        """Grab only after a fresh BTN_MODE baseline can be established."""
+        try:
+            self.phys.grab()
+            self.grabbed = True
+            active = self.phys.active_keys()
+        except OSError as e:
+            if self.grabbed:
+                try:
+                    self.phys.ungrab()
+                except OSError:
+                    pass
+                self.grabbed = False
+            say(f'cannot establish button baseline on {self.phys_path}: {e}')
+            self.log.write({'kind': 'health', 'event': 'grab-failed',
+                            'node': self.phys_path, 'error': str(e)})
+            return False
+        self.tracker.reset()
+        self._guide_baseline_down = gesture.BTN_MODE in active
+        return True
+
+    def _clear_gesture_state(self, why):
+        if self.pending:
+            self.log.write({'kind': 'virtual-pad', 'event': 'pending-dropped',
+                            'queued': len(self.pending), 'why': why})
+            self.pending.clear()
+        self.all_keys_up()
+        self.tracker.reset()
+        self.hold_pending = False
+        self._hold_reported = False
+        self._long_hold_reported = False
+        self._guide_baseline_down = False
+
+    def release_ownership(self, why):
+        """Atomically leave owning mode without closing the forwarding path."""
+        self._clear_gesture_state(why)
+        if self.grabbed:
+            try:
+                self.phys.ungrab()
+            except OSError:
+                pass
+            self.grabbed = False
+        self.own = False
+        self.wire_pad('detached', why=why)
+        if self.phys is not None:
+            self.wire_pad('attached', node=self.phys_path, grabbed=False)
+        say(f'input ownership released ({why}); observe-and-forward-only')
+        self.log.write({'kind': 'health', 'event': 'ownership-released',
+                        'why': why, 'node': self.phys_path})
+
+    def acquire_ownership(self):
+        """Enter owning mode only with the declaration and wire both live."""
+        if self.phys is None or self.degraded:
+            return False
+        if self.args.assert_ownership and not self.check_ownership(self.phys_path):
+            return False
+        self.conf = gestureconf.load()
+        self.tracker.hold_seconds = self.conf.hold_seconds
+        self.tracker.double_tap_s = self.conf.double_tap_seconds
+        self.tracker.long_hold_seconds = self.conf.long_hold_seconds
+        self._clear_gesture_state('ownership-acquire')
+        if not self._grab_with_baseline():
+            return False
+        self.own = True
+        self.wire_pad('detached', why='ownership-baseline')
+        self.wire_pad('attached', node=self.phys_path, grabbed=True)
+        say('input ownership acquired (owns.conf and supervisor live)')
+        self.log.write({'kind': 'health', 'event': 'ownership-acquired',
+                        'node': self.phys_path,
+                        'guide_held': self._guide_baseline_down})
+        return True
+
+    def sync_ownership(self, mono):
+        """Continuous owns.conf + supervisor lease interlock."""
+        requested = grants_input() and not self.args.observe
+        connected = self.wire.connected
+        if connected:
+            self._wire_lost_at = None
+        elif self.own and self._wire_lost_at is None:
+            self._wire_lost_at = mono
+
+        lease_expired = (self._wire_lost_at is not None
+                         and mono - self._wire_lost_at >= SUPERVISOR_LEASE_S)
+        if self.own and (not requested or lease_expired):
+            self.release_ownership('owns.conf withdrew input' if not requested
+                                   else 'supervisor lease expired')
+        elif not self.own and requested and connected:
+            self.acquire_ownership()
 
     def check_ownership(self, path):
         """SR5: assert on EVERY appearance. On failure REFUSE to own, log
@@ -1005,6 +1097,14 @@ class InputProc:
         # Note the release goes too - report() only ever names it as a
         # classified gesture, and a consumer running its own PressTracker
         # needs both edges or nothing it computes means anything.
+        if getattr(self, '_guide_baseline_down', False):
+            if value == 0:
+                self._guide_baseline_down = False
+                self.tracker.reset()
+            self.report('press', event='BTN_MODE', value=value,
+                        kernel_t=round(k, 6), forwarded=False,
+                        baseline_ignored=True)
+            return
         self.wire_press(k, value)
         if not self.own:
             out = translate(gesture.EV_KEY, gesture.BTN_MODE, value)
@@ -1264,6 +1364,7 @@ class InputProc:
         registered = {}
         while not self.stop:
             mono = time.monotonic()
+            self.sync_ownership(mono)
             self.drain_pending(mono)
 
             # (re)register whatever fds exist right now

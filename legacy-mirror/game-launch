@@ -1404,8 +1404,6 @@ if [ -n "$_stamp_key" ]; then
   mkdir -p /home/ds2000/.local/share/game-tiles/lastplayed 2>/dev/null \
     && touch "/home/ds2000/.local/share/game-tiles/lastplayed/$_stamp_key" 2>/dev/null || true
 fi
-# Raise the loading card now, before Big Picture and the game flip below.
-case "$MODE" in steam|shadps4) curtain_show_loading ;; esac
 intent launch "${APPID:-$MODE}" "mode=$MODE" "app=$MODE" source=fresh-launch
 # Launching from the phone with the TV off should light the set up: tv-waker
 # consumes this flag within half a second and wakes only if it's in standby.
@@ -1421,6 +1419,10 @@ yield_to_couchd transitions request_tv_wake tv via=tv-wake-request-flag \
 # launcher's flag with it.
 echo "$$ $MODE $APPID" > "$SESSION"
 intent set_flag session "value=$$ $MODE $APPID" "launcher=$$" reason=launch
+# The session generation must belong to this shell before its curtain does.
+# Otherwise the retiring launcher still named above can fade this launch's
+# newly raised loading card from its EXIT trap.
+case "$MODE" in steam|shadps4) curtain_show_loading ;; esac
 # MODE ASSERT (22 Aug 2026): the TV wake requested above hotplugs the output
 # and drops X to a 60Hz EDID mode - and with the session flag now written,
 # mode-keeper's game gate (correctly) refuses to fix it, so the whole session
@@ -1441,11 +1443,15 @@ intent set_flag session "value=$$ $MODE $APPID" "launcher=$$" reason=launch
 # The session flag is OURS either way - this shell's lifetime IS the session,
 # and a launcher that stopped clearing its own flag would orphan every session
 # it ran. Only the pad-and-screen handover is the `transitions` responsibility.
-restore_on_exit() {
+restore_on_exit() {  # <owned|retired>
   # Game-mode restore runs on BOTH ownership paths - quieting is this
   # launcher's own doing, not a couchd responsibility.
   [ -x /home/ds2000/couch/tools/game-quiet ] && \
     { /home/ds2000/couch/tools/game-quiet off >>"$LOG" 2>&1 & }
+  [ "${1:-retired}" = owned ] || {
+    say "retired (trap): newer launcher owns the screen"
+    return 0
+  }
   yield_to_couchd transitions route_pad kodi via=kodi-jsonrpc "mode=$MODE" && {
     intent show kodi via=xlib-restack "mode=$MODE" yielded=true owner=couchd
     say "restored (trap): yielded to couchd (transitions)"
@@ -1460,7 +1466,17 @@ restore_on_exit() {
 # early from it, and the recorder must be told the launcher is gone on every
 # path. No tracer running = both are silent no-ops.
 finish_trace() { qtrace mark launcher-exit "mode=$MODE"; qtrace done; }
-trap '[ "$(cut -d" " -f1 "$SESSION" 2>/dev/null)" = "$$" ] && { rm -f "$SESSION"; intent clear_flag session reason=launcher-exit "launcher=$$"; }; restore_on_exit; finish_trace' EXIT
+finish_on_exit() {
+  if [ "$(cut -d' ' -f1 "$SESSION" 2>/dev/null)" = "$$" ]; then
+    rm -f "$SESSION"
+    intent clear_flag session reason=launcher-exit "launcher=$$"
+    restore_on_exit owned
+  else
+    restore_on_exit retired
+  fi
+  finish_trace
+}
+trap finish_on_exit EXIT
 
 yield_to_couchd transitions route_pad game via=kodi-jsonrpc "mode=$MODE" \
   || pad_to_game

@@ -355,8 +355,7 @@ def _tap(rig, k0, length=0.08, **kw):
 
 
 def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
-    """The dialog is Kodi's, so Kodi must own pad and screen before it opens:
-    the whole PS-hold suspend, then show_switcher, in that order."""
+    """The frozen game covers Kodi while the dialog opens behind it."""
     rig = Rig(session=SESSION, pid_states={200: 'S', 201: 'S'}, joystick=False,
               top_name='Elden Ring', top_class='steam_app_367520').settle()
     k0 = 11000.0
@@ -366,13 +365,72 @@ def test_double_tap_in_a_game_suspends_first_then_asks_for_the_switcher():
     assert rig.machine.regions['gesture'] == 'double-tap'
     order = [(i.verb, i.subject) for i in got]
     assert order == [('freeze', APPID), ('set_flag', 'suspended'),
-                     ('snapshot', APPID), ('route_pad', 'kodi'),
-                     ('show', 'kodi'), ('iconify', APPID),
-                     ('spawn_guard', 'kodi'), ('show_switcher', 'tv')]
+                     ('snapshot', APPID), ('show_switcher', 'tv')]
     assert find(got, 'freeze')[0].args['pids'] == [200, 201]
     assert find(got, 'show_switcher')[0].args['suspended_first'] is True
     rig.observe()
     assert rig.machine.regions['gesture'] == 'idle'
+
+
+def test_bare_switcher_reveals_kodi_only_after_the_dialog_is_confirmed():
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              top_name='Elden Ring', top_class='steam_app_367520').settle()
+    k0 = 11200.0
+    _tap(rig, k0)
+    started = _tap(rig, k0 + 0.2, double_armed=True)
+    assert find(started, 'show_switcher')
+
+    waiting = rig.observe(suspended=APPID, pid_states={200: 'T'},
+                          kodi_window=10000, joystick=False)
+    assert not find(waiting, 'route_pad')
+    assert not find(waiting, 'show', 'kodi')
+    assert not find(waiting, 'iconify')
+    assert not find(waiting, 'spawn_guard')
+
+    ready = rig.observe(suspended=APPID, pid_states={200: 'T'},
+                        kodi_window=13000, joystick=False)
+    assert verbs(ready) == [('route_pad', 'kodi'), ('show', 'kodi'),
+                            ('iconify', APPID), ('spawn_guard', 'kodi')]
+    assert all(i.reason == 'gesture:switcher-ready' for i in ready)
+
+
+def test_a_switcher_that_never_draws_hands_the_screen_back():
+    """The behind-the-game wait MUST expire (29 Aug 2026).
+
+    While a reveal is pending, `_switcher_request_pending` suppresses
+    `reconcile:frozen-game-visible` - the only net that rescues the screen.
+    The dialog demonstrably can fail to arrive: script.couch.switcher has
+    crashed before, and this repo documents a Kodi wedge where NO python addon
+    runs while the GUI stays responsive. Unbounded, that leaves a frozen game
+    on the TV with its own safety net switched off until the session changes.
+
+    Expiring the wait degrades to the OLD behaviour (Kodi becomes visible),
+    which is ugly but usable, instead of to a console you cannot drive.
+    """
+    rig = Rig(session=SESSION, pid_states={200: 'S'}, joystick=False,
+              top_name='Elden Ring', top_class='steam_app_367520').settle()
+    k0 = 11400.0
+    _tap(rig, k0)
+    assert find(_tap(rig, k0 + 0.2, double_armed=True), 'show_switcher')
+
+    # The dialog never arrives. Inside the grace the frozen game keeps the
+    # screen: that is the whole point of the change and must not regress.
+    early = []
+    for _ in range(8):                      # 4.0s, comfortably inside 6.0s
+        early += rig.observe(dt=0.5, suspended=APPID, pid_states={200: 'T'},
+                             kodi_window=10000, joystick=False)
+    assert not find(early, 'show', 'kodi'), (
+        'Kodi was exposed while the addon was still legitimately starting: %s'
+        % verbs(early))
+
+    # Past the grace, the repair net must take the screen back.
+    late = []
+    for _ in range(10):                     # +5.0s, so 9.0s total
+        late += rig.observe(dt=0.5, suspended=APPID, pid_states={200: 'T'},
+                            kodi_window=10000, joystick=False)
+    assert find(late, 'show', 'kodi'), (
+        'the wait never expired - a dead addon would strand a frozen game on '
+        'screen with frozen-game-visible suppressed forever')
 
 
 def test_double_tap_with_nothing_running_guards_the_switcher_too():
@@ -577,6 +635,18 @@ def test_the_model_defaults_to_the_console_as_shipped():
         0.9, 0.35, 3.0)
 
 
+def test_every_tap_guard_uses_the_configured_nondefault_hold_boundary():
+    long_tap = make_obs(button_down=False, press_duration=1.0,
+                        hold_seconds=1.5, suspended=APPID,
+                        bindings=bind(double_tap='none'))
+    assert couchd.g_released_tap_resume(long_tap)
+    assert couchd.g_released_double(replace(long_tap, double_armed=True))
+
+    short_hold = replace(long_tap, hold_seconds=0.5)
+    assert not couchd.g_released_tap_resume(short_hold)
+    assert not couchd.g_released_double(replace(short_hold, double_armed=True))
+
+
 def test_wrapped_double_tap_opens_the_rail_not_kodi():
     """The stage-3 overlay path (15 Aug 2026): a gamescope-wrapped game gets
     the rail composited over it - freeze + flag + snapshot + the overlay
@@ -637,7 +707,7 @@ def test_stale_gamescope_bridge_cannot_hijack_a_bare_session():
     got = reconcile(o)
     sw = find(got, 'show_switcher')
     assert sw and sw[0].args['via'] == 'kodi-addon:script.couch.switcher'
-    assert find(got, 'route_pad'), 'the normal handoff'
+    assert not find(got, 'route_pad'), 'the bare game stays up until confirmed'
 
 
 def test_the_rail_owns_the_pad_while_its_flag_is_up():
@@ -739,12 +809,11 @@ def test_rebinding_the_hold_to_the_switcher_suspends_and_opens_the_dialog():
                                hold_release='suspend_to_kodi'))
     got = reconcile(o)
     assert verbs(got) == [('freeze', APPID), ('set_flag', 'suspended'),
-                          ('snapshot', APPID), ('route_pad', 'kodi'),
-                          ('show', 'kodi'), ('iconify', APPID),
-                          ('spawn_guard', 'kodi'), ('show_switcher', 'tv')]
+                          ('snapshot', APPID), ('show_switcher', 'tv')]
     # not the hold's deferred handoff: a switcher hands off at once, exactly
     # as the double-tap one always has
-    assert find(got, 'show_switcher')[0].reason == 'gesture:ps-hold-switcher'
+    assert find(got, 'show_switcher')[0].reason == \
+        'gesture:ps-hold-switcher-behind-game'
 
 
 def test_a_hold_that_is_not_the_suspend_does_not_wait_for_a_handoff():

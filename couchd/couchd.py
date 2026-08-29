@@ -671,7 +671,8 @@ def g_released_tap_resume(o):
     to escalate to; otherwise the press falls through to 'tap-wait' and
     resumes from there when the window shuts (g_tap_resume_due).
     """
-    return (not o.button_down and gesture.is_tap(o.press_duration)
+    return (not o.button_down
+            and gesture.is_tap(o.press_duration, o.hold_seconds)
             and o.suspended_present and not foreign_suspend(o)
             and o.binding('double_tap') == 'none')
 
@@ -708,7 +709,7 @@ def g_tap_resume_due(o):
     return (not o.button_down and o.suspended_present
             and o.binding('double_tap') != 'none'
             and not foreign_suspend(o)
-            and gesture.is_tap(o.press_duration)
+            and gesture.is_tap(o.press_duration, o.hold_seconds)
             and gesture.double_tap_window_over(_since(o, 'gesture'),
                                                o.double_tap_seconds))
 
@@ -777,7 +778,7 @@ def g_released_double(o):
     has both, so tap-then-hold is always the hold.
     """
     return (not o.button_down and o.double_armed
-            and gesture.is_tap(o.press_duration))
+            and gesture.is_tap(o.press_duration, o.hold_seconds))
 
 
 def g_tap_window_fire(o):
@@ -1727,11 +1728,17 @@ def _handoff_intents(o, appid, reason, freezing=False):
 def _switcher_intents(o, appid, running, reason, switcher_reason):
     """`switcher`: the on-TV dialog script.couch.switcher draws.
 
-    The dialog is Kodi's and has to be navigable with the stick, so anything
-    actually running is suspended FIRST - the whole suspend path, in the same
-    order - and only then is the dialog asked for. That order is what the
-    watcher does, so the differ sees the same sequence from both stacks.
+    Anything actually running is suspended first. On bare X11 its frozen,
+    still-mapped window then covers Kodi while the addon draws behind it;
+    _switcher_reveal_intents performs the handoff only after Kodi positively
+    reports the dialog. The gamescope rail remains a separate branch below.
     """
+    # The request's reason changes on the post-freeze pass, so the generic
+    # intent-key cooldown cannot recognise it as the same completed press.
+    if any(k.startswith('show_switcher|tv|')
+           and k.endswith('-behind-game')
+           and (o.mono - t) < 3.0 for k, t in o.recent.items()):
+        return []
     out = []
     handed = False
     # THE WRAPPED PATH (15 Aug 2026): a gamescope-wrapped game gets the
@@ -1808,6 +1815,19 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
             requires=('gesture', 'session'), cooldown=3.0))
         handed = True
     if handed:
+        if running:
+            # Keep the frozen game mapped and on top. Raising Kodi or opening
+            # the guard here exposes Home for the addon's measured 1.3-1.5s
+            # startup; the confirmation-driven second half is emitted by
+            # _switcher_reveal_intents on a later pass.
+            out.append(Intent('show_switcher', 'tv',
+                              {'via': 'kodi-addon:script.couch.switcher',
+                               'suspended_first': True,
+                               'reveal': 'after-confirmation'},
+                              switcher_reason + '-behind-game',
+                              _pred('Kodi select dialog open', 3.0),
+                              requires=('gesture',), cooldown=3.0))
+            return out
         # Same self-knowledge as _suspend_intents: when this batch carries
         # the freeze, the observed flags cannot vouch for the iconify yet.
         out += _handoff_intents(o, appid, reason,
@@ -1852,6 +1872,63 @@ def _switcher_intents(o, appid, running, reason, switcher_reason):
                       _pred('Kodi select dialog open', 3.0),
                       requires=('gesture',), cooldown=3.0))
     return out
+
+
+# How long the frozen game may stay parked over Kodi waiting for the addon to
+# report its dialog. The addon is measured at 1.3-1.5s to draw; this is 4x
+# that, so a slow-but-working open still gets the clean swap.
+#
+# BOUNDED ON PURPOSE (29 Aug 2026). The wait suppresses the
+# `reconcile:frozen-game-visible` repair net, which is the only thing that
+# rescues the screen if the dialog never arrives - and it demonstrably can
+# not arrive: script.couch.switcher has crashed before, and this repo
+# documents a Kodi wedge where NO python addon runs while the GUI stays
+# responsive. Unbounded, that combination leaves a frozen game on the TV with
+# its own safety net disabled until the session changes. Expiring the wait
+# hands the screen back to the repair net, i.e. degrades to the OLD behaviour
+# (you see Kodi) instead of to a dead console.
+SWITCHER_REVEAL_GRACE = 6.0
+
+
+def _switcher_request_pending(o):
+    requested = max((t for k, t in o.recent.items()
+                     if (k.startswith('show_switcher|tv|')
+                         and k.endswith('-behind-game'))), default=-1.0)
+    cleared = max((t for k, t in o.recent.items()
+                   if (k == 'show|kodi|gesture:switcher-ready'
+                       or k.endswith('|gesture:tap-resume')
+                       or k.endswith('|transition:session-ended')
+                       or k.endswith('|transition:session-started'))),
+                  default=-1.0)
+    if requested <= cleared:
+        return False
+    return (o.mono - requested) < SWITCHER_REVEAL_GRACE
+
+
+def _kodi_switcher_confirmed(o):
+    return (o.kodi_known and
+            (o.kodi_window == KODI_SELECT_DIALOG
+             or (o.kodi_window is not None
+                 and 13000 <= o.kodi_window <= 13099)))
+
+
+def _switcher_waiting_behind_game(o):
+    # Covers both the wait and the just-emitted swap. On an unchanged world
+    # the ordinary drift nets must not race either half of this transition.
+    return (_switcher_request_pending(o)
+            or _recent(o, 'show|kodi|gesture:switcher-ready', 3.0))
+
+
+def _switcher_reveal_intents(o, appid):
+    """Swap a bare-X11 frozen game for Kodi only once its dialog exists."""
+    wrapped = bool(o.gamescope_display) and (
+        not o.x_known or o.top_class == 'gamescope')
+    if (not _switcher_request_pending(o) or not _kodi_switcher_confirmed(o)
+            or wrapped or o.overlay_up
+            or not o.session_present or not o.suspended_present
+            or _recent(o, 'show|kodi|gesture:switcher-ready', 3.0)):
+        return []
+    return _handoff_intents(o, appid, 'gesture:switcher-ready')
 
 
 def action_intents(o, gesture_name, appid, running, defer_handoff=False):
@@ -2050,6 +2127,11 @@ def reconcile(o):
                               'gesture:tap-resume',
                               _pred('currentwindow != 10106', 2.0),
                               requires=('gesture',), cooldown=3.0))
+
+    # The second half of a bare-X11 switcher open. This is deliberately a
+    # level check over Kodi's observed window, not a timer: the frozen game
+    # remains the visible cover for however long the addon actually takes.
+    out += _switcher_reveal_intents(o, appid)
 
     # -- 2. transitions ---------------------------------------------------
     if sess == 'starting':
@@ -2294,7 +2376,7 @@ def reconcile(o):
         want = want_pad_owner(o)
         have = o.regions.get('input_ownership')
         if o.kodi_known and o.joystick is not None and have in ('kodi', 'game') \
-                and have != want:
+                and have != want and not _switcher_waiting_behind_game(o):
             out.append(Intent('route_pad', want,
                               {'via': 'kodi-jsonrpc', 'was': o.joystick},
                               'reconcile:joystick-setting-drift',
@@ -2309,7 +2391,8 @@ def reconcile(o):
         # exactly this reason; this is the same rule, written down.
         if o.suspended_present and o.x_known \
                 and o.top_class.startswith('steam_app') \
-                and not playing_despite_flag(o):
+                and not playing_despite_flag(o) \
+                and not _switcher_waiting_behind_game(o):
             out.append(Intent('show', 'kodi', {'via': 'xlib-restack',
                                                'topclass': o.top_class},
                               'reconcile:frozen-game-visible',
@@ -3698,7 +3781,11 @@ class PadObserver:
         self._present = False
         # ALL the tap/hold arithmetic is gesture.py's, byte for byte the same
         # module the stage-2 input process runs (SR4).
-        self.tracker = gesture.PressTracker()
+        conf = gestureconf.load()
+        self.tracker = gesture.PressTracker(
+            hold_seconds=conf.hold_seconds,
+            double_tap_s=conf.double_tap_seconds,
+            long_hold_seconds=conf.long_hold_seconds)
         self.first_event_latency = None    # R5: pad-appearance -> first event
         self._appeared_at = None
         # The stage-2 wire (supervisor.py). BOTH default False, and while they
@@ -3759,6 +3846,15 @@ class PadObserver:
         All gesture arithmetic stays in this timebase (R4); without the
         extrapolation a held button with no further reports never fires."""
         return self.tracker.kernel_now()
+
+    def configure_timings(self, conf):
+        """Adopt a reload only between presses; one press keeps one scale."""
+        if self.tracker.button_down:
+            return False
+        self.tracker.hold_seconds = conf.hold_seconds
+        self.tracker.double_tap_s = conf.double_tap_seconds
+        self.tracker.long_hold_seconds = conf.long_hold_seconds
+        return True
 
     async def run(self, loop):
         while True:
@@ -5202,6 +5298,7 @@ class Couchd:
         safety rail) must be visible in /tmp/couchd.log without drowning it.
         """
         conf = gestureconf.load()
+        self.pad.configure_timings(conf)
         if conf.warnings and conf.warnings != self._conf_warnings:
             self._conf_warnings = conf.warnings
             for w in conf.warnings:
@@ -5277,9 +5374,10 @@ class Couchd:
             # Re-read every pass; gestureconf.load() is a stat() unless the
             # file changed, so a rebind takes effect on the next tick without
             # a restart, exactly as it does in the watcher.
-            bindings=dict(conf.bindings), hold_seconds=conf.hold_seconds,
-            double_tap_seconds=conf.double_tap_seconds,
-            long_hold_seconds=conf.long_hold_seconds,
+            bindings=dict(conf.bindings),
+            hold_seconds=self.pad.tracker.hold_seconds,
+            double_tap_seconds=self.pad.tracker.double_tap_s,
+            long_hold_seconds=self.pad.tracker.long_hold_seconds,
             regions=dict(self.machine.regions),
             region_since=dict(self.machine.since),
             games=dict(self.machine.games),

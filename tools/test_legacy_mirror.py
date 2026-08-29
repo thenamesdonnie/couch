@@ -700,6 +700,31 @@ def _in_order(calls, *prefixes):
     assert pos == sorted(pos), f'wrong order {list(zip(prefixes, pos))}'
 
 
+def test_new_launcher_claims_the_session_before_showing_its_curtain():
+    text = open(os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                             'legacy-mirror', 'game-launch')).read()
+    claim = text.index('echo "$$ $MODE $APPID" > "$SESSION"')
+    show = text.index('case "$MODE" in steam|shadps4) curtain_show_loading')
+    assert claim < show
+
+
+def test_retired_launcher_cannot_restore_or_fade_the_new_launchers_screen():
+    text = open(os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                             'legacy-mirror', 'game-launch')).read()
+    finish = re.search(r'finish_on_exit\(\) \{(.*?)\n\}', text, re.S)
+    assert finish, 'the EXIT ownership guard is missing'
+    body = finish.group(1)
+    owned = body.index('restore_on_exit owned')
+    retired = body.index('restore_on_exit retired')
+    guard = body.index('if [ "$(cut -d\' \' -f1 "$SESSION"')
+    assert guard < owned < retired
+    restore = text[text.index('restore_on_exit()'):
+                   text.index('# Forensics epilogue')]
+    gate = restore.index('[ "${1:-retired}" = owned ] ||')
+    assert gate < restore.index('focus_kodi')
+    assert gate < restore.index('curtain_fade')
+
+
 @pytest.fixture
 def glaunch(tmp_path):
     t = tmp_path

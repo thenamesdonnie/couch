@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import couchd
 import gesture
+import gestureconf
 import inputproc
 import supervisor
 from couchd import PadObserver, Source, SupervisorObserver
@@ -716,6 +717,36 @@ def test_constructing_the_daemon_binds_no_socket(tmp_path, monkeypatch):
     assert d.pad.supervised is False
     d.log.close()
     d.snapshots.close()
+
+
+def test_couchd_runtime_uses_nondefault_timings_and_snapshots_a_press(
+        tmp_path, monkeypatch):
+    current = [gestureconf.GestureConfig(
+        hold_seconds=1.5, double_tap_seconds=0.6,
+        long_hold_seconds=4.0)]
+    monkeypatch.setattr(gestureconf, 'load', lambda: current[0])
+    d = build_daemon(tmp_path, monkeypatch)
+    try:
+        assert (d.pad.tracker.hold_seconds, d.pad.tracker.double_tap_s,
+                d.pad.tracker.long_hold_seconds) == (1.5, 0.6, 4.0)
+        d.pad.note_button(1000.0, 1)
+
+        current[0] = gestureconf.GestureConfig(
+            hold_seconds=0.5, double_tap_seconds=0.2,
+            long_hold_seconds=2.0)
+        d.gesture_conf()
+        assert d.pad.tracker.hold_seconds == 1.5, (
+            'a reload mid-press must not move that press\'s hold boundary')
+
+        d.pad.note_button(1001.0, 0)
+        assert d.pad.tracker.tap_k == 1001.0
+        assert d.pad.tracker.hold_release_k is None
+        d.gesture_conf()
+        assert (d.pad.tracker.hold_seconds, d.pad.tracker.double_tap_s,
+                d.pad.tracker.long_hold_seconds) == (0.5, 0.2, 2.0)
+    finally:
+        d.log.close()
+        d.snapshots.close()
 
 
 def test_status_json_carries_the_wire_and_reads_inert(tmp_path, monkeypatch):
