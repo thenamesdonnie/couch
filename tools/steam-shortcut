@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Add (or update) a non-Steam shortcut in Steam's shortcuts.vdf, with art.
+
+Donnie, 30 Aug 2026: "can you pause and add bloodborne as a steam game so i
+can launch from big picture".
+
+Why a tool and not a one-off: Steam's Add a Non-Steam Game dialog cannot be
+driven headlessly, and the file it writes is a BINARY VDF that Steam
+rewrites from memory on shutdown. So the only safe sequence is
+
+    steam -shutdown  ->  edit the file  ->  start steam again
+
+and getting that wrong silently loses the entry, which is exactly the kind of
+thing that gets declared done and isn't. `--apply` does the whole dance and
+verifies by reading the file back after Steam has restarted.
+
+The shortcut points at game-launch, NOT at the emulator directly. game-launch
+is the console's session manager: it does the Kodi input handover, the
+loading curtain, the TV wake and the suspend/resume bookkeeping. A shortcut
+that ran shadps4 raw would boot the game with none of that, and the PS button
+would still be talking to Kodi.
+
+AllowOverlay is 0 on purpose. Steam's overlay works by LD_PRELOADing into the
+launched process, which is a well-known way to break a shell script that then
+execs something else. We do not need the overlay for an emulated PS4 game.
+
+Grid art is written into userdata/<id>/config/grid/ under the shortcut's
+generated appid, in Steam's four slots (portrait, landscape, hero, logo).
+
+Usage:
+    tools/steam-shortcut --list            what is in shortcuts.vdf now
+    tools/steam-shortcut --apply           add/update the entries below
+    tools/steam-shortcut --apply --no-art  entries only, leave grid art alone
+"""
+import argparse
+import binascii
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser('~')
+USERDATA = os.path.join(HOME, '.steam', 'steam', 'userdata')
+GAME_LAUNCH = os.path.join(HOME, '.local', 'bin', 'game-launch')
+PS4 = os.path.join(HOME, 'games', 'ps4')
+TILES = os.path.join(HOME, '.local', 'share', 'game-tiles')
+
+#: name -> how to launch it, and where its four art files come from.
+#: `art` keys are Steam's grid slots; a missing source is simply skipped.
+SHORTCUTS = [
+    dict(
+        name='Bloodborne',
+        exe=GAME_LAUNCH,
+        args='shadps4 %s' % os.path.join(PS4, 'CUSA00900', 'eboot.bin'),
+        startdir=os.path.join(PS4, 'CUSA00900'),
+        tags=['Emulated', 'PS4'],
+        art=dict(
+            portrait=os.path.join(PS4, 'CUSA00900', 'cover.png'),      # 600x900
+            hero=os.path.join(TILES, 'heroes', 'CUSA00900.jpg'),
+            logo=os.path.join(TILES, 'logos', 'CUSA00900.png'),
+            landscape=os.path.join(TILES, 'heroes', 'CUSA00900.jpg'),  # cropped
+        ),
+    ),
+]
+
+#: Steam's grid slots: suffix, and the size it wants. None = leave as-is.
+ART_SLOTS = {
+    'portrait':  ('p.png',      (600, 900)),
+    'landscape': ('.png',       (920, 430)),
+    'hero':      ('_hero.png',  (1920, 620)),
+    'logo':      ('_logo.png',  (1280, 263)),
+}
+
+
+# ---------------------------------------------------------------- binary VDF
+
+def _str(key, val):
+    return b'\x01' + key.encode() + b'\x00' + val.encode('utf-8') + b'\x00'
+
+
+def _int(key, val):
+    return b'\x02' + key.encode() + b'\x00' + struct.pack('<I', val & 0xFFFFFFFF)
+
+
+def shortcut_appid(exe, name):
+    """Steam's own scheme: crc32 of exe+name with the top bit forced on. The
+    grid art filenames key off this, so it has to be stable across runs."""
+    return binascii.crc32(('"%s"%s' % (exe, name)).encode('utf-8')) | 0x80000000
+
+
+def encode(entries):
+    out = bytearray(b'\x00shortcuts\x00')
+    for idx, e in enumerate(entries):
+        out += b'\x00' + str(idx).encode() + b'\x00'
+        out += _int('appid', e['appid'])
+        out += _str('AppName', e['name'])
+        out += _str('Exe', '"%s"' % e['exe'])
+        out += _str('StartDir', '"%s"' % e['startdir'])
+        out += _str('icon', e.get('icon', ''))
+        out += _str('ShortcutPath', '')
+        out += _str('LaunchOptions', e['args'])
+        out += _int('IsHidden', 0)
+        out += _int('AllowDesktopConfig', 1)
+        out += _int('AllowOverlay', 0)
+        out += _int('OpenVR', 0)
+        out += _int('Devkit', 0)
+        out += _str('DevkitGameID', '')
+        out += _int('DevkitOverrideAppID', 0)
+        out += _int('LastPlayTime', 0)
+        out += _str('FlatpakAppID', '')
+        out += b'\x00tags\x00'
+        for t_idx, tag in enumerate(e.get('tags', [])):
+            out += _str(str(t_idx), tag)
+        out += b'\x08'                      # close tags
+        out += b'\x08'                      # close this entry
+    out += b'\x08\x08'                      # close shortcuts, close root
+    return bytes(out)
+
+
+def decode(blob):
+    """Just enough parsing to read entries back for verification."""
+    entries, i, n = [], 0, len(blob)
+    if blob.startswith(b'\x00shortcuts\x00'):
+        i = len(b'\x00shortcuts\x00')
+    cur = None
+    while i < n:
+        t = blob[i]
+        if t == 0x08:
+            if cur is not None:
+                entries.append(cur)
+                cur = None
+            i += 1
+            continue
+        end = blob.index(b'\x00', i + 1)
+        key = blob[i + 1:end].decode('utf-8', 'replace')
+        i = end + 1
+        if t == 0x00:
+            if cur is None:
+                cur = {}
+            continue
+        if t == 0x01:
+            end = blob.index(b'\x00', i)
+            cur = {} if cur is None else cur
+            cur[key] = blob[i:end].decode('utf-8', 'replace')
+            i = end + 1
+        elif t == 0x02:
+            cur = {} if cur is None else cur
+            cur[key] = struct.unpack('<I', blob[i:i + 4])[0]
+            i += 4
+        else:
+            raise ValueError('unknown vdf type 0x%02x at %d' % (t, i))
+    return [e for e in entries if 'AppName' in e]
+
+
+# --------------------------------------------------------------------- steam
+
+def user_dir():
+    ids = [d for d in os.listdir(USERDATA) if d.isdigit() and d != '0']
+    if len(ids) != 1:
+        sys.exit('expected exactly one Steam user under %s, found %r'
+                 % (USERDATA, ids))
+    return os.path.join(USERDATA, ids[0], 'config')
+
+
+def steam_running():
+    return subprocess.run(['pgrep', '-x', 'steam'],
+                          capture_output=True).returncode == 0
+
+
+def stop_steam(timeout=40):
+    if not steam_running():
+        return False
+    subprocess.run(['steam', '-shutdown'], capture_output=True)
+    for _ in range(timeout * 2):
+        if not steam_running():
+            return True
+        time.sleep(0.5)
+    sys.exit('steam did not shut down within %ds - aborting rather than '
+             'writing a file it will overwrite' % timeout)
+
+
+def start_steam():
+    env = dict(os.environ, DISPLAY=os.environ.get('DISPLAY', ':0'))
+    subprocess.Popen(['setsid', 'steam', '-silent'], env=env,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    for _ in range(60):
+        if steam_running():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+# ----------------------------------------------------------------------- art
+
+def write_art(grid_dir, appid, art):
+    from PIL import Image
+    os.makedirs(grid_dir, exist_ok=True)
+    done = []
+    for slot, src in art.items():
+        if not src or not os.path.exists(src):
+            print('  art %-9s SKIPPED (no %s)' % (slot, src))
+            continue
+        suffix, size = ART_SLOTS[slot]
+        dest = os.path.join(grid_dir, '%d%s' % (appid, suffix))
+        im = Image.open(src).convert('RGBA')
+        if slot == 'logo':
+            im.thumbnail(size, Image.LANCZOS)          # keep the whole logo
+        else:
+            # cover-crop to the slot's aspect, then scale
+            want = size[0] / size[1]
+            have = im.width / im.height
+            if have > want:
+                w = int(im.height * want)
+                box = ((im.width - w) // 2, 0, (im.width - w) // 2 + w, im.height)
+            else:
+                h = int(im.width / want)
+                top = int((im.height - h) * 0.35)      # favour the upper third
+                box = (0, top, im.width, top + h)
+            im = im.crop(box).resize(size, Image.LANCZOS)
+        im.save(dest)
+        done.append('%s %dx%d' % (os.path.basename(dest), im.width, im.height))
+    for d in done:
+        print('  art %s' % d)
+
+
+# ---------------------------------------------------------------------- main
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--list', action='store_true')
+    ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--no-art', action='store_true')
+    ap.add_argument('--art-only', action='store_true',
+                    help='rewrite the grid art and nothing else. Steam only '
+                         'owns shortcuts.vdf, not the grid folder, so this '
+                         'needs no shutdown - it just re-reads the art next '
+                         'time the library is drawn.')
+    args = ap.parse_args()
+
+    if args.art_only:
+        cfg = user_dir()
+        for s in SHORTCUTS:
+            appid = shortcut_appid(s['exe'], s['name'])
+            print('%s -> appid %d' % (s['name'], appid))
+            write_art(os.path.join(cfg, 'grid'), appid, s.get('art') or {})
+        return 0
+
+    cfg = user_dir()
+    vdf = os.path.join(cfg, 'shortcuts.vdf')
+
+    if args.list or not args.apply:
+        if not os.path.exists(vdf):
+            print('no shortcuts.vdf at %s (no non-Steam games yet)' % vdf)
+            return 0
+        for e in decode(open(vdf, 'rb').read()):
+            print('%-24s appid %-12d %s %s'
+                  % (e.get('AppName'), e.get('appid', 0),
+                     e.get('Exe', ''), e.get('LaunchOptions', '')))
+        return 0
+
+    # Merge: keep anything already there that we are not replacing by name.
+    existing = []
+    if os.path.exists(vdf):
+        existing = decode(open(vdf, 'rb').read())
+        shutil.copy2(vdf, vdf + '.bak-%s' % time.strftime('%Y%m%d%H%M%S'))
+
+    wanted = {s['name']: s for s in SHORTCUTS}
+    entries = []
+    for e in existing:
+        if e.get('AppName') not in wanted:
+            entries.append(dict(
+                appid=e.get('appid', 0), name=e['AppName'],
+                exe=e.get('Exe', '').strip('"'),
+                startdir=e.get('StartDir', '').strip('"'),
+                args=e.get('LaunchOptions', ''), tags=[]))
+    ours = []
+    for s in SHORTCUTS:
+        s = dict(s)
+        s['appid'] = shortcut_appid(s['exe'], s['name'])
+        entries.append(s)
+        ours.append(s)
+
+    was_running = stop_steam()
+    print('steam %s' % ('stopped' if was_running else 'was not running'))
+
+    os.makedirs(cfg, exist_ok=True)
+    open(vdf, 'wb').write(encode(entries))
+    print('wrote %s (%d entries)' % (vdf, len(entries)))
+
+    for s in ours:
+        print('%s -> appid %d' % (s['name'], s['appid']))
+        if not args.no_art and s.get('art'):
+            write_art(os.path.join(cfg, 'grid'), s['appid'], s['art'])
+
+    if was_running:
+        print('steam restarting...' if start_steam() else 'steam did NOT come back')
+        time.sleep(8)   # let it settle before reading the file back
+
+    print('--- shortcuts.vdf after Steam restarted ---')
+    for e in decode(open(vdf, 'rb').read()):
+        print('%-24s appid %-12d %s %s'
+              % (e.get('AppName'), e.get('appid', 0),
+                 e.get('Exe', ''), e.get('LaunchOptions', '')))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
