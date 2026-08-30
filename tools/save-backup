@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Snapshot the console's game saves, because none of these games have a cloud.
+
+30 Aug 2026. Donnie's Dark Souls III save from October 2024 was recovered from
+a `C:\\Windows.old` folder on his main PC that Windows should have deleted ten
+days after a factory reset and had instead kept for three months. That was
+luck. This tool is so we stop needing luck.
+
+The exposure is real and it is not just DS3:
+
+  * Dark Souls III has NO Steam Cloud. Never did. Dark Souls 1 had it.
+  * Elden Ring and Sekiro have none either.
+  * Bloodborne runs under shadPS4, which has no cloud by definition, and it
+    is the blind playthrough - 33 hours in as of tonight, and the one save
+    here whose loss would actually hurt.
+
+So every save on this box exists in exactly one place, inside a Proton prefix
+or an emulator user dir, both of which are the kind of directory that gets
+blown away by a reinstall without anyone thinking of it as "data".
+
+HOW IT WORKS. Each game is a root directory plus globs under it. Every run
+tars the matched files, hashes the content, and writes a snapshot ONLY if the
+hash differs from the newest one already stored. An idle box therefore costs
+nothing, and a session produces one snapshot per real save.
+
+TWO THINGS IT DELIBERATELY DOES NOT DO:
+
+  * It does not skip while the game is running. Bloodborne writes its save
+    constantly and a backup you can only take when the game is closed is a
+    backup you will not have when you need it. Instead a file modified in the
+    last STABLE_SECS is treated as mid-write and the whole snapshot is
+    deferred to the next run.
+  * It does not sync anything anywhere. Two-way sync between here and the
+    Windows PC invites a conflict that silently eats a save, which is a worse
+    failure than the one we are fixing. This is a one-way history. Carrying a
+    save between machines stays a deliberate act.
+
+OFF-BOX. data/game-saves/ is on the same disk as the saves, so it survives a
+reinstall and not a disk failure. The nightly root cron already pushes 48
+paths to dns2; add this directory to it and the saves go off the box too.
+
+Usage:
+    tools/save-backup                    snapshot anything that changed
+    tools/save-backup --list             what is stored, per game
+    tools/save-backup --restore GAME     put the newest snapshot back
+    tools/save-backup --restore GAME --snapshot NAME
+"""
+import argparse
+import glob
+import hashlib
+import io
+import os
+import shutil
+import sys
+import tarfile
+import time
+
+HOME = os.path.expanduser('~')
+STEAM = os.path.join(HOME, '.steam', 'debian-installation', 'steamapps', 'compatdata')
+OUT = os.path.join(HOME, 'couch', 'data', 'game-saves')
+
+#: A file written within this many seconds is assumed to be mid-write; the
+#: snapshot is deferred rather than risking a torn copy.
+STABLE_SECS = 20
+
+#: Retention: keep everything younger than KEEP_DAYS, and at least KEEP_MIN
+#: snapshots per game however old they are. Nothing else is ever deleted.
+KEEP_DAYS = 21
+KEEP_MIN = 40
+
+
+def prefix(appid, *parts):
+    return os.path.join(STEAM, str(appid), 'pfx', 'drive_c', 'users',
+                        'steamuser', 'AppData', 'Roaming', *parts)
+
+
+GAMES = {
+    # The blind playthrough. shadPS4 keeps ten slots plus its own rolling
+    # backups; take the lot, it is 14MB and disk is free.
+    'bloodborne': dict(
+        root=os.path.join(HOME, '.local', 'share', 'shadPS4', 'home', '1000',
+                          'savedata', 'CUSA00900'),
+        globs=['SPRJ0005/**/*'],
+    ),
+    # The .sl2.bak files are the game's own previous-save copy and are worth
+    # having: if a save is corrupted, the bak is often the way back.
+    'dark-souls-3': dict(
+        root=prefix(374320, 'DarkSoulsIII'),
+        globs=['*/DS3*.sl2', '*/DS3*.sl2.bak'],
+    ),
+    'elden-ring': dict(
+        root=prefix(1245620, 'EldenRing'),
+        globs=['*/ER*.sl2', '*/ER*.sl2.bak'],
+    ),
+    'sekiro': dict(
+        root=prefix(814380, 'Sekiro'),
+        globs=['*/S*.sl2', '*/S*.sl2.bak'],
+    ),
+}
+
+
+def matched(spec):
+    """Files for a game, as (abs path, path relative to its root)."""
+    root = spec['root']
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for pattern in spec['globs']:
+        for p in glob.glob(os.path.join(root, pattern), recursive=True):
+            if os.path.isfile(p):
+                out.append((p, os.path.relpath(p, root)))
+    return sorted(set(out), key=lambda t: t[1])
+
+
+def content_hash(files):
+    """Hash of the save set: names, sizes and bytes. Timestamps deliberately
+    excluded - a game that rewrites an identical save must not make a snapshot."""
+    h = hashlib.sha256()
+    for path, rel in files:
+        h.update(rel.encode())
+        h.update(b'\0')
+        h.update(str(os.path.getsize(path)).encode())
+        h.update(b'\0')
+        with open(path, 'rb') as f:
+            while chunk := f.read(1 << 20):
+                h.update(chunk)
+    return h.hexdigest()
+
+
+def snapshots(game):
+    d = os.path.join(OUT, game)
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d) if f.endswith('.tar.gz'))
+
+
+def newest_hash(game):
+    snaps = snapshots(game)
+    if not snaps:
+        return None
+    # <utc>-<hash12>.tar.gz
+    return snaps[-1].rsplit('-', 1)[1][:-len('.tar.gz')]
+
+
+def prune(game):
+    """Retention. Never touches anything inside KEEP_DAYS or the newest
+    KEEP_MIN, so the only thing that can be dropped is genuinely old bulk."""
+    d = os.path.join(OUT, game)
+    snaps = snapshots(game)
+    cutoff = time.time() - KEEP_DAYS * 86400
+    dropped = []
+    for name in snaps[:-KEEP_MIN] if len(snaps) > KEEP_MIN else []:
+        p = os.path.join(d, name)
+        if os.path.getmtime(p) < cutoff:
+            os.remove(p)
+            dropped.append(name)
+    return dropped
+
+
+def snapshot(game, spec, verbose=True):
+    files = matched(spec)
+    if not files:
+        if verbose:
+            print('%-14s no save files' % game)
+        return None
+    now = time.time()
+    fresh = [rel for path, rel in files if now - os.path.getmtime(path) < STABLE_SECS]
+    if fresh:
+        if verbose:
+            print('%-14s deferred, being written: %s' % (game, ', '.join(fresh[:3])))
+        return None
+
+    digest = content_hash(files)
+    if digest[:12] == newest_hash(game):
+        if verbose:
+            print('%-14s unchanged' % game)
+        return None
+
+    d = os.path.join(OUT, game)
+    os.makedirs(d, exist_ok=True)
+    name = '%s-%s.tar.gz' % (time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()),
+                             digest[:12])
+    tmp = os.path.join(d, '.' + name)
+    with tarfile.open(tmp, 'w:gz') as tar:
+        for path, rel in files:
+            tar.add(path, arcname=rel)
+    os.replace(tmp, os.path.join(d, name))     # atomic: no half-written snapshot
+    size = os.path.getsize(os.path.join(d, name))
+    if verbose:
+        print('%-14s SNAPSHOT %s  (%d files, %.1f MB)'
+              % (game, name, len(files), size / 1e6))
+    for gone in prune(game):
+        print('%-14s pruned %s' % (game, gone))
+    return name
+
+
+def restore(game, which=None):
+    spec = GAMES[game]
+    snaps = snapshots(game)
+    if not snaps:
+        sys.exit('no snapshots for %s' % game)
+    name = which or snaps[-1]
+    if name not in snaps:
+        sys.exit('no such snapshot: %s' % name)
+    src = os.path.join(OUT, game, name)
+
+    # Never restore over a live save without keeping it first.
+    pre = snapshot(game, spec, verbose=False)
+    print('current save kept as %s' % (pre or '(unchanged, already stored)'))
+
+    with tarfile.open(src, 'r:gz') as tar:
+        members = tar.getmembers()
+        for m in members:
+            if m.name.startswith('/') or '..' in m.name.split('/'):
+                sys.exit('refusing unsafe member %r' % m.name)
+        tar.extractall(spec['root'])
+    print('restored %s -> %s (%d files)' % (name, spec['root'], len(members)))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--list', action='store_true')
+    ap.add_argument('--restore', metavar='GAME')
+    ap.add_argument('--snapshot', metavar='NAME',
+                    help='with --restore: which snapshot, default newest')
+    args = ap.parse_args()
+
+    if args.restore:
+        if args.restore not in GAMES:
+            sys.exit('unknown game %r (have: %s)'
+                     % (args.restore, ', '.join(sorted(GAMES))))
+        return restore(args.restore, args.snapshot)
+
+    if args.list:
+        for game in sorted(GAMES):
+            snaps = snapshots(game)
+            files = matched(GAMES[game])
+            print('%-14s %2d snapshot(s), %d live file(s)%s'
+                  % (game, len(snaps), len(files),
+                     '' if os.path.isdir(GAMES[game]['root'])
+                     else '   [not installed]'))
+            for s in snaps[-5:]:
+                p = os.path.join(OUT, game, s)
+                print('               %s  %.1f MB' % (s, os.path.getsize(p) / 1e6))
+            if len(snaps) > 5:
+                print('               ... and %d older' % (len(snaps) - 5))
+        return 0
+
+    for game in sorted(GAMES):
+        snapshot(game, GAMES[game])
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

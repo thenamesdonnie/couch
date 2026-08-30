@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Is anybody using the console right now? A verdict, with its reasons.
+
+Donnie, 30 Aug 2026: "is there a way you can check my location so if i'm not
+home you can restart things or whatever unless i explicitly say not to".
+
+**This deliberately does not try to find him.** Location is not available to
+the assistant, phone-presence-on-the-LAN is unreliable in the direction that
+matters (a sleeping wifi radio looks exactly like an empty house), and it is
+the wrong question anyway. The thing that decides whether it is safe to
+restart Kodi, bounce a service or take the screen is not where Donnie is, it
+is **whether anything is in use** - which is directly observable, cheap, and
+right in a way a location guess never is.
+
+It also fails in the correct direction. Every signal that cannot be read is
+treated as "in use", so a broken probe blocks a disruptive action instead of
+green-lighting one. An empty house wrongly reported as busy costs a delay; a
+busy house wrongly reported as empty costs blanking the TV mid-film.
+
+Signals, cheapest first:
+
+  session    /tmp/game-session, /tmp/game-suspended - a game is running or
+             parked. Decisive on its own.
+  kodi       JSON-RPC: any active player, i.e. something is playing.
+  input      X11 idle seconds (XScreenSaver extension). The strongest single
+             signal that a human is in front of it.
+  pad        the DualSense connected over Bluetooth. Connected-but-idle is
+             common (it sits on the sofa), so this only ever downgrades a
+             verdict to `quiet`, it never claims `busy` by itself.
+  tv         webOS power state. ~3s over the network, so it runs last and
+             only when everything else already says quiet.
+
+Verdicts:
+
+  busy     something is playing or someone is pressing buttons. Touch nothing.
+  quiet    nothing running, but the TV is awake or input was recent. Cheap,
+           reversible things are fine; do not take the screen.
+  away     TV in standby, no session, nothing playing, input idle past the
+           threshold. Disruptive-but-recoverable work is fine.
+
+Usage:
+    tools/console-idle              human-readable verdict + reasons
+    tools/console-idle --json       same, as JSON
+    tools/console-idle --quiet      print only the verdict word
+    tools/console-idle --require away   exit 0 only if the verdict is at
+                                        least that idle; for use in scripts
+"""
+import argparse
+import base64
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+HOME = os.path.expanduser('~')
+SESSION = '/tmp/game-session'
+SUSPENDED = '/tmp/game-suspended'
+KODI = 'http://localhost:8090/jsonrpc'
+KODI_AUTH = base64.b64encode(b'kodi:$KODI_PASSWORD').decode()
+TV = os.path.join(HOME, '.local/bin/tv')
+
+#: Input idle beyond this is "nobody is at the sofa". Ten minutes is long
+#: enough to survive a pause for the kettle and short enough to be useful.
+IDLE_AWAY_S = 600
+#: An explicit veto. `touch` it and everything below reports busy, whatever
+#: the signals say - the "explicitly say not to" half of the request.
+HOLD_FLAG = os.path.join(HOME, 'couch/data/console-hold')
+
+RANK = {'busy': 0, 'quiet': 1, 'away': 2}
+
+
+def x_idle_seconds():
+    try:
+        from Xlib import display
+        os.environ.setdefault('DISPLAY', ':0')
+        d = display.Display(os.environ['DISPLAY'])
+        return d.screen().root.screensaver_query_info().idle / 1000.0
+    except Exception:
+        return None            # unknown -> treated as "someone is there"
+
+
+def kodi_playing():
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1,
+                       'method': 'Player.GetActivePlayers'}).encode()
+    req = urllib.request.Request(KODI, body,
+                                 {'Content-Type': 'application/json',
+                                  'Authorization': 'Basic ' + KODI_AUTH})
+    try:
+        return bool(json.load(urllib.request.urlopen(req, timeout=4))['result'])
+    except Exception:
+        return None
+
+
+def pad_connected():
+    try:
+        out = subprocess.run(['bluetoothctl', 'info'], capture_output=True,
+                             text=True, timeout=6).stdout
+        return 'Connected: yes' in out
+    except Exception:
+        return None
+
+
+def tv_on():
+    try:
+        out = subprocess.run([TV, 'status'], capture_output=True, text=True,
+                             timeout=20).stdout.strip()
+        if not out:
+            return None
+        return not out.startswith('standby')
+    except Exception:
+        return None
+
+
+def assess(skip_tv=False):
+    why = []
+    verdict = 'away'
+
+    def down(to, reason):
+        nonlocal verdict
+        why.append(reason)
+        if RANK[to] < RANK[verdict]:
+            verdict = to
+
+    if os.path.exists(HOLD_FLAG):
+        return 'busy', ['%s exists: an explicit hold is in place' % HOLD_FLAG], {}
+
+    facts = {}
+
+    facts['session'] = os.path.exists(SESSION)
+    facts['suspended'] = os.path.exists(SUSPENDED)
+    if facts['session']:
+        down('busy', 'a game session is running')
+    elif facts['suspended']:
+        down('busy', 'a game is suspended and expects to be resumed')
+
+    facts['kodi_playing'] = kodi_playing()
+    if facts['kodi_playing'] is None:
+        down('quiet', 'could not ask Kodi what it is playing')
+    elif facts['kodi_playing']:
+        down('busy', 'Kodi is playing something')
+
+    facts['idle_s'] = x_idle_seconds()
+    if facts['idle_s'] is None:
+        down('busy', 'could not read X11 idle time, assuming someone is there')
+    elif facts['idle_s'] < 60:
+        down('busy', 'input %.0fs ago' % facts['idle_s'])
+    elif facts['idle_s'] < IDLE_AWAY_S:
+        down('quiet', 'input %.0fs ago, under the %ds threshold'
+             % (facts['idle_s'], IDLE_AWAY_S))
+    else:
+        why.append('input idle %.0fs' % facts['idle_s'])
+
+    facts['pad'] = pad_connected()
+    if facts['pad']:
+        # never enough on its own: it lives on the sofa, connected, all day
+        down('quiet', 'the pad is connected')
+
+    # Only worth the network round trip if nothing above already decided.
+    if skip_tv or verdict == 'busy':
+        facts['tv_on'] = None
+    else:
+        facts['tv_on'] = tv_on()
+        if facts['tv_on'] is None:
+            down('quiet', 'could not read the TV power state')
+        elif facts['tv_on']:
+            down('quiet', 'the TV is awake')
+        else:
+            why.append('TV in standby')
+
+    return verdict, why, facts
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--json', action='store_true')
+    ap.add_argument('--quiet', action='store_true',
+                    help='print only the verdict word')
+    ap.add_argument('--skip-tv', action='store_true',
+                    help='do not make the ~3s webOS call')
+    ap.add_argument('--require', choices=sorted(RANK),
+                    help='exit 0 only if the verdict is at least this idle')
+    args = ap.parse_args()
+
+    verdict, why, facts = assess(skip_tv=args.skip_tv)
+
+    if args.json:
+        print(json.dumps({'verdict': verdict, 'why': why, 'facts': facts,
+                          'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z')},
+                         indent=2))
+    elif args.quiet:
+        print(verdict)
+    else:
+        print(verdict.upper())
+        for line in why:
+            print('  - %s' % line)
+
+    if args.require:
+        return 0 if RANK[verdict] >= RANK[args.require] else 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
