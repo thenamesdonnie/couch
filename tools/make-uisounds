@@ -10,47 +10,64 @@ were measurably coming out of the HDMI sink - but the stock set is a mixed bag
 want to hear is the quietest thing in the pack) and it has nothing at all to
 say about launching a game.
 
-Seven hand-made wavs for a couch set had been sitting untracked in the addon
-since 11 Aug with no addon.xml, no sounds.xml and no way for Kodi to load
-them. They are a good, coherent family, so they were measured off the wave
-(fundamental, glide, envelope) and are RE-GENERATED here rather than left as
-opaque binaries: the point of this file is that "make select warmer" or "the
-tick is too loud" is a number to change, not a re-synthesis from scratch. The
-11 Aug originals are kept beside the output in `sources/` as the reference.
+30 Aug 2026 - THE REWRITE, and why. Donnie: "the ones you gave me kind of
+sucked... can we find the playstation ones". The 24 Aug set was seven pure
+SINE waves plus a harmonic or two under an exponential decay. That is a beep.
+It was diagnosed twice as a level problem (measured cursor -30.5 dBFS RMS vs
+launch -17.9) and it was never only a level problem: no amount of gain makes a
+sine sound like a console.
 
-The design, and why each sound is the shape it is:
+Console UI sounds are three layers, and the first one is the one that matters:
 
-  cursor  a 55ms tick, the quietest thing here. It fires on every single
-          d-pad step, so it has to read as texture, not as an event.
-  select  a longer 1184Hz note with an octave above it. Confirmation.
-  back    the same idea gliding DOWN (800 -> 668Hz): pitch falls when you do.
-  in/out  a rising and a falling swoosh, a matched pair for entering and
-          leaving a section. Wired OFF by default in sounds.xml - see there.
-  error   high, short and hard, the only sound in the set meant to be
-          unpleasant.
-  launch  the odd one out: 750ms, rising 1512 -> 1934Hz, and it SWELLS (peak
-          at ~240ms) instead of decaying from the attack. Everything else is
-          a percussive tick; this one is a small event, because it plays when
-          a game is being handed the machine.
+  1. TRANSIENT. A few ms of band-passed noise at the very front. This is the
+     entire reason a real UI click reads as a physical event rather than a
+     test tone, and no sine can fake it - a sine has no broadband attack.
+  2. BODY. A short tone under it, with INHARMONIC partials (2.63x, 3.02x, not
+     2x and 3x). Exact octaves sound like an oscillator; slightly-off ratios
+     sound like a struck object. That is the whole difference between "beep"
+     and "glass".
+  3. TAIL. A small room. 150-500ms of reverb with damped feedback, so the
+     sound happened somewhere instead of inside the speaker cone. The tail
+     also carries real energy, which matters for the level problem below.
 
-Levels: the whole set is lifted +10 dB over the 11 Aug originals, which were
-uniformly too quiet to hear over a soundbar (the tick peaked at -26 dBFS).
-The lift is uniform on purpose - the internal balance was already right, and
-the launch swell should stay the biggest thing in the pack.
+The swooshes (in/out/launch) add a fourth thing: band-passed noise with the
+filter frequency SWEPT, which is a swoosh in the same way that a filter sweep
+is a swoosh on a synth. The launch sound is that shimmer layered over a low
+swelling body, because it plays when a game is being handed the machine.
 
-Two things are added over the originals, both because a synthesised sine
-played through eARC into a real soundbar is less forgiving than it looks in a
-waveform: a few ms of attack ramp (an instantaneous sine start is a broadband
-click - it reads as a pop on a big system) and a quiet harmonic on the
-percussive sounds, which is the difference between a beep and a note.
+Everything is still numbers in SOUNDS below. "Make select warmer" or "the tick
+is too bright" remains an edit to a dict, never a wav edit. The noise layers
+are driven by a SEEDED rng so the output stays byte-reproducible and --check
+still means something.
+
+MEASURE LOUDNESS OVER A 50ms WINDOW, NOT OVER THE FILE. Whole-file RMS is
+worse than useless here: it divides by the length, so lengthening a sound to
+give it a tail makes the number go DOWN while the sound gets louder. The 24
+Aug diagnosis ("cursor -30.5 RMS vs launch -17.9") was measured that way and
+the first pass of this rewrite appeared to make things worse by the same
+metric while plainly being louder. `--measure` reports both; trust loud50,
+which is the RMS of the hottest 50ms window and is roughly what an ear does
+with a click.
+
+Levels, measured (loud50 dBFS): cursor -21.8, error -18.1, select -17.5,
+out -18.5, back/in -18.8, launch -12.5. The cursor stays the quietest thing
+here on purpose because it fires on every d-pad step and wants to read as
+texture, but the 24 Aug set had it 18.7 dB under launch, which is why he
+could only hear the launch sound. It is 9.3 dB under now. Peaks all sit at
+-9 dBFS or hotter, so the GUI-sounds volume slider has somewhere to go.
+
+The 24 Aug wavs are kept in data/uisounds-backup-20260830/ for A/B.
 
 Usage:
-    tools/make-uisounds              write the wavs
-    tools/make-uisounds --check      regenerate to a temp dir and diff
+    tools/make-uisounds                 write the wavs
+    tools/make-uisounds --check         regenerate to a temp dir and diff
+    tools/make-uisounds --measure       print peak/RMS of what is on disk
+    tools/make-uisounds --audition P    write one wav of all 7 in sequence
 """
 import argparse
 import math
 import os
+import random
 import struct
 import sys
 import tempfile
@@ -61,72 +78,232 @@ OUT = os.path.join(REPO, 'kodi-addons', 'resource.uisounds.couch', 'resources')
 
 RATE = 48000
 
-#: The set. Each entry is a sound:
+#: Layer specs. A sound is up to three generators mixed at relative dB, then
+#: put through a small room, then normalised to `peak`.
 #:
-#:   ms       length
-#:   f0, f1   fundamental at the start and at the end (equal = no glide)
-#:   peak     peak amplitude in dBFS
-#:   attack   ms to full amplitude (kills the click of a hard sine start)
-#:   swell    ms to the loudest point; None = decay straight from the attack
-#:   decay    ms for the tail to fall by 60 dB
-#:   parts    (harmonic ratio, relative amplitude) beyond the fundamental
+#:   transient  ms, fc, q      band-passed noise burst at the attack
+#:   body       f0, f1, parts  glided tone; parts are (ratio, amplitude) and
+#:                             the ratios are deliberately NOT whole numbers
+#:   sweep      f0, f1, q      band-passed noise with the filter swept
+#:   env        attack / swell / decay in ms, shared shape (see envelope())
+#:   room       rt60 ms, wet   damped Schroeder reverb
+ORDER = ['cursor', 'select', 'back', 'in', 'out', 'error', 'launch']
+
 SOUNDS = {
-    'cursor': dict(ms=55,  f0=1605, f1=1605, peak=-16, attack=1.5,
-                   swell=None, decay=45,  parts=[(2.0, 0.10)]),
-    'select': dict(ms=150, f0=1184, f1=1184, peak=-10, attack=2.0,
-                   swell=None, decay=130, parts=[(2.0, 0.22)]),
-    'back':   dict(ms=170, f0=800,  f1=668, peak=-12, attack=2.0,
-                   swell=None, decay=150, parts=[(2.0, 0.12)]),
-    'in':     dict(ms=380, f0=773,  f1=1148, peak=-8, attack=12,
-                   swell=30,   decay=430, parts=[(2.0, 0.16), (3.0, 0.05)]),
-    'out':    dict(ms=400, f0=750,  f1=469, peak=-11, attack=12,
-                   swell=30,   decay=450, parts=[(2.0, 0.16), (3.0, 0.05)]),
-    'error':  dict(ms=130, f0=2098, f1=2098, peak=-10, attack=1.0,
-                   swell=None, decay=95,  parts=[(1.78, 0.30)]),
-    'launch': dict(ms=750, f0=1512, f1=1934, peak=-8,  attack=8,
-                   swell=240,  decay=900, parts=[(2.0, 0.20), (3.0, 0.07)]),
+    # The tick. A glassy body with a noise click on the front, and a short
+    # bright room. Kept to 150ms total so a held d-pad does not smear.
+    'cursor': dict(
+        ms=150, peak=-6, seed=1,
+        transient=dict(ms=4.0, fc=5200, q=1.2, decay=9, level=-3.0),
+        body=dict(f0=2400, f1=2400, parts=[(1.0, 1.0), (2.63, 0.14)],
+                  attack=1.0, swell=None, decay=48, level=0.0),
+        room=dict(rt60=150, wet=0.34),
+    ),
+    # Confirmation. Warmer, a touch of lift in the pitch, a real tail.
+    'select': dict(
+        ms=320, peak=-7, seed=2,
+        transient=dict(ms=6.0, fc=4200, q=1.0, decay=12, level=-4.0),
+        body=dict(f0=1150, f1=1210, parts=[(1.0, 1.0), (2.02, 0.25),
+                                           (3.06, 0.08)],
+                  attack=2.0, swell=None, decay=150, level=0.0),
+        room=dict(rt60=220, wet=0.22),
+    ),
+    # The same idea falling instead of rising: pitch drops when you do.
+    'back': dict(
+        ms=340, peak=-9, seed=3,
+        transient=dict(ms=6.0, fc=3000, q=1.0, decay=12, level=-6.0),
+        body=dict(f0=880, f1=700, parts=[(1.0, 1.0), (1.98, 0.18),
+                                         (2.96, 0.05)],
+                  attack=2.0, swell=None, decay=170, level=0.0),
+        room=dict(rt60=220, wet=0.20),
+    ),
+    # Entering a section: a filter sweep up, with a tone riding it.
+    'in': dict(
+        ms=480, peak=-8, seed=4,
+        sweep=dict(f0=500, f1=4200, q=1.6,
+                   attack=40, swell=200, decay=200, level=0.0),
+        body=dict(f0=620, f1=1180, parts=[(1.0, 1.0), (2.01, 0.20)],
+                  attack=20, swell=200, decay=260, level=-5.0),
+        room=dict(rt60=260, wet=0.25),
+    ),
+    # Leaving it: the mirror image.
+    'out': dict(
+        ms=480, peak=-9, seed=5,
+        sweep=dict(f0=3800, f1=450, q=1.6,
+                   attack=30, swell=160, decay=240, level=0.0),
+        body=dict(f0=1100, f1=560, parts=[(1.0, 1.0), (2.01, 0.20)],
+                  attack=20, swell=160, decay=280, level=-5.0),
+        room=dict(rt60=260, wet=0.25),
+    ),
+    # The only sound in the set meant to be unpleasant. The 1.41 partial is a
+    # tritone against the fundamental and it is there to grate.
+    'error': dict(
+        ms=260, peak=-4, seed=6,
+        transient=dict(ms=5.0, fc=3000, q=0.8, decay=10, level=-2.0),
+        body=dict(f0=520, f1=520, parts=[(1.0, 1.0), (1.41, 0.60),
+                                         (2.00, 0.30)],
+                  attack=1.0, swell=None, decay=140, level=0.0),
+        room=dict(rt60=160, wet=0.12),
+    ),
+    # The event. Low body swelling up an octave, shimmer sweeping over it,
+    # and the biggest room in the set. 1.2s, because a game is starting.
+    'launch': dict(
+        ms=1200, peak=-4, seed=7,
+        transient=dict(ms=10.0, fc=2500, q=0.7, decay=25, level=-10.0),
+        sweep=dict(f0=800, f1=6500, q=1.4,
+                   attack=60, swell=380, decay=500, level=-8.0),
+        body=dict(f0=320, f1=640, parts=[(1.0, 1.0), (2.01, 0.50),
+                                         (3.02, 0.25), (4.05, 0.12),
+                                         (6.08, 0.06)],
+                  attack=30, swell=320, decay=700, level=0.0),
+        room=dict(rt60=500, wet=0.32),
+    ),
 }
 
 
-def envelope(i, n, attack, swell, decay):
-    """Amplitude at sample i: ramp in, optional swell, exponential tail."""
-    t = i / RATE * 1000.0                                   # ms
-    if t < attack:
-        # raised cosine in, not a straight line: no corner at either end
-        return 0.5 - 0.5 * math.cos(math.pi * t / attack)
-    if swell is not None and t < swell:
-        # hold the ramp climbing to the swell peak, then decay from there
-        return 0.5 - 0.5 * math.cos(math.pi * min(1.0, t / swell))
-    tail = t - (swell if swell is not None else attack)
-    return 10 ** (-3.0 * tail / decay)                       # -60 dB over decay
+def envelope(t_ms, attack, swell, decay):
+    """Amplitude at t: raised-cosine ramp in, optional swell, then -60dB tail."""
+    if t_ms < attack:
+        return 0.5 - 0.5 * math.cos(math.pi * t_ms / attack)
+    if swell is not None and t_ms < swell:
+        return 0.5 - 0.5 * math.cos(math.pi * min(1.0, t_ms / swell))
+    tail = t_ms - (swell if swell is not None else attack)
+    return 10 ** (-3.0 * tail / decay)
 
 
-def render(spec):
-    n = int(spec['ms'] / 1000.0 * RATE)
-    parts = [(1.0, 1.0)] + list(spec['parts'])
-    # Glide by integrating the instantaneous frequency, so the phase stays
-    # continuous - stepping the frequency per sample and multiplying by t
-    # instead is the classic way to get a warble that is not in the design.
+def svf_band(x, fc0, fc1, q):
+    """Chamberlin state-variable bandpass, centre swept fc0 -> fc1.
+
+    Stability wants f1 < ~1, i.e. fc below about rate/6. Everything here is
+    well under that; the cap is belt and braces rather than a real limit.
+    """
+    n = len(x)
+    low = band = 0.0
+    q1 = 1.0 / max(0.5, q)
+    out = [0.0] * n
+    for i in range(n):
+        fc = fc0 + (fc1 - fc0) * (i / max(1, n - 1))
+        f1 = min(0.9, 2.0 * math.sin(math.pi * min(fc, RATE / 6.0) / RATE))
+        high = x[i] - low - q1 * band
+        band += f1 * high
+        low += f1 * band
+        out[i] = band
+    return out
+
+
+# Small-room Schroeder: four damped feedback combs in parallel into two
+# allpasses. Delays are prime-ish and short (8-13ms) so it reads as a room
+# around the speaker, not as an effect.
+COMBS = [389, 457, 541, 613]
+ALLPASS = [151, 61]
+DAMP = 0.28
+
+
+def room(x, rt60_ms, wet):
+    if wet <= 0:
+        return list(x)
+    n = len(x)
+    acc = [0.0] * n
+    for d in COMBS:
+        d_ms = d / RATE * 1000.0
+        g = 10 ** (-3.0 * d_ms / rt60_ms)
+        buf = [0.0] * d
+        store = 0.0
+        idx = 0
+        for i in range(n):
+            y = buf[idx]
+            acc[i] += y
+            store = y * (1.0 - DAMP) + store * DAMP
+            buf[idx] = x[i] + store * g
+            idx = idx + 1 if idx + 1 < d else 0
+    acc = [v / len(COMBS) for v in acc]
+    for d in ALLPASS:
+        buf = [0.0] * d
+        idx = 0
+        for i in range(n):
+            bufout = buf[idx]
+            buf[idx] = acc[i] + bufout * 0.5
+            acc[i] = bufout - acc[i]
+            idx = idx + 1 if idx + 1 < d else 0
+    return [x[i] + wet * acc[i] for i in range(n)]
+
+
+def gen_transient(spec, n, rng):
+    """A few ms of band-passed noise. The physicality of the whole set."""
+    raw = [rng.uniform(-1.0, 1.0) for _ in range(n)]
+    for i in range(n):
+        t = i / RATE * 1000.0
+        raw[i] *= 10 ** (-3.0 * t / spec['decay']) if t > spec['ms'] else 1.0
+    filt = svf_band(raw, spec['fc'], spec['fc'], spec['q'])
+    # hard stop once the burst is spent, so it cannot smear into the body
+    cut = int((spec['ms'] + spec['decay'] * 3) / 1000.0 * RATE)
+    for i in range(cut, n):
+        filt[i] = 0.0
+    return filt
+
+
+def gen_sweep(spec, n, rng):
+    """Band-passed noise with the centre frequency swept. A swoosh."""
+    raw = [rng.uniform(-1.0, 1.0) for _ in range(n)]
+    filt = svf_band(raw, spec['f0'], spec['f1'], spec['q'])
+    for i in range(n):
+        t = i / RATE * 1000.0
+        filt[i] *= envelope(t, spec['attack'], spec['swell'], spec['decay'])
+    return filt
+
+
+def gen_body(spec, n):
+    """Glided tone with inharmonic partials, phase-integrated so it does not
+    warble. Stepping frequency per sample and multiplying by t instead is the
+    classic way to get a wobble that is not in the design."""
+    parts = spec['parts']
     phases = [0.0] * len(parts)
-    raw = []
+    out = [0.0] * n
     for i in range(n):
         frac = i / max(1, n - 1)
         f = spec['f0'] + (spec['f1'] - spec['f0']) * frac
-        env = envelope(i, n, spec['attack'], spec['swell'], spec['decay'])
+        t = i / RATE * 1000.0
+        env = envelope(t, spec['attack'], spec['swell'], spec['decay'])
         v = 0.0
         for k, (ratio, amp) in enumerate(parts):
             phases[k] += 2 * math.pi * f * ratio / RATE
             v += amp * math.sin(phases[k])
-        raw.append(v * env)
-    # Fade the last 8ms to zero: the tail is inaudible by then, but a wav that
+        out[i] = v * env
+    return out
+
+
+def norm(sig):
+    high = max((abs(v) for v in sig), default=0.0) or 1.0
+    return [v / high for v in sig]
+
+
+def render(spec):
+    n = int(spec['ms'] / 1000.0 * RATE)
+    rng = random.Random(spec['seed'])
+    mix = [0.0] * n
+    for key, gen in (('transient', gen_transient), ('sweep', gen_sweep)):
+        if key in spec:
+            layer = norm(gen(spec[key], n, rng))
+            g = 10 ** (spec[key]['level'] / 20.0)
+            for i in range(n):
+                mix[i] += layer[i] * g
+    if 'body' in spec:
+        layer = norm(gen_body(spec['body'], n))
+        g = 10 ** (spec['body']['level'] / 20.0)
+        for i in range(n):
+            mix[i] += layer[i] * g
+
+    mix = room(mix, spec['room']['rt60'], spec['room']['wet'])
+
+    # Fade the last 8ms out. The tail is inaudible by then, but a wav that
     # stops on a non-zero sample clicks on the way out.
     fade = min(int(0.008 * RATE), n)
     for i in range(fade):
-        raw[n - fade + i] *= 0.5 + 0.5 * math.cos(math.pi * i / fade)
+        mix[n - fade + i] *= 0.5 + 0.5 * math.cos(math.pi * i / fade)
 
-    high = max(abs(v) for v in raw) or 1.0
+    high = max((abs(v) for v in mix), default=0.0) or 1.0
     gain = (10 ** (spec['peak'] / 20.0)) / high
-    return [v * gain for v in raw]
+    return [v * gain for v in mix]
 
 
 def write(path, samples):
@@ -141,20 +318,67 @@ def write(path, samples):
         w.writeframes(bytes(frames))
 
 
+def read_mono(path):
+    with wave.open(path, 'rb') as w:
+        n, ch = w.getnframes(), w.getnchannels()
+        raw = w.readframes(n)
+    vals = struct.unpack('<%dh' % (len(raw) // 2), raw)
+    return [v / 32768.0 for v in vals[::ch]]
+
+
+def _db(v):
+    return 20 * math.log10(v) if v > 1e-9 else -99.0
+
+
+def levels(sig):
+    """peak, whole-file RMS, and loud50 - see the note in the module docstring
+    about why only the last one is worth acting on."""
+    pk = max((abs(v) for v in sig), default=0.0)
+    rms = math.sqrt(sum(v * v for v in sig) / max(1, len(sig)))
+    w = int(0.050 * RATE)
+    if len(sig) <= w:
+        loud = rms
+    else:
+        run = best = sum(v * v for v in sig[:w])
+        for i in range(w, len(sig)):
+            run += sig[i] * sig[i] - sig[i - w] * sig[i - w]
+            best = max(best, run)
+        loud = math.sqrt(best / w)
+    return _db(pk), _db(rms), _db(loud)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--check', action='store_true',
                     help='regenerate to a temp dir and report differences')
+    ap.add_argument('--measure', action='store_true',
+                    help='print peak/RMS of the wavs on disk and exit')
+    ap.add_argument('--audition', metavar='PATH',
+                    help='also write one wav of all seven in sequence')
     ap.add_argument('--out', default=OUT)
     args = ap.parse_args()
+
+    if args.measure:
+        for name in ORDER:
+            path = os.path.join(args.out, name + '.wav')
+            if not os.path.exists(path):
+                print('%-8s MISSING' % name)
+                continue
+            sig = read_mono(path)
+            pk, rms, loud = levels(sig)
+            print('%-8s %6.0fms  peak %6.1f  rms %6.1f  loud50 %6.1f  dBFS'
+                  % (name, len(sig) / RATE * 1000, pk, rms, loud))
+        return 0
 
     dest = tempfile.mkdtemp(prefix='uisounds-') if args.check else args.out
     os.makedirs(dest, exist_ok=True)
 
-    differs = []
-    for name, spec in sorted(SOUNDS.items()):
+    differs, rendered = [], {}
+    for name in ORDER:
+        sig = render(SOUNDS[name])
+        rendered[name] = sig
         path = os.path.join(dest, name + '.wav')
-        write(path, render(spec))
+        write(path, sig)
         live = os.path.join(args.out, name + '.wav')
         if args.check:
             same = (os.path.exists(live) and
@@ -163,10 +387,20 @@ def main():
             if not same:
                 differs.append(name)
         else:
-            print('%-8s %4dms  peak %+d dBFS  %s' % (
-                name, spec['ms'], spec['peak'],
-                '%dHz' % spec['f0'] if spec['f0'] == spec['f1']
-                else '%d->%dHz' % (spec['f0'], spec['f1'])))
+            pk, rms, loud = levels(sig)
+            print('%-8s %6.0fms  peak %6.1f  loud50 %6.1f  %s'
+                  % (name, SOUNDS[name]['ms'], pk, loud,
+                     '+'.join(k for k in ('transient', 'sweep', 'body')
+                              if k in SOUNDS[name])))
+
+    if args.audition:
+        gap = [0.0] * int(0.55 * RATE)
+        seq = []
+        for name in ORDER:
+            seq += rendered[name] + gap
+        write(args.audition, seq)
+        print('audition -> %s (%.1fs)' % (args.audition, len(seq) / RATE))
+
     return 1 if differs else 0
 
 
