@@ -27,6 +27,11 @@ before answering any game question. Update this file at every milestone.
   permanently unavailable before he finishes exploring gets raised immediately
   and unprompted (as with Eileen/Henryk and the Afflicted Beggar). Missables
   are the clock, not secrets.
+- **DIRECTIONS MUST NOT NAME THE DESTINATION (29 Aug, his callout).** Saying
+  "the cave leads to Iosefka's Clinic" spoiled the reveal at the end of the
+  route. Route him by LANDMARKS ONLY (lamp, dog cages, side path left, winding
+  steps, poison swamp, ladder) and let the place announce itself when he gets
+  there. He raised it mildly and said it was okay, but logged as a rule.
 - No-stakes choices get "follow your gut, nothing mechanical hinges".
 - He reports sends/choices AFTER making them; assistant confirms whether
   anything needs flagging, still without outcomes.
@@ -36,6 +41,74 @@ before answering any game question. Update this file at every milestone.
   judge people by how they speak of others; incense logic (would the
   beast-warding incense object); circumstances they're found in.
   Plus: the send system announces itself - no offer, no stakes.
+
+## Progress (updated 29 Aug 2026, evening)
+- 29 Aug: **SHADOWS OF YHARNAM DEAD.** Forbidden Woods is cleared, Byrgenwerth
+  is open, and **the watershed is now literally the next thing** (the lake off
+  the Byrgenwerth pier IS Rom). Bosses: Cleric Beast, Gascoigne, Witch, BSB,
+  Paarl, Amelia, Shadows.
+  **THE LOAD-BEARING WARNING WAS DELIVERED** (settle everyone before the lake).
+  Told: Byrgenwerth itself is safe to walk into and to talk to the man in the
+  rocking chair, the pier/lake is the line, no outcomes given.
+  Open pre-Rom business handed to him, deadlines only:
+  1. **BEGGAR SENT TO THE CLINIC (he reported it after the fact) - this is a
+     SAFE play.** The chapel roster (Adella, Arianna, Lonely Old Dame) is out
+     of danger and cord C's chapel risk is now only the Adella jealousy one.
+     Told only "nothing to flag" plus "there is something worth collecting at
+     the clinic later, I will raise it when it is live" (= Beast rune off the
+     mob post-Rom, NOT named).
+  2. Poison cave ladder at the far end of the Woods -> back door of the clinic.
+     Item on a table there opens an optional region + a whole NPC chain that
+     wants finishing pre-lake. TRAP GIVEN: do not attack the woman upstairs,
+     it costs something permanent (cord B, not named).
+  3. Alfred is still waiting on the balcony; his chain runs through that item.
+  4. Hypogean Gaol full sweep if never done (that area changes at the lake).
+     Adella herself is already safe at the chapel, so only loot is at risk.
+  5. Visit the window people, incl. Gilbert, before the lake. Last chance.
+  6. Never drink Blood of Arianna (standing).
+  7. **CORD A CONFIRMED HELD.** He looted the whole Abandoned Old Workshop and
+     gave the Small Hair Ornament to the Doll (so the Tear Stone is his too).
+     Cord tally: A held, D unmissable, B is post-watershed, C rides on Arianna.
+  8. **He refused to re-sweep the Woods ("it all looks the same") and asked for
+     tier-3 directions instead - GIVEN, from the Forbidden Woods lamp:**
+     (a) Valtr = the shortcut hut right beside the first lamp; if its door is
+     still barred he has not run the elevator yet and must come up from below.
+     Framed as an optional oath rune, no deadline, DLC NPC so "if he is not
+     there, no loss".
+     (b) The cave = main path down from the first lamp to the dog cages/kennels
+     shacks, side path off to the left of the cages, winding steps down
+     (antidotes on the way), poison swamp with the big Church Giants (run it,
+     do not fight), ladder at the far end, up into the clinic's back courtyard.
+     Told to take the summons off the table, that it opens an optional region
+     reached from the Hemwick crossroads obelisk he was already shown, that
+     the region ends in a proper boss, and that the chain it starts is what
+     eventually gives Alfred his item. Do it before the lake to be safe.
+     TRAP RESTATED: do not attack the woman upstairs in the clinic.
+     Sources: Fextralife Forbidden Woods + Valtr pages, bloodborne-guide
+     tumblr walkthrough. Route corroborated across three sources.
+  9. He will not tour the window NPCs; **only Gilbert was asked for.**
+  10. **CAINHURST SUMMONS OBTAINED 29 Aug.** He ran the cave, came up the
+     ladder, opened the clinic door from the inside, saw the operating room and
+     the Celestial Mobs, and took a blood vial off her. He did NOT attack her
+     (trap restated twice, held). He asked outright "is the woman upstairs the
+     one I was speaking to" - answered YES, plain object identity only, and
+     nothing about impostor/cord B. **He is piecing the clinic out himself, do
+     not get ahead of him.** Deliberately did NOT tell him the Celestial Mobs
+     are the people he sent.
+  11. **SEND SYSTEM IS EFFECTIVELY CLOSED: all six are placed.** Adella,
+     Arianna, Lonely Old Dame -> chapel; Skeptical Man, Suspicious Beggar ->
+     clinic; Young Girl brooched (out of the system, stays indoors). Told him
+     sends still pay out until the lake but there is nobody left to send.
+  Weapons thread: wants a STRENGTH mainstay. Told Kirkhammer is already
+  buyable (3,000, Cleric Beast badge) as a cheap feel-test, Ludwig's Holy Blade
+  is the destination (20,000 + Radiant Sword Hunter Badge, chest on the top
+  floor of the Healing Church Workshop, looks like the wall coffins), Str 16 /
+  Skl 12, and that the real cost of switching is re-climbing to +6 in Twin
+  Shards. Told to keep the Cleaver as the beast killer. Stats never given.
+  Insight: 21 lost to a Brainsucker grab at Byrgenwerth (2 per grab, permanent);
+  he holds 27 Madman's Knowledge. Advised to bank them and stay under 15 for
+  the Frenzy and enemy-upgrade thresholds, spending one only to wake the Doll.
+  Eileen's next beat is still post-watershed and still on me to raise.
 
 ## Progress (updated 28 Aug 2026, morning)
 - 28 Aug: **DARKBEAST PAARL DEAD** ("that spark boss just outside the gaol

@@ -404,7 +404,169 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (29 Aug 2026 ~22:00 — sol reviews landed, trophies fixed, two emulator fixes armed, sounds waiting on Donnie)
+## ▶ Resume here (30 Aug 2026 ~16:45 — UI sounds rewritten and LIVE, Bloodborne is a Steam shortcut, the DS3 save came back from the dead)
+
+### ▶▶ DONNIE'S TO-DO (only he can do these)
+
+1. **`sudo systemctl restart inputproc.service`** — STILL OUTSTANDING. pid 1161,
+   up since 27 Aug 10:20, so it is running 27 Aug code and the input-ownership
+   fix (`9d11873`) has never gone live. **Do it at the TV, not from work**: that
+   process holds the exclusive grab on the only controller. Panic lever
+   `sudo couchd-input-release`. Every inputproc restart deafens flatpak Kodi
+   until `peripheral.joystick` is addon-bounced — the assistant can do that
+   over Kodi's API afterwards, no sudo needed.
+2. **Judge the new UI sounds by ear.** They are live on the box and measured
+   correct (see §1), but whether they *sound* right in the room over the
+   soundbar is the one thing no measurement here can settle. mp3 A/B of the old
+   and new sets was sent in chat. Retuning is a number in `SOUNDS`, never a wav.
+3. Still outstanding from 26 Aug:
+   `sudo rm /var/lib/apport/coredump/core._tmp_claude*bbcw-dummy*`
+
+**Item 2 of the 29 Aug list is DEAD**: "pick UI sounds from the Kenney audition
+page" is obsolete. He heard them, said they "kind of sucked", and the set was
+rewritten from scratch instead. Do not re-offer that page.
+
+### 1. UI sounds — REWRITTEN, DEPLOYED, LIVE, AND PROVEN AT THE SINK
+
+The 29 Aug diagnosis ("just mixed too quiet") was half wrong and **measured
+wrong**. The old set was seven pure SINE waves under an exponential decay; no
+amount of gain makes a sine sound like a console.
+
+**MEASURE loud50, NOT whole-file RMS.** Whole-file RMS divides by length, so
+giving a sound a reverb tail makes the number go DOWN while it gets louder —
+the first pass of this rewrite looked like a regression by that metric while
+plainly being louder. `tools/make-uisounds --measure` now reports peak, RMS and
+**loud50** (RMS of the hottest 50ms window). Only loud50 means anything here.
+
+Each sound is now three layers, all still numbers in `SOUNDS`:
+transient (band-passed noise at the attack — the reason a click reads as
+physical), body (inharmonic partials, 2.63x/3.06x not 2x/3x), room (150-500ms
+damped Schroeder). `in`/`out`/`launch` add a swept-bandpass noise layer.
+
+Levels (loud50 dBFS): cursor -21.8, launch -12.5, the rest -17.5 to -18.8.
+**The cursor was 18.7 dB under launch; it is 9.3 now.** Noise uses a seeded rng
+so output stays byte-reproducible and `--check` still means something.
+
+**Verified, not asserted.** Attack windows measure spectral flatness 0.5-0.7
+(broadband) against bodies at 0.18-0.44 (tonal); no clipping, no DC. Then
+recorded the HDMI sink monitor while sending two d-pad presses:
+`2 bursts, 96ms each, peak -5.7 dBFS, dominant 2427 Hz` — against a design of
+-6.0 dBFS at 2400 Hz. That is the new tick coming out of the real sink.
+Old wavs kept at `data/uisounds-backup-20260830/`.
+
+### 2. Bloodborne is a Steam shortcut now (`tools/steam-shortcut`) — CONFIRMED WORKING
+
+Donnie: "can you pause and add bloodborne as a steam game so i can launch from
+big picture". He has since launched it from Big Picture and confirmed it brings
+up our own loading card.
+
+`shortcuts.vdf` is a **binary VDF that Steam rewrites from memory on shutdown**,
+so the only safe sequence is `steam -shutdown` → edit → start, which the tool
+does and then verifies by reading the file back after Steam is up again. The
+shortcut points at **`game-launch`, not the emulator**, so it gets the Kodi
+input handover, the curtain, the TV wake and suspend/resume. `AllowOverlay=0`
+on purpose: the overlay works by LD_PRELOAD, which is a good way to break a
+shell script that execs something else.
+
+Grid art goes in `userdata/1024364793/config/grid/<appid>.*` — **Steam does not
+own that folder**, so `--art-only` rewrites art with no shutdown at all.
+
+**One thing found and NOT chased:** `game-launch bigpicture` brought Big Picture
+up at full size but left it **stacked underneath Kodi**, so the screen never
+changed. Had to raise it by hand with `_NET_ACTIVE_WINDOW`. May be the known
+restack weakness, may only bite when the request comes from a shell rather than
+the pad. Does not affect launching a game from Big Picture.
+
+### 3. Loading spinner — smoother, and a real drift bug fixed
+
+Donnie: "can we increase the frame rate and in between frames". Two problems.
+
+`loading-card` was **24 frames at 12fps** — a 15-degree jump every 83ms. Now
+**60 at 30**, measured off the generated strip at `mean 6.00 deg` per frame,
+`360.0 deg over 60 frames = 2.00s`. Same speed, 2.5x the resolution.
+
+The bigger one was in `curtain`: the tick loop scheduled `now + period`,
+restarting the clock from each wakeup, so every tick's lateness compounded.
+Simulated with realistic jitter: **old 27.8 fps, new 30.0** — it was silently
+losing ~9 frames every 4 seconds. Now advances the schedule, with a resync if
+it falls more than a whole frame behind.
+
+Also: **`SPIN_VERSION`** in `loading-card`, because the card cache validates on
+the ART's mtimes, which say nothing about the spinner — without it a redesign
+silently keeps serving the old strip. And **all 13 cards were pre-warmed**
+(cold compose 2.0s, warm 22ms), or the first launch per game would show the
+shuffle the curtain exists to hide. 52 curtain tests pass.
+
+### 4. Bloodborne hero art replaced — it was a SPOILER sitting on the home screen
+
+Donnie: "can we change the bloodborne artwork to a proper game poster / banner
+art instead of a screencap of a final boss". He is playing **blind**. Replaced
+with the official textless key art, genuine 3840x2160 native (picked from six
+4K candidates, the only one unambiguously safe for a blind player). Old one at
+`data/art-backups/`. **Do not tell him what the old one was.**
+
+Live on both surfaces, screenshot-verified: Kodi home and the Steam Big Picture
+backdrop. Two traps: the card cache busts itself on the hero's mtime (good), but
+**Kodi kept drawing the old texture even after `Textures.RemoveTexture` and
+navigating away and back — only a Kodi restart cleared it.**
+
+### 5. THE DARK SOULS III SAVE CAME BACK, and the hole it exposed is closed
+
+His DS3 save from **17 Oct 2024** was recovered from `C:\Windows.old` on his
+Windows PC — a folder Windows should have deleted ten days after a May 2026
+"keep my files" factory reset (which still wipes AppData) and had kept for
+three months. Pure luck. Installed and checksum-verified.
+
+**None of these games have cloud saves.** DS3 never had Steam Cloud (DS1 did);
+Elden Ring and Sekiro have none; Bloodborne is an emulator. Every save on the
+box lived in exactly one place.
+
+`tools/save-backup` + `save-backup.timer` (user, 10 min) now snapshots all four,
+content-hashed so idle costs nothing. It deliberately does **not** wait for the
+game to quit (a file touched in the last 20s is deferred as mid-write instead)
+and deliberately does **not** sync to the PC (a sync conflict eating a save is
+worse than the problem). Restore snapshots the current save first; the path was
+exercised end to end on Sekiro. Every archive was extracted and compared
+byte-for-byte against the live files: 19/19 identical.
+
+**Off-box needed no work**: `~/.local/bin/backup-all.sh` (root crontab 03:35,
+rsync to dns2) already lists `/home/ds2000/couch` and no exclude touches
+`data/`. The 03:35 run has already carried them; verified on dns2 by MD5.
+
+### 6. Bloodborne companion — HE IS AT THE WATERSHED
+
+`docs/research/bloodborne-progress.md` is current. **Shadows of Yharnam dead,
+Byrgenwerth open, and the lake off the pier IS Rom** — the load-bearing "settle
+everyone before the lake" warning was delivered in full.
+
+Pre-lake business he holds: the Cainhurst summons chain (obtained; next stop the
+Hemwick obelisk, feeds Alfred), and Gilbert. Everything else is settled — all
+six refugees are placed, beggar sent to the clinic (safe), cord A confirmed
+held. **Eileen's Grand Cathedral beat after Rom is still MINE to raise.**
+
+New standing rule, his callout: **directions must not name the destination.**
+Saying "the cave leads to Iosefka's Clinic" spoiled the reveal at the end of the
+route. Landmarks only; let the place announce itself.
+
+Also this session: he lost 21 Insight to a Brainsucker at Byrgenwerth (2 per
+grab, permanent, mash out to lose 1) and holds 27 Madman's Knowledge — advised
+to bank them and stay under 15 for the Frenzy and enemy-upgrade thresholds. The
+"bell on a stick coming out of the ground" in the Dream is the **Beckoning
+Bell's summon marker**, not an item; Silencing Blank clears it and refunds.
+
+### Uncommitted / loose
+
+Standing convention, deliberately uncommitted: `data/`, `shadow/`,
+`recordings/`. **Inherited and NOT mine:** `tools/game-quiet` +
+`tools/test_game_quiet.py` (predates this session, left alone).
+
+`tools/console-idle` exists on disk from a thread Donnie asked to drop. It is a
+read-only "is the console in use" check. Not documented further on purpose.
+
+The `save-backup` systemd units live in `~/.config/systemd/user/` and are **not
+in the repo** — consistent with `spotify-heal`, which is not either.
+
+## ▶ Previous (29 Aug 2026 ~22:00 — sol reviews landed, trophies fixed, two emulator fixes armed, sounds waiting on Donnie)
 
 ### ▶▶ DONNIE'S TO-DO (only he can do these)
 
