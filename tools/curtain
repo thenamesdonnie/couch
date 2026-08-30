@@ -886,8 +886,21 @@ def loop(overlay, deadline, timeout):
             if overlay.spin:
                 if now >= next_spin:
                     overlay.spin_tick()
-                    next_spin = now + overlay.spin['period'] \
-                        if overlay.spin else now + 3600
+                    if overlay.spin:
+                        # Advance the SCHEDULE, not "now + period". Restarting
+                        # the clock from `now` adds the whole of this tick's
+                        # lateness to every subsequent one, so the cadence
+                        # drifts long and uneven - which reads as judder, and
+                        # was doing so on top of the old 12fps. Only if we are
+                        # more than a frame behind (a stall, not jitter) do we
+                        # give up on the missed slots and resynchronise, so a
+                        # hiccup cannot make the spinner sprint to catch up.
+                        period = overlay.spin['period']
+                        next_spin += period
+                        if next_spin < now:
+                            next_spin = now + period
+                    else:
+                        next_spin = now + 3600
                 wait_ms = max(1, min(wait_ms,
                                      int((next_spin - now) * 1000) + 1))
             for _fd, _mask in poller.poll(wait_ms):

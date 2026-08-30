@@ -29,6 +29,23 @@ FONT_DIR = os.path.join(HOME, 'couch/kodi-addons/skin.couch/fonts/Figtree')
 OUT_TMPL = '/tmp/couch-loading-%dx%d.png'   # legacy; cache below supersedes
 CACHE_DIR = os.path.join(HOME, 'couch/data/loading-cards')
 
+#: The spinner's cadence. 30 Aug 2026, Donnie: "can we increase the frame rate
+#: and in between frames or whatever to make the loading circle smoother".
+#: It was 24 frames at 12fps, i.e. a 15-degree jump every 83ms, which is
+#: visibly steppy on a 4K screen where the ring is 155px across. Now 60 at 30:
+#: the rotation still takes 2.0s, so the SPEED is unchanged and only the
+#: smoothness moves - 6 degrees every 33ms.
+#:
+#: The curtain's event loop already shortens its poll wait to land on the next
+#: tick, so 30fps costs nothing there. Generation is 60 supersampled draws
+#: instead of 24, and the result is cached per game per resolution.
+SPIN_FRAMES = 60
+SPIN_FPS = 30
+#: Bumped whenever the numbers above (or the arc's shape) change. The cache is
+#: validated on the ART's mtimes, which say nothing about the spinner, so
+#: without this a redesign would silently keep serving the old strip.
+SPIN_VERSION = 2
+
 
 def steam_name(appid):
     for path in glob.glob(os.path.join(STEAMAPPS, 'appmanifest_%s.acf' % appid)):
@@ -108,7 +125,7 @@ def main():
     sw = int(sys.argv[2]) if len(sys.argv) > 2 else 3840
     sh = int(sys.argv[3]) if len(sys.argv) > 3 else 2160
 
-    # The cache: composing a 4K card + 24 spinner frames costs seconds of
+    # The cache: composing a 4K card + its spinner frames costs seconds of
     # PIL work, which used to be a black screen at the head of every launch.
     # Cards are keyed by appid+resolution and validated against the source
     # art's mtimes, all with stat() calls before PIL is even imported - a
@@ -132,6 +149,7 @@ def main():
     try:
         meta = _json.load(open(meta_path))
         if (os.path.isfile(out) and os.path.isfile(strip_out)
+                and meta.get('spin_version') == SPIN_VERSION
                 and meta.get('sources') == _mtimes(list(meta['sources']))):
             print(out)
             print('spinner %s %d %d %d %d %d' % (strip_out, *meta['spin']))
@@ -200,7 +218,7 @@ def main():
     # composited over the card's own pixels at the spinner rect, so the
     # curtain can animate it with plain opaque blits.
     from PIL import Image as _I
-    n_frames, fps = 24, 12
+    n_frames, fps = SPIN_FRAMES, SPIN_FPS
     dia = max(56, int(sh * 0.072))
     sx, sy = cx - dia // 2, base + int(sh * 0.02)
     ss = 4  # supersample for smooth arcs
@@ -233,6 +251,7 @@ def main():
     strip.save(tmp, 'PNG')
     os.replace(tmp, strip_out)
     meta = {'sources': _mtimes([p for p in (hero, logo) if p]),
+            'spin_version': SPIN_VERSION,
             'spin': [sx, sy, dia, n_frames, fps]}
     tmp = meta_path + '.part'
     with open(tmp, 'w') as fh:
