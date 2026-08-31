@@ -42,6 +42,48 @@ before answering any game question. Update this file at every milestone.
   beast-warding incense object); circumstances they're found in.
   Plus: the send system announces itself - no offer, no stakes.
 
+## Progress (updated 31 Aug 2026)
+- 31 Aug: **HE IS IN CAINHURST, AT THE ROOFTOP BOSS** (asked for tips, then
+  "what resistance do i need, his spells do so much damage"). So the summons
+  chain is running and the lake is still untouched. Given, combat only:
+  parry-into-visceral is the win condition, stay close or he casts, the
+  planted-sword AoE can be SHOT to destroy it early, pillars break the skull
+  volleys, Bolt Paper (he resists fire/arcane/bolt... i.e. do not bring
+  molotovs), all his spells are ARCANE, wear the Black Church Set (280 arcane
+  vs the Doll Set's 150), and Bloodborne has no resistance stat so Vitality is
+  the real mitigation. Boss NOT named to him, nothing about what is behind him.
+  **FLAG ALREADY GIVEN AND STILL OPEN: he must ping before handing anything to
+  Alfred** (order matters: join the queen first if he wants both). Do not let
+  that slip, and Eileen's post-Rom beat is still on me.
+- 31 Aug: the sprint-roll annoyed him ("disable the jump?"). I first said L3,
+  he TESTED IT and it is circle-after-sprint, i.e. the sprint roll doubling as
+  the gap jump - same button, state-dependent, so no remap can fix it. Offered
+  the Nexus mod "Jump on L3" (mod 156) as an after-the-fight job: he downloads
+  to ~/fileshare/bloodborne-mods, bb-mod-install does the rest, and CHECK A LAMP
+  before he commits a session (behaviour layer = the lamp saga layer).
+- 31 Aug: **RUNBACK: "can we turn on spawn at boss" - NOTHING TO DO, IT IS
+  ALREADY ON.** Enhanced's `Quick Warp to Bosses` (12100857) and `Prompt Quick
+  Warp to Bosses` (12100893) both read ON in the LIVE save (checked with
+  tools/bb-eventflags.py --mod-settings against
+  ~/.local/share/shadPS4/home/1000/savedata/CUSA00900/SPRJ0005/userdata0000).
+  It is the mod's Stakes-of-Marika: once a boss is met and until it dies,
+  nearby lamps get a warp entry straight to the arena, and the prompt auto-pops
+  on respawn. Told him no restart needed (read-only check, flags set since
+  install), and that if the entry is genuinely absent it may be a script/-less
+  menu gap and I want to hear about it.
+  RED HERRING RULED OUT: `Broken Lamp: Death Respawn Location` (12100859 =
+  Boss Lamp) applies ONLY to broken-lamp rematches, not first kills.
+  Full flag map for all 51 settings is in the mod archive at
+  `_data/settings.json` (PossibleValues gives both flag ids per setting) -
+  the tool's MOD_SETTINGS list only covers 12 of them.
+- 31 Aug: asked where to get Blood Stone Chunks. Told: Cainhurst is the best
+  pre-lake source (~5), costs are 3/5/8 = 16 chunks for one weapon +6 to +9,
+  so he cannot climb two, and to spend nothing above +6 until the Ludwig's
+  decision is made. Future sources given WITHOUT names: buyable with Insight
+  from the bath messengers at a later point (I flag when live - this is the
+  payoff for his banked Madman's Knowledge), plentiful after the lake, and
+  chalice dungeons as the infinite farm if he ever wants it.
+
 ## Progress (updated 29 Aug 2026, evening)
 - 29 Aug: **SHADOWS OF YHARNAM DEAD.** Forbidden Woods is cleared, Byrgenwerth
   is open, and **the watershed is now literally the next thing** (the lake off
@@ -250,3 +292,32 @@ before answering any game question. Update this file at every milestone.
   normal gameplay; first episode min 62-64 of the 18:42 session; MangoHud
   showed presents up to 4372fps at max clocks/176W. tools/gpu-spike-watch
   armed (6h self-expiring) to attribute per-process on next episode.
+
+## 31 Aug 2026 (late): CHEATS, because Logarius stopped being fun
+
+He asked outright for an invincibility mode ("this fight just isn't fun ...
+there's not really much counterplay"). Delivered, and it is his game, so no
+hand-wringing about it - but note for the companion service that the blind-run
+rules still apply to INFORMATION. Cheats are a difficulty valve, not a licence
+to start narrating what is coming.
+
+**`tools/bb-cheat`** (new). Enables shadPS4's official cheats for Bloodborne
+without the Qt GUI, which is unreachable here (SDL build, no keyboard/mouse at
+the TV). Available: Infinite Health, Infinite Stamina, 1 Hit Kill, Infinite
+Items, Infinite BloodEcho, Infinite Lucidity.
+  * Cheat file: `~/.local/share/shadPS4/cheats/CUSA00900_01.09.json` (fetched
+    from shadps4-emu/ps4_cheats).
+  * Boot mode: rewrites them as `<Metadata>` blocks into the SAME XML the 60fps
+    unlock uses (`patches/shadPS4/Bloodborne.xml`), which the SDL build applies
+    automatically at eboot load. Blocks are tagged `couch-cheat: ` so upstream's
+    59 blocks are never touched; verified 59 -> 61 blocks, 2615 patch lines intact.
+  * **Address rule (verified in src/common/memory_patcher.cpp, not guessed):**
+    a cheat JSON offset is eboot-relative, an XML Address is an absolute PS4 VA
+    and the emulator subtracts 0x400000. So `Address = offset + 0x400000`.
+    `Type="bytes"` values are raw hex pairs, NO 0x prefix.
+  * Live mode: `bb-cheat live on|off|status`. Writes the bytes into the running
+    process at `0x800000000 + offset` (eboot base is fixed; it is the first
+    `base_virtual_addr` line in shad_log). Verifies the current bytes match
+    either the patched or the original set before writing, and reads back after.
+  * **Needs `sudo sysctl kernel.yama.ptrace_scope=0`** (scope is 1 by default,
+    which forbids cross-process memory writes). Handed to Donnie to paste.

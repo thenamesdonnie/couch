@@ -15,6 +15,7 @@ import { WebSocketServer } from 'ws';
 import { PORT, LAN_HOST, AUTOROUTE_OFF } from './config.js';
 import { rpc, artUrl, kodiAuthHeader, KodiEvents, playerState, sendBuiltin } from './kodi.js';
 import { listGames, isAllowedArt } from './games.js';
+import * as cheats from './cheats.js';
 import * as sys from './sys.js';
 import * as jellyfin from './jellyfin.js';
 import * as jellyseerr from './jellyseerr.js';
@@ -475,6 +476,15 @@ app.post('/api/games/suspend', wrap(async () => ({ suspended: await sys.suspendG
 
 app.post('/api/games/resume', wrap(async () => sys.resumeGame()));
 app.post('/api/games/quit', wrap(async () => sys.quitGame()));
+
+// Bloodborne cheat toggles. Only the one game has them, so the route is not
+// parameterised by game id - it would be a lie to imply the others work.
+app.get('/api/games/cheats', wrap(async () => cheats.state()));
+
+app.post('/api/games/cheats', wrap(async (req) => {
+  const { name, on } = req.body ?? {};
+  return cheats.setCheat(String(name || ''), !!on);
+}));
 
 // --- steam library + downloads ---
 

@@ -63,3 +63,54 @@ nothing else.**
 - Two emulator instances ran concurrently against one save for a while
   (Kodi-tile launch + shell launch). Coordinate who launches.
 - Vanilla vial refill on death draws from STORAGE; empty storage = no refill.
+
+## 31 Aug 2026: script/ PUT BACK IN (retry), and what its absence had cost
+
+Discovered while chasing a Cainhurst runback complaint: **a lamp is a talk
+object**, so keeping `script/` vanilla did not just cost NPC dialogue - it made
+the mod's entire lamp menu inert. Specifically dead the whole time:
+Lamp Menu (+ Warp / Level Up / Workshop / Storage / Messengers / Boss
+Rematches), **Quick Warp to Bosses** (the Stakes-of-Marika runback skip), and
+the Doll's **"Enhanced Features" settings menu** - i.e. all 46 supposedly
+in-game-toggleable settings have never once been reachable.
+
+The trap that hid it: `bb-eventflags.py --mod-settings` reads `Quick Warp to
+Bosses` (12100857) and `Prompt Quick Warp to Bosses` (12100893) as **ON** in the
+live save. The flag being set only means the setting is enabled; it says nothing
+about whether anything can deliver it. Donnie had never seen a single prompt.
+
+Retry rationale: the 26 Aug bisect convicted `script/`, but the suspected cause
+was a stale talk-flow flag left by that session's freeze/OOM, "sidestepped
+rather than explained". Clean save, so worth one honest test.
+
+Done: saves snapshotted (`20260831T132421Z-6da4c59c5a5a.tar.gz`), then
+`bb-bisect install script` (19 files, 0 added files, so revert is a pure
+restore). `param/` deliberately untouched - it carries the 9999-durability
+patch and reads "vanilla" to bb-bisect status for that reason.
+
+**Panic lever: `tools/bb-script-revert`** (and `--check` to ask which state the
+dump is in). NOT play-tested at time of writing - the verdict is whether a lamp
+still responds on the next launch.
+
+### VERDICT (same evening): RETRY FAILED, script/ IS THE CAUSE. DO NOT RETRY.
+
+Lamps died again on the first launch, on a clean save with no freeze/OOM in the
+session. That kills the "stale talk flag" theory outright and convicts the files
+themselves for the second time. Reverted with `tools/bb-script-revert` (19 files,
+verified VANILLA). **Treat script/ as permanently out unless the root cause below
+is actually solved - it is not a coin flip, it is 2 for 2.**
+
+Standing consequence: the runback stays, `Quick Warp to Bosses` stays inert
+despite its flag being ON, and the Doll's settings menu stays absent, so any mod
+setting Donnie wants changed must be done by writing the flag into the save
+(group 12100 = slot 50; flag ids for all 51 settings are in the archive's
+`_data/settings.json` under `PossibleValues`). bb-eventflags.py reads; a writer
+is ~10 lines on top of it and is the obvious next tool if he wants a setting.
+
+UNTESTED LEAD for anyone who picks this up: the archive is
+"FullPackage ... ---- patcher.0.5.1 ---- fix9" and ships `BBEnhancedPatcherGUI`
+plus a 1MB `_data/emevd_patches.json`. We have only ever done a plain file
+overlay via bb-mod-install and have NEVER run the patcher (Windows .NET 8
+WinForms; source in `_src/`). If the shipped talk ESDs assume a patcher pass over
+the dump's own files, a raw overlay would be exactly this broken. Worth reading
+`_src/BBEnhancedPatcherGUI/Form1.cs` (114KB) before ever touching script/ again.

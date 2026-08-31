@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# PANIC LEVER: put Bloodborne's talk scripts back to VANILLA.
+#
+# Context (31 Aug 2026). Bloodborne Enhanced was installed on 24 Aug MINUS its
+# script/ category, because the 26 Aug bisect convicted script/ of making every
+# lamp un-interactable (docs/research/bloodborne-lamp-saga-20260826.md). The
+# cost of that, discovered 31 Aug: a lamp is a TALK object, so the mod's whole
+# lamp menu lives in script/talk/ and was therefore inert - including
+# "Quick Warp to Bosses", the feature that skips a boss runback, which read as
+# ENABLED in the save the entire time with nothing able to deliver it. The Doll's
+# "Enhanced Features" settings menu was missing for the same reason.
+#
+# So script/ went back IN on 31 Aug as a retry, on the theory that the original
+# lamp failure was a stale talk flag left by that session's freeze/OOM rather
+# than the files themselves. If the lamps break again, run this.
+#
+#   bb-script-revert          restore the 19 vanilla script files
+#   bb-script-revert --check  say which state the dump is in, change nothing
+#
+# Only script/ is touched. param/ is deliberately left alone: it carries the
+# 9999-durability patch (tools/bb-durability-patch.py), which a mod reinstall
+# would silently wipe.
+set -euo pipefail
+
+VAN="$HOME/couch/data/bb-mod-backups-copy/BloodborneEnhanced-0.11.2-fix9/files/script"
+GAME="$HOME/games/ps4/CUSA00900/dvdroot_ps4/script"
+
+[ -d "$VAN" ] || { echo "no vanilla backup at $VAN" >&2; exit 1; }
+
+if [ "${1:-}" = "--check" ]; then
+    probe="talk/m21_00_00_00.talkesdbnd.dcx"
+    if cmp -s "$VAN/$probe" "$GAME/$probe"; then
+        echo "script/: VANILLA (mod lamp menu + Doll settings menu are inert)"
+    else
+        echo "script/: MODDED (mod lamp menu should be live)"
+    fi
+    exit 0
+fi
+
+if pgrep -x shadps4 >/dev/null 2>&1 || pgrep -f "Shadps4-sdl" >/dev/null 2>&1; then
+    echo "shadPS4 is running - quit the game first, it reads these files" >&2
+    exit 1
+fi
+
+n=0
+while IFS= read -r -d '' rel; do
+    rel="${rel#./}"
+    mkdir -p "$GAME/$(dirname "$rel")"
+    cp "$VAN/$rel" "$GAME/$rel"
+    n=$((n + 1))
+done < <(cd "$VAN" && find . -type f -print0)
+
+echo "restored $n vanilla script files - lamps should behave again on next launch"

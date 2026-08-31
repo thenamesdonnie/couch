@@ -2,6 +2,10 @@
   import { live, api } from './state.svelte.js';
   import { ui, cache, loadGames, loadSteamLib } from './store.svelte.js';
   import { fadeimg } from './img.js';
+  import { fadeIn, fadeOut, slideDown, slideUp } from './anim.js';
+  import { dragDismiss } from './drag.js';
+  import { portal } from './portal.js';
+  import { reducedMotion } from './reduced-motion.js';
   import Icon from './Icon.svelte';
   import Pip from './Pip.svelte';
 
@@ -43,10 +47,58 @@
     return false;
   }
 
+  // Games with cheat support open an options sheet instead of launching on
+  // tap, so the cheats are reachable without a keyboard at the television.
+  let sheet = $state(null);        // the game whose sheet is open
+  let cheats = $state(null);       // null while loading
+  let cheatNote = $state('');
+  let busy = $state(new Set());    // cheat names mid-toggle
+
+  async function loadCheats() {
+    cheats = null;
+    try { cheats = await api('/api/games/cheats'); } catch { cheats = { cheats: [] }; }
+  }
+
+  function openSheet(g) {
+    sheet = g;
+    cheatNote = '';
+    loadCheats();
+  }
+
+  // A cheat is "on" if it is live in the running game, or armed for the next
+  // launch when nothing is running. Those are the same switch to the player.
+  function cheatOn(c) {
+    return c.live ? c.live === 'on' : c.boot;
+  }
+
+  async function toggleCheat(c) {
+    if (busy.has(c.name)) return;
+    busy = new Set(busy).add(c.name);
+    cheatNote = '';
+    try {
+      const res = await api('/api/games/cheats', { name: c.name, on: !cheatOn(c) });
+      cheatNote = res.note || '';
+    } catch (e) {
+      cheatNote = String(e.message || e);
+    } finally {
+      busy = new Set([...busy].filter((n) => n !== c.name));
+      await loadCheats();
+    }
+  }
+
+  async function launch(g) {
+    if (isPaused(g)) { await api('/api/games/resume', {}); sheet = null; return; }
+    if (live.game.active && !confirm(`A game session is already running. Launch ${g.name} anyway?`)) return;
+    await api('/api/games/launch', { id: g.id });
+    sheet = null;
+  }
+
+  // Always the sheet for a cheat game, paused or not: mid-session is exactly
+  // when you want to reach for a cheat, so hiding it behind "resume" would
+  // defeat the point. The sheet's own button does the resuming.
   async function tap(g) {
-    if (isPaused(g)) await api('/api/games/resume', {});
-    else if (live.game.active && !confirm(`A game session is already running. Launch ${g.name} anyway?`)) return;
-    else await api('/api/games/launch', { id: g.id });
+    if (g.cheats) { openSheet(g); return; }
+    await launch(g);
   }
 
   // Steam library tile: launch if installed, else download.
@@ -167,8 +219,105 @@
   {/if}
 {/if}
 
+{#if sheet}
+  <div use:portal use:fadeIn={{ reduced: $reducedMotion }} out:fadeOut={{ reduced: $reducedMotion }} class="scrim" onclick={() => (sheet = null)} role="presentation">
+    <div use:slideUp={{ reduced: $reducedMotion }} out:slideDown={{ reduced: $reducedMotion }} use:dragDismiss={{ onClose: () => (sheet = null) }} class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={sheet.name}>
+      <div class="sheetbar">
+        <span class="sheettitle">{sheet.name}</span>
+        <button class="closebtn" onclick={() => (sheet = null)} aria-label="Close"><Icon name="x" size={16} /></button>
+      </div>
+
+      <button class="primary launch" onclick={() => launch(sheet)}>
+        {isPaused(sheet) ? 'Resume game' : 'Launch game'}
+      </button>
+
+      <div class="chead">
+        <span class="clabel">Cheats</span>
+        {#if cheats?.running}<span class="dim small">game running</span>{/if}
+      </div>
+
+      {#if cheats === null}
+        <p class="dim small">Loading…</p>
+      {:else if cheats.cheats.length === 0}
+        <p class="dim small">Cheat list unavailable.</p>
+      {:else}
+        <div class="cheats">
+          {#each cheats.cheats as c (c.name)}
+            <button class="cheat" class:on={cheatOn(c)} disabled={busy.has(c.name)} onclick={() => toggleCheat(c)}>
+              <span class="cname">{c.name}</span>
+              <span class="pill">{busy.has(c.name) ? '…' : cheatOn(c) ? 'ON' : 'off'}</span>
+            </button>
+          {/each}
+        </div>
+        <p class="dim small note">
+          {#if cheatNote}
+            {cheatNote}
+          {:else if cheats.liveError}
+            Cannot reach the running game: {cheats.liveError}. Changes still apply on the next launch.
+          {:else if cheats.running}
+            Changes apply immediately and stick for the next launch.
+          {:else}
+            Changes apply the next time the game launches.
+          {/if}
+        </p>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 <style>
   .bigpic { width: 100%; margin-bottom: 12px; padding: 12px; color: var(--ink); }
+
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: var(--scrim);
+    z-index: 20;
+    display: flex;
+    align-items: flex-end;
+  }
+  .sheet {
+    background: var(--card);
+    border-radius: 20px 20px 0 0;
+    padding: 0 16px max(18px, env(safe-area-inset-bottom));
+    width: 100%;
+    max-height: 85dvh;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+  .sheetbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 0 10px; }
+  .sheettitle { font-weight: 600; }
+  .closebtn { padding: 6px; background: none; color: var(--muted); }
+  .launch { width: 100%; padding: 13px; }
+  .chead { display: flex; align-items: baseline; justify-content: space-between; margin: 18px 0 8px; }
+  .clabel { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .cheats { display: flex; flex-direction: column; gap: 6px; }
+  .cheat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    text-align: left;
+    color: var(--ink);
+  }
+  .cheat.on { color: var(--accent); }
+  .cheat:disabled { opacity: 0.55; }
+  .cname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pill {
+    flex: none;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--chip, rgba(127, 127, 127, 0.18));
+  }
+  .cheat.on .pill { background: var(--accent); color: var(--on-accent, #000); }
+  .note { margin: 12px 0 4px; }
   .seg { margin-bottom: 12px; }
   .seg button { flex: 1; }
 

@@ -113,7 +113,10 @@ function ps4Games() {
     const cover = path.join(gdir, 'cover.png');
     const icon0 = path.join(gdir, 'sce_sys', 'icon0.png');
     const art = fs.existsSync(cover) ? cover : (fs.existsSync(icon0) ? icon0 : null);
-    out.push({ id: 'ps4:' + eboot, kind: 'ps4', name: title, poster: art, hero: null });
+    // Bloodborne is the only dump with a cheat table wired up (tools/bb-cheat),
+    // so the tile opens an options sheet instead of launching on tap.
+    const cheats = entry === 'CUSA00900';
+    out.push({ id: 'ps4:' + eboot, kind: 'ps4', name: title, poster: art, hero: null, cheats });
   }
   return out;
 }

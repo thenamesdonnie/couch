@@ -404,7 +404,160 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (30 Aug 2026 ~16:45 — UI sounds rewritten and LIVE, Bloodborne is a Steam shortcut, the DS3 save came back from the dead)
+## ▶ Resume here (31 Aug 2026 ~15:30 — Bloodborne cheats end to end, script/ convicted for good, mode-keeper is OFF)
+
+A Bloodborne companion session that turned into three pieces of engineering.
+Donnie hit a wall on the Cainhurst boss and the day ended with cheat toggles on
+his phone.
+
+### ▶▶ DONNIE'S TO-DO (only he can do these)
+
+1. **`sudo sysctl kernel.yama.ptrace_scope=0`** — NEW, and it is what unlocks
+   live cheat toggling. The scope is 1 by default, which forbids one process
+   writing another's memory, so `bb-cheat live` and the phone's toggle-while-
+   running path both fail without it. Lasts until reboot; undo with
+   `sudo sysctl kernel.yama.ptrace_scope=1`. Without it everything still works,
+   it just applies at the next launch instead of instantly.
+2. **Look at the new Bloodborne sheet on your phone.** Games tab, tap
+   Bloodborne. The API is verified end to end but **the sheet has never been
+   rendered** — there is no browser on the box (playwright wants Chrome at
+   /opt/google/chrome/chrome, which is not installed). First human eyes on it
+   are his.
+3. **`sudo systemctl restart inputproc.service`** — STILL OUTSTANDING from
+   29 Aug, now four days stale. pid 1161 is running 27 Aug code, so the
+   input-ownership fix (`9d11873`) has never gone live. Do it at the TV, not
+   from work. Panic lever `sudo couchd-input-release`. Every inputproc restart
+   deafens flatpak Kodi until `peripheral.joystick` is addon-bounced, which the
+   assistant can do over Kodi's API afterwards, no sudo needed.
+4. Still outstanding from 26 Aug:
+   `sudo rm /var/lib/apport/coredump/core._tmp_claude*bbcw-dummy*`
+
+Judging the UI sounds by ear is still open too, see the 30 Aug block below.
+
+### 1. CHEATS: `tools/bb-cheat` + a Bloodborne sheet in the phone remote
+
+Donnie, after an hour on the Cainhurst boss: "this fight just isn't fun ... i'm
+looking through the debug menu for like an invincibility mode". Then: "can we
+make it so we can toggle mid game", then: "can you add toggles to the remote
+app?". All three are done.
+
+**`tools/bb-cheat`** wraps shadPS4's official cheat file
+(`~/.local/share/shadPS4/cheats/CUSA00900_01.09.json`, from shadps4-emu/
+ps4_cheats). Six cheats: Infinite Health, Infinite Stamina, 1 Hit Kill,
+Infinite Items, Infinite BloodEcho, Infinite Lucidity.
+
+The problem it solves: **shadPS4's cheat UI lives in the Qt GUI**, our launcher
+runs the SDL build, and there is **no keyboard or mouse at the television**
+(`/dev/input/by-id` is empty), so those tickboxes are physically unreachable.
+
+Two paths, both verified against the emulator source rather than guessed:
+
+- **Boot mode** writes the cheats as `<Metadata>` blocks into the SAME XML the
+  60fps unlock uses, `patches/shadPS4/Bloodborne.xml`, which the SDL build
+  applies automatically at eboot load (`MemoryPatcher::OnGameLoaded`, called
+  from `module.cpp` when eboot.bin loads). **The address rule matters:** a cheat
+  JSON offset is eboot-relative, an XML `Address` is an absolute PS4 VA and the
+  emulator subtracts 0x400000, so `Address = offset + 0x400000`. `Type="bytes"`
+  values are raw hex pairs with **no 0x prefix** — a prefix parses as 0 and
+  writes garbage. Our blocks are tagged `couch-cheat: ` and upstream's 59 blocks
+  and 2615 patch lines were re-counted intact after repeated toggles.
+- **Live mode** (`bb-cheat live on|off|status`) writes into the running process
+  at `0x800000000 + offset`. The eboot base is fixed — it is the first
+  `base_virtual_addr` line in shad_log. It reads the current bytes first and
+  **refuses unless they match either the patched or the original set** (the
+  cheat file carries both), then reads back after writing. A wrong address
+  errors instead of corrupting the game. Needs ptrace_scope 0, see to-do 1.
+
+**Phone remote**: `server/cheats.js` (thin wrapper, absolute path because the
+systemd PATH has no `~/couch/tools` — the launch PATH trap again),
+`GET/POST /api/games/cheats`, a `cheats: true` flag on the CUSA00900 tile from
+`games.js`, and a sheet in `Games.svelte`. Tapping Bloodborne now opens options
+instead of launching: Launch/Resume, then six tap-to-toggle rows. A toggle does
+**both halves** — the running game and the next launch — because doing only one
+looks like the switch did nothing. Verified by round trip through the HTTP API;
+NOT verified visually.
+
+`bb-cheat off` returns to a clean game whenever he wants.
+
+### 2. script/ IS CONVICTED FOR GOOD — and its absence cost more than we knew
+
+Chasing "can we turn on spawn at boss, i'm sick of the runback" turned up that
+Enhanced's **`Quick Warp to Bosses` has been ENABLED in his save the whole
+time** (flag 12100857, read live with `bb-eventflags.py --mod-settings`) and he
+has never once seen it. **A lamp is a talk object**, so keeping `script/`
+vanilla after the August lamp saga did not just cost NPC dialogue — it made the
+mod's entire lamp menu inert: warp, level up, workshop, boss rematches, quick
+warp, and the Doll's "Enhanced Features" menu. All 46 supposedly in-game
+settings have never been reachable.
+
+**The trap worth remembering: a set flag proves the setting is enabled, not
+that anything can deliver it.**
+
+So `script/` went back in as a retry (the 26 Aug bisect convicted it, but the
+suspected cause was a stale talk flag from that session's freeze/OOM, never
+explained). **Lamps died again on the first launch, clean save, no crash.**
+That kills the stale-flag theory: 2 for 2, it is the files. Reverted, verified
+byte-identical to vanilla. **Do not retry.**
+
+New panic lever `tools/bb-script-revert` (`--check` reports which state the dump
+is in). Full write-up appended to
+`docs/research/bloodborne-lamp-saga-20260826.md`, including the one untested
+lead: the archive is a "full package + **patcher**" and ships
+`BBEnhancedPatcherGUI` plus a 1MB `_data/emevd_patches.json`, and **we have only
+ever done a plain file overlay, never run the patcher**. If the shipped talk
+ESDs assume a patcher pass, a raw copy would break in exactly this way. Read
+`_src/BBEnhancedPatcherGUI/Form1.cs` before ever touching `script/` again.
+
+Consequence for the companion: any mod setting he wants must be written into the
+save as an event flag (group 12100 = slot 50; all 51 flag ids are in the
+archive's `_data/settings.json` under `PossibleValues`). `bb-eventflags.py`
+reads; a writer is ~10 lines on top of it and is the obvious next tool.
+
+### 3. mode-keeper IS STOPPED — the TV lost signal, deliberately left off
+
+Mid-session, quitting the emulator dropped the display to plain 3840x2160,
+mode-keeper spotted it 4 seconds later (`correction 10`) and forced the hand-made
+`4k120` modeline back on. **The TV did not accept it and went to no signal.**
+Not a crash: Kodi and X were both fine throughout.
+
+Fixed by `systemctl --user stop mode-keeper.service` then
+`xrandr --output DisplayPort-2 --mode 3840x2160 --rate 60`. Picture confirmed
+back by Donnie.
+
+**mode-keeper is still stopped and the box is on 4K60.** He explicitly parked
+the handshake investigation ("park looking in to the handshake"). To restore the
+old behaviour: `systemctl --user start mode-keeper.service` — but expect the
+same blank if the handshake is genuinely flaky now, and it has corrected fine
+ten times this boot, so it is intermittent. Also note a modeset resets Kodi's
+audio sink; `tools/kodi-restart` if sound is missing.
+
+### 4. Companion service — he is at the Cainhurst boss and struggling
+
+Ledger `docs/research/bloodborne-progress.md` is current with every answer
+given. He has **Ludwig's Holy Blade at +7** (bought it himself), 10 Insight,
+and has not touched the lake. Headlines:
+
+- Corrected myself twice in his favour: **Bolt Paper is wrong on this boss**
+  (he is strong vs fire/arcane/bolt, 290 arcane defence vs 133 physical), and
+  **greatsword form kills the parry** because it is two-handed and takes the gun.
+- Stat answer: Ludwig's is a **quality** weapon, 25/25, Skill first because
+  visceral damage scales with Skill.
+- **The ladder mystery was STAMINA** and he confirmed it. On a ladder, stamina
+  is what keeps you attached; he had started sprinting the runback and was
+  arriving empty. Two wrong theories were offered before that (two shooters,
+  then Bound Widows) and the second one landed as condescending — he was right
+  to push back. Go to mechanics before theories about what he can or cannot see.
+- **STILL OPEN AND LOAD-BEARING: he must ping before handing anything to
+  Alfred** (order matters), and **Eileen's post-Rom beat is on me to raise**.
+
+### 5. Small thing left on the table
+
+The Nexus mod **"Jump on L3"** (mod 156) would move the sprint-roll's gap jump
+onto its own button, which he wanted. It needs him to download it to
+`~/fileshare/bloodborne-mods`. It edits the same behaviour layer as the lamp
+saga, so check a lamp before committing a session to it.
+
+## ▶ Previous (30 Aug 2026 ~16:45 — UI sounds rewritten and LIVE, Bloodborne is a Steam shortcut, the DS3 save came back from the dead)
 
 ### ▶▶ DONNIE'S TO-DO (only he can do these)
 

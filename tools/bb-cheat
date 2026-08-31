@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+"""Turn shadPS4 cheats on and off for Bloodborne, without the Qt GUI.
+
+WHY THIS EXISTS (31 Aug 2026). shadPS4 ships a cheat system, but the UI for it
+lives in the Qt desktop GUI. Our launcher runs the SDL build, and the box has no
+keyboard or mouse at the TV, so those tickboxes are unreachable. The cheats
+themselves are just byte patches at fixed offsets in the eboot, and shadPS4's
+SDL build ALREADY applies byte patches automatically at game load, from the XML
+patch files in <userdir>/patches/<repo>/ - that is the same path the Bloodborne
+60fps unlock rides on. So this tool translates entries out of the official cheat
+JSON into that XML, and the emulator applies them on the next launch with no GUI
+in the picture.
+
+Mechanism, verified against the emulator source (src/common/memory_patcher.cpp
+in ~/src/shadps4-dbg), not guessed:
+  * OnGameLoaded() runs when eboot.bin loads and applies every <Metadata> block
+    with isEnabled="true" whose AppVer matches the game's APP_VER.
+  * A cheat JSON "offset" is relative to the eboot base (isOffset=true).
+    An XML "Address" is an absolute PS4 VA and the emulator subtracts 0x400000.
+    So  Address = cheat offset + 0x400000.  Getting this wrong writes bytes into
+    a random place in the game's code, so it is asserted, not assumed.
+  * Type="bytes" values are parsed as raw hex PAIRS with no 0x prefix.
+  * The JSON's "master" block is a hook the individual cheats jump through. Its
+    "challenged: yes" means it must be applied whenever any cheat is on, so it
+    is written as its own block and managed automatically.
+
+Cheats apply AT LOAD. Turning one on while the game is running does nothing
+until the next launch, and turning one off likewise. That is a property of the
+patch path, not a bug in this tool.
+
+LIVE MODE toggles a cheat in the RUNNING game instead of waiting for a relaunch.
+It writes the same bytes straight into the emulator's memory, which is exactly
+what shadPS4's own cheat GUI does. Two things make it safe to do blind:
+  * the eboot always loads at a fixed base, 0x800000000 (confirmed from the
+    emulator's own "base_virtual_addr" log line), so the target address is
+    base + the cheat's offset;
+  * the cheat file carries the ORIGINAL bytes as well as the patched ones, so
+    the tool reads what is currently there first and refuses to write unless it
+    finds one or the other. A wrong address cannot be silently scribbled on.
+Live mode needs permission to write another process's memory. On this box
+kernel.yama.ptrace_scope is 1, which forbids that; the tool will tell you the
+one command that lifts it if it hits that wall.
+
+Usage:
+  bb-cheat list                     what is available, and what is on
+  bb-cheat on "Infinite Health"     enable one or more (adds master for you)
+  bb-cheat off                      disable ALL of ours, leave upstream alone
+  bb-cheat off "1 Hit Kill"         disable specific ones
+  bb-cheat status                   short summary
+  bb-cheat live on "Infinite Health"    toggle in the running game, now
+  bb-cheat live off "Infinite Health"
+  bb-cheat live status                  what is actually live in memory
+
+Our blocks are tagged with a Name prefix so they can be added and removed
+idempotently without ever touching the 59 upstream patch blocks in the file.
+The XML is backed up once per change.
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+HOME = Path.home()
+CHEAT_JSON = HOME / ".local/share/shadPS4/cheats/CUSA00900_01.09.json"
+PATCH_XML = HOME / ".local/share/shadPS4/patches/shadPS4/Bloodborne.xml"
+APP_VER = "01.09"
+EBOOT_VA_BASE = 0x400000
+TAG = "couch-cheat: "          # marks blocks this tool owns
+MASTER_NAME = TAG + "master"
+
+
+def die(msg: str) -> None:
+    print(f"bb-cheat: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_cheats() -> dict:
+    if not CHEAT_JSON.exists():
+        die(f"no cheat file at {CHEAT_JSON}\n"
+            "  fetch it with:\n"
+            "  curl -sL -o "
+            f"{CHEAT_JSON} https://raw.githubusercontent.com/shadps4-emu/"
+            "ps4_cheats/main/CHEATS/CUSA00900_01.09.json")
+    d = json.loads(CHEAT_JSON.read_text())
+    if d.get("version") != APP_VER:
+        die(f"cheat file is for {d.get('version')}, this tool targets {APP_VER}. "
+            "Byte offsets are version specific - do not force it.")
+    return d
+
+
+def to_address(offset_str: str) -> str:
+    """Cheat JSON offset (eboot relative) -> XML Address (absolute PS4 VA)."""
+    return f"0x{int(offset_str, 16) + EBOOT_VA_BASE:08x}"
+
+
+def load_xml() -> tuple[ET.ElementTree, ET.Element]:
+    if not PATCH_XML.exists():
+        die(f"no patch file at {PATCH_XML}")
+    tree = ET.parse(PATCH_XML)
+    root = tree.getroot()
+    if root.tag != "Patch":
+        die(f"unexpected root <{root.tag}> in {PATCH_XML}")
+    return tree, root
+
+
+def ours(root: ET.Element) -> list[ET.Element]:
+    return [m for m in root.findall("Metadata")
+            if m.get("Name", "").startswith(TAG)]
+
+
+def enabled_names(root: ET.Element) -> list[str]:
+    return sorted(m.get("Name")[len(TAG):] for m in ours(root)
+                  if m.get("isEnabled") == "true" and m.get("Name") != MASTER_NAME)
+
+
+def make_block(name: str, entries: list[dict]) -> ET.Element:
+    md = ET.Element("Metadata", {
+        "Title": "Bloodborne",
+        "Name": TAG + name,
+        "Note": "Added by couch/tools/bb-cheat from the official shadPS4 cheat file.",
+        "Author": "Shiningami + bloo",
+        "PatchVer": "1.0",
+        "AppVer": APP_VER,
+        "AppElf": "eboot.bin",
+        "isEnabled": "true",
+    })
+    pl = ET.SubElement(md, "PatchList")
+    for e in entries:
+        value = e["on"]
+        if value.lower().startswith("0x"):
+            die(f"cheat value for {name} has a 0x prefix; the emulator parses "
+                "raw hex pairs and would write garbage")
+        if len(value) % 2:
+            die(f"cheat value for {name} is not a whole number of bytes")
+        ET.SubElement(pl, "Line", {
+            "Type": "bytes",
+            "Address": to_address(e["offset"]),
+            "Value": value,
+        })
+    return md
+
+
+def backup() -> Path:
+    dest = PATCH_XML.with_suffix(f".xml.pre-cheat-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(PATCH_XML, dest)
+    return dest
+
+
+def indent(elem: ET.Element, level: int = 0) -> None:
+    pad = "\n" + "    " * level
+    if len(elem):
+        if not (elem.text or "").strip():
+            elem.text = pad + "    "
+        for child in elem:
+            indent(child, level + 1)
+        if not (elem.tail or "").strip():
+            elem.tail = pad
+        if not (elem[-1].tail or "").strip():
+            elem[-1].tail = pad
+    elif level and not (elem.tail or "").strip():
+        elem.tail = pad
+
+
+def write(tree: ET.ElementTree, root: ET.Element) -> None:
+    indent(root)
+    tree.write(PATCH_XML, encoding="utf-8", xml_declaration=True)
+
+
+def cmd_list(cheats: dict, root: ET.Element) -> None:
+    on = set(enabled_names(root))
+    print(f"Bloodborne cheats ({CHEAT_JSON.name}, credits: "
+          f"{', '.join(cheats.get('credits', []))})\n")
+    for m in cheats["mods"]:
+        mark = "ON " if m["name"] in on else "   "
+        print(f"  [{mark}] {m['name']}")
+    print("\nCheats apply at game load. Restart the game after changing them.")
+
+
+def cmd_status(root: ET.Element) -> None:
+    on = enabled_names(root)
+    if on:
+        print("cheats ON: " + ", ".join(on))
+    else:
+        print("no cheats enabled (upstream patches untouched)")
+
+
+def cmd_on(cheats: dict, tree: ET.ElementTree, root: ET.Element,
+           names: list[str]) -> None:
+    by_name = {m["name"]: m for m in cheats["mods"]}
+    wanted = []
+    for n in names:
+        match = [k for k in by_name if k.lower() == n.lower()]
+        if not match:
+            die(f"no cheat called {n!r}. Run 'bb-cheat list'.")
+        wanted.append(match[0])
+
+    backup_path = backup()
+
+    # Drop any existing block of ours for these cheats, then re-add.
+    for md in ours(root):
+        if md.get("Name")[len(TAG):] in wanted:
+            root.remove(md)
+
+    if not any(md.get("Name") == MASTER_NAME for md in ours(root)):
+        master = cheats.get("master", {})
+        if master.get("challenged") == "yes":
+            root.append(make_block("master", master["memory"]))
+
+    for n in wanted:
+        root.append(make_block(n, by_name[n]["memory"]))
+
+    write(tree, root)
+    print(f"enabled: {', '.join(wanted)}")
+    print(f"backup:  {backup_path.name}")
+    print("Applies on the NEXT game launch, not to a running game.")
+
+
+def cmd_off(tree: ET.ElementTree, root: ET.Element, names: list[str]) -> None:
+    mine = ours(root)
+    if not mine:
+        print("nothing to turn off")
+        return
+    backup_path = backup()
+    removed = []
+    for md in mine:
+        short = md.get("Name")[len(TAG):]
+        if names and short.lower() not in [n.lower() for n in names]:
+            continue
+        root.remove(md)
+        if short != "master":
+            removed.append(short)
+    # No cheats left means the master hook is dead weight; take it out too.
+    if not [m for m in ours(root) if m.get("Name") != MASTER_NAME]:
+        for md in ours(root):
+            if md.get("Name") == MASTER_NAME:
+                root.remove(md)
+    write(tree, root)
+    print(f"disabled: {', '.join(removed) if removed else '(none)'}")
+    print(f"backup:   {backup_path.name}")
+    print("Takes effect on the NEXT game launch.")
+
+
+# ---------------------------------------------------------------- live mode
+
+EBOOT_BASE = 0x800000000   # fixed; see the "base_virtual_addr" line in shad_log
+
+
+def find_pid(required: bool = True) -> int | None:
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            comm = (proc / "comm").read_text().strip()
+        except OSError:
+            continue
+        if comm in ("shadps4", "Shadps4-sdl", "Shadps4-qt"):
+            return int(proc.name)
+    if not required:
+        return None
+    die("shadPS4 is not running - live mode needs the game up. "
+        "Use 'bb-cheat on' for the next launch instead.")
+
+
+def mem_path(pid: int) -> Path:
+    return Path(f"/proc/{pid}/mem")
+
+
+def read_mem(pid: int, addr: int, length: int) -> bytes:
+    try:
+        with open(mem_path(pid), "rb") as f:
+            f.seek(addr)
+            return f.read(length)
+    except PermissionError:
+        die("not allowed to read the emulator's memory.\n"
+            "  kernel.yama.ptrace_scope is 1 on this box, which blocks it.\n"
+            "  Run this in your own terminal, then try again:\n"
+            "      sudo sysctl kernel.yama.ptrace_scope=0\n"
+            "  It lasts until reboot. To undo it now: "
+            "sudo sysctl kernel.yama.ptrace_scope=1")
+    except OSError as e:
+        die(f"could not read memory at {addr:#x}: {e}")
+
+
+def write_mem(pid: int, addr: int, data: bytes) -> None:
+    try:
+        with open(mem_path(pid), "wb") as f:
+            f.seek(addr)
+            f.write(data)
+    except PermissionError:
+        die("not allowed to write the emulator's memory. See the ptrace_scope "
+            "note above.")
+    except OSError as e:
+        die(f"could not write memory at {addr:#x}: {e}")
+
+
+def entry_state(pid: int, entry: dict) -> str:
+    """Is this one patch currently 'on', 'off', or something unexpected?"""
+    addr = EBOOT_BASE + int(entry["offset"], 16)
+    on = bytes.fromhex(entry["on"])
+    off = bytes.fromhex(entry.get("off", ""))
+    cur = read_mem(pid, addr, len(on))
+    if cur == on:
+        return "on"
+    if off and cur == off:
+        return "off"
+    return "unknown"
+
+
+def cmd_live(cheats: dict, args: list[str]) -> None:
+    if not args:
+        die("live what? Try: live status, live on \"Infinite Health\"")
+    action, names = args[0], args[1:]
+    by_name = {m["name"]: m for m in cheats["mods"]}
+    pid = find_pid()
+
+    if action == "status":
+        print(f"shadPS4 pid {pid}, eboot base {EBOOT_BASE:#x}")
+        for m in cheats["mods"]:
+            states = {entry_state(pid, e) for e in m["memory"]}
+            state = states.pop() if len(states) == 1 else "partial"
+            print(f"  {state:>7}  {m['name']}")
+        return
+
+    if action not in ("on", "off"):
+        die(f"unknown live action {action!r}. Use on, off or status.")
+    if not names:
+        die(f"live {action} what? Run 'bb-cheat list'.")
+
+    wanted = []
+    for n in names:
+        match = [k for k in by_name if k.lower() == n.lower()]
+        if not match:
+            die(f"no cheat called {n!r}. Run 'bb-cheat list'.")
+        wanted.append(match[0])
+
+    # The master block is the hook the individual cheats jump through, so it has
+    # to be in place before any of them, and it has no "off" - leaving it in an
+    # otherwise unpatched game is inert.
+    if action == "on":
+        master = cheats.get("master", {})
+        if master.get("challenged") == "yes":
+            for e in master["memory"]:
+                addr = EBOOT_BASE + int(e["offset"], 16)
+                on = bytes.fromhex(e["on"])
+                if read_mem(pid, addr, len(on)) != on:
+                    write_mem(pid, addr, on)
+                    print(f"  master hook written at {addr:#x}")
+
+    for n in wanted:
+        for e in by_name[n]["memory"]:
+            addr = EBOOT_BASE + int(e["offset"], 16)
+            target = bytes.fromhex(e["on"] if action == "on" else e["off"])
+            other = bytes.fromhex(e["off"] if action == "on" else e["on"])
+            cur = read_mem(pid, addr, len(target))
+            if cur == target:
+                print(f"  {n}: already {action} at {addr:#x}")
+                continue
+            if cur != other:
+                die(f"refusing to write {n} at {addr:#x}: memory holds neither "
+                    f"the patched nor the original bytes (found "
+                    f"{cur.hex()[:32]}...). Wrong address or wrong game version.")
+            write_mem(pid, addr, target)
+            back = read_mem(pid, addr, len(target))
+            if back != target:
+                die(f"wrote {n} at {addr:#x} but read back {back.hex()[:32]}...")
+            print(f"  {n}: {action} at {addr:#x} (verified)")
+
+    print(f"live {action}: {', '.join(wanted)} - takes effect immediately")
+
+
+def cmd_json(cheats: dict, root: ET.Element) -> None:
+    """Machine-readable state, for the phone remote's Games tab.
+
+    Never raises on a missing game or a ptrace refusal: a UI asking "what is
+    the state" must get an answer, not a stack trace. Unreadable live state
+    comes back as null with the reason alongside it.
+    """
+    boot_on = set(enabled_names(root))
+    pid = find_pid(required=False)
+    live_error = None
+    out = []
+    for m in cheats["mods"]:
+        live = None
+        if pid is not None:
+            try:
+                states = {entry_state(pid, e) for e in m["memory"]}
+                live = states.pop() if len(states) == 1 else "partial"
+            except SystemExit:
+                # entry_state -> read_mem -> die() on a ptrace refusal.
+                live, live_error = None, "no permission to read game memory"
+        out.append({"name": m["name"], "boot": m["name"] in boot_on, "live": live})
+    print(json.dumps({
+        "running": pid is not None,
+        "liveError": live_error,
+        "cheats": out,
+    }))
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    cmd, args = argv[0], argv[1:]
+    cheats = load_cheats()
+    tree, root = load_xml()
+
+    if cmd == "json":
+        cmd_json(cheats, root)
+    elif cmd == "live":
+        cmd_live(cheats, args)
+    elif cmd == "list":
+        cmd_list(cheats, root)
+    elif cmd == "status":
+        cmd_status(root)
+    elif cmd == "on":
+        if not args:
+            die("on what? Run 'bb-cheat list'.")
+        cmd_on(cheats, tree, root, args)
+    elif cmd == "off":
+        cmd_off(tree, root, args)
+    else:
+        die(f"unknown command {cmd!r}. Try list, status, on, off.")
+
+
+if __name__ == "__main__":
+    main()
