@@ -107,10 +107,35 @@ setting Donnie wants changed must be done by writing the flag into the save
 `_data/settings.json` under `PossibleValues`). bb-eventflags.py reads; a writer
 is ~10 lines on top of it and is the obvious next tool if he wants a setting.
 
-UNTESTED LEAD for anyone who picks this up: the archive is
-"FullPackage ... ---- patcher.0.5.1 ---- fix9" and ships `BBEnhancedPatcherGUI`
-plus a 1MB `_data/emevd_patches.json`. We have only ever done a plain file
-overlay via bb-mod-install and have NEVER run the patcher (Windows .NET 8
-WinForms; source in `_src/`). If the shipped talk ESDs assume a patcher pass over
-the dump's own files, a raw overlay would be exactly this broken. Worth reading
-`_src/BBEnhancedPatcherGUI/Form1.cs` (114KB) before ever touching script/ again.
+~~UNTESTED LEAD: the patcher.~~ **CLOSED THE SAME EVENING - IT IS NOT THE
+PATCHER.** gpt-5.6-sol was pointed at the extracted archive (report +
+adjudication in `docs/audits/bloodborne-lamp-script-20260831-*.md`) and the
+decisive fact is verified: **the patcher copies `_data/script/talk` to its
+output verbatim**, and all 17 of those files are md5-identical to the
+`GAME FILES/dvdroot_ps4/script/talk` ones we already install. Running it would
+install the same failing bytes. Also verified: our install is NOT incomplete -
+the packaged mod byte-matches the live dump in chr 1/1, event 18/18, menu 40/40,
+msg 42/42, parts 4/4, sfx 2/2 and 2178 sampled map files, zero differences.
+Do not spend an evening reimplementing the patcher on Linux.
+
+**Where the fault actually is:** the mod replaces the talk script of EVERY lamp
+in all 16 maps, rewriting the lamp setup call from 7 arguments to 8 to register
+a new ActionButtonParam `6103` ("Glimpse into the Hunter's Dream") plus a lamp
+index. That param row and its message text are both present and installed, so it
+is not a missing row. Which part the runtime rejects cannot be read out of static
+bytes. NOTE the ESD-internals detail in that report is UNVERIFIED by us; the
+table above is what was checked.
+
+**Cheapest decisive next test** (needs Donnie at the TV, his agreement, and a
+save WRITER which bb-eventflags.py does not yet have): install `script/`, set
+`12100972 = 1` / `12100872 = 0` in the save so Lamp Menu is Disabled, touch a
+lamp. Prompt returns = the ESD loads and the fault is in the enhanced branch;
+prompt still absent = the mod's own disabled fallback is broken too and the
+expanded setup call is the culprit.
+
+**The side-door worth more than the lamp menu:** `m21_00_00_00.talkesdbnd.dcx`
+entry `t210304.esd` grows 34,488 -> 124,512 bytes and carries 100 of the 113
+setting flag ids. A hybrid BND keeping the stock Hunter's Dream lamp entries but
+taking the mod's `t210304` might restore the Doll's "Enhanced Features" menu
+WITHOUT touching any lamp - i.e. make all 46 in-game settings reachable for the
+first time. Untested.
