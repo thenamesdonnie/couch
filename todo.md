@@ -550,7 +550,16 @@ and has not touched the lake. Headlines:
 - **STILL OPEN AND LOAD-BEARING: he must ping before handing anything to
   Alfred** (order matters), and **Eileen's post-Rom beat is on me to raise**.
 
-### 5. Small thing left on the table
+### 5. Git state
+
+Committed to `master` as `2f6a32b` (this repo has only ever had the one branch,
+so a handoff branch would just orphan the work). **Deliberately left
+uncommitted, and none of it is from this session:** `tools/game-quiet` and
+`tools/test_game_quiet.py` were already modified when the session started, and
+`shadow/*.jsonl` are the running shadow logs. Someone should work out what the
+game-quiet edits were for before they get committed by accident.
+
+### 6. Small thing left on the table
 
 The Nexus mod **"Jump on L3"** (mod 156) would move the sprint-roll's gap jump
 onto its own button, which he wanted. It needs him to download it to
