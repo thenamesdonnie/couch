@@ -139,3 +139,31 @@ setting flag ids. A hybrid BND keeping the stock Hunter's Dream lamp entries but
 taking the mod's `t210304` might restore the Doll's "Enhanced Features" menu
 WITHOUT touching any lamp - i.e. make all 46 in-game settings reachable for the
 first time. Untested.
+
+### Two Reddit leads, assessed 31 Aug
+
+Donnie found two community answers to the same symptom. Assessment:
+
+**1. "Your mods are conflicting" (they had an SFX mod + Enhanced). RULED OUT
+for us, with evidence.** Every category the lamp flow touches is byte-identical
+to Enhanced's own packaged output on our dump: chr 1/1, event 18/18, menu 40/40,
+msg 42/42, parts 4/4, sfx 2/2, 2178 sampled map files, zero differences. The only
+other mod installed is the Vertex Explosion Fix, and its file list is entirely
+`parts/fg_a_*` FaceGen - no overlap with talk, event, param, msg or map. There is
+nothing here to conflict.
+
+**2. "Put the optional files from the enhanced folder into the game folder."
+Looks like STALE advice for an older release, but not fully closed.** The archive
+we hold (`FullPackage19mod.0.11.2-fix9`) contains exactly one OPTIONAL folder:
+`OPTIONAL CHEATS/gems/dvdroot_ps4/param/gameparam/gameparam.parambnd.dcx` - a
+single replacement param giving all blood gems. That is a cheat, not a lamp fix,
+and installing it would clobber our 9999-durability patch. `filelist.txt` has no
+other "optional" references. The Nexus mod page reportedly states there are **no
+longer any OPTIONAL FILES required for shadPS4**, which fits the theory that the
+advice predates our version.
+
+**OPEN, and only Donnie can check it** (nexusmods returns 403 to WebFetch without
+an account): on mod 19's Files tab, (a) is there an Optional Files section with
+anything in it, and (b) **is there a release newer than 0.11.2-fix9?** Ours was
+downloaded 23 Aug 2026. A newer build that fixes this would be far cheaper than
+the ESD surgery described above.
