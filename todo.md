@@ -550,6 +550,36 @@ and has not touched the lake. Headlines:
 - **STILL OPEN AND LOAD-BEARING: he must ping before handing anything to
   Alfred** (order matters), and **Eileen's post-Rom beat is on me to raise**.
 
+### 4b. Three more mods dropped in (31 Aug ~20:40) — two installed, one refused
+
+- **60fps Cutscene Fix (mod 70) — INSTALLED**, 11 files. Its `sfx/` files are
+  `frpg_sfxbnd_m21` and `m25`; Enhanced's are `commoneffects` and `m29d`, so
+  **no overlap** and the Reddit "sfx mod conflicts with Enhanced" scenario does
+  not arise here. Plus 9 `remo/` cutscene files Enhanced does not ship.
+- **Visual Upgrade Mod (mod 160) — INSTALLED AS A SAFE SUBSET.** All 23
+  `param/drawparam` lighting files (Enhanced ships only `param/gameparam`, so no
+  collision, and the durability patch is untouched - md5 re-verified) plus the 8
+  map MSBs Enhanced does not ship. **16 map MSBs were HELD BACK** because
+  Enhanced ships them too, and **Enhanced's Auto Refill is a proximity region
+  living in its own MSBs** - overwriting them would kill Auto Refill in 16
+  areas including Central Yharnam and Cainhurst. Cost of holding them: some of
+  v1.3's shadow/LoD fixes in those maps. To take the full mod and lose Auto
+  Refill instead: `bb-mod-install install "<the original 160 zip>"`.
+  Staged subset zip: scratchpad `vum/VisualUpgrade-160-v1.3-SAFE-SUBSET.zip`.
+- **Jump on L3 (mod 156) — NOT INSTALLED, and it looks wrong.** The dump's
+  `action/script/c0000.hks` is **compiled Lua bytecode** (`\x1bLuaQ` header,
+  760,643 bytes). The mod ships **plain text HKS source** with a UTF-8 BOM,
+  428KB, in two undocumented variants ("DS3 - Modern" and "DS3 - Classic").
+  Text where the engine wants bytecode will not load, and this file IS the
+  player behaviour script, so a bad one breaks the character outright. Needs
+  either an HKS compiler or proof Bloodborne accepts source. Do not install it
+  blind while he is out.
+
+**Verified after both installs:** Bloodborne Enhanced is untouched - chr 1/1,
+event 18/18, menu 40/40, msg 42/42, parts 4/4, sfx 2/2 and **all 2335 map
+files** byte-identical to its packaged output. gameparam still carries the
+durability patch.
+
 ### 5. Git state
 
 Committed to `master` as `2f6a32b` (this repo has only ever had the one branch,
