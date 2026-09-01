@@ -179,9 +179,27 @@ launch() {
     [ "${DS3SHOT_STRACE:-}" = 1 ] && TRACE="strace -f -e trace=execve -s 400 -o $BASE/strace.log"
     unset DISPLAY XAUTHORITY
     cd "$SANDBOX_GAME" || exit 1
+    # DS3SHOT_MOD=1 boots through ModEngine2 so files under
+    # $SANDBOX_GAME/mod/ override the ones inside the game archives.
+    # ME2 is a launcher+injector, not a dinput8 proxy, so it must be the
+    # process we start; it is installed INTO the sandbox game dir (which is a
+    # symlink farm we own) precisely so its "find the game" step cannot wander
+    # off to the real install and trip the Steam-relaunch escape.
+    GAME_TARGET="$SANDBOX_GAME/DarkSoulsIII.exe"; GAME_ARGS=""
+    if [ "${DS3SHOT_MOD:-}" = 1 ]; then
+      GAME_TARGET="$SANDBOX_GAME/modengine2_launcher.exe"
+      # -p pins the game path so ME2 never searches Steam for it, which is
+      # what makes this safe against the real-install escape.
+      GAME_ARGS="-t ds3 -c $SANDBOX_GAME/config_darksouls3.toml -p $SANDBOX_GAME/DarkSoulsIII.exe"
+    fi
+    # ME2's launcher INJECTS AND EXITS. gamescope tears down when its primary
+    # child ends, which would kill the game we just started, so in mod mode the
+    # primary child must outlive the launcher: run it, then idle.
+    INNER='echo "$DISPLAY" > "$0"; exec "$@"'
+    [ "${DS3SHOT_MOD:-}" = 1 ] && INNER='echo "$DISPLAY" > "$0"; "$@"; sleep 1200'
     exec "$GS_DIR/gamescope" --backend headless -W "$OUT_W" -H "$OUT_H" -r 60 -- \
-      sh -c 'echo "$DISPLAY" > "$0"; exec "$@"' \
-      "$DISPLAY_FILE" $TRACE "$PROTON" run "$SANDBOX_GAME/DarkSoulsIII.exe"
+      sh -c "$INNER" \
+      "$DISPLAY_FILE" $TRACE "$PROTON" run "$GAME_TARGET" $GAME_ARGS
   ) >>"$LOG" 2>&1 &
   echo $! > "$PIDFILE"
   local i
