@@ -108,3 +108,36 @@ def dcx_decompress(data: bytes) -> bytes:
     if len(out) != uncompressed_size:
         raise ValueError(f"expected {uncompressed_size} bytes, got {len(out)}")
     return out
+
+
+def dcx_compress_dflt(payload: bytes, level: int = 9) -> bytes:
+    """Wrap bytes in a DS3-style DCX_DFLT container (zlib).
+
+    The 76-byte header is fixed apart from the two sizes; this is templated on
+    a real DS3 file (menu/01_common.tpf.dcx) rather than invented. Version is
+    0x00010000 for DS3, where Elden Ring uses 0x00011000 with KRAK.
+
+    Only DFLT is written. We never need to WRITE Oodle: ooz decompresses only,
+    and DS3, which is what we repack for, uses zlib anyway.
+    """
+    import zlib
+
+    comp = zlib.compress(payload, level)
+    h = bytearray(76)
+    h[0:4] = b"DCX\0"
+    struct.pack_into(">I", h, 4, 0x00010000)
+    struct.pack_into(">I", h, 8, 0x18)      # DCS offset
+    struct.pack_into(">I", h, 12, 0x24)     # DCP offset
+    struct.pack_into(">I", h, 16, 0x44)
+    struct.pack_into(">I", h, 20, 0x4C)
+    h[24:28] = b"DCS\0"
+    struct.pack_into(">I", h, 28, len(payload))
+    struct.pack_into(">I", h, 32, len(comp))
+    h[36:40] = b"DCP\0"
+    h[40:44] = b"DFLT"
+    struct.pack_into(">I", h, 44, 0x20)
+    h[48] = level
+    struct.pack_into(">I", h, 64, 0x00010100)
+    h[68:72] = b"DCA\0"
+    struct.pack_into(">I", h, 72, 8)
+    return bytes(h) + comp

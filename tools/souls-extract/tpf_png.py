@@ -31,11 +31,17 @@ def dds_describe(d: bytes) -> tuple[int, int, str, int]:
     if d[:4] != b"DDS ":
         raise ValueError("not a DDS")
     height, width = struct.unpack_from("<II", d, 12)
+    pf_flags = struct.unpack_from("<I", d, 80)[0]
     fourcc = d[84:88]
     if fourcc == b"DX10":
         dxgi = struct.unpack_from("<I", d, 128)[0]
         kind = "BC7" if dxgi in (DXGI_BC7_UNORM, DXGI_BC7_UNORM_SRGB) else f"dxgi{dxgi}"
         return width, height, kind, 148          # 128 header + 20 DX10 header
+    if pf_flags & 0x40:                          # DDPF_RGB: uncompressed
+        bpp = struct.unpack_from("<I", d, 88)[0]
+        rmask = struct.unpack_from("<I", d, 92)[0]
+        # We write B8G8R8A8, i.e. red in the third byte -> mask 0x00FF0000.
+        return width, height, f"RAW{bpp}" + ("_BGRA" if rmask == 0x00FF0000 else "_RGBA"), 128
     return width, height, fourcc.decode("ascii", "replace"), 128
 
 
@@ -48,6 +54,10 @@ def decode(d: bytes):
     if width == 0 or height == 0:
         return None
     payload = d[offset:]
+    if kind.startswith("RAW32"):
+        order = "BGRA" if kind.endswith("_BGRA") else "RGBA"
+        return Image.frombytes("RGBA", (width, height),
+                               payload[:width * height * 4], "raw", order)
     if kind == "BC7":
         raw = texture2ddecoder.decode_bc7(payload, width, height)
     elif kind in ("DXT1",):
