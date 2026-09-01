@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+# ds3-shot: photograph Dark Souls 3's UI with nobody home and nothing on the TV.
+#
+#   tools/ds3-shot              -> inventory journey (the UI-work target):
+#                                  in-game HUD, Equipment screen, Inventory screen
+#   tools/ds3-shot title        -> title screen only (zero-risk, no save loaded)
+#   tools/ds3-shot menu         -> main menu (fonts, item highlight, version box)
+#   tools/ds3-shot loadlist     -> the Load Game character list (slot audit)
+#
+# Prints the PNG path(s) on success, exits non-zero with a message on failure,
+# and leaves nothing running. Full write-up + every trap: tools/ds3-shot.md.
+#
+# THE SHAPE OF IT. DS3 runs under Proton inside gamescope's HEADLESS backend
+# (the shadPS4 soak precedent): no TV, no :0, no controller, no audio device.
+# The game sees a SANDBOX: a full copy of the Proton prefix at
+# data/ds3-shot/compatdata-374320 (so the real save file, which holds the
+# irreplaceable rescued character, is never even opened), and a symlink-farm
+# copy of the Game dir with our own steam_appid.txt (so the real install stays
+# untouched and steam_api does not relaunch the game through Steam - see the
+# .md for that incident). The sandbox save has its own harness character
+# ("shotbot", Knight, created in the sandbox on 1 Sep 2026) and DS3's own
+# Launch Setting is Play Offline IN THE SANDBOX SAVE, so the game boots
+# showing "Offline" and never attempts a server login. Screenshots come out
+# through gamescope's own compositor (gamescopectl screenshot); input goes in
+# as XTEST keys/clicks on the nested Xwayland display.
+#
+# SAFETY RAILS HONOURED HERE:
+#   - refuses to run while a live TV game session exists (/tmp/game-session)
+#   - never touches :0, Kodi, couchd, the pad stack, or the display mode
+#   - real game dir and real prefix are read-only to this tool
+#   - a save-backup snapshot must exist before the sandbox save is ever
+#     (re)copied from the real prefix
+#   - tripwire: any Steam-side launch of appid 374320 is killed on sight
+set -u
+
+BASE="$HOME/couch/data/ds3-shot"
+RUN="$BASE/run"                # private XDG_RUNTIME_DIR: isolates our wayland
+                               # sockets AND hides pipewire/pulse so no game
+                               # audio can ever reach the living room
+SHOTS="$BASE/shots"
+SANDBOX="$BASE/compatdata-374320"
+SANDBOX_GAME="$BASE/game"      # symlink farm over GAMEDIR + steam_appid.txt
+GS_DIR="$HOME/src/gamescope/build/src"
+GAMEDIR="$HOME/.steam/steam/steamapps/common/DARK SOULS III/Game"
+PROTON="$HOME/.steam/steam/steamapps/common/Proton - Experimental/proton"
+REAL_COMPAT="$HOME/.steam/steam/steamapps/compatdata/374320"
+SAVE_REL="pfx/drive_c/users/steamuser/AppData/Roaming/DarkSoulsIII"
+DISPLAY_FILE="$BASE/child-display"
+PIDFILE="$BASE/session.pid"
+LOG="$BASE/ds3-shot.log"
+LOCK="$BASE/lock"
+
+OUT_W=1920
+OUT_H=1080
+
+say()  { echo "$(date +%H:%M:%S) ds3-shot: $*" | tee -a "$LOG" >&2; }
+die()  { say "FAIL: $*"; exit 1; }
+
+mkdir -p "$BASE" "$SHOTS" "$RUN"
+chmod 700 "$RUN"
+
+# ---------------------------------------------------------------- preflight
+preflight() {
+  [ -e /tmp/game-session ] && die "a live TV game session exists (/tmp/game-session); refusing to share the GPU with it"
+  [ -x "$GS_DIR/gamescope" ] || die "no gamescope at $GS_DIR"
+  [ -x "$GS_DIR/gamescopectl" ] || die "no gamescopectl at $GS_DIR"
+  [ -f "$PROTON" ] || die "no Proton Experimental at $PROTON"
+  [ -f "$GAMEDIR/DarkSoulsIII.exe" ] || die "no DS3 at $GAMEDIR"
+  python3 -c 'from Xlib.ext import xtest' 2>/dev/null || die "python3-xlib missing"
+  command -v identify >/dev/null || die "imagemagick missing"
+  python3 -c 'import PIL' 2>/dev/null || die "python3-PIL missing"
+}
+
+# The sandbox game dir. Running DarkSoulsIII.exe straight out of steamapps
+# made steam_api ask the RUNNING Steam client to relaunch the game "properly",
+# which put DS3 with the REAL prefix on the session display (live, 1 Sep 2026,
+# twice). steam_appid.txt beside the exe is the canonical defeat; the real
+# Game dir is read-only to us, so the exe runs from a farm of symlinks with
+# our own steam_appid.txt added. DS3 only reads its install dir; symlinks are
+# safe and cost nothing.
+ensure_gamedir() {
+  mkdir -p "$SANDBOX_GAME"
+  local f
+  for f in "$GAMEDIR"/*; do
+    ln -sfn "$f" "$SANDBOX_GAME/$(basename "$f")"
+  done
+  echo -n 374320 > "$SANDBOX_GAME/steam_appid.txt"
+  # Containment for the same failure class: Proton forwards a game-issued
+  # steam:// URL by exec'ing steam-runtime-steam-remote from PATH. Our shim
+  # shadows it, logs, and swallows the request, so a relaunch can never reach
+  # the real Steam client again even if the appid defence regresses.
+  mkdir -p "$BASE/shim"
+  printf '#!/bin/sh\necho "$(date +%%H:%%M:%%S) ds3-shot shim swallowed: steam-runtime-steam-remote $*" >> %s\nexit 0\n' \
+    "$LOG" > "$BASE/shim/steam-runtime-steam-remote"
+  chmod +x "$BASE/shim/steam-runtime-steam-remote"
+}
+
+# Tripwire for a Steam-side launch of DS3 appearing while we run. Ours never
+# matches: we do not go through steam-launch-wrapper/SteamLaunch.
+steam_relaunch_check() {
+  local pids p
+  pids="$(pgrep -f "SteamLaunch AppId=374320" 2>/dev/null || true)"
+  [ -z "$pids" ] && return 0
+  say "TRIPWIRE: Steam relaunched DS3 outside the sandbox (pids: $pids) - killing it"
+  for p in $pids; do kill -TERM "$p" 2>/dev/null; done
+  sleep 2
+  for p in $(pgrep -f "SteamLaunch AppId=374320" 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done
+  for p in $(pgrep -f "DarkSoulsIII.exe" 2>/dev/null); do kill -TERM "$p" 2>/dev/null; done
+  teardown || true
+  die "steam_api escaped to a real Steam launch; the steam_appid.txt defence failed - investigate before rerunning"
+}
+
+# The sandbox prefix: a full copy of the real compatdata (625MB, once), so the
+# game boots with known-good graphics config and reads a COPY of the save.
+# The copy has since DIVERGED on purpose: it holds the harness character and
+# the persisted Play Offline setting. Do not casually re-copy (see the .md).
+ensure_sandbox() {
+  if [ ! -d "$SANDBOX/pfx" ]; then
+    say "sandbox prefix missing; snapshotting the real save first (the rail)"
+    backup_guard
+    say "copying real compatdata -> sandbox (~625MB, once)"
+    cp -a "$REAL_COMPAT" "$SANDBOX.tmp" || die "compatdata copy failed"
+    mv "$SANDBOX.tmp" "$SANDBOX"
+    say "NOTE: a FRESH sandbox has no harness character and Play Online set."
+    say "NOTE: run 'ds3-shot title' fine; the inventory journey needs manual"
+    say "NOTE: re-provisioning - see tools/ds3-shot.md (Provisioning)."
+  fi
+}
+
+# Never copy the save without a confirmed snapshot of it.
+backup_guard() {
+  "$HOME/couch/tools/save-backup" >>"$LOG" 2>&1 || die "save-backup failed"
+  ls "$HOME"/couch/data/game-saves/dark-souls-3/*.tar.gz >/dev/null 2>&1 \
+    || die "no DS3 snapshot in data/game-saves; refusing to touch the save"
+}
+
+refresh_save() {
+  [ "${DS3SHOT_I_UNDERSTAND:-}" = 1 ] || die \
+"--refresh-save DESTROYS the sandbox's harness character and its persisted
+Play Offline setting (both live in the sandbox DS30000.sl2, which this
+replaces with a copy of the real one). The next inventory run would launch
+ONLINE and have no character to load until re-provisioned by hand
+(tools/ds3-shot.md, Provisioning). Set DS3SHOT_I_UNDERSTAND=1 to proceed."
+  backup_guard
+  say "refreshing sandbox save from the real prefix"
+  rm -rf "$SANDBOX/$SAVE_REL"
+  mkdir -p "$(dirname "$SANDBOX/$SAVE_REL")"
+  cp -a "$REAL_COMPAT/$SAVE_REL" "$SANDBOX/$SAVE_REL" || die "save copy failed"
+  say "sandbox save refreshed; RE-PROVISION before the next inventory run"
+}
+
+# ------------------------------------------------------------ session control
+launch() {
+  rm -f "$DISPLAY_FILE"
+  rm -f "$RUN"/gamescope-* "$RUN"/wayland-* 2>/dev/null
+  say "launching DS3 headless (sandbox prefix + sandbox game dir, offline save)"
+  (
+    exec 9>&-   # the session must not inherit (and hold) the tool's flock
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.steam/steam"
+    export STEAM_COMPAT_DATA_PATH="$SANDBOX"
+    export SteamAppId=374320
+    export SteamGameId=374320
+    export XDG_RUNTIME_DIR="$RUN"
+    export SDL_AUDIODRIVER=dummy
+    export PULSE_SERVER=/nonexistent
+    export PIPEWIRE_REMOTE=/nonexistent
+    export PATH="$BASE/shim:$GS_DIR:$PATH"  # shim first; gamescope needs
+                                            # gamescopereaper on PATH
+    # NO network namespace, deliberately: inside a netns the host
+    # steamclient.so cannot reach the running Steam client
+    # ("steamclient_init_registry Failed to connect to Steam"), steam_api
+    # cannot verify the session, and the game exits after requesting a Steam
+    # relaunch - the TV-takeover failure. Offline is enforced at the game
+    # level instead (Play Offline in the sandbox save, proven by the
+    # "Offline" top-left capture) and this install has no EasyAntiCheat
+    # files, so the game cannot complete a server handshake even if asked.
+    [ "${DS3SHOT_PROTON_LOG:-}" = 1 ] && export PROTON_LOG=1
+    TRACE=""
+    [ "${DS3SHOT_STRACE:-}" = 1 ] && TRACE="strace -f -e trace=execve -s 400 -o $BASE/strace.log"
+    unset DISPLAY XAUTHORITY
+    cd "$SANDBOX_GAME" || exit 1
+    exec "$GS_DIR/gamescope" --backend headless -W "$OUT_W" -H "$OUT_H" -r 60 -- \
+      sh -c 'echo "$DISPLAY" > "$0"; exec "$@"' \
+      "$DISPLAY_FILE" $TRACE "$PROTON" run "$SANDBOX_GAME/DarkSoulsIII.exe"
+  ) >>"$LOG" 2>&1 &
+  echo $! > "$PIDFILE"
+  local i
+  for i in $(seq 60); do [ -s "$DISPLAY_FILE" ] && break; sleep 1; done
+  [ -s "$DISPLAY_FILE" ] || { teardown; die "gamescope/Xwayland never came up (see $LOG)"; }
+  say "nested display $(cat "$DISPLAY_FILE"), session pid $(cat "$PIDFILE")"
+  steam_relaunch_check
+}
+
+session_alive() {
+  local pid; pid="$(cat "$PIDFILE" 2>/dev/null)" || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Everything we started is under the session pid and/or betrayed by the
+# sandbox paths in its cmdline. Kill by those handles only, never a bare name.
+# TRAP (learned live): pgrep -f patterns match OTHER shells whose command
+# lines merely mention these paths - never run teardown from an interactive
+# compound command that names the sandbox dirs.
+teardown() {
+  local pid w
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    say "teardown: TERM to session $pid"
+    kill -TERM "$pid" 2>/dev/null
+    for w in $(seq 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  fi
+  for w in $(pgrep -f "compatdata-374320|ds3-shot[/\\\\]game" 2>/dev/null); do
+    kill -TERM "$w" 2>/dev/null
+  done
+  sleep 2
+  for w in $(pgrep -f "compatdata-374320|ds3-shot[/\\\\]game" 2>/dev/null); do
+    kill -KILL "$w" 2>/dev/null
+  done
+  rm -f "$PIDFILE"
+  if pgrep -f "compatdata-374320|ds3-shot[/\\\\]game" >/dev/null 2>&1; then
+    say "WARNING: sandbox processes survived teardown"
+    return 1
+  fi
+  say "teardown complete, nothing left running"
+}
+
+# ------------------------------------------------------------------- capture
+# gamescope composites and saves asynchronously; wait for the file.
+shot() {
+  local name="$1" out="$SHOTS/$1.png" tries i
+  rm -f "$out"
+  for tries in 1 2 3; do
+    XDG_RUNTIME_DIR="$RUN" GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+      "$GS_DIR/gamescopectl" screenshot "$out" >>"$LOG" 2>&1
+    for i in $(seq 20); do [ -s "$out" ] && break; sleep 0.25; done
+    [ -s "$out" ] && { echo "$out"; return 0; }
+    say "screenshot $name: no file yet (try $tries)"
+    sleep 2
+  done
+  return 1
+}
+
+img_stddev() { identify -format "%[fx:standard_deviation*1000]" "$1" 2>/dev/null | cut -d. -f1; }
+img_ok() {  # dims + non-trivial variance; the classic failure is a black PNG
+  local f="$1" sd dims
+  [ -s "$f" ] || return 1
+  dims="$(identify -format "%wx%h" "$f" 2>/dev/null)"
+  [ "$dims" = "${OUT_W}x${OUT_H}" ] || { say "$f is $dims, wanted ${OUT_W}x${OUT_H}"; return 1; }
+  sd="$(img_stddev "$f")"
+  [ -n "$sd" ] && [ "$sd" -ge 30 ] || { say "$f stddev ${sd:-none} - looks black/blank"; return 1; }
+  return 0
+}
+
+# Pixel probes, calibrated against live captures (1 Sep 2026, 1920x1080):
+#   hud:  red-dominant HP bar at y~80-86 x 210-400, green stamina y~115-120
+#   menu: the warm highlight ellipse under the selected main-menu item
+#         (x 880-1050, y 736-748); the title screen is pure black there
+probe() {  # probe <hud|menu> <png> -> exit 0/1
+  python3 - "$1" "$2" <<'EOF'
+import sys
+from PIL import Image
+what, path = sys.argv[1], sys.argv[2]
+im = Image.open(path).convert("RGB")
+def frac(box, pred):
+    xs = range(box[0], box[2], 6); ys = range(box[1], box[3], 2)
+    n = hit = 0
+    for y in ys:
+        for x in xs:
+            r, g, b = im.getpixel((x, y)); n += 1
+            if pred(r, g, b): hit += 1
+    return hit / max(n, 1)
+if what == "hud":
+    red = frac((210, 78, 400, 88), lambda r, g, b: r > 55 and r > g * 1.6 and r > b * 1.6)
+    green = frac((210, 113, 370, 121), lambda r, g, b: g > 55 and g > r * 1.2 and g > b * 1.2)
+    sys.exit(0 if red > 0.5 and green > 0.5 else 1)
+if what == "menu":
+    warm = frac((880, 736, 1050, 748), lambda r, g, b: r >= 30 and b <= r * 0.6)
+    sys.exit(0 if warm > 0.5 else 1)
+sys.exit(2)
+EOF
+}
+
+wait_probe() {  # wait_probe <hud|menu> <timeout-s> [poke] - poke: click between polls
+  local what="$1" limit="$2" poke="${3:-}" t=0 f
+  while [ $t -lt "$limit" ]; do
+    steam_relaunch_check
+    session_alive || die "game died while waiting for $what (tail $LOG)"
+    f="$(shot _probe)" || { sleep 3; t=$((t+3)); continue; }
+    if img_ok "$f" 2>/dev/null && probe "$what" "$f"; then return 0; fi
+    [ "$poke" = poke ] && click 960 540
+    sleep 4; t=$((t+4))
+  done
+  return 1
+}
+
+wait_first_frame() {
+  local t=0 f
+  say "waiting for the game's first rendered frame"
+  while [ $t -lt 180 ]; do
+    steam_relaunch_check
+    session_alive || die "game died during startup (tail $LOG)"
+    f="$(shot _probe)" || { sleep 3; t=$((t+3)); continue; }
+    if img_ok "$f" 2>/dev/null; then say "first frame after ~${t}s"; return 0; fi
+    sleep 3; t=$((t+3))
+  done
+  die "no rendered frame within 180s"
+}
+
+# --------------------------------------------------------------------- input
+# Key map, learned live: arrows navigate, e = confirm (A), q = back (B).
+# Return/Escape/Tab/PageDown do NOTHING in DS3's menus; dialogs with A/B
+# glyph prompts respond to mouse clicks, not keys. Category tabs inside
+# System are mouse-clickable at y=240.
+key() {  # key <keysym> [hold-s]
+  python3 - "$(cat "$DISPLAY_FILE")" "$1" "${2:-0.08}" <<'EOF'
+import sys, time
+from Xlib import display, X, XK
+from Xlib.ext import xtest
+d = display.Display(sys.argv[1])
+kc = d.keysym_to_keycode(XK.string_to_keysym(sys.argv[2]))
+if not kc: sys.exit("no keycode for " + sys.argv[2])
+xtest.fake_input(d, X.KeyPress, kc); d.sync()
+time.sleep(float(sys.argv[3]))
+xtest.fake_input(d, X.KeyRelease, kc); d.sync()
+EOF
+}
+
+click() {  # click <x> <y>
+  python3 - "$(cat "$DISPLAY_FILE")" "$1" "$2" <<'EOF'
+import sys, time
+from Xlib import display, X
+from Xlib.ext import xtest
+d = display.Display(sys.argv[1])
+xtest.fake_input(d, X.MotionNotify, x=int(sys.argv[2]), y=int(sys.argv[3])); d.sync()
+time.sleep(0.25)
+xtest.fake_input(d, X.ButtonPress, 1); d.sync()
+time.sleep(0.12)
+xtest.fake_input(d, X.ButtonRelease, 1); d.sync()
+EOF
+}
+
+# ------------------------------------------------------------------ journeys
+# Boot -> main menu: clicks skip the logos and press through the title screen
+# ("PRESS ANY BUTTON"); the click lands in dead space at the menu itself, so
+# poking is idempotent. Offline, there is no login and no announcements
+# dialog on this path.
+advance_to_menu() {
+  wait_first_frame
+  say "advancing to the main menu"
+  wait_probe menu 150 poke || { teardown; die "main menu never appeared"; }
+  say "main menu up (Continue highlighted)"
+}
+
+finish() {  # emit verified shots, tear down, report
+  local f
+  for f in "$@"; do img_ok "$SHOTS/$f.png" || { teardown; die "$f.png failed content check"; }; done
+  teardown || true
+  for f in "$@"; do echo "$SHOTS/$f.png"; done
+}
+
+run_title() {
+  launch
+  wait_first_frame
+  say "letting the logos run out (no input, the title parks itself)"
+  sleep 45
+  shot title >/dev/null || { teardown; die "screenshot failed"; }
+  say "OK title"
+  finish title
+}
+
+run_menu() {
+  launch
+  advance_to_menu
+  shot mainmenu >/dev/null || { teardown; die "screenshot failed"; }
+  say "OK menu"
+  finish mainmenu
+}
+
+run_loadlist() {
+  launch
+  advance_to_menu
+  key Down; sleep 1.2
+  key e; sleep 3
+  shot loadlist >/dev/null || { teardown; die "screenshot failed"; }
+  say "OK loadlist (no character loaded; the list is read-only)"
+  finish loadlist
+}
+
+run_inventory() {
+  launch
+  advance_to_menu
+  # Continue is the top item and highlighted by default; it loads the newest
+  # save in the SANDBOX profile, which is the harness character (shotbot) -
+  # and every run below quits from shotbot, so it stays the newest. The real
+  # character is never loaded anywhere.
+  key e
+  say "loading the harness character (Continue)"
+  wait_probe hud 120 || { teardown; die "never reached the in-game HUD"; }
+  sleep 3
+  shot ingame >/dev/null || { teardown; die "screenshot failed"; }
+  # Esc opens the in-game menu bar with Equipment highlighted first.
+  key Escape; sleep 2
+  key e; sleep 2.5
+  shot equipment >/dev/null || { teardown; die "screenshot failed"; }
+  key q; sleep 1.5           # back to the bar, Equipment still selected
+  key Right; sleep 1
+  key e; sleep 2.5
+  shot inventory >/dev/null || { teardown; die "screenshot failed"; }
+  # Clean exit so the sandbox save is never killed mid-write: bar -> System
+  # (3 right of Inventory) -> the Quit Game tab (mouse, x=1105 y=240) ->
+  # Quit Game button -> YES. "Save the game and return to title menu."
+  key q; sleep 1.5
+  key Right; sleep 0.8; key Right; sleep 0.8; key Right; sleep 0.8
+  key e; sleep 2
+  click 1105 240; sleep 1.5
+  click 960 788; sleep 1.5
+  click 740 595
+  say "saved and quitting to title"
+  sleep 12
+  say "OK inventory journey"
+  finish ingame equipment inventory
+}
+
+# ----------------------------------------------------------------------- dev
+run_dev() {
+  case "${1:-}" in
+    start) launch ;;
+    frame) wait_first_frame ;;
+    menu)  advance_to_menu ;;
+    shot)  shot "${2:?name}" || die "no shot" ;;
+    key)   key "${2:?keysym}" "${3:-0.08}" ;;
+    click) click "${2:?x}" "${3:?y}" ;;
+    probe) probe "${2:?hud|menu}" "${3:?file}" && echo yes || echo no ;;
+    stop)  teardown ;;
+    *) die "dev: start|frame|menu|shot NAME|key SYM [s]|click X Y|probe WHAT FILE|stop" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------- main
+exec 9>>"$LOCK"
+flock -n 9 || die "another ds3-shot is running"
+
+CMD="${1:-inventory}"
+case "$CMD" in
+  _dev) shift; preflight; ensure_gamedir; ensure_sandbox; run_dev "$@" ;;
+  title|menu|loadlist|inventory)
+    preflight; ensure_gamedir; ensure_sandbox
+    trap 'teardown >/dev/null 2>&1' EXIT
+    "run_$CMD"
+    trap - EXIT
+    ;;
+  --refresh-save) preflight; ensure_sandbox; refresh_save ;;
+  *) die "usage: ds3-shot [inventory|title|menu|loadlist|--refresh-save]" ;;
+esac
