@@ -14,6 +14,15 @@
 #
 # Then drop the result at mod/font/matissepron/font.gfx in the ModEngine2 mod
 # folder. Verified in game: Noto Serif and Crimson Pro both render correctly.
+#
+# TRAP: VARIABLE FONTS COME IN LIGHT. FFDec takes the default instance, which
+# for Crimson Pro is wght=400, and that rendered 23% LESS ink than vanilla
+# (6.79% coverage against 8.82%) - i.e. HARDER to read at sofa distance, which
+# is the opposite of the point. Instance a static weight first:
+#     python -m fontTools.varLib.instancer Font.ttf wght=600 -o Font-600.ttf
+# Crimson Pro at 600 measures 8.38%, matching vanilla's weight while keeping
+# the cleaner letterforms. Measure ink coverage on a text crop rather than
+# judging weight by eye; the eye is fooled by letterform clarity.
 # Character id 1 is the embedded font; DS3's font.gfx contains exactly one.
 set -euo pipefail
 FFDEC="${FFDEC:-/tmp/ffdec/ffdec-cli.jar}"
