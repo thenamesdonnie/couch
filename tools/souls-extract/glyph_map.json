@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Elden Ring SB_KG glyph -> Dark Souls 3 KG_PS4_* slot.",
+    "Indices are into the output of segment_glyphs.py run on ER's menu/hi/01_common.tpf.dcx SB_KG.",
+    "DS3 slot naming, which is not obvious: L_* is the D-PAD cluster and R_* is the FACE BUTTON cluster.",
+    "DS3's PlayStation set follows the Japanese convention: OK is Circle, Cancel is Cross. Do not swap these.",
+    "D-pad pairs were matched by measuring which arms are lit, not by eye. ER ships two complete sets of",
+    "seven d-pads, a bright white-filled set and a dark outlined set; DS3 highlights the active direction,",
+    "so the bright set is correct. Lit arms measure ~173 vs ~64 for unlit, which separates them cleanly.",
+    "07_pill is a DERIVED asset: ER merges the OPTIONS word and its button pill into one component, so it",
+    "is split at y=30 where row occupancy steps from ~82px wide (text) to ~26px (pill).",
+    "TP_L and TP_R are deliberately ABSENT. ER ships a single touchpad symbol, not a left/right pair, and",
+    "using it for both would erase the distinction DS3 needs. Those two slots stay vanilla."
+  ],
+  "source_texture": "menu/hi/01_common.tpf.dcx :: SB_KG",
+  "target_texture": "menu/01_common.tpf.dcx",
+  "map": {
+    "Cancel": "17", "OK": "1", "R_L": "9", "R_U": "44",
+    "L1": "27", "L2": "19", "L3": "11", "LS": "3",
+    "R1": "45", "R2": "13", "R3": "30", "RS": "23",
+    "Start": "07_pill",
+    "L_D": "46", "L_L": "39", "L_LR": "31", "L_R": "24",
+    "L_U": "18", "L_UD": "10", "L_UDLR": "2"
+  },
+  "excluded": { "TP_L": "no ER equivalent", "TP_R": "no ER equivalent" }
+}
