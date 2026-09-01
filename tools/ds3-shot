@@ -380,8 +380,21 @@ finish() {  # emit verified shots, tear down, report
 run_title() {
   launch
   wait_first_frame
-  say "letting the logos run out (no input, the title parks itself)"
-  sleep 45
+  # POLL, do not sleep. This used to be a hardcoded `sleep 45`, which meant no
+  # amount of intro-skipping could ever make a title run faster - the harness
+  # was the bottleneck, not the game. Watch for the logo's bright pixels in the
+  # band where MENU_DS3_LOGO renders (screen y 400-580) and go as soon as it is
+  # up, with the old 45s as the ceiling rather than the cost.
+  say "waiting for the title logo (polling)"
+  local waited=0 lit
+  while [ "$waited" -lt 45 ]; do
+    shot _titlepoll >/dev/null 2>&1 || true
+    lit=$(convert "$SHOTS/_titlepoll.png" -crop 1920x180+0+400 +repage \
+            -colorspace Gray -threshold 55% -format "%[fx:mean*10000]" info: 2>/dev/null | cut -d. -f1)
+    [ -n "$lit" ] && [ "$lit" -gt 120 ] && { say "title up after ${waited}s"; break; }
+    sleep 3; waited=$((waited+3))
+  done
+  rm -f "$SHOTS/_titlepoll.png"
   shot title >/dev/null || { teardown; die "screenshot failed"; }
   say "OK title"
   finish title
