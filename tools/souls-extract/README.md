@@ -16,6 +16,9 @@ container everything else lives inside, so those two gaps are what this fills.
 | `dvdbnd.py` | BHD5/BDT reader: RSA header decryption, buckets, path hashing, AES range decryption |
 | `oodle.py` | DCX unwrapping for both DFLT (zlib) and KRAK (Oodle), via ooz |
 | `ooz-linux/` | The Linux port of ooz: portability shims, our patch, and a build script |
+| `flood_map_hud.py` | Empirical atlas mapper: tracer colours + notches into MENU_PlayerHUD2, read the mapping off a ds3-shot capture |
+| `hud_atlas_map.json` | The derived MENU_PlayerHUD2 map: which rect feeds which bar, and at what screen scale |
+| `er_hud_bars.py` | Rebuilds the HP/FP/stamina bars Elden Ring style (ER's own leather + gold line, authored fills) |
 
 `soulstruct` supplies TPF and BND4 on top. `pip install soulstruct cryptography`.
 

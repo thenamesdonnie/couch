@@ -1,0 +1,45 @@
+{
+  "texture": "MENU_PlayerHUD2",
+  "container": "menu/01_common.tpf.dcx",
+  "size": [256, 256],
+  "derived": "2026-09-02, empirically: flat-colour flood per strip + black notches at x=64/128/192 (widths 2/4/6), read back from a ds3-shot in-game capture at 1920x1080",
+  "strips": {
+    "bar_backdrop": {
+      "rect": [0, 6, 256, 22],
+      "verified": true,
+      "notes": "frame/backdrop behind all three bars; drawn 16 px tall on screen (1:1 vertical), full bar length; fill band covers its middle 12 rows"
+    },
+    "hp_fill": {
+      "rect": [0, 28, 256, 52],
+      "verified": true,
+      "notes": "one 24-row graphic, minified 2:1 vertically to the 12 px HP fill band (screen y77-88 for shotbot); also sampled at low alpha by the weapon-slot durability gauges (screen y~907-912)"
+    },
+    "stamina_fill": {
+      "rect": [0, 52, 256, 76],
+      "verified": true,
+      "notes": "same anatomy; stamina band was screen y111-122"
+    },
+    "fp_fill": {
+      "rect": [0, 76, 256, 100],
+      "verified": true,
+      "notes": "same anatomy; FP band was screen y94-105"
+    },
+    "unknown_olive": {
+      "rect": [0, 100, 256, 124],
+      "verified": false,
+      "notes": "never appeared in a full-bars capture; vanilla olive colouring suggests the damage-lag/depleted variant"
+    },
+    "endcaps_and_icons": {
+      "rect": [0, 124, 256, 256],
+      "verified": false,
+      "notes": "bar end-cap arrowheads, ember faces, status icons; left untouched"
+    }
+  },
+  "screen_mapping": {
+    "resolution": [1920, 1080],
+    "horizontal": "1:1, texture x + 192 = screen x for the left-anchored bars (notches at tex x 64/128/192 landed at screen x 256/320/384 in ALL bars regardless of bar length); bars shorter than 256 px crop the strip, longer presumably clamp the edge texel (unverified, needs a high-level character)",
+    "vertical": "backdrop 16 rows -> 16 px (1:1); each 24-row fill block -> 12 px (2:1 minified)",
+    "bar_bands_shotbot": {"hp": [77, 88], "fp": [94, 105], "stamina": [111, 122]}
+  },
+  "probe_constraint": "ds3-shot's hud probe samples screen y78-88 (wants red-dominant) and y113-121 (green-dominant); any replacement art for hp_fill/stamina_fill must keep those bands passing or the inventory journey dies at wait_probe"
+}
