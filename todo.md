@@ -481,9 +481,17 @@ measured as neutral or worse — do not repeat them: three sampling phases (0 be
 at 470, +1 gave 595, -1 gave 492), a vertical pre-sharpen (538), atlas scale 4
 vs 2 (2 is better: 1:1 vertically), removing either rail copy.
 
-The untried fix is deconvolution: measure the per-row error and pre-compensate
-the cut for the known blur, iterating once. Start at `graft_fills` in
+The untried fix is deconvolution: measure the blur's point-spread function with
+an impulse, invert it, and pre-compensate the cut. Start at `graft_fills` in
 `tools/souls-extract/er_hud_graft.py`.
+
+**ONE ATTEMPT MADE, FAILED ON A TRIVIAL MISTAKE — the method is still worth
+trying.** I built an impulse (drawn window flat grey 40, one row at 255) to
+measure the PSF, but flat grey means the HP bar is no longer red-dominant, so
+`wait_probe hud` never fires and the run dies with "never reached the in-game
+HUD". The numbers I read were a stale frame. **Redo it with a RED impulse** -
+keep the band red-dominant, e.g. base (60,10,8) with the impulse row (255,40,32)
+- so the probe still passes, then read the spread around the peak.
 
 Rebuild and check with:
 ```bash
