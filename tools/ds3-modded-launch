@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# ds3-modded-launch %command%
+#
+# Steam launch-option wrapper: run Dark Souls III through ModEngine2 with the
+# "Elden Ring Edition" HUD mod, against the REAL install and the REAL save.
+# Steam expands %command% to "<reaper/proton bits> <path>/DarkSoulsIII.exe";
+# this swaps the final game exe for the ModEngine2 launcher (kept OUTSIDE the
+# game directory, in couch/data/ds3-mod) and passes the real exe back to it
+# with -p, so nothing in the Steam install is modified. Same Proton, same
+# compatdata, same launch as before; only the loader changes.
+#
+# OFFLINE ONLY. Modified game files plus EasyAntiCheat online is a ban risk.
+# Set System > Network > Launch Setting to "Play Offline" in DS3 before using
+# this. The wrapper cannot verify that; it only reminds you in the log.
+#
+# Set in Steam: DS3 > Properties > Launch Options:
+#   /home/ds2000/couch/tools/ds3-modded-launch %command%
+# Remove that line to go back to vanilla; the mod dir stays put.
+set -u
+MOD_DIR="$HOME/couch/data/ds3-mod"
+LAUNCHER="$MOD_DIR/modengine2_launcher.exe"
+CONFIG="$MOD_DIR/config_darksouls3.toml"
+LOG=/tmp/ds3-modded-launch.log
+{
+  echo "=== $(date '+%F %T') argv:"; printf '  %q\n' "$@"
+} >> "$LOG" 2>&1
+args=(); game=""
+for a in "$@"; do
+  case "$a" in
+    *DarkSoulsIII.exe) game="$a"; args+=("$LAUNCHER");;
+    *) args+=("$a");;
+  esac
+done
+if [ -z "$game" ]; then
+  echo "no DarkSoulsIII.exe in the command; launching unmodified" >> "$LOG"
+  exec "$@"
+fi
+[ -x "$LAUNCHER" ] || [ -f "$LAUNCHER" ] || { echo "launcher missing at $LAUNCHER; launching unmodified" >> "$LOG"; exec "$@"; }
+args+=(-t ds3 -c "$CONFIG" -p "$game")
+echo "modded launch (OFFLINE ONLY): exec ${args[*]}" >> "$LOG"
+exec "${args[@]}"

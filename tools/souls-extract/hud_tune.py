@@ -55,7 +55,7 @@ from PIL import Image
 REF = Path.home() / "couch/data/ds3-ui-port/er-reference"
 
 # Normalised, so these hold at 1080p and 4K alike.
-BAR_LEFT = 0.10182
+BAR_LEFT = 0.11016      # 423/3840: bars shifted +16 stage px 2 Sep evening (was 0.10182)
 BARS = {
     "hp":      dict(y0=0.07083, y1=0.08056, offset=(-2.0, -8.0, -12.0)),
     "fp":      dict(y0=0.08704, y1=0.09491, offset=(-10.0, 0.0, -2.0)),
@@ -104,18 +104,22 @@ def apply_shader(frame: np.ndarray) -> np.ndarray:
 
 def apply_overlay(frame: np.ndarray, cap: Image.Image,
                   dx: int = 0, dy: int = 0, scale: float = 1.0) -> np.ndarray:
-    """Composite `cap` at each bar's left end, alpha-blended."""
+    """Composite `cap` at each bar's left end exactly as the vkBasalt shader does.
+
+    Geometry is the shader's (ds3_hud_deepen.fx, 2 Sep evening): the 41x36
+    sprite drawn 1:1 at 2160p with its origin 33 px left of the first fill
+    column (x=424 since the bars moved +32) and 6 rows above each fill window's top (154/188/222).
+    Expressed normalised so a 1080p frame gets the same placement at half
+    size. dx/dy/scale are pixel nudges at 2160p for experiments only.
+    """
     h, w = frame.shape[:2]
     out = frame.astype(float).copy()
-    for name, spec in BARS.items():
-        bar_h = int(round((spec["y1"] - spec["y0"]) * h))
-        ch = max(1, int(round(bar_h * 1.45 * scale)))       # the cap overhangs
-        cw = max(1, int(round(ch * cap.width / cap.height)))
-        piece = np.asarray(cap.resize((cw, ch), Image.LANCZOS)).astype(float)
-
-        # Anchor on the bar's left edge, then let the cap hang left of it.
-        x0 = int(round(BAR_LEFT * w)) - int(round(cw * 0.60)) + dx
-        y0 = int(round(spec["y0"] * h)) - int(round((ch - bar_h) * 0.45)) + dy
+    f = h / 2160.0
+    cw, ch = max(1, int(round(41 * f * scale))), max(1, int(round(36 * f * scale)))
+    piece = np.asarray(cap.resize((cw, ch), Image.LANCZOS)).astype(float)
+    for name, top in (("hp", 148), ("fp", 182), ("sta", 216)):
+        x0 = int(round((391 + dx) * f))   # 359 before the +32 bar shift
+        y0 = int(round((top + dy) * f))
         x1, y1 = x0 + cw, y0 + ch
         sx0, sy0 = max(0, -x0), max(0, -y0)
         x0, y0 = max(0, x0), max(0, y0)
@@ -217,7 +221,13 @@ def measure(frame: np.ndarray) -> None:
         # had not. Sample past the ornament.
         x0 = c0 + max(10, (c1 - c0) // 5)
         x1 = c0 + (c1 - c0) * 2 // 3
-        y0, y1 = rows.min() + 2, rows.max() - 1
+        # Sample only the FLAT fill: the top half of the hue-matched rows.
+        # At native 4K the bevel rows (+12..+17) also pass the hue test and
+        # they are deliberately brighter (ER's are too), so averaging them
+        # in reported HP at dE 3.15 when every row matched ER within 0.8.
+        # Row-by-row truth is hud_rows.py; this is the one-number summary.
+        y0 = rows.min() + 1
+        y1 = rows.min() + max(3, (rows.max() - rows.min()) // 2)
         if x1 <= x0 or y1 <= y0:
             print(f"{name:10s} {'too small to sample':>18}")
             continue

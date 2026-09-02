@@ -1,0 +1,73 @@
+diff --git a/src/hksclib.c b/src/hksclib.c
+index ef2616f..6e92b72 100644
+--- a/src/hksclib.c
++++ b/src/hksclib.c
+@@ -538,7 +538,7 @@ LUA_API void hksI_settings(hksc_StateSettings *settings) {
+   settings->ud = NULL;
+   settings->panic = &panic;
+   settings->mode = HKSC_MODE_DEFAULT;
+-  settings->bytecode_endianness = HKSC_DEFAULT_ENDIAN;
++  settings->bytecode_endianness = HKSC_BIG_ENDIAN; /* PATCH: Bloodborne hks are big-endian */
+ #ifdef HKSC_MULTIPLAT
+   settings->target_plat = HKSC_TARGET_PLAT_DEFAULT;
+   settings->target_ws = HKSC_TARGET_WS_DEFAULT;
+diff --git a/src/lprintf.c b/src/lprintf.c
+index 54cf8ac..1760e7a 100644
+--- a/src/lprintf.c
++++ b/src/lprintf.c
+@@ -18,11 +18,11 @@
+ #include "llimits.h"
+ #include "lobject.h"
+ 
+-static int getfarg (va_list *pap, const char **p, int *arg) {
++static int getfarg (va_list pap, const char **p, int *arg) {
+   const char *s = *p;
+   *arg = 0;
+   if (*s == '*') {
+-    *arg = va_arg(*pap, int);
++    *arg = va_arg(pap, int);
+     *p = s+1;
+     return 1;
+   }
+@@ -117,11 +117,11 @@ int luaO_vprintf (l_PFN pfn, void *ud, const char *fmt, va_list ap) {
+       for (i = 0; i < cast_int(sizeof fchar) - 1; i++)
+         if (flags & (1 << i)) spec.s[spec.n++] = fchar[i];
+     }
+-    if (getfarg(&ap, &s, &width))
++    if (getfarg(ap, &s, &width))
+       spec.n += sprintf(spec.s + spec.n, "%d", width);
+     if (*s == '.') {
+       spec.s[spec.n++] = *s++;
+-      if (getfarg(&ap, &s, &prec))
++      if (getfarg(ap, &s, &prec))
+         spec.n += sprintf(spec.s + spec.n, "%d", prec);
+     }
+     /* qualifier */
+diff --git a/src/lundump.c b/src/lundump.c
+index 11effa0..822e29b 100644
+--- a/src/lundump.c
++++ b/src/lundump.c
+@@ -345,16 +345,19 @@ static void LoadDebug(LoadState *S, Proto *f, TString *p)
+ #endif /* HKSC_FORMAT_VERSION <= 13 */
+   n=f->sizelineinfo;
+   f->lineinfo=luaM_newvector(S->H,n,int);
++  /* PATCH: the swapendian branch was gated behind HKSC_MULTIPLAT, so a
++     non-multiplat build raw-copied lineinfo and produced garbage line numbers
++     for big-endian bytecode (e.g. Bloodborne). */
++  if (
+ #ifdef HKSC_MULTIPLAT
+-  if (S->target.sizeint == sizeof(int) && S->swapendian == 0) {
++      S->target.sizeint == sizeof(int) &&
+ #endif /* HKSC_MULTIPLAT */
+-  LoadVector(S,f->lineinfo,n,sizeof(int));
+-#ifdef HKSC_MULTIPLAT
++      S->swapendian == 0) {
++    LoadVector(S,f->lineinfo,n,sizeof(int));
+   }
+   else {
+     for (i=0; i<n; i++) f->lineinfo[i] = LoadInt(S);
+   }
+-#endif /* HKSC_MULTIPLAT */
+ #if HKSC_FORMAT_VERSION <= 13
+   f->sizelocvars=LoadInt(S);
+ #endif /* HKSC_FORMAT_VERSION <= 13 */

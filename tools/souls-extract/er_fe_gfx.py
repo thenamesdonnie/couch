@@ -29,6 +29,10 @@ WHAT THIS SCRIPT CAN DO
                         matrix, shared by all three bars)
     --drop-dish         remove the brown elliptical item base (three named
                         `Dish` placements) instead of erasing it from a texture
+    --cap-over-fill     move the left end-cap above the fill layer (see the
+                        render-tree note at cap_over_fill)
+    --shift-bars N      move the three bars right by N stage px (16 = ER's
+                        badge-to-bar gap; see shift_bars)
 
 ROUND-TRIP SAFETY was checked before any of this: JPEXS xml2swf reproduces a
 554296-byte file, the same size as the original, with 12 bytes differing - all
@@ -113,6 +117,92 @@ def scale_cap(t: str, factor: float) -> tuple[str, int]:
     return pat.sub(fix, t), n
 
 
+# HOW THE BAR ACTUALLY RENDERS (read out of the movie, 2 Sep 2026 evening).
+# Each bar (sprites 384 HP / 380 MP / 373 SP) is Fade -> {BarFrame, Delay,
+# Current}, each holding a 1920-frame "Bar" sprite the engine gotoAndStops at
+# a frame proportional to the stat. Inside each Bar: a sliding rectangular
+# MASK at depth 1 (its translate moves 0.752 px per frame, 0..1444 px) over six
+# 248-px texture tiles of MENU_PlayerHUD2 at depth 3, so the bar's length is
+# the mask, never a scale. BarFrame's Bar (361, shared by all three bars) also
+# holds the LEFT END-CAP at depth 17: sprite 358 -> shape 357, a 60x23 stage-px
+# quad at the bar origin sampling atlas base texels x 4..64, rows 160..183 -
+# at atlas scale 2 that is 120x46 texels drawn 1:1 at 4K. The "5x7 sprite
+# fixed in engine code" story was never true; the knob is simply the only
+# opaque thing in that texture region. The RIGHT end-cap is sprite 360 at
+# depth 19, translated with the frame so it rides the bar's end. The fill's
+# tiles (shape 117 etc.) sample base rows 34..46 of a 24-row block, which is
+# the "middle 12 rows" measured earlier.
+#
+# The cap sits UNDER Delay and Current, so a cap art that should overlap the
+# fill's start (ER's does, by 8 px) would be covered. --cap-over-fill moves it:
+# the depth-17 placement comes out of Bar 361 and the same character goes into
+# each bar's Fade sprite (383 / 379 / 372) at depth 7, above Current at 5,
+# still inside the fade so it fades in with the bar.
+CAP_CHAR = "358"
+FADE_SPRITES = ("383", "379", "372")
+CAP_PLACE = ('<item type="PlaceObject2Tag" characterId="358" depth="7" '
+             'forceWriteAsLong="false" placeFlagHasCharacter="true" '
+             'placeFlagHasClipActions="false" placeFlagHasClipDepth="false" '
+             'placeFlagHasColorTransform="false" placeFlagHasMatrix="true" '
+             'placeFlagHasName="false" placeFlagHasRatio="false" placeFlagMove="false">\n'
+             '          <matrix type="MATRIX" hasRotate="false" hasScale="false" '
+             'nRotateBits="0" nScaleBits="0" nTranslateBits="0" translateX="0" translateY="0"/>\n'
+             '        </item>\n')
+
+
+def cap_over_fill(t: str) -> tuple[str, int]:
+    """Move the left end-cap above the fill (see the note above)."""
+    n = 0
+    # 1. drop the depth-17 placement of the cap inside Bar 361
+    pat = re.compile(r'\s*<item type="PlaceObject2Tag" characterId="358" depth="17"[^>]*>'
+                     r'.*?</item>', re.S)
+    t, k = pat.subn("", t, count=1)
+    n += k
+    # 2. add it at depth 7 to each Fade sprite, right after the Current placement
+    for sid in FADE_SPRITES:
+        m = re.search(r'<item type="DefineSpriteTag"[^>]*spriteId="%s"[^>]*>' % sid, t)
+        if not m:
+            continue
+        end = t.index("</item>\n", t.index('<item type="ShowFrameTag"', m.end())) + len("</item>\n")
+        # insert before the first ShowFrame of this sprite
+        show = t.index('<item type="ShowFrameTag"', m.end())
+        line_start = t.rfind("\n", 0, show) + 1
+        t = t[:line_start] + "        " + CAP_PLACE + t[line_start:]
+        n += 1
+    return t, n
+
+
+def shift_bars(t: str, px: float) -> tuple[str, int]:
+    """Move the three bars right by `px` stage px (sprite 471's HP/MP/SP).
+
+    WHY: with Elden Ring's cap drawn at ER's offset (33 px left of the fill at
+    4K) it ran under DS3's covenant badge, whose frame reaches within 12 px of
+    the bar; ER keeps a 43 px gap. +16 stage px (32 at 4K) reproduces ER's gap.
+    Everything inside the bars moves with them; nothing else in the HUD does.
+    """
+    n = 0
+    tw = int(round(px * 20))
+
+    def fix(m: re.Match) -> str:
+        nonlocal n
+        block = m.group(0)
+        mm = re.search(r'translateX="(-?\d+)"', block)
+        if not mm:
+            return block
+        new = re.sub(r'translateX="-?\d+"', f'translateX="{int(mm.group(1)) + tw}"', block, count=1)
+        new = re.sub(r'nTranslateBits="\d+"', 'nTranslateBits="13"', new, count=1)
+        n += 1
+        return new
+
+    # Only inside sprite 471 (the player-status sprite): other sprites also
+    # name children HP/MP/SP, and matching the whole file shifted seven.
+    m471 = re.search(r'<item type="DefineSpriteTag"[^>]*spriteId="471"[^>]*>', t)
+    a = m471.start()
+    b = t.index('<item type="DefineSpriteTag"', m471.end()) if '<item type="DefineSpriteTag"' in t[m471.end():] else len(t)
+    pat = re.compile(r'<item type="PlaceObject2Tag"[^>]*name="(?:HP|MP|SP)"[^>]*>.*?</item>', re.S)
+    return t[:a] + pat.sub(fix, t[a:b]) + t[b:], n
+
+
 def drop_dish(t: str) -> tuple[str, int]:
     """Remove the brown elliptical item base placements."""
     pat = re.compile(r'\s*<item type="PlaceObject2Tag"[^>]*name="Dish"[^>]*>'
@@ -125,6 +215,12 @@ def main() -> None:
     argv = sys.argv[1:]
     do_cx = "--neutral-cxform" in argv
     do_dish = "--drop-dish" in argv
+    do_capover = "--cap-over-fill" in argv
+    shift = None
+    if "--shift-bars" in argv:
+        i = argv.index("--shift-bars")
+        shift = float(argv[i + 1])
+        del argv[i:i + 2]
     cap = None
     if "--scale-cap" in argv:
         i = argv.index("--scale-cap")
@@ -157,6 +253,16 @@ def main() -> None:
         if do_dish:
             t, n = drop_dish(t)
             print(f"  removed {n} 'Dish' (item base) placements")
+        if do_capover:
+            t, n = cap_over_fill(t)
+            print(f"  cap-over-fill: {n} edits (1 removal + 3 placements expected)")
+            if n != 4:
+                raise SystemExit(f"expected 4 cap edits, made {n} - refusing")
+        if shift is not None:
+            t, n = shift_bars(t, shift)
+            print(f"  shifted {n} bars right by {shift:g} stage px")
+            if n != 3:
+                raise SystemExit(f"expected 3 bar placements, shifted {n} - refusing")
 
         print(f"  xml {before:,} -> {len(t):,} bytes")
         xml.write_text(t, encoding="utf-8")

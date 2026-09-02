@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# bb-lockon-sprint install|revert|status
+#
+# Bloodborne: sprint in every direction while locked on. A 12-byte patch to the
+# player-control script c0000.hks (four instructions; see
+# data/bb-hks/FINDINGS.md). The stock file is kept beside it and both are
+# checked by sha256 before anything moves, so a wrong file can never be
+# installed and revert is one command. Player-control scripts do not touch
+# save data; the file is read at game start, so restart shadPS4 after either.
+set -euo pipefail
+GAME="$HOME/games/ps4/CUSA00900/dvdroot_ps4/action/script/c0000.hks"
+DIR="$HOME/couch/data/bb-hks"
+STOCK_SHA="335a1af801d4f2108"     # first 17 hex of sha256, stock 1.09 script
+PATCH_SHA="65c3098591f21ca85"
+STOCK="$DIR/c0000.STOCK.hks"
+# Variant: `install canary` = the gate patches PLUS the Walk->Run / Run->Dash
+# stick threshold lowered 0.97 -> 0.3, so a light stick push jogs even when
+# unlocked. If that does not show in game the file is not being used at all;
+# if it does, the locked-on sideways behaviour tells us which engine variable
+# is capped. Test build only.
+PATCHED="$DIR/c0000.PROTOTYPE.hks"
+if [ "${2:-}" = canary ]; then PATCHED="$DIR/c0000.CANARY.hks"; PATCH_SHA="21c14804be9ca4803"; fi
+# `install levelblind` = gate patches + Walk->Run no longer needs MoveSpeedLevel
+# >= 0.97 and Run no longer demotes to Walk below it. Tests the theory that the
+# engine reports walk level whenever locked on and off-axis (so Run is never
+# entered sideways). Tiny push unlocked should jog; locked-on sideways should
+# become a running strafe.
+if [ "${2:-}" = levelblind ]; then PATCHED="$DIR/c0000.LEVELBLIND.hks"; PATCH_SHA="d695522844e1ea351"; fi
+# `install dashtest` = levelblind + Run->DashStart no longer needs the sprint
+# hold or the speed level, and DashStart/Dash skip their demotion trees, so a
+# dash persists until the stick is released. Unlocked, every full push
+# sprints (deliberate). Locked-on sideways is the question. TEST BUILD ONLY.
+if [ "${2:-}" = dashtest ]; then PATCHED="$DIR/c0000.DASHTEST.hks"; PATCH_SHA="1b7df6c6ddabf9f70"; fi
+# dasha = dashtest with the SPEED-LEVEL check restored (only the sprint-hold
+# check bypassed); dashb = the opposite. Whichever still dashes sideways
+# while locked on names the check the engine withholds off-axis.
+if [ "${2:-}" = dasha ]; then PATCHED="$DIR/c0000.DASHA.hks"; PATCH_SHA="57c40011194c49b43"; fi
+if [ "${2:-}" = dashb ]; then PATCHED="$DIR/c0000.DASHB.hks"; PATCH_SHA="a0a153be3cf329971"; fi
+# `install lockspint` = THE CANDIDATE: stock logic with every "or MoveDirection
+# > 0" exit removed from Walk/Run/DashStart/Dash (seven instructions). Sprint
+# still needs circle held; the engine's own sprint level still gates
+# DashStart -> Dash. Direction of the dash is the graph's job, not this file's.
+if [ "${2:-}" = lockspint ]; then PATCHED="$DIR/c0000.LOCKSPRINT.hks"; PATCH_SHA="7a6ce8006558abaf8"; fi
+sha() { sha256sum "$1" | cut -c1-17; }
+cur=$(sha "$GAME")
+case "${1:-status}" in
+  status)
+    if [ "$cur" = "$STOCK_SHA" ]; then echo "game script: STOCK (lock-on sprint patch not installed)";
+    elif [ "$cur" = "65c3098591f21ca85" ]; then echo "game script: PATCHED (gate patches only)";
+    elif [ "$cur" = "21c14804be9ca4803" ]; then echo "game script: CANARY (gate patches + 0.3 run threshold)";
+    elif [ "$cur" = "d695522844e1ea351" ]; then echo "game script: LEVELBLIND (gate patches + speed-level-blind Walk/Run)";
+    elif [ "$cur" = "1b7df6c6ddabf9f70" ]; then echo "game script: DASHTEST (levelblind + dash without hold, no demotions)";
+    elif [ "$cur" = "57c40011194c49b43" ]; then echo "game script: DASHA (dashtest + speed-level check restored)";
+    elif [ "$cur" = "a0a153be3cf329971" ]; then echo "game script: DASHB (dashtest + sprint-hold check restored)";
+    elif [ "$cur" = "7a6ce8006558abaf8" ]; then echo "game script: LOCKSPRINT (all direction exits removed, circle required)";
+    else echo "game script: UNKNOWN sha $cur - neither stock nor our patch; do not touch it blind"; exit 2; fi ;;
+  install)
+    pgrep -x shadps4 >/dev/null && { echo "shadPS4 is running; quit it first"; exit 1; }
+    [ "$(sha "$PATCHED")" = "$PATCH_SHA" ] || { echo "patched file sha mismatch, refusing"; exit 1; }
+    if [ "$cur" = "$PATCH_SHA" ]; then echo "already installed"; exit 0; fi
+    [ "$cur" = "$STOCK_SHA" ] || [ "$cur" = "65c3098591f21ca85" ] || [ "$cur" = "21c14804be9ca4803" ] || [ "$cur" = "d695522844e1ea351" ] || [ "$cur" = "1b7df6c6ddabf9f70" ] || [ "$cur" = "57c40011194c49b43" ] || [ "$cur" = "a0a153be3cf329971" ] || [ "$cur" = "7a6ce8006558abaf8" ] || { echo "game script is not a known file (sha $cur), refusing"; exit 1; }
+    [ -f "$STOCK" ] || cp -a "$GAME" "$STOCK"
+    [ "$(sha "$STOCK")" = "$STOCK_SHA" ] || { echo "stock backup sha mismatch, refusing"; exit 1; }
+    cp -a "$PATCHED" "$GAME.tmp" && mv "$GAME.tmp" "$GAME"
+    echo "installed; stock kept at $STOCK. Start Bloodborne, lock on, hold sprint and push sideways." ;;
+  revert)
+    pgrep -x shadps4 >/dev/null && { echo "shadPS4 is running; quit it first"; exit 1; }
+    [ -f "$STOCK" ] || { echo "no stock backup at $STOCK"; exit 1; }
+    [ "$(sha "$STOCK")" = "$STOCK_SHA" ] || { echo "stock backup sha mismatch, refusing"; exit 1; }
+    cp -a "$STOCK" "$GAME.tmp" && mv "$GAME.tmp" "$GAME"
+    echo "reverted to the stock script" ;;
+  *) echo "usage: bb-lockon-sprint install [canary|levelblind|dashtest|dasha|dashb|lockspint]|revert|status"; exit 1 ;;
+esac

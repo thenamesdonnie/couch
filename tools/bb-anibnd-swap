@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# bb-anibnd-swap install <candidate.anibnd.dcx> | revert | status
+#
+# Swap Bloodborne's player animation bundle (chr/c0000.anibnd.dcx, which holds
+# the Havok behaviour graph and the TAE tables) for a candidate built under
+# data/bb-hks/anibnd/, keeping the stock file beside it. The stock file is
+# fingerprinted before the first swap and revert refuses to restore anything
+# else. Animation bundles hold no save state; the file is read at game start,
+# so restart shadPS4 after either operation. Companion to bb-lockon-sprint.
+set -euo pipefail
+GAME="$HOME/games/ps4/CUSA00900/dvdroot_ps4/chr/c0000.anibnd.dcx"
+DIR="$HOME/couch/data/bb-hks/anibnd"
+STOCK="$DIR/c0000.STOCK.anibnd.dcx"
+STOCK_SHA_FILE="$DIR/c0000.STOCK.sha"
+sha() { sha256sum "$1" | cut -c1-17; }
+running() { pgrep -x shadps4 >/dev/null; }
+mkdir -p "$DIR"
+case "${1:-status}" in
+  status)
+    cur=$(sha "$GAME")
+    if [ -f "$STOCK_SHA_FILE" ] && [ "$cur" = "$(cat "$STOCK_SHA_FILE")" ]; then echo "game bundle: STOCK ($cur)";
+    elif [ -f "$STOCK_SHA_FILE" ]; then echo "game bundle: CANDIDATE ($cur); stock is $(cat "$STOCK_SHA_FILE")";
+    else echo "game bundle: $cur (never swapped; stock not yet fingerprinted)"; fi ;;
+  install)
+    running && { echo "shadPS4 is running; quit it first"; exit 1; }
+    cand="${2:?usage: bb-anibnd-swap install <candidate.anibnd.dcx>}"
+    [ -f "$cand" ] || { echo "no such file: $cand"; exit 1; }
+    if [ ! -f "$STOCK" ]; then
+      cp -a "$GAME" "$STOCK"; sha "$STOCK" > "$STOCK_SHA_FILE"
+      echo "stock bundle fingerprinted: $(cat "$STOCK_SHA_FILE"), kept at $STOCK"
+    fi
+    cur=$(sha "$GAME")
+    [ "$cur" = "$(cat "$STOCK_SHA_FILE")" ] || [ -f "$DIR/.installed" ] || { echo "game bundle is neither stock nor a known candidate ($cur), refusing"; exit 1; }
+    cp -a "$cand" "$GAME.tmp" && mv "$GAME.tmp" "$GAME"; echo "$(sha "$GAME") $cand" > "$DIR/.installed"
+    echo "installed $(basename "$cand") ($(sha "$GAME"))" ;;
+  revert)
+    running && { echo "shadPS4 is running; quit it first"; exit 1; }
+    [ -f "$STOCK" ] || { echo "no stock backup; nothing was ever installed"; exit 1; }
+    [ "$(sha "$STOCK")" = "$(cat "$STOCK_SHA_FILE")" ] || { echo "stock backup fingerprint mismatch, refusing"; exit 1; }
+    cp -a "$STOCK" "$GAME.tmp" && mv "$GAME.tmp" "$GAME"; rm -f "$DIR/.installed"
+    echo "reverted to the stock bundle" ;;
+  *) echo "usage: bb-anibnd-swap install <candidate.anibnd.dcx> | revert | status"; exit 1 ;;
+esac

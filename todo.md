@@ -404,7 +404,149 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (2 Sep 2026 ~16:00 — DS3 "ELDEN RING EDITION": the HUD port, and the wrong conclusion that cost hours)
+## ▶ Resume here (2 Sep 2026 ~23:00 — DS3 HUD is LIVE on the real game; Bloodborne lock-on sprint half done)
+
+### ▶▶ DONNIE'S TO-DO
+1. **DS3 must be set to Play Offline** (System > Network > Launch Setting) before
+   playing the modded launch; modified files + EAC online is a ban risk.
+2. Next time a DS3 bar is damaged, say so: I grab the TV and measure the new
+   translucent trough against ER (unverified, alpha assumed linear).
+3. Still outstanding from 29 Aug: `sudo systemctl restart inputproc.service`.
+
+### ▶▶ DS3: what is live
+Steam launch options = `tools/ds3-modded-launch %command%` (ModEngine2 kept in
+`data/ds3-mod`, mod dir symlinked to the sandbox's, real save). Bars, rail and
+cap are ER's texels 1:1 at native 4K (row sums 9/10/11); the cap is drawn by
+the HUD movie (`er_fe_gfx.py --cap-over-fill --shift-bars 16`); the vkBasalt
+pass is inert and its launch option removed. NEW and unverified: the depleted
+trough synthesised from ER's translucent profile (RECIPE, "The trough").
+Remaining small items: the two brown rows above each bar (per-bar rim needs
+the fill's UV extended one row in the gfx), gamma 0.87 -> 0.8795.
+
+### ▶▶ Bloodborne: lock-on sprint (memory: bloodborne-lockon-sprint)
+SOLVED: the trigger. `tools/bb-lockon-sprint install lockspint` (installed):
+circle-held sprint fires in every direction while locked on. Seven
+MoveDirection gates in c0000.hks, 21 bytes; the behaviour graph has no
+conditions at all; the engine reports the sprint off-axis.
+NOT SOLVED: direction. The dash goes at the enemy (forward-only dash clips +
+engine-locked facing). Bundle installed: DIRDASH5 (harmless: sideways = normal
+strafe). Dead ends, do not retry: cloned hkbClipGenerators never load an
+animation (any name); the script has no facing control; eboot flags
+0x555428c (latch control-forward) and 0x5128330 (old lock control) load and
+change nothing. bb-cheat's "master" hook now CRASHES at world load (so the
+official cheats will too); flags are marked standalone and skip it.
+NEXT: install ghidra under ~/src (Java 21 present, no sudo) and patch the
+locomotion controller's facing rule (data/bb-eboot/FINDINGS.md has the
+struct offsets and consumer addresses). Fallback: v7-style fast strafe with
+the DashStart end-event fix and TAE stamina events on new anim ids.
+Also open: Enhanced Bloodborne dialogue problem (Donnie), and the QoL list
+(docs/research/bloodborne-qol-port-candidates-20260902.md): FOV, lock-on
+range, camera distance, logo skip, boss-lamp respawn setting.
+Tools: bb-lockon-sprint (script variants), bb-anibnd-swap (bundle), bb-cheat,
+~/src/bb-havok (append_hkx.py, build_v7.py), ~/src/hksc (patched, big endian),
+data/bb-hks/ref/ (Enhanced Controls + Jump on L3 = full Lua SOURCE of c0000.hks).
+Traps: pgrep patterns match your own shell (exit 144 everywhere today); ds3-shot
+kills a foreground shell at teardown; the shadPS4 log has no timestamps.
+
+### (superseded) Resume block from 2 Sep ~18:00 — DS3 "ELDEN RING EDITION": the bars are 1:1, the sandbox had been rendering 1080p)
+
+### ▶▶ DONNIE'S TO-DO (only he can do these)
+
+1. **Remove the vkBasalt launch options for DS3** (Steam > DS3 > Properties >
+   Launch Options; currently `ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE=... %command%`).
+   The pass now does nothing: the cap is drawn by the HUD movie itself and the
+   colour correction has been off since the cxform fix. Harmless if left.
+2. Still outstanding from 29 Aug: `sudo systemctl restart inputproc.service`.
+3. Nothing in this session is committed. `git status` shows the changed tools
+   (`er_hud_graft.py`, `hud_tune.py`, `hud_sim.py`, `hud_sim_probes.py`) and
+   the new `hud_rows.py`, `hud_cap.py`; commit when happy.
+
+### ▶▶ THE SECOND WRONG CONCLUSION OF THE DAY
+
+The afternoon's "measured 3-tap blur", "2:1 minification", "fractional row
+drift", sampling phases and deconvolution were all real measurements of the
+WRONG SETUP: the sandbox's `GraphicsConfig.xml` said `WINDOW 1920x1080`, so
+every "4K" capture was a 1080p window bilinearly upscaled 2x by gamescope.
+Donnie's real install is `FULLSCREEN 3840x2160`. Sandbox config switched to
+match (backup `build/GraphicsConfig.sandbox-1080p-window.xml.bak`; the file is
+UTF-16, grep it through iconv).
+
+Proof: a one-texel checkerboard in the FP block came back as a perfect 50/92
+alternation in both axes over exactly 24 rows. **One scale-2 texel is one 4K
+pixel, no filtering.** Capture: `data/ds3-shot/shots/probe_checker_4k_native.png`.
+
+### ▶▶ WHERE THE PORT IS NOW
+
+Deployed build `01_common_final.tpf.dcx` (md5 267019be…) at
+`data/ds3-shot/game/mod/menu/`. Graft is a straight 24-row 1:1 paste of ER's
+fill+bevel+rail assembly, no vertical resampling of any kind.
+
+`hud_rows.py` (every drawn row vs ER's row, columns 40..200):
+
+| bar | rows within dE 0.8 | sum dE / 24 rows | rail (ER 145/84/146/144) |
+|---|---|---|---|
+| HP | 24/24 | 11 | 144 / 83 / 144 / 143 |
+| FP | 24/24 | 12 | matches to within 1 on every row |
+| stamina | 24/24 | 12 | matches to within 1 on every row |
+
+`hud_tune.py measure` (now samples the flat top half only): HP 0.70, FP 2.26,
+STA 1.39. **The rail is done.** At 3x the bar bodies are indistinguishable.
+
+**Cap: IN THE MOVIE NOW, not the shader.** Donnie asked for the real thing, so
+the bar's render tree was read out of `01_000_fe.gfx` (RECIPE has the table):
+each bar is a 1920-frame sprite, length is a sliding mask, and the left
+end-cap is a 60x23 quad at the bar origin sampling atlas base x 4..64, rows
+160..183 - never "fixed in engine code". ER's sprite goes into that texture
+region, `er_fe_gfx.py --cap-over-fill` lifts the cap above the fill layer,
+`--shift-bars 16` gives ER's badge-to-bar gap so the badge stops covering it.
+Verified run 9: dx=0 dy=0 on all three bars, colour within 0.5 dE of ER's,
+fills unchanged. Deployed: `01_000_fe_capover_shift16.gfx` + the final atlas.
+Bar origin is now 4K x=416, red starts at 424; tools' geometry moved with it.
+
+`hud_sim.py` (offline renderer) now models native 4K and validates on the
+checker capture at mean abs 0.76/channel with zero fitted parameters. It
+found the gamma is 0.8795, not 0.87; NOT changed, because the graft's inverse
+uses the same constant and they must move together (worth ~1 unit).
+
+**Fill texture: ER's own texels, 1:1.** `SB_FE_01.png` holds the three fills
+as 2889-texel strips that ER draws at exactly 1 texel per 4K px; the graft now
+pastes them straight in (per-bar start texel HP 5 / ST 7 / FP 8, contrast
+0.85 as ER's screen shows it). Run 12: per-pixel correlation 0.955-0.963
+against ER's art on all three bars, row sums 9/10/11, fill dE 0.53/1.42/0.43.
+`hud_grain.py` is the check (windows inside the shortest bar).
+
+### ▶▶ WHAT IS LEFT, in order
+
+1. The two brown backdrop rows above each bar (ours 56,42,32 / 67,51,38 on
+   all three; ER has a dark line then a per-bar tinted rim, e.g. HP
+   63,47,35 / 90,38,18). They are outside the fill's drawn window, so fixing
+   them means either the shared backdrop (one colour for all bars) or
+   widening the fill sprite's UV rect in `01_000_fe.gfx`. Small at 4K.
+2. Gamma 0.87 -> 0.8795 in `er_hud_bars.SCREEN_GAMMA` and `hud_sim.GAMMA`
+   together, then one run. Expected gain about one unit on every channel.
+3. ER's rail continues left under the cap and past the fill on a damaged bar;
+   ours stops with the fill. Cosmetic.
+
+### ▶▶ THE LOOP
+
+```
+cd ~/couch
+V=data/ds3-ui-port/.venv/bin/python; B=data/ds3-ui-port/build
+$V tools/souls-extract/er_hud_graft.py   $B/01_common.tpf.dcx   $B/01_common_g3.tpf.dcx
+$V tools/souls-extract/er_pledge_icon.py $B/01_common_g3.tpf.dcx $B/01_common_g4.tpf.dcx
+$V tools/souls-extract/er_hud_chrome.py  $B/01_common_g4.tpf.dcx $B/01_common_g5.tpf.dcx
+$V tools/souls-extract/er_item_panel.py  $B/01_common_g5.tpf.dcx $B/01_common_final.tpf.dcx
+cp $B/01_common_final.tpf.dcx ~/couch/data/ds3-shot/game/mod/menu/01_common.tpf.dcx
+DS3SHOT_FAST=1 DS3SHOT_MOD=1 DS3SHOT_W=3840 DS3SHOT_H=2160 tools/ds3-shot inventory   # ~2 min
+$V tools/souls-extract/hud_rows.py data/ds3-shot/shots/ingame.png
+$V tools/souls-extract/hud_tune.py measure data/ds3-shot/shots/ingame.png
+```
+Always 4K: a 1080p capture of a 4K render is a downscale and measures nothing.
+`DS3SHOT_MOD=1` is mandatory (guarded). Rebuilding is not deploying.
+
+### ▶▶ THE AFTERNOON'S RECORD (kept for the two lessons)
+
+### (superseded) Resume block from 2 Sep ~16:00 — DS3 "ELDEN RING EDITION": the HUD port, and the wrong conclusion that cost hours)
 
 An all-day session porting Elden Ring's HUD onto Dark Souls 3. The bars are
 effectively colour-matched and most of the HUD is done. **Read the correction

@@ -89,6 +89,179 @@ not have survived a reboot). Set `FFDEC=` to point elsewhere.
 touches the TV. Shots land in `~/couch/data/ds3-shot/shots/`.
 
 
+## THE SECOND CORRECTION (2 Sep 2026, evening): THE SANDBOX WAS RENDERING 1080p
+
+Every "4K" capture before this evening was a **1920x1080 window bilinearly
+upscaled 2x by gamescope**. The sandbox's `GraphicsConfig.xml` (UTF-16; plain
+grep reads nothing) said `ScreenMode WINDOW 1920x1080`, while Donnie's real
+install is `FULLSCREEN 3840x2160`. So the whole rail investigation was fought
+against the upscaler:
+
+* the "2:1 minification" of a scale-2 atlas: the 1080p window's, not the game's
+* the "23.6 texels per 24 rows" fractional drift: the upscaler's sample phase
+* the "measured" 3-tap blur `[0.277, 0.446, 0.277]`: the upscaler's bilinear
+  kernel forced into a symmetric fit
+* the pair duplication, sampling phase and deconvolution in `er_hud_graft.py`:
+  all modelling something that does not exist at native 4K. Deleted.
+
+Proven with a one-texel checkerboard (blue 40/80) in the FP block, shot with
+the sandbox config switched to fullscreen 4K: it came back as a perfect 50/92
+alternation in BOTH axes across exactly 24 screen rows (188..211). **One
+scale-2 texel is one 4K pixel. No filtering, no blur.** 40->50 and 80->92 also
+re-confirm the pure gamma 0.87 transfer. Capture kept at
+`data/ds3-shot/shots/probe_checker_4k_native.png`.
+
+The sandbox config is now fullscreen 4K (old one backed up beside this file as
+`GraphicsConfig.sandbox-1080p-window.xml.bak`). Always shoot with
+`DS3SHOT_W=3840 DS3SHOT_H=2160`; a 1080p capture of a 4K render is a downscale
+and measures nothing useful.
+
+**Result, the 1:1 graft rendered at native 4K** (`hud_rows.py`, per row over
+columns 40..200 of each bar, against ER's reference rows):
+
+| bar | rows matched within dE 0.8 | sum dE over the 24 drawn rows | rail rows (ER 145/84/146/144) |
+|---|---|---|---|
+| HP | 24 of 24 | 11 | 144 / 83 / 144 / 143 |
+| FP | 24 of 24 | 12 | 131 / 85 / 133 / 145 vs ER 131 / 85 / 133 / 146 |
+| stamina | 24 of 24 | 12 | 127 / 97 / 130 / 148 vs ER 128 / 98 / 131 / 149 |
+
+The rail is done. What is left outside the fill's drawn window: the two brown
+backdrop rows above each bar (ours 56,42,32 / 67,51,38 on all three; ER has a
+dark line then a per-bar tinted rim, e.g. HP 63,47,35 / 90,38,18), and the
+cap. Row-by-row truth is `hud_rows.py <capture>`; `hud_tune.py measure` is the
+one-number summary and now samples only the flat top half of each bar (with
+the bevel included it reported HP at 3.15 while every row was within 0.8).
+
+## The cap, done properly (2 Sep evening): it is part of the HUD movie now
+
+Donnie: "the shader just paints it on the screen no matter what I'm on. can
+we look deep into how the health bar actually renders and edit that
+directly?" Yes, and the answer killed another "engine-side" myth.
+
+### How a bar actually renders (read out of `01_000_fe.gfx`)
+
+Sprite 471 places the three bars: **384 HP, 380 MP, 373 SP** (named, at stage
+x 50 (now 66), y -53/-36/-19; one stage px = two 4K px). Each is
+`Fade -> {BarFrame 362, Delay 364, Current}`, and each of those holds a
+**1920-frame "Bar" sprite** the engine `gotoAndStop`s at a frame proportional
+to the stat. Inside a Bar:
+
+| depth | what | detail |
+|---|---|---|
+| 1 | sliding MASK (sprite 64, clipDepth 15) | translate moves 0.752 px per frame, 0..1444 px. **Bar length is the mask, never a scale.** |
+| 3 | six 248-px texture TILES | `MENU_PlayerHUD2`, 1 texel per stage px. Fill tiles sample base rows 34..46 = the "middle 12 rows" |
+| 17 | LEFT END-CAP, sprite 358 / shape 357 | a 60x23 stage-px quad at the bar origin sampling base texels x 4..64, rows 160..183 (`bm t=(-34,-171)`). **Not "a 5x7 sprite fixed in engine code"**: the knob was the only opaque thing in that region |
+| 19 | RIGHT END-CAP, sprite 360 | translated with the frame so it rides the bar's end |
+
+BarFrame's Bar (361) is shared by all three bars, so one cap texture serves
+all three. The cap sat UNDER Delay and Current, so an ER-style cap that
+overlaps the fill's start would be covered.
+
+### The edit
+
+1. `er_fe_gfx.py --cap-over-fill`: removes the depth-17 placement from Bar
+   361 and places sprite 358 at depth 7 in each Fade sprite (383/379/372),
+   above Current at 5, inside the fade so it fades with the bar.
+2. `er_hud_graft.py` clears the end-cap texture region and writes Elden
+   Ring's 41x36 sprite (real alpha, `er-reference/er_bar_cap.png`) at scale-2
+   texel (35, 324), pre-compensated through the fill transfer and scaled by
+   0.961 (ER renders the sprite at 0.961x its file values, measured).
+   Mapping: 4K x = origin + 2*(tx-34), 4K y = 166 + 2*(ty-171), bar origin
+   at 4K x = 392 before the shift. A first attempt assumed the origin was 384
+   and the cap landed exactly 8 px right (cross-correlation), which is how
+   the origin was pinned: the fill's first displayed texel is already red.
+3. `er_fe_gfx.py --shift-bars 16`: with ER's cap at ER's offset (33 px left of
+   the fill) it ran under DS3's covenant badge, which is drawn above the bars
+   and reaches within 12 px of them; ER keeps a 43 px gap. +16 stage px (32 at
+   4K) reproduces that gap. Scoped to sprite 471 (other sprites also name
+   children HP/MP/SP; unscoped it shifted seven).
+
+Result (run 9, native 4K): cap at the intended origin on all three bars,
+dx=0 dy=0 by cross-correlation; opaque-pixel mean 112.3/100.6/73.6 against
+ER's 113.6/101.9/74.8; fill rows unchanged (sum dE 11/12/12). Red now starts
+at 4K x=424; the tools' geometry (`hud_rows.BAR_X`, `hud_sim.FILL_X`,
+`hud_tune.BAR_LEFT`) moved with it.
+
+**The vkBasalt pass now does nothing** (cap call commented out, colour
+correction already off). The Steam launch options that enable it can go.
+Old placement-only shader kept as `ds3_hud_deepen.fx.bak-20260902-cap-overlap32`.
+
+### Movie build chain
+
+```bash
+V=data/ds3-ui-port/.venv/bin/python; B=data/ds3-ui-port/build
+$V tools/souls-extract/er_fe_gfx.py <vanilla 01_000_fe.gfx> $B/01_000_fe_neutral.gfx --neutral-cxform
+$V tools/souls-extract/er_fe_gfx.py $B/01_000_fe_neutral.gfx $B/01_000_fe_capover.gfx --cap-over-fill
+$V tools/souls-extract/er_fe_gfx.py $B/01_000_fe_capover.gfx $B/01_000_fe_capover_shift16.gfx --shift-bars 16
+cp $B/01_000_fe_capover_shift16.gfx ~/couch/data/ds3-shot/game/mod/menu/01_000_fe.gfx
+```
+(the flags can also be combined in one call). `ds3-shot` kills a FOREGROUND
+shell at teardown; run it with the harness in the background and measure
+afterwards.
+
+## The fill texture (2 Sep, late): Elden Ring's own texels, one for one
+
+Donnie: "can we match the textures on it too now?" The screenshot cut had the
+colours right but not the grain: 1300 screen columns squeezed into 512 made
+our streaks finer and weaker than ER's (HP red std 1.94 vs 3.14, 16-px
+autocorrelation 0.24 vs 0.66).
+
+**ER's fills are in `extract/er/png/SB_FE_01.png`** as three 2889-texel strips
+(HP rows 117..139, FP 153..175, stamina 81..102: two fading rim rows, the fill
+top, 12 flat rows, 6 bevel rows, 2 fading rows). Cross-correlating the HP
+strip's column profile against the 4K reference: **correlation 0.945 at exactly
+1.00 screen px per texel**, so ER draws it 1:1 at 2160p, and the rows map 1:1
+too. Our scale-2 atlas is also one texel per 4K px, so the strip goes into the
+fill block with no resampling. Per bar, ER starts on a different strip texel
+(HP 5, stamina 7, FP 8, each found at correlation 0.94-0.96), and ER's screen
+shows the strip at about 0.85 of its contrast (regression slopes 0.79-0.88
+across bars and frames). `er_hud_graft.py`: rows +0..+16 from the strip with
+each row's mean pinned to ER's measured screen mean and the deviation scaled
+by `GRAIN_CONTRAST = 0.85`; rows +17..+23 (bevel bottom, rail) stay from the
+screenshot cut. The rail is a separate frame element in ER, drawn OVER the
+strip's last rows, which is why those rows diverge from the sheet.
+
+Verified run 12, native 4K (`hud_grain.py`):
+
+| bar | per-pixel corr vs strip | std ours / ER / strip | rows sum dE | fill dE |
+|---|---|---|---|---|
+| HP | 0.955 at offset 0 | 3.40 / 2.87 / 4.05 | 9 | 0.53 |
+| FP | 0.957 at offset 0 | 3.12 / 3.21 / 3.77 | 10 | 1.42 |
+| stamina | 0.963 at offset 0 | 2.61 / 2.42 / 3.18 | 11 | 0.43 |
+
+TRAP, again: the first grain check read 0.05 for FP and 0.4 for stamina
+because its 480 px window ran past the ends of those shorter bars into
+scenery. Windows must stay inside the shortest bar (~280 px here).
+Also: `pkill -f` on a pattern that appears in your own shell's command line
+kills your shell (exit 144); that was every unexplained 144 today.
+
+## Playing it for real (2 Sep, late): the modded Steam launch
+
+Steam launch options for DS3 are now `/home/ds2000/couch/tools/ds3-modded-launch %command%`
+(set by editing localconfig.vdf with Steam shut down; backups beside this
+file as `localconfig.vdf.bak-*`). The wrapper swaps the game exe in Steam's
+command for `data/ds3-mod/modengine2_launcher.exe` and passes the real exe
+back with `-p`, so the install is untouched and the REAL save is used.
+`data/ds3-mod/mod` is a symlink to `data/ds3-shot/game/mod`, so every rebuild
+deploys to the sandbox and the real launch at once. Menu assets load at boot:
+restart DS3 to see a rebuild. Log: `/tmp/ds3-modded-launch.log`.
+**OFFLINE ONLY** (System > Network > Launch Setting > Play Offline); the wrapper
+cannot check it. The vkBasalt launch option is gone; the pass is inert anyway.
+
+## The trough (2 Sep, late): synthesised from ER's profile
+
+A TV grab of a damaged bar showed the depleted part as opaque brown leather
+with a tile seam and a brightness step, and the rail stopping at the fill's
+end. ER's trough, measured on two frames with different scenes, is a
+translucent darkening (~0.52 of the scene through the body, ~0.77 at row -2,
+~0.58 at -1, easing to ~0.41 at +18), a warm dark bevel row at +19, the same
+bone rail at +20..+23 running the full width, a dark olive line at +24 and a
+faint fade. `er_hud_graft.py` now builds the backdrop block from that profile
+(rail rows copied from the HP fill after the graft) instead of cutting ER's
+leather art. Alpha is assumed linear; UNVERIFIED on screen until the next
+damaged-bar grab (`DISPLAY=:0 import -window root`; the HUD auto-hides, so
+have Donnie cycle an item first; a 4K grab takes ~4 s).
+
 ## THE CORRECTION THAT MATTERS MOST
 
 For a long time I believed the +34 lift on the gauge fill was engine-side and
@@ -139,6 +312,11 @@ JPEXS round-trip is safe for this file: rebuilt size is byte-count identical,
   Sample INSIDE bars and use the longest CONTIGUOUS run: min..max spans stray
   matches and lands on scenery, which caused several false readings.
 * `hud_tune.py shader|overlay|compare` - simulate the post-process pass offline.
+* `hud_rows.py <capture>` - every drawn row of every bar against ER's row,
+  with deltaE. The definitive rail/bevel/fill check at native 4K.
+* `hud_cap.py <capture> | --er` - cap footprint measured the SAME way on both
+  frames (per-row and per-column bone counts printed, so a scenery false
+  positive is visible instead of silently becoming the box's bounds).
 * `tools/ds3-state save|load|list` - emulator-style save states for the sandbox.
 
 

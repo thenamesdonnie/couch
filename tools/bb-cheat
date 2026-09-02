@@ -205,7 +205,13 @@ def cmd_on(cheats: dict, tree: ET.ElementTree, root: ET.Element,
         if md.get("Name")[len(TAG):] in wanted:
             root.remove(md)
 
-    if not any(md.get("Name") == MASTER_NAME for md in ours(root)):
+    # The official cheats jump through a "master" code hook, so it is added
+    # whenever one of them is on. Our own plain byte-flag entries (marked
+    # "standalone" in the JSON) must NOT drag it in: on 2 Sep two flag tests
+    # crashed at world load with the hook present, and the hook was the one
+    # thing those launches shared with nothing that had ever run before.
+    needs_master = any(not by_name[n].get("standalone") for n in wanted)
+    if needs_master and not any(md.get("Name") == MASTER_NAME for md in ours(root)):
         master = cheats.get("master", {})
         if master.get("challenged") == "yes":
             root.append(make_block("master", master["memory"]))

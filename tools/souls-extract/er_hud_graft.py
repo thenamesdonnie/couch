@@ -56,73 +56,42 @@ from er_hud_bars import (BACKDROP_FLOOR, BACKDROP_GAIN, BACKDROP_ROWS,
 
 REF = Path.home() / "couch/data/ds3-ui-port/er-reference"
 
-# THE ATLAS IS REBUILT AT 4x. MENU_PlayerHUD2 is 256x256 in the game files, but
-# the game samples it by normalised UV, so a bigger texture is simply more
-# detail in the same places - verified in game at 1024x1024, where the rail and
-# medallion came back pixel-identical to the 256 build.
+# THE GAME RENDERS AT NATIVE 4K, AND THE ATLAS MAPS 1:1. Established 2 Sep
+# 2026 (evening) with a one-texel checkerboard in the FP block: it came back on
+# screen as a perfect 50/92 alternation in BOTH axes over exactly 24 rows, so
+# one scale-2 texel is one 4K pixel, with no filtering, no mip and no blur.
 #
-# That matters for one thing above all: ER's ornate left cap. At 256 the cap
-# gets 30 texels and turns into a yellow smear; at 1024 it gets 120, which is
-# 1:1 with the 60 px of 4K source stretched over the bar's 4K footprint.
-# SCALE 2, NOT 4, and this is the whole reason the rail would not come right.
+# THAT CONTRADICTS EVERYTHING BELOW THIS FILE USED TO SAY, and here is why the
+# old measurements were wrong without being mismeasured: the sandbox's
+# GraphicsConfig.xml said `ScreenMode WINDOW 1920x1080`, so the game rendered a
+# 1080p window and gamescope bilinearly upscaled it 2x into the "4K" capture.
+# Donnie's REAL install runs FULLSCREEN 3840x2160. Every 4K figure taken
+# before this evening - the 2:1 minification, the fractional 23.6-texels-per-
+# 24-rows drift, the "measured" 3-tap PSF [0.277, 0.446, 0.277], the pair
+# sampling phase, the deconvolution - described the UPSCALER, not the game.
+# The sandbox config is now fullscreen 4K to match the real one (backup of the
+# old one in build/GraphicsConfig.sandbox-1080p-window.xml.bak).
 #
-# At scale 4 the drawn window is 48 texels rendered into 24 screen rows - a 2:1
-# MINIFICATION, so the GPU filters away anything finer than two texels. ER's
-# one-row rail gap could not survive that no matter what the atlas held, which
-# is why three phase offsets and a vertical pre-sharpen all failed: the built
-# atlas was verifiably correct (texels reading 143/84/145/144, exactly ER's
-# rail) and the screen still showed a ramp. Flat colour survived; detail did
-# not. That is minification, not misalignment.
-#
-# At scale 2 the window is 24 texels for 24 screen rows at 4K: 1:1, no filter,
-# no mip. Horizontally 512 texels map onto the bar's ~520 px, also about 1:1.
+# MENU_PlayerHUD2 is 256x256 in the game files and is sampled by normalised
+# UV, so a bigger texture is simply more detail in the same places. The fill
+# block draws 12 base rows (DRAWN_ROWS) over 24 screen rows at 4K, so scale 2
+# is exactly 1:1 vertically; horizontally 512 texels land on the bar's 512 px
+# at 4K, also 1:1. Scale 4 would be a 2:1 minification for real.
 ATLAS_SCALE = 2
 BASE_WIDTH = 256
 ATLAS_WIDTH = BASE_WIDTH * ATLAS_SCALE
 
-# 256 base texels = 256 screen px at 1080p = 512 px of a 4K grab. Scaled up,
-# there is no longer any need to average the source down 2:1 - it is resampled
-# straight to the target texel count, so no detail is thrown away.
+# 256 base texels = 256 screen px at 1080p = 512 px at 4K. The ER source is
+# resampled straight to the target texel count, so no detail is thrown away.
 SRC_COLS_NEEDED = 512
 
 # THE GAME DOES NOT DRAW THE WHOLE 24-ROW FILL BLOCK. Measured 2 Sep 2026 by
-# painting the FP block with 24 distinct grey levels (5, 15, ... 235), shooting
-# at 4K where the atlas maps ~2:1 vertically, and inverting each screen row
-# back through the transfer to recover which block index produced it:
-#
-#     screen 188 -> index 6.17      screen 205 -> index 14.67
-#     screen 195 -> index 9.73      screen 210 -> index 16.97
-#     fit: index = 0.4915 * row - 86.15, i.e. 2.03 screen rows per atlas row,
-#     drawn range 5.75 .. 17.55
-#
-# So it samples the MIDDLE 12 ROWS and discards the outer six on each side.
-# Everything pasted outside this window is invisible, which is exactly how the
-# bevel got clipped. Author the whole assembly into DRAWN_ROWS.
+# painting the FP block with 24 distinct grey levels: it samples the MIDDLE 12
+# base rows and discards the outer six on each side. Everything pasted outside
+# this window is invisible, which is exactly how the bevel got clipped. Author
+# the whole assembly into DRAWN_ROWS. (Re-confirmed by the checkerboard: the
+# pattern occupied screen rows 188..211, 24 rows, i.e. base rows 6..18 at 2x.)
 DRAWN_ROWS = (6 * ATLAS_SCALE, 18 * ATLAS_SCALE)
-
-# Texel offset applied to the duplicated rows so the game's 2:1 sampling lands
-# within each pair rather than straddling two. See bevel/rail note in graft_fills.
-SAMPLE_PHASE = 0
-
-# THE BLUR, MEASURED. An impulse (band flat at red 60, one row at 255) rendered
-# in game spreads over exactly three rows with these weights:
-#
-#     offset -1   0.277
-#     offset  0   0.446
-#     offset +1   0.277
-#
-# A symmetric 3-tap tent. This is why ER's one-row rail ruling would not
-# reproduce however the atlas was authored - and why three sampling phases, a
-# pre-sharpen and two atlas scales all failed: they were fighting a blur
-# instead of inverting it.
-#
-# The FIRST attempt at this measurement used a GREY impulse, which stopped the
-# HP band being red-dominant, so wait_probe hud never fired and the numbers
-# read were a stale frame. Keep any test pattern red-dominant.
-PSF = (0.277, 0.446, 0.277)
-
-# How hard to pre-sharpen vertically to survive the game's 2:1 minification.
-VERT_SHARPEN = 1.6
 
 # PURE FILL ROWS ONLY. Every ER bar has a bevel under the fill where it
 # brightens into the key-line, and the first cut included it: stamina took
@@ -170,10 +139,46 @@ SOURCES = {
     # because the problem was never the filter, it was the row count. 24 -> 24
     # needs no resampling at all. HP starts one row later than the others to
     # make its count match; that row is uniform fill and costs nothing.
-    "hp":      dict(file="hud_full.png",              rows=(96, 120),  cols=(350, 1650)),
-    "stamina": dict(file="hud_full.png",              rows=(168, 192), cols=(350, 1010)),
-    "fp":      dict(file="burst/hud-combat-full.png", rows=(132, 156), cols=(330, 699)),
+    "hp":      dict(file="hud_full.png",              rows=(96, 120),  cols=(350, 1650), strip=119, strip_x0=5),
+    "stamina": dict(file="hud_full.png",              rows=(168, 192), cols=(350, 1010), strip=83,  strip_x0=7),
+    "fp":      dict(file="burst/hud-combat-full.png", rows=(132, 156), cols=(330, 699),  strip=155, strip_x0=8),
 }
+
+# THE FILL TEXTURE IS ELDEN RING'S OWN, TEXEL FOR TEXEL (2 Sep, late evening).
+# Donnie: "can we match the textures on it too now?" The screenshot cut above
+# gives the right colours but not the right GRAIN: 1300 screen columns were
+# squeezed into 512, so our streaks were finer and weaker than ER's (HP red
+# std 1.94 vs 3.14, autocorrelation at 16 px 0.24 vs 0.66).
+#
+# ER's fills live in SB_FE_01.png as three 2889-texel strips (rows 117..139
+# HP, 153..175 FP, 81..102 stamina, with two fading rim rows above each).
+# Cross-correlating the HP strip's column profile against the 4K screenshot
+# gives correlation 0.945 at EXACTLY 1.00 screen px per texel, screen x315 =
+# texel 10, so ER draws it 1:1 at 2160p; and the rows map 1:1 too: strip row
+# `strip` is the fill's top screen row, then 12 flat, 6 bevel, 2 fading.
+# Our scale-2 atlas is also one texel per 4K px, so the strip goes in with NO
+# resampling. Alignment: our red starts at atlas column 8 (base texel 4, the
+# tile's first displayed texel) and ER's at strip texel 5, so atlas column c
+# holds strip texel c - 3.
+#
+# Rows +0..+16 come from the strip, each row's mean pinned to ER's measured
+# SCREEN mean for that row (the screenshot cut's row mean; ER renders the
+# strip at about 0.98 gain and the bevel rows blend with the frame drawn
+# over them). Rows +17..+23 (bevel bottom and the rail, which is a separate
+# frame element in ER) stay from the screenshot cut, which measured within
+# 0.7 dE. Per-pixel, screen vs strip*gain differs by ~1 unit: capture noise.
+ER_SHEET = Path.home() / "couch/data/ds3-ui-port/extract/er/png/SB_FE_01.png"
+STRIP_ROWS = 17            # fill rows taken from the strip (+0..+16)
+# Each bar starts on a different strip texel in ER (measured by correlating
+# the reference frames against the strips: HP texel 5, stamina 7, FP 8, each
+# at correlation 0.94-0.96). `strip_x0` per source; our red starts at atlas
+# column 8, so atlas column c holds strip texel (c - 8) + strip_x0.
+RED_START_COL = 8
+# ER's SCREEN shows the strip at reduced contrast: regressing the reference
+# frames' deviations on the strip's gives slopes 0.79-0.88 (HP 0.79/0.86 in
+# two frames, FP 0.86, stamina 0.88). The row means are pinned separately,
+# so this scales only the deviation from the row mean.
+GRAIN_CONTRAST = 0.85
 
 # The damage-lag segment cannot be cut the same way: only 58 columns of it
 # exist in any frame (a sliver to the right of current HP in hud-damage-lag),
@@ -284,41 +289,26 @@ def graft_fills(atlas: np.ndarray) -> np.ndarray:
         # ever reached the screen, which is why the bar had an abrupt bottom
         # where ER's graduates softly into the rail.
         d0, d1 = DRAWN_ROWS
-        # Horizontal LANCZOS (the fill's streaks are fine detail worth
-        # filtering well); VERTICAL NEAREST, because bilinear averages away
-        # ER's rail ruling - it is bright/dark/bright over rows 116-119
-        # (141, 85, 145, 144) and smoothing turned the 85 dip into 133.
-        # EXACT ROW ALIGNMENT. The drawn window is (d1-d0) texels and the game
-        # renders it over half that many screen rows at 4K - a clean 2:1. So
-        # resample the source to exactly that many SCREEN rows first, then
-        # duplicate each row into two texels. Every screen row then comes from
-        # one source row and nothing is averaged across.
+        # 1:1. The drawn window is (d1-d0) = 24 texels and the game renders it
+        # over 24 screen rows at native 4K, so the 24 source rows go in
+        # untouched: no vertical resample, no pair duplication, no phase roll,
+        # no deconvolution. Horizontal LANCZOS only (the fill's streaks are
+        # fine detail worth filtering well; the source is wider than 512).
         #
-        # Without this, 25 source rows resampled into 48 texels is a fractional
-        # ratio, the game's downsample straddles the boundaries, and ER's rail
-        # ruling - bright/dark/bright at rows 116-119 (141, 85, 145, 144) -
-        # smooths into a ramp, losing the 85 dip entirely.
-        screen_rows = (d1 - d0) // 2
-        # Split the axes. Horizontal LANCZOS: the fill's vertical streaks are
-        # fine detail that filters well. Vertical NEAREST: a 25->24 LANCZOS
-        # still blends neighbouring rows, and ER's rail dip is ONE row - it
-        # survives being dropped or kept, but not being averaged.
+        # Deleted here on 2 Sep evening: the "resample to 12 screen rows, then
+        # duplicate each into a texel pair" step, the SAMPLE_PHASE roll, and
+        # the tridiagonal PSF deconvolution (both the straight and lambda 0.02
+        # regularised forms). All of it modelled a 2:1 minification and a
+        # 3-tap blur that only ever existed in gamescope's upscale of a 1080p
+        # window (see the header). Rendered at native 4K the duplication was
+        # visible as literal doubled pixel rows.
         img = Image.fromarray(piece.clip(0, 255).astype(np.uint8), "RGB")
         img = img.resize((ATLAS_WIDTH, img.height), Image.LANCZOS)
-        img = img.resize((ATLAS_WIDTH, screen_rows), Image.NEAREST)
-        # PHASE. Each source row is duplicated into two texels, and the game
-        # renders two texels per screen row - but its sampling is offset by one
-        # texel, so it averages ACROSS the pairs instead of within them. Proof:
-        # the built atlas holds ER's rail exactly (143,136,106 / 84,82,65 /
-        # 145,139,108 / 144,138,107) yet the screen showed a ramp, and 113 at
-        # row +21 is precisely the average of the 143 and 84 texels either side
-        # of a pair boundary. Rolling by one texel realigns the pairs.
-        drawn = np.repeat(np.asarray(img).astype(float), 2, axis=0)
-        drawn = np.roll(drawn, SAMPLE_PHASE, axis=0)
-
-        if drawn.shape[0] != d1 - d0:
-            drawn = np.asarray(Image.fromarray(drawn.clip(0, 255).astype(np.uint8), "RGB")
-                               .resize((ATLAS_WIDTH, d1 - d0), Image.NEAREST)).astype(float)
+        if img.height != d1 - d0:
+            # Only if a source is ever cut at a different height; the SOURCES
+            # are all exactly 24 rows so this is normally a no-op.
+            img = img.resize((ATLAS_WIDTH, d1 - d0), Image.NEAREST)
+        drawn = np.asarray(img).astype(float)
 
         # Rows outside the drawn window are never sampled at this resolution,
         # but clamp-extend the edges into them rather than leaving whatever was
@@ -343,27 +333,6 @@ def graft_fills(atlas: np.ndarray) -> np.ndarray:
         # blotchy. Matching per-channel keeps the bar's redness varying
         # exactly as ER's does and accepts the desaturation as the floor's
         # unavoidable cost.
-        # DECONVOLVE against the measured blur, so what LANDS is the cut rather
-        # than a smeared version of it. Solve
-        #     0.277*I[k-1] + 0.446*I[k] + 0.277*I[k+1] = desired[k]
-        # for I. Edge rows assume the value repeats outside the window, which
-        # is what the clamp-extend below produces anyway.
-        n = drawn.shape[0]
-        A = np.zeros((n, n))
-        for k in range(n):
-            A[k, k] = PSF[1]
-            if k > 0:
-                A[k, k - 1] = PSF[0]
-            else:
-                A[k, k] += PSF[0]
-            if k < n - 1:
-                A[k, k + 1] = PSF[2]
-            else:
-                A[k, k] += PSF[2]
-        inv = np.linalg.inv(A)
-        flat = drawn.reshape(n, -1)
-        drawn = np.clip(inv @ flat, 0, 255).reshape(drawn.shape)
-
         # Restore the LUMINANCE variation the floor destroys.
         #
         # Pre-compensation already inverts the transfer, but two of three
@@ -392,6 +361,21 @@ def graft_fills(atlas: np.ndarray) -> np.ndarray:
                 break
             scale = float(np.clip(scale * (target_lum / got), 0.2, 8.0))
         piece = np.clip(rowmean + dev * scale, 0, 255)
+
+        # ER's own texels for the fill body (see STRIP_ROWS above). `piece`
+        # is in screen units here, rows d0..d1 being the drawn window.
+        if spec.get("strip") is not None:
+            sheet = np.asarray(Image.open(ER_SHEET).convert("RGB")).astype(float)
+            cols = np.clip(np.arange(ATLAS_WIDTH) - RED_START_COL + spec.get("strip_x0", 5),
+                           0, sheet.shape[1] - 1)
+            for k in range(STRIP_ROWS):
+                srow = sheet[spec["strip"] + k, cols]
+                if spec.get("retint"):
+                    srow = retint(srow[None], spec["retint"])[0]
+                target = piece[d0 + k].mean(axis=0)
+                srow = srow * (target / np.maximum(srow.mean(axis=0), 1e-6))
+                srow = target + (srow - target) * GRAIN_CONTRAST
+                piece[d0 + k] = np.clip(srow, 0, 255)
 
         compensated = to_atlas(piece)
         atlas[r0:r1, :, :3] = compensated.round().astype(np.uint8)
@@ -579,31 +563,90 @@ def build(tpf_in: Path, tpf_out: Path, preview: Path | None = None) -> None:
     vanilla = vanilla.convert("RGBA").resize((ATLAS_WIDTH, ATLAS_WIDTH), Image.LANCZOS)
     atlas = np.asarray(vanilla).copy()
 
-    # Reuse the composed backdrop (leather, dark seams, ER's dark top edge),
-    # then overwrite the parts that should be real ER pixels.
-    er_atlas = Image.open(Path.home() / "couch/data/ds3-ui-port/extract/er/png/SB_In_Game_02.png")
-    b0, b1 = backdrop_rows()
-    back = backdrop_block(np.asarray(er_atlas.convert("RGBA")), width=ATLAS_WIDTH)
-    back = np.asarray(Image.fromarray(back, "RGBA").resize((ATLAS_WIDTH, b1 - b0), Image.LANCZOS)).copy()
-
-    # Trim the dark band above the fill. The backdrop is 16 base rows with the
-    # fill's 12 centred in it, so 2 base rows sit above - which at this scale
-    # is 8 texels and renders as 4 dark screen rows at 4K. Elden Ring has
-    # exactly ONE dark row there and then the scene, measured (65,48,36) at
-    # row -1 with sage immediately above it. Clearing the alpha on the upper
-    # part lets the scene through the same way.
-    keep_dark = 2 * ATLAS_SCALE // 2          # rows of dark edge to retain
-    back[: (2 * ATLAS_SCALE) - keep_dark, :, 3] = 0
-
-    # And clear the BOTTOM rows too. backdrop_block still lays its own gold
-    # key-line there, which is why row +24 kept rendering bright at 131 even
-    # after graft_keyline was switched off - I had removed one duplicate rail
-    # and left another. The fill block now carries ER's rail itself, so
-    # everything the backdrop draws below the fill is surplus.
-    back[-(2 * ATLAS_SCALE):, :, 3] = 0
-    atlas[b0:b1] = back
-
+    # THE BACKDROP (the trough that shows where a bar is depleted) IS NOW
+    # SYNTHESISED FROM ER'S MEASURED PROFILE, not cut from ER's leather art.
+    # Donnie, 2 Sep late, from a TV grab of a damaged bar: "the depleted
+    # health bar has gradient jumps". The old block was ER's SB_In_Game_02
+    # backdrop resampled to the trough, an OPAQUE brown leather with a tile
+    # seam and a brightness step, and its rail rows were transparent so the
+    # bone rail stopped dead at the fill's end. ER's real trough, measured on
+    # two reference frames with different scenes behind it (hud_full FP and
+    # hud_depleted HP), is a translucent darkening of the scene: ratio to the
+    # scene ~0.77 at row -2, ~0.58 at -1, ~0.52 flat through the body, easing
+    # to ~0.41 at +18, a warm dark bevel row at +19, the same bone rail as the
+    # fill at +20..+23 running the FULL width, one dark olive line at +24 and
+    # a faint fade below. Rows are scale-2 texels, one per 4K screen row; the
+    # backdrop tiles draw base rows 6..22, so texel row j lands on screen row
+    # (j - 4) relative to the fill's top. The rail rows are copied from the
+    # HP fill block after the graft so the ruling continues seamlessly.
+    #
+    # Alpha is assumed linear (the fill transfer gamma applies to RGB only);
+    # verify on the next damaged-bar grab from the TV.
+    # (synthesised below, after graft_fills, because it borrows the rail)
     atlas = graft_fills(atlas)
+
+    b0, b1 = backdrop_rows()
+    H = b1 - b0                                    # 32 texel rows at scale 2
+    back = np.zeros((H, ATLAS_WIDTH, 4), float)
+    # (screen row rel. fill top) -> (rgb, alpha) in SCREEN units
+    prof = {-4: ((0, 0, 0), 0.03), -3: ((0, 0, 0), 0.06), -2: ((0, 0, 0), 0.23),
+            -1: ((0, 0, 0), 0.42), 0: ((0, 0, 0), 0.45)}
+    for r in range(1, 14):
+        prof[r] = ((0, 0, 0), 0.48)
+    prof.update({14: ((0, 0, 0), 0.50), 15: ((0, 0, 0), 0.52), 16: ((0, 0, 0), 0.53),
+                 17: ((0, 0, 0), 0.55), 18: ((0, 0, 0), 0.59), 19: ((50, 39, 30), 0.56),
+                 24: ((68, 70, 56), 1.0), 25: ((27, 27, 21), 0.32),
+                 26: ((0, 0, 0), 0.13), 27: ((0, 0, 0), 0.10)})
+    hp0, _ = rows_of("hp")
+    d0, d1 = DRAWN_ROWS
+    for j in range(H):
+        r = j - 2 * ATLAS_SCALE                     # screen row rel. fill top
+        if 20 <= r <= 23:
+            back[j] = atlas[hp0 + d0 + r, :, :]     # the fill's own rail, already compensated
+            back[j, :, 3] = 255
+        elif r in prof:
+            rgb, al = prof[r]
+            back[j, :, :3] = to_atlas(np.array(rgb, float))
+            back[j, :, 3] = al * 255
+    atlas[b0:b1] = np.clip(back, 0, 255).round().astype(np.uint8)
+    print(f"  backdrop: synthesised translucent trough, rail rows copied from the HP fill")
+
+    # ELDEN RING'S CAP GOES INTO THE TEXTURE THE GAME ALREADY DRAWS AT THE
+    # BAR'S LEFT END. Read out of 01_000_fe.gfx (see er_fe_gfx.py): the left
+    # end-cap is shape 357, a 60x23 stage-px quad at the bar origin sampling
+    # MENU_PlayerHUD2 base texels x 4..64, rows 160..183, i.e. the bitmap
+    # matrix maps texel (tx, ty) to stage (tx - 34, ty - 171). One stage px is
+    # two 4K px, one scale-2 texel is one 4K px, so the region is drawn 1:1.
+    # DS3's own knob was just the only opaque thing in it.
+    #
+    # ER's 41x36 sprite (its own art, real alpha, from SB_FE_01) sits with its
+    # origin 33 px left of the first red fill column and 6 rows above the
+    # fill's top, measured by template-matching into ER's reference. The bar
+    # ORIGIN is at 4K x=392 (the fill's first displayed texel is already red;
+    # a first attempt assumed 384 and the cap landed exactly 8 px right,
+    # measured by cross-correlation in game), fill centre at y=166:
+    # 4K x = 392 + 2*(tx - 34)  ->  x=359 gives tx = 17.5, scale-2 column 35
+    # 4K y = 166 + 2*(ty - 171)  ->  y=148 gives ty = 162,  scale-2 row  324
+    # The region is cleared first (that removes the knob), then the cap is
+    # written pre-compensated through the same transfer as the fills.
+    x0, x1 = 4 * ATLAS_SCALE, 64 * ATLAS_SCALE
+    y0, y1 = 160 * ATLAS_SCALE, 184 * ATLAS_SCALE
+    atlas[y0:y1, x0:x1, 3] = 0
+    cap = Image.open(REF / "er_bar_cap.png").convert("RGBA")
+    if ATLAS_SCALE != 2:
+        cap = cap.resize((cap.width * ATLAS_SCALE // 2, cap.height * ATLAS_SCALE // 2), Image.LANCZOS)
+    c = np.asarray(cap).astype(float)
+    cx, cy = 35 * ATLAS_SCALE // 2, 324 * ATLAS_SCALE // 2
+    dst = atlas[cy:cy + c.shape[0], cx:cx + c.shape[1]]
+    # ER renders this sprite at 0.961x its file values (measured: the opaque
+    # cap pixels in ER's frame average 113.6/101.9/74.8 against the sprite's
+    # 118.2/106.0/77.9, the same ratio on all three channels). Our first
+    # in-game render came out at 1.024x ER's; this closes it.
+    ER_CAP_GAIN = 0.961
+    dst[..., :3] = np.clip(to_atlas(c[..., :3] * ER_CAP_GAIN), 0, 255).round().astype(np.uint8)
+    dst[..., 3] = c[..., 3].round().astype(np.uint8)
+    print(f"  ER cap {c.shape[1]}x{c.shape[0]} written at atlas ({cx},{cy}); "
+          f"end-cap region x{x0}-{x1} y{y0}-{y1} cleared first")
 
     # THE BACKDROP RAIL IS NO LONGER DRAWN. It made sense when the fill cut
     # stopped at the bevel, but the cut now carries ER's rail rows itself and
