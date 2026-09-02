@@ -39,39 +39,232 @@ from PIL import Image
 
 DS3_PNG_CACHE = None  # set in main
 
-# ER-palette fill colours (bright top -> dark bottom), authored to read like
-# Elden Ring's bars. Constraint: ds3-shot's HUD probe needs the on-screen HP
-# band red-dominant (r > 1.6g, 1.6b) and the stamina band green-dominant
-# (g > 1.2r, 1.2b); these satisfy that with margin.
+# Fill colours MEASURED off Elden Ring, then COMPENSATED for DS3's blend.
+#
+# Two separate facts, both measured, neither guessed:
+#
+# 1. Elden Ring's real on-screen bar colours (screen-grabbed at 4K off the
+#    live game, then independently re-sampled from a second capture set):
+#        HP        94, 26, 22     brick red
+#        FP        28, 68, 85     slate blue  (two samples: 32,67,84 / 25,68,86)
+#        stamina   28, 69, 45     forest green
+#        lag       140,114, 23    olive gold, NOT orange
+#        trough     46, 56, 46    (sample from an empty-HP frame; it is
+#                                  translucent and reads 80-100 over bright fog)
+#        key-line  145,141,110
+#
+# 2. DS3 does not draw this atlas 1:1. A grey step-ramp painted across the FP
+#    band (8 levels, read back from an in-game capture) gives a dead-linear
+#        screen = 0.87 * atlas + 38
+#    identical on all three channels, r-squared eyeball-perfect. The +38 is
+#    LOCAL to the bar fill, not a global tone lift: 28% of the same frame sits
+#    below 38 and the frame minimum is 0.
+#
+# CONSEQUENCE, and it is a real constraint: ER's green (26) and blue (22) on HP
+# are BELOW that floor. No atlas value can reach them - a pure black fill still
+# lands at 38. So the fills below are the inverse-transfer (target-38)/0.87
+# CLAMPED AT ZERO, which gets each bar's dominant channel exactly right and
+# leaves the other two sitting at 38 instead of ER's 22-26. The bars come out
+# very slightly greyer than Elden Ring's. That is a floor, not a tuning miss.
+#
+# Do NOT "fix" these by eye against the atlas - they are pre-compensation
+# values and are SUPPOSED to look wrong there (green and blue at zero on HP).
+# Judge them on screen, or run them back through 0.87x+38 first.
+#
+# Constraint: ds3-shot's HUD probe needs the on-screen HP band red-dominant
+# (r > 1.6g, 1.6b) and stamina green-dominant (g > 1.2r, 1.2b). Post-transfer
+# these pass: HP (94,38,38), 94 > 61; stamina (38,69,45), 69 > 46 and > 54.
+
+# DS3's measured atlas -> screen transfer (see above). Used to convert both the
+# fill colours and the grain amplitude out of screen units into atlas units.
+# WAS 0.87 / 38.0. That transfer was real, but it was not the ENGINE - it was a
+# Scaleform colour transform (mult 230/256, add +26) on the three bar
+# placements in menu/01_000_fe.gfx, which er_fe_gfx.py now neutralises. With it
+# gone the channels reach zero: HP measured (76,0,0) where it used to floor at
+# (96,34,34). So the pre-compensation that fought the lift must come off too,
+# or the bars render far too dark.
+SCREEN_GAIN = 1.0
+SCREEN_FLOOR = 0.0
+
+# With the +26 cxform gone, what remains is a pure GAMMA, no offset. Writing
+# ER's values straight in rendered them bright - HP (94,26,22) came back as
+# (107,38,32) - and fitting those three points gives
+#     screen = 255 * (atlas/255) ** 0.87
+# which reproduces all three channels within ~3. There is no additive term left
+# to fight, so this inverts cleanly and every channel is reachable.
+SCREEN_GAMMA = 0.87
+
+
+def to_atlas(target):
+    """ER's on-screen target -> the atlas value that renders as it."""
+    import numpy as _np
+    a = _np.asarray(target, dtype=float) / 255.0
+    return _np.clip(255.0 * _np.power(_np.clip(a, 0, 1), 1.0 / SCREEN_GAMMA), 0, 255)
+
+
+def to_screen(atlas):
+    import numpy as _np
+    a = _np.asarray(atlas, dtype=float) / 255.0
+    return _np.clip(255.0 * _np.power(_np.clip(a, 0, 1), SCREEN_GAMMA), 0, 255)
+
+
+def compensate(target) -> tuple:
+    """ER's on-screen target -> the atlas value that produces it in DS3.
+
+    Clamped at zero, which is where the floor bites: any target channel below
+    38 is simply unreachable and comes out at 38.
+    """
+    return tuple(int(round(v)) for v in to_atlas(target))
+
+
+# Elden Ring's measured on-screen colours, and the compensated atlas values
+# they imply. Only "mid" is needed now: ER's fill is flat, and the shape comes
+# from ER_ROW_PROFILE plus the real grain rather than an authored gradient.
 FILLS = {
-    "hp":      {"rows": (28, 52), "top": (188, 44, 32),  "mid": (150, 24, 18),  "bot": (80, 10, 8)},
-    "stamina": {"rows": (52, 76), "top": (124, 166, 58), "mid": (94, 140, 44),  "bot": (44, 72, 20)},
-    "fp":      {"rows": (76, 100), "top": (56, 116, 180), "mid": (34, 84, 146), "bot": (14, 36, 74)},
-    "lag":     {"rows": (100, 124), "top": (232, 202, 140), "mid": (208, 174, 112), "bot": (140, 112, 66)},
+    "hp":      {"rows": (28, 52),  "er": (94, 26, 22),   "mid": compensate((94, 26, 22))},
+    "stamina": {"rows": (52, 76),  "er": (28, 69, 45),   "mid": compensate((28, 69, 45))},
+    "fp":      {"rows": (76, 100), "er": (28, 68, 85),   "mid": compensate((28, 68, 85))},
+    "lag":     {"rows": (100, 124),"er": (140, 114, 23), "mid": compensate((140, 114, 23))},
 }
 BACKDROP_ROWS = (6, 22)
 
 
+# Elden Ring's ACTUAL vertical profile through the HP fill, luminance per row,
+# measured off the 4K reference grab (rows 95-107; row 108 onward is the bone
+# key-line UNDER the bar, not the fill, and including it is what first made
+# this look like a bottom-up gradient).
+#
+# The whole span is 46.3 to 49.4. The fill is essentially FLAT. The gradient
+# that used to be here ran 116 down to 66 on screen - about 15x too much
+# contrast, in the wrong direction, and it is why the bars read as painted
+# plastic next to ER's.
+ER_ROW_PROFILE = np.array([49.4, 47.3, 46.6, 46.3, 46.6, 47.2, 47.6,
+                           47.8, 48.1, 48.1, 47.8, 47.4, 48.4])
+
+# ER's measured horizontal grain amplitude on screen, as a luminance std. The
+# bars are scaled to reproduce THIS on screen rather than to carry a fixed
+# atlas amplitude, because the floor clips whichever channels sit at zero and
+# swallows part of the variation before it is drawn.
+ER_GRAIN_STD = 2.48
+
+_GRAIN_CACHE = None
+
+
+def _grain_screen(h: int, width: int) -> np.ndarray:
+    """ER's vertical brush-stroke texture, in SCREEN luminance units.
+
+    Baked by extract_fill_grain.py off the live-game reference and stored as
+    delta+128 at 1 unit per screen RGB unit. Callers convert to atlas units.
+    """
+    global _GRAIN_CACHE
+    if _GRAIN_CACHE is None:
+        p = Path(__file__).parent / "hud_fill_grain.png"
+        if not p.exists():
+            raise SystemExit(f"missing {p} - run extract_fill_grain.py first")
+        _GRAIN_CACHE = Image.open(p).convert("L")
+    g = _GRAIN_CACHE
+    if g.size != (width, h):
+        g = g.resize((width, h), Image.BILINEAR)
+    return np.asarray(g).astype(float) - 128.0
+
+
 def fill_block(colours: dict, width: int = 256) -> np.ndarray:
-    """One 24-row bar-fill graphic, ER style: thin bright top edge, flat body
-    with a gentle vertical falloff, darker base. Drawn at 2px granularity
-    because the game minifies the block 2:1 vertically."""
+    """One 24-row bar-fill graphic: ER's flat profile plus its real grain.
+
+    Drawn at full row granularity even though the game minifies the block 2:1
+    vertically - the grain is vertical streaks, so it survives the minify.
+
+    Built in SCREEN space and compensated back at the end, rather than authored
+    directly in atlas values. That matters for the grain: added flat in atlas
+    space it would clip against zero on HP's green and blue (both compensate to
+    0) and survive only on its positive lobe, rippling the hue. Modelled as a
+    proportional modulation of the tint, which is what ER's greyscale-texture-
+    times-shader-colour actually does, it stays neutral.
+    """
     h = colours["rows"][1] - colours["rows"][0]
-    top, mid, bot = (np.array(colours[k], float) for k in ("top", "mid", "bot"))
+    er = np.array(colours["er"], float)
+    er_luma = max(er.mean(), 1.0)
+
+    # ER's row profile, resampled to this block's height, normalised to 1.0.
+    prof = np.interp(np.linspace(0, len(ER_ROW_PROFILE) - 1, h),
+                     np.arange(len(ER_ROW_PROFILE)), ER_ROW_PROFILE)
+    prof = prof / prof.mean()
+
+    # Grain as a fraction of the bar's own brightness (ER: +-11 on a mean of
+    # ~48, so roughly +-22% at the extremes).
+    grain = _grain_screen(h, width) / er_luma
+
+    def render(scale: float):
+        screen = er[None, None, :] * prof[:, None, None] * (1.0 + scale * grain[:, :, None])
+        atlas = np.clip((screen - SCREEN_FLOOR) / SCREEN_GAIN, 0, 255)
+        actual = atlas * SCREEN_GAIN + SCREEN_FLOOR      # what the screen gets
+        lum = actual.mean(axis=2)
+        return atlas, (lum - lum.mean(axis=1, keepdims=True)).std()
+
+    # Solve for the scale that lands ER's real luminance variation on screen.
+    # Needed because the floor clips whichever channels compensate to zero, so
+    # the grain only rides the dominant one and arrives diluted: HP measured
+    # 1.59 against ER's 2.48 before this correction. One proportional step is
+    # enough - the relationship is near-linear until the clipping bites.
+    atlas, got = render(1.0)
+    if got > 0.01:
+        scale = float(np.clip(ER_GRAIN_STD / got, 0.5, 3.0))
+        atlas, got = render(scale)
+
     block = np.zeros((h, width, 4), np.uint8)
-    for y in range(h):
-        t = y / (h - 1)
-        if y < 2:                                # bright key edge
-            c = top * 1.22
-        elif t < 0.45:                           # upper body: top -> mid
-            c = top + (mid - top) * (t / 0.45)
-        else:                                    # lower body: mid -> bot
-            c = mid + (bot - mid) * ((t - 0.45) / 0.55)
-        if y >= h - 2:                           # grounding shadow line
-            c = bot * 0.55
-        block[y, :, :3] = np.clip(c, 0, 255)
+    block[..., :3] = atlas
     block[..., 3] = 255
     return block
+
+
+# The backdrop strip renders through a DIFFERENT transfer from the fill.
+BACKDROP_GAIN = 0.833
+BACKDROP_FLOOR = 48.0
+
+# ER's bone key-line, measured on screen, and its ruling amplitude.
+ER_KEYLINE = (145, 139, 108)
+
+# The baked ticks arrive weaker than ER's because extract_fill_grain collapses
+# four 4K rows into one. Do NOT calibrate against ER's 4K per-row std of 11.1 -
+# that compares a 4K row against our 1080p row and would overdrive it 2.2x.
+# Downsampled to 1080p, ER's key-line rows measure 5.87 and 8.46; ours came
+# back at 5.11, so this closes a real but modest gap.
+TICK_GAIN = 1.4
+_TICKS_CACHE = None
+
+
+def _back_compensate(target) -> tuple:
+    """Backdrop target -> atlas value.
+
+    Uses the same gamma as the fill now. The old linear 0.833x+48 was measured
+    while the HUD's colour transform was still adding +26; with that gone it
+    over-darkened, and the dark edge above the bar rendered (28,3,1) where ER
+    has (65,48,36).
+    """
+    return tuple(int(round(v)) for v in to_atlas(target))
+
+
+def _keyline_row(width: int) -> np.ndarray:
+    """One row of ER's bone key-line, complete with its fine ruling.
+
+    The ticks are baked in SCREEN luminance units by extract_fill_grain.py and
+    applied proportionally, so the line keeps its hue while it varies.
+    """
+    global _TICKS_CACHE
+    if _TICKS_CACHE is None:
+        p = Path(__file__).parent / "hud_keyline_ticks.png"
+        if not p.exists():
+            raise SystemExit(f"missing {p} - run extract_fill_grain.py first")
+        _TICKS_CACHE = Image.open(p).convert("L")
+    t = _TICKS_CACHE
+    if t.size[0] != width:
+        t = t.resize((width, 1), Image.BILINEAR)
+    ticks = np.asarray(t).astype(float).reshape(-1) - 128.0
+
+    base = np.array(ER_KEYLINE, float)
+    screen = base[None, :] * (1.0 + (TICK_GAIN * ticks / base.mean())[:, None])
+    atlas = (screen - BACKDROP_FLOOR) / BACKDROP_GAIN
+    return np.clip(atlas, 0, 255).astype(np.uint8)
 
 
 def backdrop_block(er: np.ndarray, width: int = 256) -> np.ndarray:
@@ -86,12 +279,28 @@ def backdrop_block(er: np.ndarray, width: int = 256) -> np.ndarray:
         rgb = rgba[..., :3].astype(float) * a + np.array(base, float) * (1 - a)
         return np.clip(rgb, 0, 255).astype(np.uint8)
 
-    gold = np.asarray(Image.fromarray(er[0:3, 5:1004]).resize((width, 1), Image.LANCZOS))
     leather = np.asarray(Image.fromarray(er[12:60, 0:800]).resize((width, h - 4), Image.LANCZOS))
-    out[0, :, :3] = (24, 19, 12)                     # outer dark seam
-    out[1, :, :3] = flatten(gold)[0] * 0.92          # gold key-line, top
+
+    # Only four rows of this block are ever visible: the fill covers the middle
+    # 12 of 16. Rows 0-1 sit above the fill and rows h-2, h-1 below it.
+    #
+    # ER's bar is ASYMMETRIC and the first version had it backwards. Measured
+    # off the reference grab, above the fill (row 94) is a DARK edge at
+    # (65,49,37) against the scene; below it (rows 116-119) is a pale bone
+    # key-line at (145,139,108), finely ruled like hatching on a ruler. Ours
+    # had a bright (164,154,143) line ON TOP and a duller one underneath -
+    # the inversion of ER, which is what Donnie spotted: "we also need the long
+    # paler bar at the bottom of the texture".
+    #
+    # The backdrop has its OWN transfer, not the fill's. Two clean data points
+    # from a capture (atlas 139 -> screen 164, atlas 121 -> screen 149) give
+    #     screen = 0.833 * atlas + 48
+    # so the floor here is 48, not the fill's 38. ER's top-edge blue of 37 is
+    # under it and clamps; everything else is reachable.
+    out[0, :, :3] = (24, 19, 12)                       # outer dark seam
+    out[1, :, :3] = _back_compensate((65, 49, 37))     # ER's DARK top edge
     out[2:h - 2, :, :3] = (flatten(leather).astype(float) * 0.8).astype(np.uint8)
-    out[h - 2, :, :3] = flatten(gold)[0] * 0.8       # gold key-line, bottom
+    out[h - 2, :, :3] = _keyline_row(width)            # ER's ruled bone key-line
     out[h - 1, :, :3] = (24, 19, 12)
     out[..., 3] = 255
     return out

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# ds3-state: emulator-style save states for the DS3 screenshot harness.
+#
+#   tools/ds3-state save <name> [note]   snapshot the sandbox save
+#   tools/ds3-state load <name>          restore it
+#   tools/ds3-state list                 show what is stored
+#   tools/ds3-state rm <name>            delete a state
+#
+# WHY. DS3 has no save states, but the harness does not need real ones. Every
+# ds3-shot run boots the SANDBOX save and loads the harness character, so
+# whatever position, gear and menu state that save holds is where the run
+# starts. Snapshot the save at an interesting spot - a boss arena, a bonfire,
+# the inventory screen - and every future run lands there with whatever
+# textures and shaders are current. That is the emulator loop: fix a state,
+# vary the graphics, compare like for like.
+#
+# THIS ONLY EVER TOUCHES THE SANDBOX SAVE. The real save at
+# steamapps/compatdata/374320 holds Donnie's characters, including the
+# irreplaceable rescued one, and is never read or written here. The guard below
+# refuses to run if the sandbox path does not look like the sandbox.
+set -u
+
+BASE="$HOME/couch/data/ds3-shot"
+SANDBOX="$BASE/compatdata-374320"
+SAVE_DIR="$SANDBOX/pfx/drive_c/users/steamuser/AppData/Roaming/DarkSoulsIII"
+STATES="$BASE/states"
+
+say() { echo "ds3-state: $*" >&2; }
+die() { say "FAIL: $*"; exit 1; }
+
+# Rail: never operate on anything that is not the sandbox.
+case "$SANDBOX" in
+  *"/couch/data/ds3-shot/compatdata-374320") : ;;
+  *) die "refusing: '$SANDBOX' is not the sandbox prefix" ;;
+esac
+[ -d "$SAVE_DIR" ] || die "no sandbox save dir at $SAVE_DIR (run ds3-shot once first)"
+
+find_sl2() { find "$SAVE_DIR" -maxdepth 2 -name '*.sl2' 2>/dev/null | head -1; }
+
+cmd_save() {
+  local name="${1:?usage: ds3-state save <name> [note]}"; shift || true
+  local note="${*:-}"
+  local src; src="$(find_sl2)"
+  [ -n "$src" ] || die "no .sl2 found under $SAVE_DIR"
+  if pgrep -f "DarkSoulsIII.exe" >/dev/null 2>&1; then
+    die "DS3 is running - quit it first, or the save on disk is stale"
+  fi
+  mkdir -p "$STATES/$name"
+  cp -a "$src" "$STATES/$name/save.sl2"
+  {
+    echo "name: $name"
+    echo "saved: $(date -Iseconds)"
+    echo "source: $src"
+    echo "bytes: $(stat -c %s "$src")"
+    echo "md5: $(md5sum "$src" | cut -d' ' -f1)"
+    [ -n "$note" ] && echo "note: $note"
+  } > "$STATES/$name/meta.txt"
+  say "saved state '$name' ($(stat -c %s "$src") bytes)"
+  [ -n "$note" ] && say "  note: $note"
+}
+
+cmd_load() {
+  local name="${1:?usage: ds3-state load <name>}"
+  local st="$STATES/$name/save.sl2"
+  [ -f "$st" ] || die "no state called '$name' (try: ds3-state list)"
+  if pgrep -f "DarkSoulsIII.exe" >/dev/null 2>&1; then
+    die "DS3 is running - quit it first or it will overwrite the restore"
+  fi
+  local dst; dst="$(find_sl2)"
+  [ -n "$dst" ] || die "no .sl2 in the sandbox to replace"
+  # Keep one rollback of whatever we are about to clobber.
+  cp -a "$dst" "$STATES/.previous.sl2"
+  cp -a "$st" "$dst"
+  say "loaded state '$name' -> $dst"
+  say "  the state it replaced is at $STATES/.previous.sl2"
+}
+
+cmd_list() {
+  [ -d "$STATES" ] || { say "no states yet"; return; }
+  local any=0
+  for d in "$STATES"/*/; do
+    [ -f "$d/meta.txt" ] || continue
+    any=1
+    echo "--- $(basename "$d")"
+    sed 's/^/    /' "$d/meta.txt"
+  done
+  [ "$any" = 1 ] || say "no states yet"
+}
+
+cmd_rm() {
+  local name="${1:?usage: ds3-state rm <name>}"
+  [ -d "$STATES/$name" ] || die "no state called '$name'"
+  rm -rf "${STATES:?}/$name"
+  say "removed '$name'"
+}
+
+case "${1:-}" in
+  save) shift; cmd_save "$@" ;;
+  load) shift; cmd_load "$@" ;;
+  list) cmd_list ;;
+  rm)   shift; cmd_rm "$@" ;;
+  *) echo "usage: ds3-state save <name> [note] | load <name> | list | rm <name>" >&2; exit 1 ;;
+esac

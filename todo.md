@@ -404,7 +404,150 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (31 Aug 2026 ~15:30 — Bloodborne cheats end to end, script/ convicted for good, mode-keeper is OFF)
+## ▶ Resume here (2 Sep 2026 ~16:00 — DS3 "ELDEN RING EDITION": the HUD port, and the wrong conclusion that cost hours)
+
+An all-day session porting Elden Ring's HUD onto Dark Souls 3. The bars are
+effectively colour-matched and most of the HUD is done. **Read the correction
+below before touching anything** — I built a whole post-processing layer on a
+conclusion that turned out to be false.
+
+### ▶▶ DONNIE'S TO-DO (only he can do these)
+
+1. **Nothing is blocking.** The DS3 work needs no sudo. Optional:
+   `sudo apt install inotify-tools` would make file-open diagnosis cleaner, but
+   the question it was for has already been answered another way.
+2. **Steam launch options for DS3 were changed by me** (Steam had to be closed
+   to do it; it is back up and signed in). They are now:
+   `ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE=/home/ds2000/.config/vkBasalt/vkBasalt.conf %command%`
+   That enables the post-process pass, which now ONLY draws the bar end-cap —
+   the colour correction in it is switched off. Home toggles it in game.
+   Original localconfig.vdf backed up at
+   `data/ds3-ui-port/build/localconfig.vdf.bak-20260902-100716`.
+3. **Still outstanding from 29 Aug, now five days stale:**
+   `sudo systemctl restart inputproc.service` at the TV.
+
+### ▶▶ THE CORRECTION THAT MATTERS
+
+I told Donnie repeatedly that DS3's HUD gauges are drawn by engine code, that
+the +34 brightness lift on the fill was irreducible, and that reaching Elden
+Ring's real green (26) and blue (22) would need patching `DarkSoulsIII.exe`.
+**All of that was wrong**, and two mistakes compounded:
+
+* I checked `menu/02_000_ingametop.gfx` for a colour transform, found it
+  referenced none of the HUD textures, and concluded no HUD `.gfx` existed.
+  `02_*` is the START MENU stack. The in-game HUD is **`menu/01_000_fe.gfx`**,
+  which I never opened.
+* I then "proved" the lift was engine-side by elimination — blacking the
+  backdrop, `MENU_PlayerHUD`, `MENU_HUD_Status`, varying alpha, an all-black
+  bar. Every test was sound. Every result was ALSO consistent with a Scaleform
+  colour transform, which is what it was. **Ruling out asset causes does not
+  prove an engine cause.**
+
+The lift was three XML attributes: sprite 471's `HP`/`MP`/`SP` placements each
+carried `CXFORMWITHALPHA` mult 230/256, add **+26** on R, G and B.
+
+### ▶▶ WHERE THE PORT ACTUALLY IS
+
+Deployed at `data/ds3-shot/game/mod/menu/`: `01_common.tpf.dcx` (bars, covenant
+badge, souls tile, item panel), `01_000_fe.gfx` (colour transform neutralised),
+`02_title.tpf.dcx` (ELDEN RING EDITION lockup).
+
+Measured against ER, from the texture alone, no post-processing:
+
+| bar | ours | Elden Ring | deltaE |
+|---|---|---|---|
+| HP | 95,30,25 | 94,26,22 | 1.58 |
+| FP | 28,68,87 | 28,68,85 | 1.37 |
+| stamina | 31,69,46 | 28,69,45 | 1.22 |
+
+Also done: the covenant badge (the bright stone octagon top-left, which is
+`MENU_PledgeIcon` — **not** anything in `MENU_PlayerHUD`) darkened to ER's
+Great Rune slot with emblems still legible; the souls spiral tile darkened; the
+item **podium removed** (it is the brown ellipse inside `MENU_ItemPanel_02`,
+NOT `MENU_Dish`, which is named for it, looks exactly right, and is not
+referenced by the HUD at all); ER's real cap art extracted from ER's own
+archives with genuine alpha and drawn by the shader so it can overhang the bar.
+
+### ▶▶ EXACT NEXT STEP
+
+The **rail** is the one visible difference left. Row-by-row the fill and bevel
+match ER within 1-5, but the rail's four rows do not: ER has a bright/dark/
+bright ruling and ours reads as a smoother, heavier band.
+
+Root cause is identified and NOT yet fixed: **the game samples ~23.6 texels per
+24 screen rows**, so a fractional drift smears any one-row feature. Smooth areas
+are unaffected, which is why only the rail suffers. Things already tried and
+measured as neutral or worse — do not repeat them: three sampling phases (0 best
+at 470, +1 gave 595, -1 gave 492), a vertical pre-sharpen (538), atlas scale 4
+vs 2 (2 is better: 1:1 vertically), removing either rail copy.
+
+The untried fix is deconvolution: measure the per-row error and pre-compensate
+the cut for the known blur, iterating once. Start at `graft_fills` in
+`tools/souls-extract/er_hud_graft.py`.
+
+Rebuild and check with:
+```bash
+V=data/ds3-ui-port/.venv/bin/python; B=data/ds3-ui-port/build
+$V tools/souls-extract/er_hud_graft.py   $B/01_common.tpf.dcx   $B/01_common_g3.tpf.dcx
+$V tools/souls-extract/er_pledge_icon.py $B/01_common_g3.tpf.dcx $B/01_common_g4.tpf.dcx
+$V tools/souls-extract/er_hud_chrome.py  $B/01_common_g4.tpf.dcx $B/01_common_g5.tpf.dcx
+$V tools/souls-extract/er_item_panel.py  $B/01_common_g5.tpf.dcx $B/01_common_final.tpf.dcx
+cp $B/01_common_final.tpf.dcx ~/couch/data/ds3-shot/game/mod/menu/01_common.tpf.dcx
+DS3SHOT_FAST=1 DS3SHOT_MOD=1 DS3SHOT_W=3840 DS3SHOT_H=2160 tools/ds3-shot inventory
+$V tools/souls-extract/hud_tune.py measure data/ds3-shot/shots/ingame.png
+```
+
+### ▶▶ ITERATION SPEED — two obvious ideas measured as WORTHLESS
+
+* **Hot reload does not exist and cannot be faked.** `tools/ds3-hotreload-test`
+  proves it: get in game, quit to title without ending the process, swap in a
+  build with a magenta HP bar, press Continue — the bar comes back normal. Menu
+  resources are resident from process start. This also kills "keep the session
+  alive".
+* **Pre-decrypting the archive headers gave nothing.** `tools/ds3-bootboost`
+  does BootBoost natively (no Windows exe; sandbox only; `--revert`). Timed over
+  four runs: decrypted 92/91s, encrypted 91/91s. Symlinks left in place.
+* **What did work, 1: `DS3SHOT_FAST=1`,** 81s against 91s, by skipping the
+  Equipment and Inventory screenshots that HUD work never looks at.
+* **What did work, 2: logo skip, another 4s.** `tools/ds3-nologo build`
+  truncates the five boot logo movies (155 frames each) to a single frame. They
+  are ordinary Scaleform files in the archive, so no NoLogo DLL is needed. The
+  menu now appears 3s after first frame instead of ~25s. `remove` reverts.
+* **Cumulative: 91s -> 77s.** Both are ON in the deployed mod dir.
+* **Save states cannot help speed.** `tools/ds3-state` restores a save FILE, so
+  the game still boots and loads. Nothing snapshots DS3's memory.
+
+### ▶▶ TOOLS BUILT THIS SESSION
+
+`tools/souls-extract/`: `er_hud_graft.py` (bars), `er_pledge_icon.py`,
+`er_hud_chrome.py`, `er_item_panel.py`, `er_fe_gfx.py` (patches the HUD movie —
+`--neutral-cxform`, `--scale-cap`, `--drop-dish`), `hud_tune.py` (**`measure`
+reports every element vs ER with deltaE in one command**), `extract_fill_grain.py`.
+`tools/ds3-state` (save states), `tools/ds3-bootboost`, `tools/ds3-hotreload-test`.
+`tools/ds3-shot` gained 4K capture (`DS3SHOT_W/H`), `DS3SHOT_FAST`,
+`DS3SHOT_BACKEND=sdl`, `DS3SHOT_VKBASALT`, and a colour-independent
+improper-shutdown-dialog dismissal.
+
+### ▶▶ THE MEASUREMENT TRAP THAT BIT REPEATEDLY
+
+Several false readings all came from the same mistake: **sampling past the end
+of a bar into the scenery.** A bar is only as long as current HP. `hud_tune.py`
+now takes the longest CONTIGUOUS run rather than min..max, and samples a fifth
+of the way in to clear the end-cap. If a measurement looks wrong, check the
+sample window before believing it.
+
+### ▶▶ STILL OPEN
+
+* The rail (above) — the only visible difference on the health bar.
+* Equipment slot **rails** are still DS3's ornate gold vs ER's plain thin
+  borders. Panel tone already matches (23,23,24 vs ER 32,33,28).
+* `er_fe_gfx.py --scale-cap` and `--drop-dish` are written and round-trip-safe
+  but have **never been run in game**.
+* Not tried: JPEXS preview of `fe.gfx` with the atlas DDS beside it (zero-launch
+  layout checks); Special K live texture reload. Research in `/tmp/uiloop/`
+  (copy it somewhere permanent if it matters — /tmp gets cleaned).
+
+## ▶ Previous (31 Aug 2026 ~15:30 — Bloodborne cheats end to end, script/ convicted for good, mode-keeper is OFF)
 
 A Bloodborne companion session that turned into three pieces of engineering.
 Donnie hit a wall on the Cainhurst boss and the day ended with cheat toggles on

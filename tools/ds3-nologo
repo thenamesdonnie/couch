@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Skip DS3's boot logos by truncating their Scaleform movies to one frame.
+
+DS3 plays five logo/warning movies before the title screen. The usual fix is
+bladecoding's NoLogo dinput8.dll, but that is a Windows binary to inject; these
+are ordinary Scaleform files in the archive, so ModEngine2 can simply override
+them with versions whose timeline ends immediately.
+
+    /menu/05_900_logo_fromsoft.gfx
+    /menu/05_901_logo_bne.gfx
+    /menu/05_902_logo_esrb.gfx
+    /menu/05_903_warn_illegalcopy.gfx
+    /menu/05_905_logo_copyright.gfx
+
+Each is decompiled, every ShowFrameTag after the first is dropped, frameCount is
+set to 1, and it is recompiled. The movie still exists and still loads - so
+nothing the engine expects goes missing - it just has nothing left to play.
+
+WHY BOTHER, given the other two speedups measured as nothing: the harness POLLS
+for the title screen rather than sleeping, so any time the logos do not consume
+is time actually saved. Whether that is seconds or nothing is measurable - run
+a timed `ds3-shot` before and after and compare, do not assume.
+
+    tools/ds3-nologo build     write truncated copies into the mod dir
+    tools/ds3-nologo remove    take them back out
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+FFDEC = Path.home() / "couch/data/ds3-ui-port/ffdec/ffdec.sh"
+SRC = Path.home() / "couch/data/ds3-ui-port/build/logos"
+MOD = Path.home() / "couch/data/ds3-shot/game/mod/menu"
+WORK = Path.home() / "couch/data/ds3-ui-port/build/logos-nologo"
+
+LOGOS = [
+    "05_900_logo_fromsoft.gfx",
+    "05_901_logo_bne.gfx",
+    "05_902_logo_esrb.gfx",
+    "05_903_warn_illegalcopy.gfx",
+    "05_905_logo_copyright.gfx",
+]
+
+
+def truncate(src: Path, dst: Path) -> bool:
+    WORK.mkdir(parents=True, exist_ok=True)
+    xml = WORK / (src.stem + ".xml")
+    try:
+        subprocess.run([str(FFDEC), "-swf2xml", str(src), str(xml)],
+                       check=True, capture_output=True, timeout=300)
+    except Exception as e:
+        print(f"  {src.name:30s} decompile failed: {e}")
+        return False
+
+    t = xml.read_text(encoding="utf-8", errors="replace")
+
+    # Keep the first ShowFrameTag on the main timeline, drop the rest. Sprites
+    # keep theirs - truncating those risks breaking a symbol the loader wants.
+    shows = list(re.finditer(r'\s*<item type="ShowFrameTag"[^>]*/>', t))
+    if len(shows) <= 1:
+        print(f"  {src.name:30s} already a single frame, copying as-is")
+        dst.write_bytes(src.read_bytes())
+        return True
+    for m in reversed(shows[1:]):
+        t = t[:m.start()] + t[m.end():]
+    t = re.sub(r'(<swf[^>]*\sframeCount=")\d+(")', r"\g<1>1\g<2>", t, count=1)
+
+    xml.write_text(t, encoding="utf-8")
+    try:
+        subprocess.run([str(FFDEC), "-xml2swf", str(xml), str(dst)],
+                       check=True, capture_output=True, timeout=300)
+    except Exception as e:
+        print(f"  {src.name:30s} recompile failed: {e}")
+        return False
+    print(f"  {src.name:30s} {len(shows)} frames -> 1   "
+          f"({src.stat().st_size:,} -> {dst.stat().st_size:,} bytes)")
+    return True
+
+
+def main() -> None:
+    what = sys.argv[1] if len(sys.argv) > 1 else "build"
+    if what == "remove":
+        n = 0
+        for name in LOGOS:
+            f = MOD / name
+            if f.exists():
+                f.unlink()
+                n += 1
+        print(f"  removed {n} logo overrides; the game's own logos return")
+        return
+
+    if not SRC.is_dir():
+        raise SystemExit(f"no extracted logos at {SRC}")
+    MOD.mkdir(parents=True, exist_ok=True)
+    ok = 0
+    for name in LOGOS:
+        s = SRC / name
+        if not s.exists():
+            print(f"  {name:30s} not extracted, skipping")
+            continue
+        if truncate(s, MOD / name):
+            ok += 1
+    print(f"\n  {ok}/{len(LOGOS)} logo movies truncated into {MOD}")
+    print("  TIME A RUN BEFORE AND AFTER - do not assume this helped.")
+    print("  revert with: tools/ds3-nologo remove")
+
+
+if __name__ == "__main__":
+    main()

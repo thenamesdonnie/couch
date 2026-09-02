@@ -50,8 +50,15 @@ PIDFILE="$BASE/session.pid"
 LOG="$BASE/ds3-shot.log"
 LOCK="$BASE/lock"
 
-OUT_W=1920
-OUT_H=1080
+# Capture resolution. Overridable so the harness can shoot 4K for asset
+# comparisons against Elden Ring's own 4K grabs - comparing our 1080p output
+# against ER at 4K makes ours look softer than it is. Every hardcoded pixel
+# coordinate below is expressed at 1920x1080 and scaled through sx(); keep it
+# that way when adding new ones.
+OUT_W=${DS3SHOT_W:-1920}
+OUT_H=${DS3SHOT_H:-1080}
+SCALE_PCT=$(( OUT_W * 100 / 1920 ))
+sx() { echo $(( $1 * SCALE_PCT / 100 )); }
 
 say()  { echo "$(date +%H:%M:%S) ds3-shot: $*" | tee -a "$LOG" >&2; }
 die()  { say "FAIL: $*"; exit 1; }
@@ -177,7 +184,12 @@ launch() {
     [ "${DS3SHOT_PROTON_LOG:-}" = 1 ] && export PROTON_LOG=1
     TRACE=""
     [ "${DS3SHOT_STRACE:-}" = 1 ] && TRACE="strace -f -e trace=execve -s 400 -o $BASE/strace.log"
-    unset DISPLAY XAUTHORITY
+    # headless needs no host display; a presenting backend needs :0
+    if [ "${DS3SHOT_BACKEND:-headless}" = headless ]; then
+      unset DISPLAY XAUTHORITY
+    else
+      export DISPLAY="${DS3SHOT_HOST_DISPLAY:-:0}"
+    fi
     cd "$SANDBOX_GAME" || exit 1
     # DS3SHOT_MOD=1 boots through ModEngine2 so files under
     # $SANDBOX_GAME/mod/ override the ones inside the game archives.
@@ -197,7 +209,37 @@ launch() {
     # primary child must outlive the launcher: run it, then idle.
     INNER='echo "$DISPLAY" > "$0"; exec "$@"'
     [ "${DS3SHOT_MOD:-}" = 1 ] && INNER='echo "$DISPLAY" > "$0"; "$@"; sleep 1200'
-    exec "$GS_DIR/gamescope" --backend headless -W "$OUT_W" -H "$OUT_H" -r 60 -- \
+    # Optional post-process pass. DS3's engine lifts the gauge fill by +34, so
+    # ER's real green (26) and blue (22) are unreachable from the texture; the
+    # shader claws that back after rendering. See the .fx for the evidence.
+    # --force-composition matters: without it gamescope direct-scans-out the
+    # client buffer, the post-process pass never runs, and the screenshot is
+    # the raw game frame. A test shader that pins green to 255 came back with
+    # green min 0, which is how that was caught.
+    # Backend. Default headless: nothing on the TV. But headless gamescope
+    # never creates a Vulkan SWAPCHAIN, and with no swapchain a post-process
+    # layer has nothing to hook - vkBasalt gets to vkCreateDevice and stops.
+    # Verifying the HUD colour shader therefore needs a presenting backend,
+    # i.e. a real window. Deliberately NOT fullscreen: this box has had the
+    # 4k120 correction blank the TV, and a window asks for no modeset.
+    GS_BACKEND="${DS3SHOT_BACKEND:-headless}"
+    RESHADE=""
+    [ -n "${DS3SHOT_RESHADE:-}" ] && RESHADE="--force-composition --reshade-effect $DS3SHOT_RESHADE"
+    # vkBasalt route (DS3SHOT_VKBASALT=1). A Vulkan implicit layer, so it runs
+    # at the game's own present, before gamescope sees the frame - which also
+    # means gamescope's screenshot captures the corrected image. gamescope's
+    # own --reshade-effect did NOT work here: a test shader pinning green to
+    # 255 came back with green min 0, with and without --force-composition.
+    # Installed user-locally under ~/.local/vkbasalt, no root involved.
+    if [ "${DS3SHOT_VKBASALT:-}" = 1 ]; then
+      export ENABLE_VKBASALT=1
+      export VK_ADD_IMPLICIT_LAYER_PATH="$HOME/.local/vkbasalt/share/vulkan/implicit_layer.d"
+      export XDG_DATA_DIRS="$HOME/.local/vkbasalt/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+      export VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/vkBasalt.conf"
+      export VKBASALT_LOG_LEVEL="${VKBASALT_LOG_LEVEL:-info}"
+      export VKBASALT_LOG_FILE="${VKBASALT_LOG_FILE:-}"
+    fi
+    exec "$GS_DIR/gamescope" --backend "$GS_BACKEND" -W "$OUT_W" -H "$OUT_H" -r 60 $RESHADE -- \
       sh -c "$INNER" \
       "$DISPLAY_FILE" $TRACE "$PROTON" run "$GAME_TARGET" $GAME_ARGS
   ) >>"$LOG" 2>&1 &
@@ -274,14 +316,17 @@ img_ok() {  # dims + non-trivial variance; the classic failure is a black PNG
 #   hud:  red-dominant HP bar at y~80-86 x 210-400, green stamina y~115-120
 #   menu: the warm highlight ellipse under the selected main-menu item
 #         (x 880-1050, y 736-748); the title screen is pure black there
-probe() {  # probe <hud|menu> <png> -> exit 0/1
-  python3 - "$1" "$2" <<'EOF'
+probe() {  # probe <hud|menu|dialog> <png> -> exit 0/1
+  python3 - "$1" "$2" "$SCALE_PCT" <<'EOF'
 import sys
 from PIL import Image
 what, path = sys.argv[1], sys.argv[2]
+S = int(sys.argv[3]) / 100.0     # boxes are authored at 1920x1080
 im = Image.open(path).convert("RGB")
 def frac(box, pred):
-    xs = range(box[0], box[2], 6); ys = range(box[1], box[3], 2)
+    box = [int(round(v * S)) for v in box]
+    step_x, step_y = max(1, int(6 * S)), max(1, int(2 * S))
+    xs = range(box[0], box[2], step_x); ys = range(box[1], box[3], step_y)
     n = hit = 0
     for y in ys:
         for x in xs:
@@ -289,12 +334,32 @@ def frac(box, pred):
             if pred(r, g, b): hit += 1
     return hit / max(n, 1)
 if what == "hud":
-    red = frac((210, 78, 400, 88), lambda r, g, b: r > 55 and r > g * 1.6 and r > b * 1.6)
-    green = frac((210, 113, 370, 121), lambda r, g, b: g > 55 and g > r * 1.2 and g > b * 1.2)
+    # Thresholds dropped from 55 to 32. Neutralising the HUD's colour transform
+    # in fe.gfx removed a +26 lift that had been floating every bar, so stamina
+    # now sits at green ~44 where it used to read ~68 and the old test failed on
+    # a HUD that was rendering perfectly.
+    red = frac((210, 78, 400, 88), lambda r, g, b: r > 32 and r > g * 1.6 and r > b * 1.6)
+    green = frac((210, 113, 370, 121), lambda r, g, b: g > 32 and g > r * 1.2 and g > b * 1.2)
     sys.exit(0 if red > 0.5 and green > 0.5 else 1)
 if what == "menu":
     warm = frac((880, 736, 1050, 748), lambda r, g, b: r >= 30 and b <= r * 0.6)
     sys.exit(0 if warm > 0.5 else 1)
+if what == "dialog":
+    # DS3's "Quit Game might not have been selected from the system menu"
+    # warning, which sits OVER the main menu and blocks it. Any run that is
+    # interrupted instead of quitting cleanly leaves this for the next boot,
+    # so it is not an edge case - it is the normal cost of a killed run, and
+    # it cost two full runs before it was spotted.
+    # Two tests, because one is not specific enough. "warm" is the top border
+    # of the highlighted OK button; "dark_above" is the dialog panel over it.
+    # The border alone also fires on a solid-orange frame at 0.571 against the
+    # dialog's 0.765, which is too thin to thread. Requiring the panel above to
+    # be dark separates them outright.
+    # Measured across 45 harness frames: dialog (0.765, 0.931); every real game
+    # frame 0.000 warm; the orange decoy 0.571 warm but 0.000 dark_above.
+    warm = frac((814, 643, 1105, 647), lambda r, g, b: r > 70 and r > g * 1.5 and r > b * 2.2)
+    dark_above = frac((814, 618, 1105, 634), lambda r, g, b: r < 60 and g < 60 and b < 60)
+    sys.exit(0 if warm > 0.5 and dark_above > 0.7 else 1)
 sys.exit(2)
 EOF
 }
@@ -306,7 +371,17 @@ wait_probe() {  # wait_probe <hud|menu> <timeout-s> [poke] - poke: click between
     session_alive || die "game died while waiting for $what (tail $LOG)"
     f="$(shot _probe)" || { sleep 3; t=$((t+3)); continue; }
     if img_ok "$f" 2>/dev/null && probe "$what" "$f"; then return 0; fi
-    [ "$poke" = poke ] && click 960 540
+    if [ "$poke" = poke ]; then
+      # Clear the improper-shutdown warning if it is up. The generic poke is a
+      # click at screen centre, which misses the OK button at y~662 entirely,
+      # so without this the wait just times out for its full 150s.
+      if probe dialog "$f" 2>/dev/null; then
+        say "clearing DS3's improper-shutdown dialog"
+        key e; sleep 1.5
+      else
+        click $(sx 960) $(sx 540)
+      fi
+    fi
     sleep 4; t=$((t+4))
   done
   return 1
@@ -365,6 +440,14 @@ EOF
 # dialog on this path.
 advance_to_menu() {
   wait_first_frame
+  # Clear DS3's improper-shutdown warning UNCONDITIONALLY, before the menu is
+  # up. The colour-based dialog probe below is not enough on its own: any run
+  # that recolours UI textures - which every tracer sweep does - also recolours
+  # that dialog's OK button and the probe stops recognising it, costing a full
+  # 150s timeout. A confirm press here is free when no dialog is present,
+  # because the title screen needs one anyway, and it happens before the menu
+  # exists so it cannot select a menu item by accident.
+  key e; sleep 1.5
   say "advancing to the main menu"
   wait_probe menu 150 poke || { teardown; die "main menu never appeared"; }
   say "main menu up (Continue highlighted)"
@@ -389,7 +472,7 @@ run_title() {
   local waited=0 lit
   while [ "$waited" -lt 45 ]; do
     shot _titlepoll >/dev/null 2>&1 || true
-    lit=$(convert "$SHOTS/_titlepoll.png" -crop 1920x180+0+400 +repage \
+    lit=$(convert "$SHOTS/_titlepoll.png" -crop $(sx 1920)x$(sx 180)+0+$(sx 400) +repage \
             -colorspace Gray -threshold 55% -format "%[fx:mean*10000]" info: 2>/dev/null | cut -d. -f1)
     [ -n "$lit" ] && [ "$lit" -gt 120 ] && { say "title up after ${waited}s"; break; }
     sleep 3; waited=$((waited+3))
@@ -430,6 +513,33 @@ run_inventory() {
   wait_probe hud 120 || { teardown; die "never reached the in-game HUD"; }
   sleep 3
   shot ingame >/dev/null || { teardown; die "screenshot failed"; }
+
+  # FAST MODE. HUD work only ever looks at `ingame`, but the full journey also
+  # walks into Equipment and Inventory for two more shots, which costs about
+  # 15s of the ~91s run in keypresses, waits and captures. DS3SHOT_FAST=1 goes
+  # straight from the in-game shot to the clean quit.
+  #
+  # This is the only worthwhile speedup found. The two obvious candidates both
+  # measured as nothing: menu assets are resident from process start, so
+  # swapping a file at the title screen and pressing Continue changes nothing
+  # (tested directly with a magenta bar); and pre-decrypting the archive
+  # headers, BootBoost-style, gave 92/91s against 91/91s - no difference.
+  if [ "${DS3SHOT_FAST:-}" = 1 ]; then
+    say "fast mode: skipping the equipment and inventory screens"
+    key Escape; sleep 2
+    key Right; sleep 0.8; key Right; sleep 0.8
+    key Right; sleep 0.8; key Right; sleep 0.8
+    key e; sleep 2
+    click $(sx 1105) $(sx 240); sleep 1.5
+    click $(sx 960) $(sx 788); sleep 1.5
+    click $(sx 740) $(sx 595)
+    say "saved and quitting to title"
+    sleep 12
+    say "OK inventory journey (fast)"
+    finish ingame
+    return
+  fi
+
   # Esc opens the in-game menu bar with Equipment highlighted first.
   key Escape; sleep 2
   key e; sleep 2.5
@@ -444,9 +554,9 @@ run_inventory() {
   key q; sleep 1.5
   key Right; sleep 0.8; key Right; sleep 0.8; key Right; sleep 0.8
   key e; sleep 2
-  click 1105 240; sleep 1.5
-  click 960 788; sleep 1.5
-  click 740 595
+  click $(sx 1105) $(sx 240); sleep 1.5
+  click $(sx 960) $(sx 788); sleep 1.5
+  click $(sx 740) $(sx 595)
   say "saved and quitting to title"
   sleep 12
   say "OK inventory journey"

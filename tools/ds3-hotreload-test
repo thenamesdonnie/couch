@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Does DS3 re-read its menu files on quit-to-title -> Continue?
+#
+# THE QUESTION THIS ANSWERS, AND WHY IT MATTERS. Every HUD iteration currently
+# costs a full ~150s boot. ModEngine2 serves override bytes at EVERY file open,
+# so if the game re-opens menu/01_common.tpf.dcx when a save is loaded rather
+# than only at process start, the loop collapses to quitout -> swap -> Continue,
+# about 35-45s. Nobody in the modding community has documented which it is.
+#
+# HOW IT TESTS. Rather than instrument file opens (inotify-tools is not
+# installed and needs root), it just asks the question directly: get in game,
+# quit to title, swap in a build whose HP bar is solid magenta, Continue, and
+# look at the bar. Magenta means the file was re-read. Unchanged means the
+# menu resources are resident from boot and this whole avenue is closed.
+#
+# Leaves the normal build in place on exit either way.
+set -u
+
+SHOT="$HOME/couch/data/ds3-shot/shots"
+MOD="$HOME/couch/data/ds3-shot/game/mod/menu/01_common.tpf.dcx"
+NORMAL=/tmp/hotreload_normal.dcx
+GARISH=/tmp/hotreload_garish.dcx
+DS3="$HOME/couch/tools/ds3-shot"
+
+say() { echo "  hotreload: $*" >&2; }
+dev() { DS3SHOT_MOD=1 "$DS3" _dev "$@"; }
+
+restore() { cp -f "$NORMAL" "$MOD"; say "normal build restored"; }
+cleanup() { dev stop >/dev/null 2>&1 || true; restore; }
+trap cleanup EXIT
+
+[ -f "$NORMAL" ] && [ -f "$GARISH" ] || { echo "need $NORMAL and $GARISH"; exit 1; }
+
+cp -f "$NORMAL" "$MOD"
+say "starting a session with the NORMAL build"
+dev start
+dev frame >/dev/null
+dev key e >/dev/null; sleep 2          # clear the improper-shutdown dialog
+dev menu
+
+say "loading the character"
+dev key e >/dev/null
+for i in $(seq 1 40); do
+  f=$(dev shot _hr 2>/dev/null | tail -1)
+  dev probe hud "$f" >/dev/null 2>&1 && { say "in game after ${i}0s-ish"; break; }
+  sleep 3
+done
+dev shot hr_before >/dev/null
+say "captured BEFORE"
+
+say "quitting to title (session stays alive)"
+dev key Escape >/dev/null; sleep 2
+dev key e >/dev/null; sleep 2
+dev key q >/dev/null; sleep 2
+dev key Right >/dev/null; sleep 1
+dev key Right >/dev/null; sleep 1
+dev key Right >/dev/null; sleep 1
+dev key e >/dev/null; sleep 2
+dev click 1105 240 >/dev/null; sleep 2
+dev click 960 788 >/dev/null; sleep 2
+dev click 740 595 >/dev/null
+sleep 14
+
+say "SWAPPING IN THE GARISH BUILD while at the title screen"
+cp -f "$GARISH" "$MOD"
+sleep 1
+
+say "Continue again"
+dev key e >/dev/null; sleep 2
+dev key e >/dev/null
+for i in $(seq 1 40); do
+  f=$(dev shot _hr 2>/dev/null | tail -1)
+  dev probe hud "$f" >/dev/null 2>&1 && break
+  sleep 3
+done
+sleep 3
+dev shot hr_after >/dev/null
+say "captured AFTER"
+
+python3 - "$SHOT/hr_before.png" "$SHOT/hr_after.png" <<'EOF'
+import sys
+import numpy as np
+from PIL import Image
+a = np.asarray(Image.open(sys.argv[1]).convert("RGB")).astype(int)
+b = np.asarray(Image.open(sys.argv[2]).convert("RGB")).astype(int)
+def magenta(x):
+    top = x[: x.shape[0] // 4, : x.shape[1] // 2]
+    m = (top[..., 0] > 150) & (top[..., 2] > 150) & (top[..., 1] < 100)
+    return int(m.sum())
+print(f"  magenta pixels BEFORE: {magenta(a)}")
+print(f"  magenta pixels AFTER : {magenta(b)}")
+print()
+if magenta(b) > 500:
+    print("  RESULT: the file WAS re-read on Continue.")
+    print("  A persistent-session loop is possible: quitout, swap, Continue.")
+else:
+    print("  RESULT: no change - menu resources are resident from process start.")
+    print("  Hot-swapping between saves does NOT work; the boot cannot be skipped.")
+EOF

@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Pre-decrypt DS3's archive headers so every boot skips the RSA work.
+
+DS3 stores its `.bhd` archive headers RSA-encrypted and decrypts all eight of
+them on every single launch, which costs 10-15 seconds. The game will happily
+read a header that is ALREADY plaintext - it checks for the `BHD5` magic first -
+so decrypting them once and writing them back removes that cost permanently.
+That is what TKGP's BootBoost does on Windows; this is the same idea done
+natively, reusing the RSA implementation already in `dvdbnd.py` rather than
+running a Windows exe under Proton.
+
+WHY THIS IS WORTH IT HERE. Iterating on the HUD port costs a full game launch
+every time - roughly 150 seconds - and I have done about ninety of them. Hot
+reloading is not available (measured: swapping a menu file at the title screen
+and hitting Continue changes nothing, the menu resources are resident from
+process start), so shortening the boot is the only lever left.
+
+SAFETY. This writes ONLY inside the ds3-shot sandbox game dir. That directory
+is a farm of symlinks pointing at the real install, so each `.bhd` is replaced
+with a real decrypted FILE, breaking the symlink - the real install is never
+opened for writing and never modified. Originals are backed up alongside.
+Re-running is harmless: already-plaintext headers are detected and skipped.
+
+    tools/ds3-bootboost            decrypt the sandbox headers
+    tools/ds3-bootboost --revert   put the symlinks back
+"""
+from __future__ import annotations
+
+import re
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.home() / "couch/tools/souls-extract"))
+
+SANDBOX_GAME = Path.home() / "couch/data/ds3-shot/game"
+REAL_GAME = Path.home() / ".steam/steam/steamapps/common/DARK SOULS III/Game"
+KEYS_CS = Path.home() / "couch/data/ds3-ui-port/uxm_keys.cs"
+BACKUP = Path.home() / "couch/data/ds3-shot/bhd-originals"
+
+
+def ds3_keys() -> dict[str, str]:
+    """Parse ONLY the DarkSouls3Keys block.
+
+    The file holds several games' dictionaries and they all use the same
+    ["Data1"]-style labels, so a regex over the whole file silently returns
+    another game's key and every archive then fails to decrypt.
+    """
+    txt = KEYS_CS.read_text(encoding="utf-8-sig")
+    m = re.search(r"DarkSouls3Keys\s*=\s*new Dictionary<string, string>\s*\{(.*?)\n\s*\};",
+                  txt, re.S)
+    if not m:
+        raise SystemExit("could not find the DarkSouls3Keys block")
+    return dict(re.findall(
+        r'\["([^"]+)"\]\s*=\s*@"(-----BEGIN RSA PUBLIC KEY-----.*?-----END RSA PUBLIC KEY-----)"',
+        m.group(1), re.S))
+
+
+def revert() -> None:
+    n = 0
+    for bhd in sorted(SANDBOX_GAME.glob("*.bhd")):
+        src = REAL_GAME / bhd.name
+        if not src.exists():
+            continue
+        bhd.unlink()
+        bhd.symlink_to(src)
+        n += 1
+    print(f"  restored {n} symlinks to the real install")
+
+
+def main() -> None:
+    if "--revert" in sys.argv:
+        revert()
+        return
+
+    from dvdbnd import decrypt_bhd
+
+    if not SANDBOX_GAME.is_dir():
+        raise SystemExit(f"no sandbox game dir at {SANDBOX_GAME} - run ds3-shot once first")
+    keys = ds3_keys()
+    BACKUP.mkdir(parents=True, exist_ok=True)
+
+    done = skipped = failed = 0
+    for bhd in sorted(SANDBOX_GAME.glob("*.bhd")):
+        raw = bhd.read_bytes()
+        if raw[:4] == b"BHD5":
+            print(f"  {bhd.name:12s} already plaintext, skipping")
+            skipped += 1
+            continue
+        key = keys.get(bhd.stem)
+        if key is None:
+            print(f"  {bhd.name:12s} no key, leaving encrypted")
+            failed += 1
+            continue
+        try:
+            dec = decrypt_bhd(raw, key)
+        except Exception as e:
+            print(f"  {bhd.name:12s} decrypt FAILED: {type(e).__name__}: {e}")
+            failed += 1
+            continue
+        if dec[:4] != b"BHD5":
+            print(f"  {bhd.name:12s} decrypted to something that is not BHD5, refusing")
+            failed += 1
+            continue
+
+        # Back up the original bytes before breaking the symlink.
+        keep = BACKUP / bhd.name
+        if not keep.exists():
+            shutil.copy2(bhd.resolve(), keep)
+        bhd.unlink()                       # removes the symlink, not its target
+        bhd.write_bytes(dec)
+        print(f"  {bhd.name:12s} decrypted  {len(raw):,} -> {len(dec):,} bytes")
+        done += 1
+
+    print(f"\n  {done} decrypted, {skipped} already done, {failed} failed")
+    if done:
+        print("  the real install was not touched; originals are in "
+              f"{BACKUP}")
+        print("  revert with: tools/ds3-bootboost --revert")
+
+
+if __name__ == "__main__":
+    main()
