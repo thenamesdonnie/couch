@@ -536,6 +536,16 @@ now takes the longest CONTIGUOUS run rather than min..max, and samples a fifth
 of the way in to clear the end-cap. If a measurement looks wrong, check the
 sample window before believing it.
 
+### ▶▶ GIT
+
+Committed as `20e6ad2` on master (all the tools, the harness changes, RECIPE.md,
+this resume block). **Deliberately not committed:** the built `.tpf.dcx` and
+`.gfx` artifacts under `data/ds3-ui-port/build/` — they are 29 MB each and
+regenerate from the four scripts in seconds. The deployed copies in
+`data/ds3-shot/game/mod/menu/` are likewise not in git. Pre-existing uncommitted
+files untouched by this session: `tools/game-quiet`, `tools/test_game_quiet.py`,
+the `kodi-addons/` skin edits, and the `shadow/` logs.
+
 ### ▶▶ STILL OPEN
 
 * The rail (above) — the only visible difference on the health bar.
