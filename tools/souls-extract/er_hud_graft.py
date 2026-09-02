@@ -104,6 +104,23 @@ DRAWN_ROWS = (6 * ATLAS_SCALE, 18 * ATLAS_SCALE)
 # within each pair rather than straddling two. See bevel/rail note in graft_fills.
 SAMPLE_PHASE = 0
 
+# THE BLUR, MEASURED. An impulse (band flat at red 60, one row at 255) rendered
+# in game spreads over exactly three rows with these weights:
+#
+#     offset -1   0.277
+#     offset  0   0.446
+#     offset +1   0.277
+#
+# A symmetric 3-tap tent. This is why ER's one-row rail ruling would not
+# reproduce however the atlas was authored - and why three sampling phases, a
+# pre-sharpen and two atlas scales all failed: they were fighting a blur
+# instead of inverting it.
+#
+# The FIRST attempt at this measurement used a GREY impulse, which stopped the
+# HP band being red-dominant, so wait_probe hud never fired and the numbers
+# read were a stale frame. Keep any test pattern red-dominant.
+PSF = (0.277, 0.446, 0.277)
+
 # How hard to pre-sharpen vertically to survive the game's 2:1 minification.
 VERT_SHARPEN = 1.6
 
@@ -326,6 +343,27 @@ def graft_fills(atlas: np.ndarray) -> np.ndarray:
         # blotchy. Matching per-channel keeps the bar's redness varying
         # exactly as ER's does and accepts the desaturation as the floor's
         # unavoidable cost.
+        # DECONVOLVE against the measured blur, so what LANDS is the cut rather
+        # than a smeared version of it. Solve
+        #     0.277*I[k-1] + 0.446*I[k] + 0.277*I[k+1] = desired[k]
+        # for I. Edge rows assume the value repeats outside the window, which
+        # is what the clamp-extend below produces anyway.
+        n = drawn.shape[0]
+        A = np.zeros((n, n))
+        for k in range(n):
+            A[k, k] = PSF[1]
+            if k > 0:
+                A[k, k - 1] = PSF[0]
+            else:
+                A[k, k] += PSF[0]
+            if k < n - 1:
+                A[k, k + 1] = PSF[2]
+            else:
+                A[k, k] += PSF[2]
+        inv = np.linalg.inv(A)
+        flat = drawn.reshape(n, -1)
+        drawn = np.clip(inv @ flat, 0, 255).reshape(drawn.shape)
+
         # Restore the LUMINANCE variation the floor destroys.
         #
         # Pre-compensation already inverts the transfer, but two of three

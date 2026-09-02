@@ -481,17 +481,36 @@ measured as neutral or worse — do not repeat them: three sampling phases (0 be
 at 470, +1 gave 595, -1 gave 492), a vertical pre-sharpen (538), atlas scale 4
 vs 2 (2 is better: 1:1 vertically), removing either rail copy.
 
-The untried fix is deconvolution: measure the blur's point-spread function with
-an impulse, invert it, and pre-compensate the cut. Start at `graft_fills` in
-`tools/souls-extract/er_hud_graft.py`.
+**DECONVOLUTION WAS TRIED AND IS NOT THE ANSWER — but it produced the single
+most useful measurement of the session.** An impulse (band flat at red 60, one
+row 255) rendered in game gives a clean symmetric 3-tap point-spread function:
 
-**ONE ATTEMPT MADE, FAILED ON A TRIVIAL MISTAKE — the method is still worth
-trying.** I built an impulse (drawn window flat grey 40, one row at 255) to
-measure the PSF, but flat grey means the HP bar is no longer red-dominant, so
-`wait_probe hud` never fires and the run dies with "never reached the in-game
-HUD". The numbers I read were a stale frame. **Redo it with a RED impulse** -
-keep the band red-dominant, e.g. base (60,10,8) with the impulse row (255,40,32)
-- so the probe still passes, then read the spread around the peak.
+    offset -1  0.277
+    offset  0  0.446
+    offset +1  0.277
+
+That blur is real and is now inverted in `graft_fills` (tridiagonal solve,
+kept — it improved the total slightly, 470 -> 453). **It did NOT fix the rail**,
+and that is the finding: if the rail were merely blurred, inverting the blur
+would have restored it. Rows +20 and +22 did not move at all (deltas 147 and 73
+before and after).
+
+**So the rail is a ROW-MAPPING problem, not a blur problem.** Our +21 (83) and
++23 (143) match ER's 85 and 144 almost exactly, while +20 and +22 are far too
+dark — i.e. only two of ER's four rail rows are landing. The next thing to
+establish is where the other two go: paint the cut's last six rows in six
+DISTINCT colours, run once, and read which screen row shows which. That
+identifies the mapping directly instead of inferring it, the same way the
+fill-vs-backdrop ownership question was finally settled.
+
+Do NOT re-try, all measured as neutral or worse: sampling phases 0/+1/-1
+(470/595/492), vertical pre-sharpen (538), atlas scale 4 (minifies and destroys
+vertical detail — scale 2 is correct), removing either rail copy, boosting the
+rail's tick amplitude.
+
+Also do not repeat the trap that cost a run: any test pattern in the HP band
+must stay RED-DOMINANT or `wait_probe hud` never fires and the run dies having
+measured a stale frame.
 
 Rebuild and check with:
 ```bash
