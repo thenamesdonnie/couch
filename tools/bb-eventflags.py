@@ -20,6 +20,8 @@ executable). Only the slots below are pinned, by diffing real saves.
 Usage:
   bb-eventflags.py <save> --slot 50 --sub 857        # one flag, positional
   bb-eventflags.py <save> --mod-settings             # the Enhanced settings
+  bb-eventflags.py <save> --flag 12100972 --set 1    # WRITE a flag (backs the
+                                                     # file up first; game closed)
 """
 import argparse
 import struct
@@ -64,6 +66,25 @@ def read_flag_at(save: bytes, slot: int, sub: int) -> bool:
     return bool(save[byte] & (0x80 >> (sub & 7)))
 
 
+def locate(save: bytes, slot: int, sub: int) -> tuple[int, int]:
+    base = block_base(save)
+    return base + slot * GROUP_STRIDE + (sub >> 3), 0x80 >> (sub & 7)
+
+
+def write_flag_at(path: str, slot: int, sub: int, value: bool) -> None:
+    """Flip one bit in the save file, in place, after copying it aside.
+    Run with the game CLOSED: shadPS4 rewrites the file on its own schedule."""
+    import shutil, time
+    data = bytearray(open(path, "rb").read())
+    byte, mask = locate(bytes(data), slot, sub)
+    before = bool(data[byte] & mask)
+    bak = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}-flag{slot}-{sub}"
+    shutil.copy2(path, bak)
+    data[byte] = (data[byte] | mask) if value else (data[byte] & ~mask & 0xFF)
+    open(path, "wb").write(data)
+    print(f"slot {slot} sub {sub}: {before} -> {value}  (backup {bak})")
+
+
 def read_flag(save: bytes, flag_id: int) -> bool:
     group, sub = divmod(flag_id, 1000)
     if group not in GROUP_SLOTS:
@@ -78,12 +99,26 @@ def main() -> None:
     ap.add_argument("--sub", type=int)
     ap.add_argument("--flag", type=int)
     ap.add_argument("--mod-settings", action="store_true")
+    ap.add_argument("--set", type=int, choices=(0, 1),
+                    help="write the flag (needs --flag or --slot/--sub)")
     a = ap.parse_args()
 
     save = open(a.save, "rb").read()
     if len(save) != SAVE_SIZE:
         sys.exit(f"unexpected save size {len(save)} (want {SAVE_SIZE})")
 
+    if a.set is not None:
+        if a.flag is not None:
+            group, sub = divmod(a.flag, 1000)
+            if group not in GROUP_SLOTS:
+                sys.exit(f"flag {a.flag}: group {group} has no known slot; use --slot")
+            slot = GROUP_SLOTS[group]
+        elif a.slot is not None and a.sub is not None:
+            slot, sub = a.slot, a.sub
+        else:
+            ap.error("--set needs --flag or both --slot and --sub")
+        write_flag_at(a.save, slot, sub, bool(a.set))
+        return
     if a.mod_settings:
         print(f"Bloodborne Enhanced settings live in {a.save} (group 12100, slot 50):")
         for sub, name in MOD_SETTINGS:

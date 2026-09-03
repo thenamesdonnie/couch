@@ -50,6 +50,12 @@ Usage:
   bb-cheat live on "Infinite Health"    toggle in the running game, now
   bb-cheat live off "Infinite Health"
   bb-cheat live status                  what is actually live in memory
+  bb-cheat add <mod.json>               install our own mod definition (a
+                                        {"name","memory":[{offset,on,off}]}
+                                        object, "standalone": true for plain
+                                        byte patches) into the cheat JSON,
+                                        replacing any entry of the same name;
+                                        the JSON is backed up first
 
 Our blocks are tagged with a Name prefix so they can be added and removed
 idempotently without ever touching the 59 upstream patch blocks in the file.
@@ -378,6 +384,45 @@ def cmd_live(cheats: dict, args: list[str]) -> None:
     print(f"live {action}: {', '.join(wanted)} - takes effect immediately")
 
 
+def cmd_add(cheats: dict, path: str) -> None:
+    """Merge one of OUR mod definitions into the official cheat JSON.
+
+    This is the only sanctioned way our own byte patches get into
+    <userdir>/cheats/: the file is backed up with a timestamp first, entries
+    are validated (hex pairs, "on" and "off" the same length, offsets inside
+    the eboot's mapped range), and an existing entry of the same name is
+    replaced so re-running after a rebuild is idempotent.
+    """
+    src = Path(path)
+    if not src.exists():
+        die(f"no such file {src}")
+    mod = json.loads(src.read_text())
+    name = mod.get("name")
+    if not name or not isinstance(mod.get("memory"), list) or not mod["memory"]:
+        die("mod file needs a name and a non-empty memory list")
+    for e in mod["memory"]:
+        off = int(e["offset"], 16)
+        if not 0 <= off < 0x56d30f4:
+            die(f"offset {e['offset']} is outside the eboot")
+        for k in ("on", "off"):
+            v = e.get(k, "")
+            if not v or len(v) % 2 or v.lower().startswith("0x") \
+                    or any(c not in "0123456789abcdefABCDEF" for c in v):
+                die(f"entry {e['offset']}: {k!r} must be plain hex pairs")
+        if len(e["on"]) != len(e["off"]):
+            die(f"entry {e['offset']}: on/off lengths differ")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    bak = CHEAT_JSON.with_name(CHEAT_JSON.name + f".bak-{stamp}-add")
+    shutil.copy2(CHEAT_JSON, bak)
+    cheats["mods"] = [m for m in cheats["mods"] if m.get("name") != name]
+    cheats["mods"].append(mod)
+    CHEAT_JSON.write_text(json.dumps(cheats, indent=1) + "\n")
+    print(f"added: {name} ({len(mod['memory'])} entries"
+          f"{', standalone' if mod.get('standalone') else ''})")
+    print(f"backup: {bak.name}")
+    print(f"enable with: bb-cheat on \"{name}\"")
+
+
 def cmd_json(cheats: dict, root: ET.Element) -> None:
     """Machine-readable state, for the phone remote's Games tab.
 
@@ -417,6 +462,10 @@ def main() -> None:
 
     if cmd == "json":
         cmd_json(cheats, root)
+    elif cmd == "add":
+        if len(args) != 1:
+            die("add needs exactly one mod JSON file")
+        cmd_add(cheats, args[0])
     elif cmd == "live":
         cmd_live(cheats, args)
     elif cmd == "list":
@@ -430,7 +479,7 @@ def main() -> None:
     elif cmd == "off":
         cmd_off(tree, root, args)
     else:
-        die(f"unknown command {cmd!r}. Try list, status, on, off.")
+        die(f"unknown command {cmd!r}. Try list, status, on, off, add.")
 
 
 if __name__ == "__main__":

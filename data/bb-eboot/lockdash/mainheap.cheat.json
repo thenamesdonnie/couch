@@ -1,0 +1,13 @@
+{
+ "name": "MAIN heap 1024 MiB",
+ "type": "checkbox",
+ "standalone": true,
+ "note": "3 Sep 2026: grow the SPRJ MAIN heap (profile row 1, table at 0x4736d40 + row*0x80; entry 0) from 0x20c00000 (524 MiB) to 0x40000000 (1024 MiB). Talk ESDs (EsdResCap) allocate from MAIN via the global at 0x5540408, so this tests whether the Enhanced mod's 12-18x larger talk scripts fail to allocate silently. Direct memory budget: 4608 + extra_dmem 4096 MiB; the other heaps sum to ~7404 MiB, so 1024 fits.",
+ "memory": [
+  {
+   "offset": "4736DC0",
+   "on": "00000040",
+   "off": "0000C020"
+  }
+ ]
+}

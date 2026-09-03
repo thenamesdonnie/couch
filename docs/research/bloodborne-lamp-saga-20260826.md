@@ -167,3 +167,89 @@ an account): on mod 19's Files tab, (a) is there an Optional Files section with
 anything in it, and (b) **is there a release newer than 0.11.2-fix9?** Ours was
 downloaded 23 Aug 2026. A newer build that fixes this would be far cheaper than
 the ESD surgery described above.
+
+## 3 Sep 2026: the talk scripts decoded, the engine side read, two one-launch tests ready
+
+Tooling: soulstruct (pip, in `~/src/bb-havok/.venv`) parses Bloodborne talk
+ESDs once you define `TalkESD(ESD)` with `VERSION=2, LONG_VARINTS=True,
+ESD_TYPE=TALK` yourself (the package's bloodborne init is broken by a missing
+data file) and patch one typo in `base/ezstate/esd/condition.py` (a stray
+`len()` around `subcondition_pointers_count`; done in the venv). Decoded
+dumps of stock and mod `t241000.esd` (Central Yharnam lamp) are what the
+rest of this section reads from.
+
+**What the mod's lamp flow does (SM -3 "Beacon warp chair", SM -5 non-multi).**
+Stock: lit lamp -> wait for `CheckActionButtonArea(6101)` (the Travel prompt)
+-> lamp menu. Mod: lit lamp -> `ClearPlayerDamageInfo(); SetTalkTime(0.33)`
+immediately -> `if GetFlagState(12100972)` (Lamp Menu DISABLED) -> stock
+prompt 6101, else -> wait for `CheckActionButtonArea(6103)` ("Glimpse into
+the Hunter's Dream", the mod's own ActionButtonParam) -> the enhanced lamp
+menu (SM 2147483587). Our save: 12100872 (Enabled) = 1, 12100972 = 0, so
+the mod's flow parks on the 6103 prompt. Unlit lamps use 6100 unchanged.
+
+**Refuted tonight, with evidence, do not re-walk:**
+* "ActionButtonParam 6103 is missing": it is in the live gameparam (238 rows;
+  live = mod params + our durability edit), identical geometry to 6101.
+* "6103 is unreachable because the mod appended rows unsorted": true that
+  30 of 65 mod params have unsorted id tables, but 17 STOCK params do too
+  (SpEffectParam has live row 1090 after 1170), so the engine does not need
+  sorted rows.
+* "The loader rejects the mod's ESD header": FUN_023793a0 (EzState v2.25.0
+  fsSL loader) checks only magic and two version ranges; stock and mod
+  headers are identical. It then allocates the script twice and returns
+  NULL silently if either allocation fails: that is the only silent
+  failure path in the loader.
+
+**Engine memory map (SprjMemory, profile row 1 of the table at
+0x4736d40 + row*0x80, names from PTR_u_MAIN_05358cc0):** MAIN 524 MiB
+(global 0x5540408), GFX 276, GFX_SystemShared 152 (0x5540468),
+GFX_GraphicsPrivate 2287 (-> 3952 with the resolution patch, entry at
+0x4736dd8), GFX_GraphicsPrivateB 886 (-> 2560, 0x4736de0), INGAME 10
+(0x5540420), TEMP 6 (0x5540428), CORERES 0, NETWORK 14, HAVOK 296
+(0x5540450), SCALEFORM 5+8, MO 9, POOL 5. The last session mapped exactly
+these. **Talk ESDs are allocated from MAIN** (EsdResCap, FUN_01ee4fc0, uses
+0x5540408). The mod's talk bundles are 1.6x-29x the stock size per map
+(m24_01: 563 KB -> 1.43 MB; m21_00: 657 KB -> 1.07 MB).
+
+**Two tests, one launch each, Donnie at the TV (game CLOSED between):**
+A. MAIN heap: `tools/bb-cheat on "MAIN heap 1024 MiB"` (standalone entry,
+   0x4736dc0: 0x20c00000 -> 0x40000000; fits the 4608+4096 MiB dmem budget)
+   with script/ installed
+   (`BB_BISECT_STAGE="/home/ds2000/fileshare/bloodborne-mods/enhanced-stage/bb_enhanced_0.11.2-fix9/GAME FILES/dvdroot_ps4" tools/bb-bisect install script`).
+   Prompt on a lit lamp = MAIN was the choke point (keep both on).
+B. Lamp Menu Disabled: `tools/bb-eventflags.py <userdata0000> --flag 12100972 --set 1`
+   and `--flag 12100872 --set 0` (new --set writer, backs the file up), same
+   script/ install. Prompt returns (the stock Travel prompt) = the ESD loads
+   and the fault is inside the enhanced 6103 branch; still nothing = the
+   ESD itself never runs.
+Revert levers: `tools/bb-script-revert`, `tools/bb-cheat off "MAIN heap 1024 MiB"`,
+`--set` back to 12100872=1 / 12100972=0 (or restore the .bak the tool made).
+
+### ROOT CAUSE (3 Sep ~01:00): the 1.09 patch folder shadows four mod files
+
+Test A (MAIN heap 1024 MiB) changed nothing; test B (Lamp Menu Disabled)
+brought the stock Travel prompt back. So the mod's ESD loads and runs, and
+the only thing that fails is `CheckActionButtonArea(6103)`. Then the
+decisive fact: **shadPS4 overlays `CUSA00900-patch/dvdroot_ps4` over the base
+dump file by file** (`src/core/file_sys/fs.cpp`, `probe_overlay("-patch")`),
+and the patch folder carries its own `param/gameparam/gameparam.parambnd.dcx`
+(retail 1.09: ActionButtonParam 234 rows, no 6103). Every mod was installed
+into the BASE dump, so that gameparam, `event/m29.emevd.dcx`,
+`msg/enggb/item.msgbnd.dcx` and `msg/engus/item.msgbnd.dcx` (the only four
+mod paths that also exist in the patch folder) have NEVER been loaded. That
+is also why "Infinite Durability" looked broken (the mod's params were never
+live) and why our 9999-durability edit of the base gameparam could not have
+worked either. Row-set comparison shows the mod's gameparam derives from the
+1.00 base (it lacks the 12 Bullet rows etc. that 1.09 added), i.e. the mod
+as shipped replaces the 1.09 gameparam outright; users with merged dumps get
+exactly that. **Fix: `tools/bb-patchdir-fix install`** copies the four base
+files (mod + durability edit) into the patch folder with sha256 backups
+under `~/games/ps4/bloodborne/mod-backups/patchdir-shadow-fix/`; `revert`
+restores. Installed 01:08 with `script/` MODDED and the Lamp Menu flags back
+to Enabled; the MAIN-heap cheat is off. NEXT LAUNCH is the verdict: a lit lamp
+should offer "Glimpse into the Hunter's Dream", the Doll should have
+"Enhanced Features", and Quick Warp to Bosses should finally exist.
+Lesson for every future mod: check `ls CUSA00900-patch/dvdroot_ps4/<path>`
+for each installed file, or install shadowed paths into the patch folder.
+
+**VERIFIED 3 Sep ~01:20 (Donnie: "ayyy it works").** The mod's lamp menu, Doll settings menu and dialogue are live for the first time since the mod went in on 23 Aug. The saga is closed.

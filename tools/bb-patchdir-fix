@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# bb-patchdir-fix install|revert|status
+#
+# WHY (3 Sep 2026, the lamp/dialogue saga's real cause): shadPS4 overlays the
+# 1.09 patch folder (CUSA00900-patch/dvdroot_ps4) OVER the base dump, file by
+# file (src/core/file_sys/fs.cpp: probe_overlay "-UPDATE"/"-patch"). Mods are
+# installed into the BASE dump, so any mod file whose path also exists in the
+# patch folder is never loaded. Exactly four Bloodborne Enhanced files are
+# shadowed that way, the gameparam among them, which is why ActionButtonParam
+# 6103 (the mod's lamp prompt) "existed" on disk but never in the game, and
+# why the lamps died with the mod's talk scripts installed.
+#
+# This copies those four files from the base dump (where the mod, plus our
+# 9999-durability edit, already live) into the patch folder, backing the
+# patch originals up once with sha256 fingerprints. revert puts them back.
+set -euo pipefail
+BASE="$HOME/games/ps4/CUSA00900/dvdroot_ps4"
+PATCH="$HOME/games/ps4/CUSA00900-patch/dvdroot_ps4"
+BK="$HOME/games/ps4/bloodborne/mod-backups/patchdir-shadow-fix"
+FILES=(param/gameparam/gameparam.parambnd.dcx event/m29.emevd.dcx msg/enggb/item.msgbnd.dcx msg/engus/item.msgbnd.dcx)
+sha() { sha256sum "$1" | cut -c1-16; }
+case "${1:-status}" in
+  status)
+    for f in "${FILES[@]}"; do
+      b=$(sha "$BASE/$f"); p=$(sha "$PATCH/$f")
+      if [ "$b" = "$p" ]; then echo "SAME     $f"; else echo "SHADOWED $f (base $b, patch $p)"; fi
+    done ;;
+  install)
+    mkdir -p "$BK"
+    for f in "${FILES[@]}"; do
+      [ -f "$BASE/$f" ] || { echo "missing in base: $f"; exit 1; }
+      if [ ! -f "$BK/$f" ]; then mkdir -p "$BK/$(dirname "$f")"; cp -p "$PATCH/$f" "$BK/$f"; echo "$(sha "$PATCH/$f")  $f" >> "$BK/ORIGINAL.sha256"; fi
+      cp -p "$BASE/$f" "$PATCH/$f"; echo "installed $f ($(sha "$PATCH/$f"))"
+    done ;;
+  revert)
+    for f in "${FILES[@]}"; do
+      [ -f "$BK/$f" ] || { echo "no backup for $f"; exit 1; }
+      cp -p "$BK/$f" "$PATCH/$f"; echo "restored $f ($(sha "$PATCH/$f"))"
+    done ;;
+  *) echo "usage: bb-patchdir-fix install|revert|status"; exit 1 ;;
+esac

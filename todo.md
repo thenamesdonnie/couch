@@ -404,7 +404,7 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (2 Sep 2026 ~23:00 — DS3 HUD is LIVE on the real game; Bloodborne lock-on sprint half done)
+## ▶ Resume here (3 Sep 2026 ~00:00 — DS3 HUD: bars + rune counter + equipment cross all ER-matched and LIVE; Bloodborne lock-on sprint DONE, v7 verified at the TV)
 
 ### ▶▶ DONNIE'S TO-DO
 1. **DS3 must be set to Play Offline** (System > Network > Launch Setting) before
@@ -418,31 +418,149 @@ Steam launch options = `tools/ds3-modded-launch %command%` (ModEngine2 kept in
 `data/ds3-mod`, mod dir symlinked to the sandbox's, real save). Bars, rail and
 cap are ER's texels 1:1 at native 4K (row sums 9/10/11); the cap is drawn by
 the HUD movie (`er_fe_gfx.py --cap-over-fill --shift-bars 16`); the vkBasalt
-pass is inert and its launch option removed. NEW and unverified: the depleted
-trough synthesised from ER's translucent profile (RECIPE, "The trough").
-Remaining small items: the two brown rows above each bar (per-bar rim needs
-the fill's UV extended one row in the gfx), gamma 0.87 -> 0.8795.
+pass is inert and its launch option removed. Unverified: the depleted trough
+synthesised from ER's translucent profile (RECIPE, "The trough").
+
+**2 Sep night, two more elements mapped, both measured against ER at 4K
+(RECIPE "The souls counter and the equipment slots"):**
+* **Rune counter** (bottom-right): `er_soul_counter.py` (texture, MENU_PlayerHUD
+  at 2x) + `er_soul_gfx.py` (movie `01_001_fe_soul.gfx`, which is NOT part of
+  `01_000_fe.gfx`). Brackets 3342..3741 x 2032..2104 vs ER 3341..3742 x
+  2032..2106; digits 3693..3712 x 2058..2087 vs ER ..3712 x 2058..2087; field
+  over rock 39/39/43 vs the ER model 37.5/37.5/40.6. Done.
+* **Equipment cross** (bottom-left): `er_fe_gfx.py --er-slots` (whole
+  `ItemPanel` at 0.75 in ER's layout, label/count sizes and colour) +
+  `er_slot_panel.py` (MENU_ItemPanel_02 at 3x: ER's translucent field and
+  gold rules painted into the panel quad, rails blanked). Every rule line
+  lands on ER's row: spell 1607/1810, weapons 1715/1918, flask 1827/2032 (ER
+  ..2030); label top 2058 = ER. Field 16/17/15 vs model 15.2/17.7/16.8.
+  The flask COUNT digit sits in ER's corner (right edge 456 = ER's, bottom on the rule, run 9)
+  but is drawn UNDER the engine's icon, so it reads dim where the Estus glow
+  covers it. DEAD END, do not retry: the icon's size is engine-owned (neither
+  the `ItemIcon` placement nor its `IconImage` child changes the drawn icon,
+  runs 6-7), so DS3's art keeps filling the slot where ER's sits at ~80%.
+* **Scaleform textures are PREMULTIPLIED** (run 3 proved it); every
+  translucent texel now goes through `premultiply()`. Older scripts wrote
+  straight alpha where RGB is near black, harmless.
+* `fe_tree.py` reads any movie's render tree; `menu_gfx_extract.py` pulls a
+  movie out of the archives. Guess nothing, read the movie.
+
+**3 Sep ~01:05, INTEGRATED AND DEPLOYED** (`01_common_final.tpf.dcx` +
+`01_000_fe_final.gfx` + `01_001_fe_soul_er.gfx`, one capture, every number
+held): three subagents added, in parallel under a flock on the sandbox:
+* **rim rows** (`--fill-rim` grows the three fill quads one stage px upward
+  so each bar carries its own two rim rows; `graft_rims` + `hud_rim.py`):
+  six rim rows sum dE 132 -> 9.5, and the gamma 0.87 -> 0.8795 move took the
+  24-row sums to HP 8 / FP 7 / ST 8 (were 9/10/11).
+* **small preview slots** (`small_slot_rgba`, four placements in
+  `--er-slots`, ER draws TWO previews per slot, front 78x98 + rear 0.84):
+  verified offline and no regression on screen; the previews themselves
+  cannot show with the one-item harness character, YOUR character will.
+* **area-name card** (`er_mapname.py` + `--er-mapname`; ER has NO band,
+  just white serif + one tapered bone rule): baseline, cap height, rule
+  centre and colour on ER's numbers via a forced instance; the game's own
+  fade timing is untested (DS3 does not raise the card on Continue).
+* Alpha convention is PER ELEMENT: the rim and map-name quads blend STRAIGHT
+  alpha, the souls panel (under an alphaMult cxform) premultiplied. Measure.
+* Traps: ds3-shot's teardown pkills any shell whose cmdline matches
+  `ds3-shot/game` AND killed the main session's background waiters; put
+  deploy+capture+copy in a script FILE under `flock` (scratchpad
+  `final_capture.sh` is the template). Subagents never received their
+  capture-completion events; poll the log instead.
+
+**3 Sep ~01:20: MENUS started.** Survey + phased plan in
+`docs/research/ds3-er-menus-survey-20260903.md` (movie map of all 22 menu
+movies via fe_tree, texture ownership, ER art). Finding: Equipment/Inventory
+share ER's three-column skeleton, so it is a reskin; only the pause menu is
+a relayout. Four agents launched in parallel with disjoint file ownership:
+A wash (panel textures -> `er_menu_wash.py`), B cells/highlight/rules/tabs
+(`er_menu_cells.py`), C typography (movies 02_010/011/020/070 ->
+`er_menu_gfx.py`), D pause menu (`02_000_ingametop` + MENU_Top ->
+`er_pause_menu.py`/`er_pause_gfx.py`, adds DS3SHOT_PAUSE=1 to the harness).
+Each verifies with the full `ds3-shot inventory` journey under
+`data/ds3-shot/agent.lock` and restores the baseline after. 4K DS3 menu
+captures kept at er-reference/ds3_equipment_4k.png and ds3_inventory_4k.png.
+Integration = chain the two texture scripts after er_mapname, deploy the
+per-screen movies, one full-journey capture.
+
+Written but NOT deployed (unverifiable in the harness, needs a lock-on on
+the TV): `er_lockon.py`, ER's soft blue lock-on dot (RECIPE "The lock-on
+marker"). Next candidates: the covenant badge SHAPE (ours is DS3's cracked
+stone darkened; ER's is a flat dark rounded octagon with a filigree border),
+the "+N" souls gain text (no ER reference frame yet), the status-effect row.
+
+Still open, smaller: the two brown rows above each bar (per-bar rim needs the
+fill's UV extended one row in the gfx), gamma 0.87 -> 0.8795, the "+N" souls
+gain text (`GetSoul`, still 34 px above the panel; ER shows it inside), the
+red durability bars under the weapon slots (ER has none; kept for the info),
+the small next-item previews (field only, no rules yet). Bigger candidates
+left on the HUD: status-effect icon row under the bars (ER only; DS3 has no
+equivalent), boss bar, lock-on reticle, "YOU DIED" and area-name cards, the
+compass (ER only, would need new art and script).
 
 ### ▶▶ Bloodborne: lock-on sprint (memory: bloodborne-lockon-sprint)
 SOLVED: the trigger. `tools/bb-lockon-sprint install lockspint` (installed):
 circle-held sprint fires in every direction while locked on. Seven
 MoveDirection gates in c0000.hks, 21 bytes; the behaviour graph has no
 conditions at all; the engine reports the sprint off-axis.
-NOT SOLVED: direction. The dash goes at the enemy (forward-only dash clips +
-engine-locked facing). Bundle installed: DIRDASH5 (harmless: sideways = normal
-strafe). Dead ends, do not retry: cloned hkbClipGenerators never load an
-animation (any name); the script has no facing control; eboot flags
-0x555428c (latch control-forward) and 0x5128330 (old lock control) load and
-change nothing. bb-cheat's "master" hook now CRASHES at world load (so the
-official cheats will too); flags are marked standalone and skip it.
-NEXT: install ghidra under ~/src (Java 21 present, no sudo) and patch the
-locomotion controller's facing rule (data/bb-eboot/FINDINGS.md has the
-struct offsets and consumer addresses). Fallback: v7-style fast strafe with
-the DashStart end-event fix and TAE stamina events on new anim ids.
-Also open: Enhanced Bloodborne dialogue problem (Donnie), and the QoL list
+DIRECTION: **v1 verified for the sprint 3 Sep ~00:10 ("works perfectly"),
+then Donnie found a plain locked-on JOG also turned the body (attacks miss).
+Cause: the engine's move state 1 is RUN, not sprint. v2 (circle-hold timer INP+0xd0 > the 0.4 s dash
+window at 0x5127b48, move state kept as a moving guard) VERIFIED: jog strafes,
+sprint turns. v3 (turn-anim picker hooks) STILL SKIDDED: the skid is
+the script's Act_Turn firing W_Turn_Dash off TurnAngle, which the rotation
+controller's unlocked path publishes, and v3 left a one-frame gap where the
+input asked for a 180 turn while the controller was still unlocked. v4
+(a/b following ROT bit 3) STOPPED THE TURNING: the flag-copy hook never
+runs for the player, so the player always rotated in the locked path. v5
+(zeroing the quantised turn angle) STILL SKIDDED: the script's TurnAngle is
+published by FUN_01a18bf0 as INP+0x24 * 57.3 (raw desired yaw). v6
+(TurnAngle zeroed) STILL skidded. Donnie's test: no skid when the stick
+stays pushed on release, skid only when everything is released = the 1.0 s
+DashEnd slide rotating with the snap-back, not a turn anim at all. v7
+(a facing-hold timer at scratch 0x56d3f00 keeps the stick facing for the
+1.0 s slide after a sprint ends with the stick released, a stick push
+cancels it; TurnAngle = 0 whenever locked) VERIFIED ~03:15: "that works
+perfectly". FEATURE COMPLETE. Keep script LOCKSPRINT + bundle DIRDASH5 +
+cheat ON together; revert lever `tools/bb-cheat off`. Not committed yet:
+tools/bb-cheat (new `add`), data/bb-eboot/{lockdash/,mkelf.py,FINDINGS.md}.**
+`bb-cheat on "Lock-on sprint faces the stick"` is enabled (standalone, no
+master hook). Ghidra (~/src/ghidra_12.1.3_PUBLIC, project ~/src/bb-ghidra)
+found that "locked-on facing" is ChrIns+0x245 (= NOT locked) read at three
+sites of the movement chain: the input update's top branch (0x15267b3), the
+additional-turn helper (0x152b020) and the rotation-controller flag copy
+(0x152b40d). Three caves at 0x50db000/40/80 make all three read "unlocked"
+while dashing (LOCO+0x138|2 == 3). Camera lock untouched. Full write-up:
+data/bb-eboot/FINDINGS.md section "3 Sep"; source data/bb-eboot/lockdash/.
+Keep all three layers installed: script LOCKSPRINT, bundle DIRDASH5 (selects
+the forward clip once MoveDirection is 0), cheat ON. Revert lever
+`tools/bb-cheat off`. Not committed yet: tools/bb-cheat (new `add`),
+data/bb-eboot/{lockdash/,mkelf.py,FINDINGS.md}.
+Dead ends, do not retry: cloned hkbClipGenerators never load an animation
+(any name); the script has no facing control; eboot flags 0x555428c and
+0x5128330 load and change nothing. bb-cheat's "master" hook CRASHES at world
+load (so the official cheats will too); ours are standalone and skip it.
+### ▶▶ Bloodborne: Enhanced mod dialogue / lamp problem: SOLVED AND VERIFIED (3 Sep ~01:20)
+Test A (bigger MAIN heap) did nothing, test B (Lamp Menu Disabled) brought
+the stock prompt back, so only the mod's own action button 6103 failed. Cause:
+**shadPS4 overlays the 1.09 patch folder over the base dump**, and four mod
+files have twins there (gameparam, event/m29.emevd, msg enggb+engus item),
+so the mod's params were NEVER loaded (no row 6103, no mod durability, and
+our 9999 edit never live either). `tools/bb-patchdir-fix install` (done,
+sha256 backups, `revert` exists) put the base copies into the patch folder;
+script/ is MODDED, Lamp Menu flags back to Enabled, MAIN-heap cheat off.
+VERIFIED at the TV ("ayyy it works"): lamp menu, Doll menu and dialogue are
+live. Levers if ever needed: `tools/bb-patchdir-fix revert` + `tools/bb-script-revert`.
+Not committed: tools/bb-patchdir-fix, bb-eventflags.py --set, bb-cheat add, lockdash/. Caveat inherent to
+the mod: its gameparam derives from 1.00 (12 Bullet rows etc. from 1.09 are
+absent), same as every merged-dump user of the mod. Lesson: any mod file
+whose path exists under CUSA00900-patch/dvdroot_ps4 is silently ignored.
+Also open: the QoL list
 (docs/research/bloodborne-qol-port-candidates-20260902.md): FOV, lock-on
 range, camera distance, logo skip, boss-lamp respawn setting.
-Tools: bb-lockon-sprint (script variants), bb-anibnd-swap (bundle), bb-cheat,
+Tools: bb-lockon-sprint (script variants), bb-anibnd-swap (bundle), bb-cheat
+(now with `add <mod.json>`), ~/src/bb-ghidra (gq/dec helpers, dec-range-*.txt
+decompiles), data/bb-eboot/mkelf.py (SELF -> plain ELF for Ghidra),
 ~/src/bb-havok (append_hkx.py, build_v7.py), ~/src/hksc (patched, big endian),
 data/bb-hks/ref/ (Enhanced Controls + Jump on L3 = full Lua SOURCE of c0000.hks).
 Traps: pgrep patterns match your own shell (exit 144 everywhere today); ds3-shot
