@@ -1,0 +1,82 @@
+#!/home/ds2000/couch/data/ds3-ui-port/.venv/bin/python
+"""Turn two ds3-menuflag-scan context dumps into a heap byte signature.
+
+Heap addresses and pointers change per launch, so a flag is identified by
+the bytes AROUND it that do not: for every pair of flags (one per run) the
+128 neighbouring bytes are compared with pointer-like qwords masked, and the
+best pair becomes an AOB pattern with wildcards, plus the flag's offset in
+it. tools/ds3-menu-watch then finds the object by scanning the heap for the
+pattern's longest fixed run and verifying the rest.
+
+    ds3-menuflag-sig ctx_A.json ctx_B.json [--write]   # --write updates menuflag.json
+"""
+import json
+import sys
+from pathlib import Path
+
+CFG = Path.home() / "couch/data/ds3-shot/menuflag.json"
+
+
+def pointer_mask(ctx: bytes, exe_base: int) -> list[bool]:
+    """True where a byte belongs to a qword that looks like a pointer."""
+    m = [False] * len(ctx)
+    for off in range(0, len(ctx) - 7):
+        q = int.from_bytes(ctx[off:off + 8], "little")
+        if 0x10000 < q < (1 << 47):
+            for k in range(off, off + 8):
+                m[k] = True
+    return m
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    A, B = (json.loads(Path(a).read_text()) for a in args[:2])
+    best = []
+    for fa in A["flags"]:
+        ca = bytes.fromhex(fa["ctx"])
+        ma = pointer_mask(ca, A["exe_base"])
+        for fb in B["flags"]:
+            if (fa["closed"], fa["open"]) != (fb["closed"], fb["open"]):
+                continue
+            cb = bytes.fromhex(fb["ctx"])
+            mb = pointer_mask(cb, B["exe_base"])
+            fixed = [i for i in range(len(ca)) if not ma[i] and not mb[i] and ca[i] == cb[i] and i != 64]
+            nonzero = sum(1 for i in fixed if ca[i] != 0)
+            best.append((len(fixed), nonzero, fa, fb, fixed))
+    best.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    for n, nz, fa, fb, fixed in best[:8]:
+        print(f"match {n}/159 fixed bytes ({nz} non-zero)  A {fa['addr']:#x}  B {fb['addr']:#x}  closed={fa['closed']} open={fa['open']}")
+    if not best:
+        sys.exit("no matches")
+    n, nz, fa, fb, fixed = best[0]
+    ca = bytes.fromhex(fa["ctx"])
+    pattern = ["??"] * len(ca)
+    for i in fixed:
+        pattern[i] = f"{ca[i]:02x}"
+    # the longest fixed run, used as the scan anchor
+    runs, cur = [], []
+    for i in range(len(ca)):
+        if pattern[i] != "??":
+            cur.append(i)
+        else:
+            if len(cur) > len(runs):
+                runs = cur
+            cur = []
+    if len(cur) > len(runs):
+        runs = cur
+    anchor = "".join(pattern[i] for i in runs)
+    print(f"anchor: {len(runs)} bytes at offset {runs[0]}: {anchor}")
+    sig = {"pattern": " ".join(pattern), "flag_offset": 64, "anchor_offset": runs[0], "anchor": anchor,
+           "open": fa["open"], "closed": fa["closed"]}
+    print(json.dumps(sig)[:400])
+    if "--write" in sys.argv:
+        cfg = json.loads(CFG.read_text()) if CFG.exists() else {}
+        cfg.update(sig)
+        for k in ("static", "d1", "d2", "vtable", "delta"):
+            cfg.pop(k, None)
+        CFG.write_text(json.dumps(cfg, indent=1))
+        print(f"wrote {CFG}")
+
+
+if __name__ == "__main__":
+    main()

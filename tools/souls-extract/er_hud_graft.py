@@ -233,6 +233,15 @@ def _source_lum_std(spec: dict) -> float:
     return float((lum - lum.mean(axis=1, keepdims=True)).std())
 
 
+def _source_raw(spec: dict) -> np.ndarray:
+    """The cut's source rows at 4K, untouched (no widening, no resample)."""
+    src = np.asarray(Image.open(REF / spec["file"]).convert("RGB")).astype(float)
+    band = src[spec["rows"][0]:spec["rows"][1], spec["cols"][0]:spec["cols"][1]]
+    if spec.get("retint"):
+        band = retint(band, spec["retint"])
+    return band
+
+
 def _source_band(spec: dict) -> np.ndarray:
     src = np.asarray(Image.open(REF / spec["file"]).convert("RGB")).astype(float)
     band = src[spec["rows"][0]:spec["rows"][1], spec["cols"][0]:spec["cols"][1]]
@@ -372,7 +381,15 @@ def graft_fills(atlas: np.ndarray) -> np.ndarray:
                 srow = sheet[spec["strip"] + k, cols]
                 if spec.get("retint"):
                     srow = retint(srow[None], spec["retint"])[0]
-                target = piece[d0 + k].mean(axis=0)
+                # Pin to the row's mean over the 40..200 window at the bar's
+                # START (the window hud_rows.py measures), not over the whole
+                # mirrored cut: FP's 369-col cut is mirror-tiled to 512 and
+                # its tail near the right end-cap is brighter, which pinned FP
+                # rows +10..+12 one to two units high in R and G (row +11 read
+                # 32,71,90 against ER's 29,69,88 in run 1, dE 1.0). HP and
+                # stamina differ by under a unit either way. 3 Sep 2026.
+                srcband = _source_raw(spec)
+                target = srcband[k, 40:200].mean(axis=0)
                 srow = srow * (target / np.maximum(srow.mean(axis=0), 1e-6))
                 srow = target + (srow - target) * GRAIN_CONTRAST
                 piece[d0 + k] = np.clip(srow, 0, 255)
@@ -388,6 +405,100 @@ def graft_fills(atlas: np.ndarray) -> np.ndarray:
               f"{spec['cols'][1]-spec['cols'][0]} from {tag:36s}"
               f" -> screen {tuple(back.reshape(-1,3).mean(axis=0).round().astype(int))}"
               f"  grain {(lum - lum.mean(axis=1, keepdims=True)).std():.2f}")
+    return atlas
+
+
+# THE TROUGH PROFILE, (screen row rel. fill top) -> (rgb, alpha) in SCREEN
+# units, measured on ER's depleted bars (see build()). Module-level because
+# the rim rows below have to know what the backdrop already draws under them.
+TROUGH = {-4: ((0, 0, 0), 0.03), -3: ((0, 0, 0), 0.06), -2: ((0, 0, 0), 0.23),
+          -1: ((0, 0, 0), 0.42), 0: ((0, 0, 0), 0.45)}
+for _r in range(1, 14):
+    TROUGH[_r] = ((0, 0, 0), 0.48)
+TROUGH.update({14: ((0, 0, 0), 0.50), 15: ((0, 0, 0), 0.52), 16: ((0, 0, 0), 0.53),
+               17: ((0, 0, 0), 0.55), 18: ((0, 0, 0), 0.59), 19: ((50, 39, 30), 0.56),
+               24: ((68, 70, 56), 1.0), 25: ((27, 27, 21), 0.32),
+               26: ((0, 0, 0), 0.13), 27: ((0, 0, 0), 0.10)})
+
+
+# THE RIM ROWS (3 Sep 2026): the two 4K rows directly above each fill.
+#
+# ER draws them as part of the bar: a translucent dark tint at -2 and an
+# OPAQUE per-bar rim at -1. Ours were the shared backdrop's trough rows, one
+# colour for all three bars (the black at 0.23 / 0.42 in TROUGH over the
+# sandbox's dark scene read 24,27,32 / 19,21,25 against ER's 94,42,20 on HP).
+# The fill quad in the movie ends at the fill's top, so the texture could not
+# reach those rows until `er_fe_gfx.py --fill-rim` grew each bar's quad one
+# stage px upward: it now samples base row 33 as well, i.e. scale-2 rows
+# RIM_ROWS of each fill block, drawn 1:1 on screen rows -2 and -1.
+#
+# ER's model, fitted over six reference frames with different scenes behind
+# the bars (hud_rim.py --er, max residual 0.6):
+#     row -1: opaque, identical in every frame
+#     row -2: out = c + k * scene, one k for all channels (it is an alpha)
+# What sits under our rim texel on screen is the backdrop's trough row (black,
+# alpha TROUGH[r]) over the scene. THIS QUAD BLENDS STRAIGHT ALPHA, with the
+# gamma on the RGB (run 1, 3 Sep 2026: written premultiplied, to_atlas(c),
+# every bar's row -2 came back 5-6 dE too dark; fitting the three measured
+# rows, straight alpha predicts FP 17.9,24.8,27.1 / stamina 18.5,23.6,22.9
+# against measured 18,26,28 / 18,24,23, premultiplied predicts 19.9,29.5,31.8
+# / 20.8,28.6,25.3. The souls counter's "premultiplied" finding was made on a
+# placement carrying an alphaMult cxform; this one carries none). So:
+#     out = a * T(rgb) + (1 - a) * (1 - a_trough) * scene
+# and matching ER's k means a = 1 - k / (1 - a_trough), rgb = to_atlas(c / a)
+# (with (1 - a_trough) replaced by the measured TROUGH_UNDER_RIM, see below).
+# The Delay bar's tile is not widened, so nothing else is stacked in between.
+# Grain: the sheet's own rim rows (strip - 2 and strip - 1 for each bar),
+# luminance-relative and at GRAIN_CONTRAST like the fill.
+ER_RIM = {   # screen row -> (c, k)
+    "hp":      {-2: ((40.6, 18.0, 10.1), 0.264), -1: ((94.1, 42.0, 20.3), 0.0)},
+    "stamina": {-2: ((11.4, 19.8, 11.8), 0.423), -1: ((54.5, 72.6, 33.2), 0.0)},
+    "fp":      {-2: ((16.1, 26.8, 26.8), 0.338), -1: ((50.9, 71.7, 63.8), 0.0)},
+}
+RIM_ROWS = (DRAWN_ROWS[0] - 2, DRAWN_ROWS[0])     # scale-2 rows 10..12 of the block
+# What the trough row UNDER the rim actually lets through in our render,
+# measured in run 2 (3 Sep 2026): with a = 1 - k/(1 - 0.23) every bar's row
+# -2 came back brighter than the model by an amount proportional to the
+# scene, and (ours - c) / scene / (1 - a) read 0.97/0.84/0.83 (HP, per
+# channel), 0.82/0.86/0.85 (FP), 0.94/0.98/0.92 (stamina): median 0.86,
+# mean 0.89, against the 0.77 that TROUGH[-2] = 0.23 implies. Whether that is
+# the backdrop row rendering lighter than authored or the scene under the
+# bar being darker than row -5 (rows -4/-3 read 5 units under -5 in that
+# capture) cannot be told apart from one frame, and does not matter for the
+# rim: the alpha only has to make (1 - a) * TROUGH_UNDER_RIM equal ER's k.
+TROUGH_UNDER_RIM = 0.88
+
+
+def graft_rims(atlas: np.ndarray) -> np.ndarray:
+    sheet = np.asarray(Image.open(ER_SHEET).convert("RGB")).astype(float)
+    for name, spec in SOURCES.items():
+        r0, _ = rows_of(name)
+        cols = np.clip(np.arange(ATLAS_WIDTH) - RED_START_COL + spec.get("strip_x0", 5),
+                       0, sheet.shape[1] - 1)
+        for k_row, r in enumerate(range(-2, 0)):
+            c, k = ER_RIM[name][r]
+            c = np.array(c, float)
+            a = 1.0 - k / TROUGH_UNDER_RIM if k > 0 else 1.0
+            if not 0.0 < a <= 1.0:
+                raise SystemExit(f"{name} row {r}: rim alpha {a:.2f} out of range (k {k})")
+            srow = sheet[spec["strip"] + r, cols]
+            lum = srow.mean(axis=1)
+            dev = lum / max(float(lum.mean()), 1e-6) - 1.0
+            # The sheet's rim rows are noisy where their alpha is low (row -2
+            # holds RGB under alpha ~40/255), so at GRAIN_CONTRAST they came
+            # out three times grainier than ER's screen (luminance std 9.5-
+            # 11.8 against ~3). Pin the luminance std to ER's own row instead,
+            # measured on the reference frame over the same 40..200 window.
+            src = np.asarray(Image.open(REF / spec["file"]).convert("RGB")).astype(float)
+            ref = src[spec["rows"][0] + r, spec["cols"][0] + 40:spec["cols"][0] + 200].mean(axis=1)
+            target_std = float(ref.std())
+            scale = target_std / max(float(c.mean()) * float(dev.std()), 1e-6)
+            rgb = c[None, :] * (1.0 + dev[:, None] * scale)
+            y = r0 + RIM_ROWS[0] + k_row
+            atlas[y, :, :3] = np.clip(to_atlas(rgb / a), 0, 255).round().astype(np.uint8)
+            atlas[y, :, 3] = int(round(a * 255))
+            print(f"  {name:8s} rim row {r:+d}: screen c=({c[0]:.0f},{c[1]:.0f},{c[2]:.0f}) k={k:.3f}"
+                  f" -> texel alpha {a:.2f}, grain std {rgb.mean(axis=1).std():.2f}")
     return atlas
 
 
@@ -584,19 +695,12 @@ def build(tpf_in: Path, tpf_out: Path, preview: Path | None = None) -> None:
     # verify on the next damaged-bar grab from the TV.
     # (synthesised below, after graft_fills, because it borrows the rail)
     atlas = graft_fills(atlas)
+    atlas = graft_rims(atlas)
 
     b0, b1 = backdrop_rows()
     H = b1 - b0                                    # 32 texel rows at scale 2
     back = np.zeros((H, ATLAS_WIDTH, 4), float)
-    # (screen row rel. fill top) -> (rgb, alpha) in SCREEN units
-    prof = {-4: ((0, 0, 0), 0.03), -3: ((0, 0, 0), 0.06), -2: ((0, 0, 0), 0.23),
-            -1: ((0, 0, 0), 0.42), 0: ((0, 0, 0), 0.45)}
-    for r in range(1, 14):
-        prof[r] = ((0, 0, 0), 0.48)
-    prof.update({14: ((0, 0, 0), 0.50), 15: ((0, 0, 0), 0.52), 16: ((0, 0, 0), 0.53),
-                 17: ((0, 0, 0), 0.55), 18: ((0, 0, 0), 0.59), 19: ((50, 39, 30), 0.56),
-                 24: ((68, 70, 56), 1.0), 25: ((27, 27, 21), 0.32),
-                 26: ((0, 0, 0), 0.13), 27: ((0, 0, 0), 0.10)})
+    prof = TROUGH
     hp0, _ = rows_of("hp")
     d0, d1 = DRAWN_ROWS
     for j in range(H):

@@ -57,6 +57,14 @@ LOCK="$BASE/lock"
 # that way when adding new ones.
 OUT_W=${DS3SHOT_W:-1920}
 OUT_H=${DS3SHOT_H:-1080}
+
+# DS3SHOT_TIGHTPOLL=1 shrinks the fixed poll intervals (4s/3s) to 2s/1s. The
+# waits themselves are already event-driven; only the granularity changes, so
+# the worst case is unchanged and the average run saves ~5s. Opt-in because
+# each poll costs a gamescope screenshot, and the default cadence is the one
+# every timing in BOOT-NOTES.md was measured at.
+PROBE_SLEEP=4; FRAME_SLEEP=3
+[ "${DS3SHOT_TIGHTPOLL:-}" = 1 ] && { PROBE_SLEEP=2; FRAME_SLEEP=1; }
 SCALE_PCT=$(( OUT_W * 100 / 1920 ))
 sx() { echo $(( $1 * SCALE_PCT / 100 )); }
 
@@ -382,7 +390,7 @@ wait_probe() {  # wait_probe <hud|menu> <timeout-s> [poke] - poke: click between
         click $(sx 960) $(sx 540)
       fi
     fi
-    sleep 4; t=$((t+4))
+    sleep $PROBE_SLEEP; t=$((t+PROBE_SLEEP))
   done
   return 1
 }
@@ -395,7 +403,7 @@ wait_first_frame() {
     session_alive || die "game died during startup (tail $LOG)"
     f="$(shot _probe)" || { sleep 3; t=$((t+3)); continue; }
     if img_ok "$f" 2>/dev/null; then say "first frame after ~${t}s"; return 0; fi
-    sleep 3; t=$((t+3))
+    sleep $FRAME_SLEEP; t=$((t+FRAME_SLEEP))
   done
   die "no rendered frame within 180s"
 }
@@ -510,9 +518,60 @@ run_inventory() {
   # character is never loaded anywhere.
   key e
   say "loading the harness character (Continue)"
+  # EARLY SWEEP (DS3SHOT_EARLY=1). The area-name title card ("Cemetery of Ash")
+  # is up for only a few seconds around the end of the load and has always
+  # faded by the time the default `ingame` shot is taken (probe poll + 3s), so
+  # HUD work never sees it. This shoots continuously from the moment Continue
+  # is pressed until a few frames after the HUD is up, keeping every frame
+  # that is not black/blank in a 16-deep ring (ingame_early00..15, ~280MB, so
+  # a long load cannot fill the disk); read them back in mtime order.
+  # It costs no extra wall clock - the sweep IS the wait, and wait_probe below
+  # then passes on its first poll. Opt-in all the same, because it writes
+  # several hundred MB of extra files. The default journey is untouched.
+  if [ "${DS3SHOT_EARLY:-}" = 1 ]; then
+    local i=0 seen=0 f
+    rm -f "$SHOTS"/ingame_early*.png
+    while [ $i -lt 120 ]; do
+      session_alive || { teardown; die "game died during the early sweep"; }
+      f="$(printf 'ingame_early%02d' $((i % 16)))"
+      shot "$f" >/dev/null 2>&1 || true
+      if img_ok "$SHOTS/$f.png" 2>/dev/null; then
+        if probe hud "$SHOTS/$f.png"; then
+          seen=$((seen + 1))
+          [ $seen -ge 6 ] && break
+        fi
+        i=$((i + 1))
+      else
+        rm -f "$SHOTS/$f.png"      # black / blank: not worth 17MB
+      fi
+    done
+    say "early sweep: $(ls "$SHOTS"/ingame_early*.png 2>/dev/null | wc -l) frames kept"
+  fi
+
   wait_probe hud 120 || { teardown; die "never reached the in-game HUD"; }
   sleep 3
   shot ingame >/dev/null || { teardown; die "screenshot failed"; }
+
+  # KILL-QUIT (DS3SHOT_KILLQUIT=1): skip the save-and-quit ceremony entirely
+  # and tear down straight from the in-game shot. The ceremony costs ~24s of
+  # fixed sleeps (menu clicks + the 12s "saved and quitting" wait) and buys
+  # exactly one thing: the sandbox save file is closed cleanly. It does NOT
+  # avoid the improper-shutdown dialog - teardown kills the process at the
+  # title screen anyway, so every run already pays that dialog on the next
+  # boot (see the log: "clearing DS3's improper-shutdown dialog" after clean
+  # runs too), and advance_to_menu already handles it.
+  #
+  # The risk taken: the game dies in-game, so if it were mid-write to
+  # DS30000.sl2 the sandbox save could corrupt. Standing idle at the bonfire
+  # it writes rarely, and the recovery is cheap and local (tools/ds3-state
+  # load, or re-provision per ds3-shot.md) - the REAL save is never involved.
+  # Opt-in, not default, for exactly that reason.
+  if [ "${DS3SHOT_KILLQUIT:-}" = 1 ]; then
+    say "kill-quit: tearing down from in-game (sandbox save not rewritten)"
+    say "OK inventory journey (kill-quit)"
+    finish ingame
+    return
+  fi
 
   # FAST MODE. HUD work only ever looks at `ingame`, but the full journey also
   # walks into Equipment and Inventory for two more shots, which costs about
@@ -542,17 +601,66 @@ run_inventory() {
 
   # Esc opens the in-game menu bar with Equipment highlighted first.
   key Escape; sleep 2
+  # PAUSE MENU SHOT (DS3SHOT_PAUSE=1): the menu bar is open right here, so a
+  # shot of it costs one capture and nothing else (phase D of the ER menu
+  # port restyles it). DS3SHOT_PAUSE=sweep also steps Right through the other
+  # four items (pausemenu_1..4: the engine's single label for each tile, and
+  # the highlight on each) and walks back so the journey below is unchanged.
+  local pause_shots=""
+  if [ -n "${DS3SHOT_PAUSE:-}" ]; then
+    shot pausemenu >/dev/null || { teardown; die "screenshot failed"; }
+    pause_shots="pausemenu"
+    if [ "$DS3SHOT_PAUSE" = down ]; then
+      # navigation probe: does Down move the highlight in a vertical list?
+      key Down; sleep 1
+      shot pausemenu_down >/dev/null || { teardown; die "screenshot failed"; }
+      pause_shots="$pause_shots pausemenu_down"
+      key Up; sleep 0.6; key Left; sleep 0.6
+    fi
+    if [ "$DS3SHOT_PAUSE" = downsweep ]; then
+      # navigation probe 2: Down five times, a shot after each
+      local k
+      for k in 1 2 3 4 5; do
+        key Down; sleep 1
+        shot "pausemenu_down$k" >/dev/null || { teardown; die "screenshot failed"; }
+        pause_shots="$pause_shots pausemenu_down$k"
+      done
+      for k in 1 2 3 4 5; do key Up; sleep 0.5; done
+      key Left; sleep 0.6
+    fi
+    if [ "$DS3SHOT_PAUSE" = sweep ]; then
+      local k
+      for k in 1 2 3 4; do
+        key Right; sleep 1
+        shot "pausemenu_$k" >/dev/null || { teardown; die "screenshot failed"; }
+        pause_shots="$pause_shots pausemenu_$k"
+      done
+      for k in 1 2 3 4; do key Left; sleep 0.6; done
+      sleep 0.5
+    fi
+  fi
   key e; sleep 2.5
   shot equipment >/dev/null || { teardown; die "screenshot failed"; }
   key q; sleep 1.5           # back to the bar, Equipment still selected
   key Right; sleep 1
   key e; sleep 2.5
   shot inventory >/dev/null || { teardown; die "screenshot failed"; }
+  # DS3SHOT_STATUS=1: one more stop, the Status screen (1 right of Inventory),
+  # for the menu restyle. Default journey unchanged.
+  if [ "${DS3SHOT_STATUS:-}" = 1 ]; then
+    key q; sleep 1.5
+    key Right; sleep 1
+    key e; sleep 2.5
+    shot status >/dev/null || { teardown; die "screenshot failed"; }
+    key q; sleep 1.5
+    key Right; sleep 0.8; key Right; sleep 0.8
+  else
   # Clean exit so the sandbox save is never killed mid-write: bar -> System
   # (3 right of Inventory) -> the Quit Game tab (mouse, x=1105 y=240) ->
   # Quit Game button -> YES. "Save the game and return to title menu."
   key q; sleep 1.5
   key Right; sleep 0.8; key Right; sleep 0.8; key Right; sleep 0.8
+  fi
   key e; sleep 2
   click $(sx 1105) $(sx 240); sleep 1.5
   click $(sx 960) $(sx 788); sleep 1.5
@@ -560,7 +668,8 @@ run_inventory() {
   say "saved and quitting to title"
   sleep 12
   say "OK inventory journey"
-  finish ingame equipment inventory
+  # shellcheck disable=SC2086
+  finish ingame $pause_shots equipment inventory ${DS3SHOT_STATUS:+status}
 }
 
 # ----------------------------------------------------------------------- dev
@@ -581,6 +690,19 @@ run_dev() {
 # ---------------------------------------------------------------------- main
 exec 9>>"$LOCK"
 flock -n 9 || die "another ds3-shot is running"
+
+# A run with the mod dir populated but DS3SHOT_MOD unset renders VANILLA and
+# says nothing about it. That cost two runs on 2 Sep and very nearly put a
+# false "the deconvolution makes it worse" verdict into er_hud_graft.py -
+# vanilla's bars are pure hues, which reads as a plausible-but-bad result
+# rather than as an obvious failure. If there are overrides staged, the only
+# reason to launch without them is to capture a deliberate vanilla reference,
+# so make that say so out loud.
+if [ "${DS3SHOT_MOD:-}" != 1 ] && [ "${DS3SHOT_VANILLA:-}" != 1 ] \
+   && [ -n "$(ls -A "$HOME/couch/data/ds3-shot/game/mod/menu" 2>/dev/null)" ]; then
+  die "mod overrides are staged but DS3SHOT_MOD is not 1, so this would render VANILLA.
+     re-run with DS3SHOT_MOD=1, or set DS3SHOT_VANILLA=1 if you really want a vanilla reference."
+fi
 
 CMD="${1:-inventory}"
 case "$CMD" in

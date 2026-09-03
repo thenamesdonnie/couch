@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Soften DS3's fog and haze particles by widening their depth fade.
+
+    tools/ds3-fog-soften                     # build the m32 (Archdragon Peak) override
+    tools/ds3-fog-soften --dry-run           # list what would change, write nothing
+    tools/ds3-fog-soften --binder commoneffects --dry-run
+    tools/ds3-fog-soften --fade-fraction 0.35 --fade-max 20
+
+WHAT IT DOES AND WHY
+--------------------
+Donnie on Archdragon Peak: "the way it clips through everything so it does not
+feel like it is coming from the doors or in the room, like it is placed on top
+of the screen." That is a soft-particle failure, and it is measurable.
+
+Every fog wisp and haze sheet is a camera-facing quad. DS3 does have soft
+particles: 376 of the 456 BillboardEx actions in the m32 binder already have
+`depthBlend = true`. But the fade band is left at its default everywhere.
+Across the 569 appearance actions in m32 that carry the depth fields,
+`unkDepthBlend1` is:
+
+    1.0 x507   2.0 x26   2.5 x14   0.5 x11   1.5 x6   0.1 x3   0.25 x1   0.75 x1
+
+and `unkDepthBlend2` is 0.0 on 566 of 569. A default fade band on a sprite
+scaled to 30 m or 100 m is nothing, so the quad reaches the floor at full
+opacity and you see the intersection line. The fix is to make the band a
+function of the sprite instead of a constant: 25 percent of the particle width
+by default, clamped to 2..15, so a 7 m wisp gets 2.0 and a 100 m haze sheet
+gets 15.0. Whether those numbers are metres or a multiplier on the default is
+NOT known, see the field section below, but both readings widen the band.
+
+WHICH PARTICLES
+---------------
+Only big fog and smoke sprites. The selection is texture id plus size:
+
+  * texture in FOG_TEXTURES (the 8x8 flipbook smoke sheets s11630, s11633,
+    s11617, s11624, s11626, s11621, s11623 and the radial haze blobs s50065,
+    s50255), and
+  * width (max over the keyframes, since 389 of 508 widths are curves) >= 5 m.
+
+Textures 3000 and 1001 are glows and are deliberately NOT in the set: a glow
+that fades near geometry loses the bloom that is the whole point of it.
+
+WHY BYTE PATCHING, NOT RE-SERIALISING
+-------------------------------------
+@cccode/fxr reads and writes DS3 FXRs, but read -> write is not byte-faithful.
+Measured on all 136 m32 files: every file returns at the SAME LENGTH and every
+file differs in content, from 8 bytes (f000432002) to 17,555 bytes
+(f000221504, 16 percent of the file). The differences are structural rather
+than semantic (a trailing 0x01 marker the library writes as 0x00, a 255 count
+written back as 256, section offsets moved by 16, zeroed offset slots filled
+in). We are shipping vanilla map files as a game override, so we do not want
+17k bytes of churn per file for a two-dword edit. The node half of this tool
+therefore uses the library only to READ, then locates each action's
+fields1+fields2 block in the original bytes by exact match and overwrites the
+two dwords. Byte-identical to vanilla apart from the intended floats, and the
+tool proves it: it diffs the patched buffer against the original and refuses to
+write any file with a byte changed outside the dwords it named.
+
+WHAT THE DEPTH FIELDS ACTUALLY ARE (researched 3 Sep 2026, be honest about it)
+------------------------------------------------------------------------------
+`depthBlend` (fields1 index 14) is documented and unambiguous: the soft-particle
+toggle. "If enabled, they will instead display in front of the object if they
+are close enough, and will fade out with distance from the object's surface
+that is blocking the view of the particle."
+
+`unkDepthBlend1` and `unkDepthBlend2` are DS3 fields2 indices 22 and 23, which
+land on on-disk dwords 25 and 26 because bloomColor is a Vector4 that eats four
+slots. Both are literally "Unknown float." in @cccode/fxr, and the public
+record has nothing better:
+
+  * RainbowStoneFXR (ividyon) and the community ER FXR Notes sheet, which share
+    a source, both say only "These two fields control how the depth blending
+    effect works, but exactly how is unknown."
+  * The older DS3 FXR Notes sheet is the most useful line anyone has written:
+    field 25 "Always >0. Some scale or something, maybe?", field 26 "Always 0".
+  * Zero issues, discussions or commits in EvenTorset/fxr about either field,
+    and no one anywhere has published a before/after test.
+
+Two traps worth writing down. First, @cccode/fxr tags unkDepthBlend2 with
+ScaleCondition.Distance, which looks like a claim that it is a world distance in
+metres. It is not: that flag arrived in a bulk sweep (abae51f, "Scaling is now
+data driven", 329 flags in one commit) and was reclassified in a second bulk
+sweep (55d42f2). When the same author DID identify a neighbouring field he said
+so in the changelog ("unk_ds3_f2_29 has been identified as some kind of view
+distance threshold"). No such claim exists for unkDepthBlend2. Second, the
+advice floating around to zero unk_sdt_f2_32 before testing depth blending does
+not apply here: that field only exists from Sekiro onward, DS3's fields2 list
+stops at unk_ds3_f2_29.
+
+So the honest reading of the vanilla numbers is that unkDepthBlend1 is a
+unitless SCALE on the depth falloff rather than a distance in metres: it is 1.0
+by default, it is the only one of the pair authors ever varied, and its whole
+range across the map is 0.1 to 2.5. unkDepthBlend2 is 0 in 566 of 569 instances
+(the three exceptions, 100/500/1000, are all in f000832002), which rules it out
+as THE fade distance since depth blending demonstrably works with it at zero.
+
+That is why this tool defaults to --field unkDepthBlend1. Under either reading
+raising it widens the fade band, which is the direction we want. But note that
+the default clamp tops out at 15.0, which is six times the largest value
+FromSoft ever authored, so if the field is a multiplier the biggest haze sheets
+may fade too eagerly near geometry. Judge it on the TV and pull --fade-max
+down to 4 or 5 if the haze reads as thin. The definitive test is a live sweep
+with fxr-reloader (EvenTorset/fxr-reloader hot-reloads FXRs into a running
+game): 0 / 0.1 / 1 / 10 / 100 on one wall-intersecting particle would settle
+what nobody has published.
+
+The binder itself is repacked with soulstruct (same entry ids, paths, flags and
+sizes) and recompressed with oodle.dcx_compress_dflt. Note that soulstruct's
+BND4 writer appends ten zero pad bytes after every entry's data block "for
+byte-perfect writes", which for this binder (whose entries are already
+16-aligned and packed tight) means the rebuilt container is 1352 bytes larger
+than vanilla: 135 gaps of 10 bytes, less an 8-byte shift of the data region.
+The recorded entry sizes and offsets are correct, so this is padding only.
+
+Nothing is written into the game install or the mod folder. The build lands in
+data/ds3-ui-port/build/fog/ and the tool prints the copy command.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HOME = Path.home()
+COUCH = HOME / "couch"
+UI_PORT = COUCH / "data/ds3-ui-port"
+VENV_PY = UI_PORT / ".venv/bin/python"
+FXR_NODE = UI_PORT / "fxr-node"
+SOULS_EXTRACT = COUCH / "tools/souls-extract"
+GAME = HOME / ".steam/steam/steamapps/common/DARK SOULS III/Game"
+KEYS_CS = UI_PORT / "uxm_keys.cs"
+SFX_CACHE = UI_PORT / "extract/ds3/sfx"
+BUILD = UI_PORT / "build/fog"
+
+BINDERS = {
+    "m32": "/sfx/frpg_sfxbnd_m32_effect.ffxbnd.dcx",
+    "commoneffects": "/sfx/frpg_sfxbnd_commoneffects_effect.ffxbnd.dcx",
+}
+
+# The fog and smoke sprite ids, read out of the m32 billboards. 11630/11633 and
+# friends are the 8x8 flipbook smoke sheets (128 px a frame); 50065 and 50255
+# are the small radial haze blobs used for the ambient sheets at 30 m and 100 m.
+FOG_TEXTURES = [11630, 11633, 11617, 11624, 11626, 11621, 11623, 50065, 50255]
+
+# soulstruct only lives in the ds3-ui-port venv; re-exec into it rather than
+# making the caller remember which python to use.
+if "soulstruct" not in sys.modules:
+    try:
+        import soulstruct  # noqa: F401
+    except ModuleNotFoundError:
+        if VENV_PY.exists() and os.environ.get("_DS3_FOG_REEXEC") != "1":
+            os.environ["_DS3_FOG_REEXEC"] = "1"
+            os.execv(str(VENV_PY), [str(VENV_PY), __file__, *sys.argv[1:]])
+        raise
+
+sys.path.insert(0, str(SOULS_EXTRACT))
+import oodle  # noqa: E402
+from soulstruct.containers import Binder  # noqa: E402
+
+
+def ds3_keys() -> dict[str, str]:
+    txt = KEYS_CS.read_text(encoding="utf-8-sig")
+    m = re.search(
+        r"DarkSouls3Keys\s*=\s*new Dictionary<string, string>\s*\{(.*?)\n\s*\};",
+        txt, re.S)
+    return dict(re.findall(
+        r'\["([^"]+)"\]\s*=\s*@"(-----BEGIN RSA PUBLIC KEY-----.*?-----END RSA PUBLIC KEY-----)"',
+        m.group(1), re.S))
+
+
+def fetch_binder(name: str) -> Path:
+    """Return the vanilla .ffxbnd.dcx, pulling it out of the archives once.
+
+    Read-only on the game install: DvdBnd mmaps the .bdt files and never writes.
+    """
+    archive_path = BINDERS[name]
+    dst = SFX_CACHE / Path(archive_path).name
+    if dst.exists():
+        return dst
+    sys.path.insert(0, str(SOULS_EXTRACT))
+    from dvdbnd import DvdBnd, DS3
+    SFX_CACHE.mkdir(parents=True, exist_ok=True)
+    data = DvdBnd(GAME, ds3_keys(), DS3).get(archive_path)
+    if data is None:
+        raise SystemExit(f"{archive_path} not found in the DS3 archives")
+    dst.write_bytes(data)
+    return dst
+
+
+def run_node(cfg: dict) -> dict:
+    work = Path(cfg["report"]).parent
+    cfg_path = work / "fog_cfg.json"
+    cfg_path.write_text(json.dumps(cfg))
+    subprocess.run(
+        ["node", "fog_soften.mjs", str(cfg_path)],
+        cwd=FXR_NODE, check=True)
+    return json.loads(Path(cfg["report"]).read_text())
+
+
+def fmt_table(changes: list[dict], field: str) -> str:
+    if not changes:
+        return "  (nothing matched)"
+    head = f"  {'effect':<12} {'action':<24} {'fog tex':<12} {'width':>8} {'old':>7} {'new':>7}"
+    lines = [head, "  " + "-" * (len(head) - 2)]
+    for c in sorted(changes, key=lambda c: (c["file"], -(c["width"] or 0))):
+        lines.append(
+            f"  {c['file']:<12} {c['action']:<24} {c['fogTextures']:<12} "
+            f"{(c['width'] or 0):>8.2f} {c['oldFade']:>7.2f} {c['newFade']:>7.2f}"
+            + ("" if c["oldDepthBlend"] else "   [depthBlend off -> on]"))
+    return "\n".join(lines)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--binder", choices=sorted(BINDERS), default="m32")
+    ap.add_argument("--min-width", type=float, default=5.0,
+                    help="metres; only particles at least this wide are touched")
+    ap.add_argument("--fade-fraction", type=float, default=0.25,
+                    help="depth fade band as a fraction of the particle width")
+    ap.add_argument("--fade-min", type=float, default=2.0, help="metres")
+    ap.add_argument("--fade-max", type=float, default=15.0, help="metres")
+    ap.add_argument("--field", default="unkDepthBlend1",
+                    choices=["unkDepthBlend1", "unkDepthBlend2"])
+    ap.add_argument("--textures", default=",".join(str(t) for t in FOG_TEXTURES),
+                    help="comma-separated texture ids to treat as fog")
+    ap.add_argument("--no-force-depth-blend", action="store_true",
+                    help="leave depthBlend alone instead of turning it on")
+    ap.add_argument("--use-height", action="store_true",
+                    help="size a particle by max(width, height) instead of width")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report only, write no FXRs and no binder")
+    ap.add_argument("--roundtrip-check", action="store_true",
+                    help="also measure what a full library re-serialise would cost")
+    ap.add_argument("--out", type=Path, default=None)
+    args = ap.parse_args()
+
+    src = fetch_binder(args.binder)
+    payload = oodle.dcx_decompress(src.read_bytes())
+    binder = Binder.from_bytes(payload)
+    print(f"{src.name}: {len(payload)} bytes payload, {len(binder.entries)} entries")
+
+    work = Path(tempfile.mkdtemp(prefix="ds3-fog-"))
+    (work / "in").mkdir()
+    (work / "out").mkdir()
+    by_name = {}
+    for entry in binder.entries:
+        name = entry.path.replace("\\", "/").rsplit("/", 1)[-1]
+        by_name[name] = entry
+        (work / "in" / name).write_bytes(entry.data)
+
+    cfg = {
+        "dir": str(work / "in"),
+        "out": str(work / "out"),
+        "report": str(work / "report.json"),
+        "textures": [int(t) for t in args.textures.split(",") if t.strip()],
+        "minWidth": args.min_width,
+        "fadeFraction": args.fade_fraction,
+        "fadeMin": args.fade_min,
+        "fadeMax": args.fade_max,
+        "field": args.field,
+        "forceDepthBlend": not args.no_force_depth_blend,
+        "useHeight": args.use_height,
+        "dryRun": args.dry_run,
+        "roundtripCheck": args.roundtrip_check,
+    }
+    report = run_node(cfg)
+
+    if report["unparsed"]:
+        print("\nfiles that did not parse (passed through untouched):")
+        for u in report["unparsed"]:
+            print(f"  {u['file']}: {u['error']}")
+    else:
+        print("all entries parsed")
+
+    if report.get("roundtrip"):
+        rt = report["roundtrip"]
+        print(f"\nlibrary re-serialise round trip: {rt['byteIdentical']}/{rt['total']} "
+              f"byte-identical; worst churn "
+              + ", ".join(f"{w['file']} {w['nDiff']}B" for w in rt["worst"]))
+
+    changed_files = [f for f in report["files"] if f["patched"]]
+    stray = sum(f["strayBytes"] for f in changed_files)
+    print(f"\n{len(report['changes'])} particles in {len(changed_files)} effects matched "
+          f"(fade = {args.fade_fraction:g} x width, clamped {args.fade_min:g}..{args.fade_max:g})")
+    print(fmt_table(report["changes"], args.field))
+    if report["skipped"]:
+        print("\nskipped:")
+        for s in report["skipped"]:
+            print(f"  {s}")
+    print(f"\nbyte proof: {sum(f['bytesChanged'] for f in changed_files)} bytes changed "
+          f"across {len(changed_files)} files, {stray} of them outside the named dwords "
+          f"({'OK' if stray == 0 else 'FAIL'}); "
+          f"all {len(changed_files)} patched files re-parse: "
+          f"{all(f['reparses'] for f in changed_files)}")
+
+    if args.dry_run:
+        print("\ndry run, nothing written")
+        shutil.rmtree(work, ignore_errors=True)
+        return
+    if stray:
+        raise SystemExit("refusing to build: stray byte changes")
+    if not changed_files:
+        print("\nnothing to build")
+        shutil.rmtree(work, ignore_errors=True)
+        return
+
+    for f in changed_files:
+        by_name[f["file"]].data = (work / "out" / f["file"]).read_bytes()
+    rebuilt = binder.to_bytes()
+    out = args.out or (BUILD / src.name)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(oodle.dcx_compress_dflt(rebuilt))
+
+    # Prove the shipped file loads: decompress it again, reopen the container,
+    # and read the edited FXRs back out of it with the library.
+    back = oodle.dcx_decompress(out.read_bytes())
+    b2 = Binder.from_bytes(back)
+    same_ids = [e.entry_id for e in binder.entries] == [e.entry_id for e in b2.entries]
+    same_paths = [e.path for e in binder.entries] == [e.path for e in b2.entries]
+    same_flags = [e.flags for e in binder.entries] == [e.flags for e in b2.entries]
+    print(f"\nbuilt {out} ({out.stat().st_size} bytes dcx, {len(rebuilt)} payload, "
+          f"vanilla payload {len(payload)}, +{len(rebuilt) - len(payload)} soulstruct pad)")
+    print(f"  reopens: {len(b2.entries)} entries, ids match {same_ids}, "
+          f"paths match {same_paths}, flags match {same_flags}")
+
+    verify = Path(tempfile.mkdtemp(prefix="ds3-fog-verify-"))
+    for e in b2.entries:
+        name = e.path.replace("\\", "/").rsplit("/", 1)[-1]
+        if name in {f["file"] for f in changed_files}:
+            (verify / name).write_bytes(e.data)
+    vcfg = dict(cfg, dir=str(verify), out=str(verify), dryRun=True,
+                report=str(verify / "report.json"), roundtripCheck=False)
+    vrep = run_node(vcfg)
+    # Compare as MULTISETS, not dicts: several particles in one effect can share
+    # an effect id, action type, texture and width, and a dict would silently
+    # collapse them and report 35 of 35 where there are 50 to check.
+    def key(c, fade):
+        return (c["file"], c["action"], c["fogTextures"], round(c["width"] or 0, 3),
+                round(fade, 3))
+    want = sorted(key(c, c["newFade"]) for c in report["changes"])
+    got = sorted(key(c, c["oldFade"]) for c in vrep["changes"])
+    on = all(c["oldDepthBlend"] for c in vrep["changes"])
+    print(f"  read back from the built binder: {len(got)} particles found, "
+          f"{'all ' + str(len(want)) + ' match' if got == want else 'MISMATCH'} the new "
+          f"{args.field}; depthBlend on for all: {on}")
+    if got != want:
+        print(f"    expected {want}\n    got      {got}")
+
+    rel = out.relative_to(HOME)
+    print("\nto deploy (NOT done automatically, the harness cannot capture m32 yet):")
+    print("  mkdir -p ~/couch/data/ds3-shot/game/mod/sfx")
+    print(f"  cp ~/{rel} ~/couch/data/ds3-shot/game/mod/sfx/{out.name}")
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(verify, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

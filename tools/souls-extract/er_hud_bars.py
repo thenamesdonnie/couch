@@ -92,7 +92,15 @@ SCREEN_FLOOR = 0.0
 #     screen = 255 * (atlas/255) ** 0.87
 # which reproduces all three channels within ~3. There is no additive term left
 # to fight, so this inverts cleanly and every channel is reachable.
-SCREEN_GAMMA = 0.87
+#
+# 0.87 -> 0.8795 (3 Sep 2026). The one-texel checkerboard at native 4K gave
+# two exact points, atlas 40 -> screen 50 and 80 -> 92, and BOTH invert to
+# 0.8795; 0.87 sits outside the round-to-nearest bracket either point allows,
+# and hud_sim's global refit over all three bars agreed (mean abs error 0.17
+# against 0.83). At 0.87 every flat fill row rendered about one unit under
+# ER's. PAIRED with hud_sim.GAMMA: the graft inverts this transfer and the
+# simulator applies it, so they move together or not at all.
+SCREEN_GAMMA = 0.8795
 
 
 def to_atlas(target):

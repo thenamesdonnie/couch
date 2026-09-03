@@ -404,9 +404,202 @@ Measured while validating (in the skill's traps): `codex exec` defaults to
 there is a ~4.3k token floor per invocation; and piping `codex exec` into
 `head` SIGPIPEs the run so the `-o` file never lands.
 
-## ▶ Resume here (3 Sep 2026 ~00:00 — DS3 HUD: bars + rune counter + equipment cross all ER-matched and LIVE; Bloodborne lock-on sprint DONE, v7 verified at the TV)
+## ▶ Resume here (3 Sep 2026 ~21:30 — DS3 "Elden Ring Edition": HUD, menus, fog, textures, 120 fps, jump all LIVE; Bloodborne lock-on sprint DONE, v7 verified at the TV)
+
+### ▶▶ DONNIE'S TO-DO (only he can do these)
+1. **At the TV, judge the new DS3 layer** (all live on the next launch via
+   `tools/ds3-modded-launch`): pause-menu D-pad Up/Down (inputproc restarted
+   18:15, Kodi joystick addon bounced; if the pad is deaf in Kodi, bounce
+   again); the Archdragon fog fade (2..5 m, dial `tools/ds3-fog-soften
+   --fade-min/--fade-max`); the cloud sea from outside the temple (4x
+   tiles); frame rate with the 69 GB 4K pack; Jump from Neutral (jump from
+   standing; kick = hold X + R1, jump attack = hold X + R2; a "Jump from
+   Walk" variant is staged at /mnt/disk1/ds3-mods/staging/jump-walk); and
+   the ER menus in the flesh.
+2. **120 fps needs the 4K120 mode back** (mode-keeper stopped, box on 4K60
+   since 31 Aug); the unlock is inert at 60 Hz with vsync. If anything
+   frame-tied misbehaves at 120: `DS3_FPS=0 tools/ds3-modded-launch %command%`.
+3. **DS3 must be Play Offline** (System > Network) with modified files.
+4. Rollback of the whole graphics layer: restore
+   `data/ds3-ui-port/build/config_darksouls3.real.single-mod.toml.bak` over
+   `data/ds3-mod/config_darksouls3.toml` and delete
+   `data/ds3-shot/game/mod/map` (the sandbox config has its own .bak).
+5. Next time a DS3 bar is damaged, say so (the trough is still unverified).
+
+### ▶▶ DS3: WHAT IS LIVE (real launcher = sandbox mod dir, `data/ds3-mod/mod -> ../ds3-shot/game/mod`)
+* ModEngine2 mod list, first match wins: `mod` (ours) > `mod-jump` (Nexus
+  1911 c0000.hks) > `mod-vo` (Visual Overhaul 0.6: gparams, MSBs, lights,
+  `_r` maps) > `mod-ti` (Texture Improvement 4K, /mnt/disk1/ds3-mods,
+  Nexus premium key at ~/.config/nexus/apikey).
+* `mod/menu`: ER HUD (bars 1:1, rim rows, cap, rune counter, equipment
+  cross + previews, area-name card), ER menus (wash, cells, typography,
+  pause menu as ER's vertical list, Status washed), logo skip, ER glyphs,
+  Spectral font. Chains: RECIPE.md "Rebuilding the HUD" + "MENUS".
+* `mod/sfx`: `frpg_sfxbnd_m32_effect` (depth fade 2..5 m, `ds3-fog-soften`),
+  `frpg_sfxbnd_commoneffects_resource` (4x fog sprites, `ds3-texup`).
+* `mod/map/m32`: all four binders merged = TI base + VO `_r` + our 4x
+  kumo/sky/storm (`ds3-texup pack --base-dir --inject`, `check` clean).
+* `tools/ds3-modded-launch` runs the game under `tools/ds3-menu-watch
+  --screen`: raises /tmp/couch-dpad-rotate while the pause bar is on
+  screen (inputproc rotates Up/Down -> Left/Right; the engine's list is
+  Left/Right-only, a proven dead end), and writes DS3_FPS (default 120)
+  into SprjFlipper once the engine is up.
+* Sandbox save = DONNIE'S (refreshed 19:21, at Archdragon Peak). Harness
+  character: `tools/ds3-state load harness-cemetery-20260903` (restore it
+  before HUD/menu journeys, they expect the Cemetery).
+
+### ▶▶ DS3: EXACT NEXT STEPS
+1. After Donnie's verdicts: fog dial (`--fade-max 4` if too thick); if the
+   pause list should be horizontal, `er_pause_gfx.py` TILE_X/TILE_Y0/
+   ROW_PITCH lay the same strips in a row.
+2. Wishlist 3: text/sound pass (Souls->Runes, Bonfire->Site of Grace, ER
+   "YOU DIED" card, ER menu sounds; FMG via soulstruct, wem->fsb), then 4
+   (warp anywhere, ESD recipe) and 5 (DS3 cheats via the ancestor watcher,
+   like bb-cheat).
+3. Commoneffects fog fade (19 particles / 10 effects, three in
+   f000000002/3/4): `ds3-fog-soften --binder commoneffects`, after the m32
+   one is judged; collides with InfiniDetail's copy of that binder.
+4. Menu follow-ups: equipment-top slot GROUP borders + diamond ornament
+   still DS3's; no scene blur (BLURFILTER on the BG placement is the only
+   route); unselected cells +4 vs ER +9.5; red X and 02_011_equip
+   unverified; bright seams at y 260/1892.
+5. `er_lockon.py` (ER's soft blue lock-on dot): written, not deployed,
+   needs a lock-on on the TV.
+
+### ▶▶ TRAPS LEARNED 3 SEP (read before running the harness)
+* ds3-shot's teardown pkills any process whose cmdline matches
+  `ds3-shot/game` or `compatdata-374320`, INCLUDING your own shell if the
+  pattern is in your command, and this session's background waiters.
+  Deploy+capture+copy in a script FILE under `flock
+  data/ds3-shot/agent.lock`, poll its log; grep the game as `D[a]rkSoulsIII`.
+* `DS3SHOT_FAST=1` skips the pause shot; modes `DS3SHOT_PAUSE=1|sweep|down|
+  downsweep`, `DS3SHOT_STATUS=1`, `DS3SHOT_EARLY=1`; `--refresh-save`
+  needs `DS3SHOT_MOD=1` too. The harness refuses while /tmp/game-session
+  exists (arm a watcher). A run that dies without `_dev stop` leaves a
+  gamescope session + `data/ds3-shot/lock`: kill by pid, rm the lock.
+* Subagents never received capture-completion events; poll logs. Three
+  were killed by a rate limit and two by 529s; SendMessage resumes them.
+* soulstruct 2.3.2 must never WRITE a BND4/BXF4 binder (shifts the hash
+  table, breaks alignment); patch in place, gate with `ds3-texup check`.
+  Alpha convention is per element. Memory chains/signatures for the menu
+  flag never recurred (8 scans); screen detection did.
+* Yama ptrace scope 1: be the game's ANCESTOR (subreaper) to read/write
+  its memory; Wine forks from worker threads, walk every thread's
+  `children`.
+
+### ▶▶ DONE 3 Sep (details in the research docs)
+docs/research/ds3-er-menus-survey-20260903.md, docs/research/
+ds3-graphics-modernisation-20260903.md, data/ds3-ui-port/build/RECIPE.md.
+Git: committed at handoff (tools, couchd, docs, RECIPE). NOT in git: the
+multi-GB build binders and the Nexus packs (rebuildable from the chains /
+re-downloadable with the premium key).
+
+### ▶▶ Bloodborne: lock-on sprint (memory: bloodborne-lockon-sprint)
+SOLVED: the trigger. `tools/bb-lockon-sprint install lockspint` (installed):
+circle-held sprint fires in every direction while locked on. Seven
+MoveDirection gates in c0000.hks, 21 bytes; the behaviour graph has no
+conditions at all; the engine reports the sprint off-axis.
+DIRECTION: **v1 verified for the sprint 3 Sep ~00:10 ("works perfectly"),
+then Donnie found a plain locked-on JOG also turned the body (attacks miss).
+Cause: the engine's move state 1 is RUN, not sprint. v2 (circle-hold timer INP+0xd0 > the 0.4 s dash
+window at 0x5127b48, move state kept as a moving guard) VERIFIED: jog strafes,
+sprint turns. v3 (turn-anim picker hooks) STILL SKIDDED: the skid is
+the script's Act_Turn firing W_Turn_Dash off TurnAngle, which the rotation
+controller's unlocked path publishes, and v3 left a one-frame gap where the
+input asked for a 180 turn while the controller was still unlocked. v4
+(a/b following ROT bit 3) STOPPED THE TURNING: the flag-copy hook never
+runs for the player, so the player always rotated in the locked path. v5
+(zeroing the quantised turn angle) STILL SKIDDED: the script's TurnAngle is
+published by FUN_01a18bf0 as INP+0x24 * 57.3 (raw desired yaw). v6
+(TurnAngle zeroed) STILL skidded. Donnie's test: no skid when the stick
+stays pushed on release, skid only when everything is released = the 1.0 s
+DashEnd slide rotating with the snap-back, not a turn anim at all. v7
+(a facing-hold timer at scratch 0x56d3f00 keeps the stick facing for the
+1.0 s slide after a sprint ends with the stick released, a stick push
+cancels it; TurnAngle = 0 whenever locked) VERIFIED ~03:15: "that works
+perfectly". FEATURE COMPLETE. Keep script LOCKSPRINT + bundle DIRDASH5 +
+cheat ON together; revert lever `tools/bb-cheat off`. Not committed yet:
+tools/bb-cheat (new `add`), data/bb-eboot/{lockdash/,mkelf.py,FINDINGS.md}.**
+`bb-cheat on "Lock-on sprint faces the stick"` is enabled (standalone, no
+master hook). Ghidra (~/src/ghidra_12.1.3_PUBLIC, project ~/src/bb-ghidra)
+found that "locked-on facing" is ChrIns+0x245 (= NOT locked) read at three
+sites of the movement chain: the input update's top branch (0x15267b3), the
+additional-turn helper (0x152b020) and the rotation-controller flag copy
+(0x152b40d). Three caves at 0x50db000/40/80 make all three read "unlocked"
+while dashing (LOCO+0x138|2 == 3). Camera lock untouched. Full write-up:
+data/bb-eboot/FINDINGS.md section "3 Sep"; source data/bb-eboot/lockdash/.
+Keep all three layers installed: script LOCKSPRINT, bundle DIRDASH5 (selects
+the forward clip once MoveDirection is 0), cheat ON. Revert lever
+`tools/bb-cheat off`. Not committed yet: tools/bb-cheat (new `add`),
+data/bb-eboot/{lockdash/,mkelf.py,FINDINGS.md}.
+Dead ends, do not retry: cloned hkbClipGenerators never load an animation
+(any name); the script has no facing control; eboot flags 0x555428c and
+0x5128330 load and change nothing. bb-cheat's "master" hook CRASHES at world
+load (so the official cheats will too); ours are standalone and skip it.
+### ▶▶ Bloodborne: Enhanced mod dialogue / lamp problem: SOLVED AND VERIFIED (3 Sep ~01:20)
+Test A (bigger MAIN heap) did nothing, test B (Lamp Menu Disabled) brought
+the stock prompt back, so only the mod's own action button 6103 failed. Cause:
+**shadPS4 overlays the 1.09 patch folder over the base dump**, and four mod
+files have twins there (gameparam, event/m29.emevd, msg enggb+engus item),
+so the mod's params were NEVER loaded (no row 6103, no mod durability, and
+our 9999 edit never live either). `tools/bb-patchdir-fix install` (done,
+sha256 backups, `revert` exists) put the base copies into the patch folder;
+script/ is MODDED, Lamp Menu flags back to Enabled, MAIN-heap cheat off.
+VERIFIED at the TV ("ayyy it works"): lamp menu, Doll menu and dialogue are
+live. Levers if ever needed: `tools/bb-patchdir-fix revert` + `tools/bb-script-revert`.
+Not committed: tools/bb-patchdir-fix, bb-eventflags.py --set, bb-cheat add, lockdash/. Caveat inherent to
+the mod: its gameparam derives from 1.00 (12 Bullet rows etc. from 1.09 are
+absent), same as every merged-dump user of the mod. Lesson: any mod file
+whose path exists under CUSA00900-patch/dvdroot_ps4 is silently ignored.
+### ▶▶ Bloodborne QoL batch (3 Sep ~02:30, INSTALLED, UNTESTED)
+1. **FOV**: three standalone cheats "FOV +10/+15/+20 degrees" (one at a time;
+   +15 is ON). Hook 0x143af5e in the camera FOV easing, cave 0x50db200 adds
+   the offset to the FOV target (bbfov mod 545 adds a per-frame delta after
+   the easing; ours is the stable equivalent). Source data/bb-eboot/fov/.
+2. **Lock-on range x3**: `tools/bb-lockrange install 3` applied to BOTH
+   gameparams (patch dir = loaded): LockCamParam.chrLockRangeMaxRadius 22->66
+   and NpcParam.lockDist x3 (258 rows). `revert` restores; `status` shows.
+3. **Camera distance**: the official file's "Increased camera distance" and
+   "Disable Camera Auto Rotation via Movement" blocks are one command away:
+   `tools/bb-cheat upstream on "Increased camera distance"` (new subcommand).
+   Not enabled: Donnie asked what it is. Caveat shadPS4 #3767 (sprint camera
+   already sits further back than on PS4).
+4. **Dodge instability (mod 475)**: needs the archive dropped into
+   ~/fileshare/bloodborne-mods (Nexus 403s us); it is a TAE flag edit on
+   a000_7100..7800 and soulstruct's TAE reader is broken in this version.
+Also open: the QoL list
+(docs/research/bloodborne-qol-port-candidates-20260902.md): FOV, lock-on
+range, camera distance, logo skip, boss-lamp respawn setting.
+Tools: bb-lockon-sprint (script variants), bb-anibnd-swap (bundle), bb-cheat
+(now with `add <mod.json>`), ~/src/bb-ghidra (gq/dec helpers, dec-range-*.txt
+decompiles), data/bb-eboot/mkelf.py (SELF -> plain ELF for Ghidra),
+~/src/bb-havok (append_hkx.py, build_v7.py), ~/src/hksc (patched, big endian),
+data/bb-hks/ref/ (Enhanced Controls + Jump on L3 = full Lua SOURCE of c0000.hks).
+Traps: pgrep patterns match your own shell (exit 144 everywhere today); ds3-shot
+kills a foreground shell at teardown; the shadPS4 log has no timestamps.
+
+### (superseded) DS3 detail from the 3 Sep ~00:00 block, kept for the numbers
 
 ### ▶▶ DONNIE'S TO-DO
+0. **D-pad Up/Down for the ER pause menu (3 Sep ~17:00):** the fix lives in
+   the input layer. `couchd/inputproc.py` now turns Up/Down into Left/Right
+   while `/tmp/couch-dpad-rotate` exists; `tools/ds3-menu-watch` raises that
+   file while DS3's top menu bar is on SCREEN (it grabs three small regions
+   of the game window's pixmap at 30 Hz and looks for the first tile's gold
+   frame plus the "Equipment" label; the memory-chain route was a dead end,
+   eight scans, see the survey doc); `tools/ds3-modded-launch` now runs the
+   game under the watcher (`DS3_NO_MENU_WATCH=1` opts out). Verified in the
+   sandbox (1080p window on :0): flag ON within 300 ms of Escape, off inside
+   Inventory, off on close; gated on the game being the ACTIVE window so a
+   frozen game behind Kodi never rotates Kodi's D-pad. inputproc.service has
+   PrivateTmp=no, so it sees /tmp/couch-dpad-rotate. Log: /tmp/ds3-menu-watch.log.
+   18:15 Donnie restarted inputproc remotely (pid 978300, new code); 18:20
+   Kodi's peripheral.joystick was bounced over JSON-RPC. Pad was off (he was
+   out), so the first REAL test is his next DS3 session: open the pause menu,
+   press Down. If the pad is deaf in Kodi first, bounce the addon again. To go
+   live at the TV: `sudo systemctl restart inputproc.service` (then the
+   flatpak Kodi joystick addon bounce, see couchd-stage2-install memory).
+   Until then the game runs exactly as before (the watcher only adds a file).
 1. **DS3 must be set to Play Offline** (System > Network > Launch Setting) before
    playing the modded launch; modified files + EAC online is a ban risk.
 2. Next time a DS3 bar is damaged, say so: I grab the TV and measure the new
@@ -480,8 +673,127 @@ A wash (panel textures -> `er_menu_wash.py`), B cells/highlight/rules/tabs
 Each verifies with the full `ds3-shot inventory` journey under
 `data/ds3-shot/agent.lock` and restores the baseline after. 4K DS3 menu
 captures kept at er-reference/ds3_equipment_4k.png and ds3_inventory_4k.png.
-Integration = chain the two texture scripts after er_mapname, deploy the
-per-screen movies, one full-journey capture.
+**02:15 INTEGRATED AND DEPLOYED** (`01_common_menus.tpf.dcx` = HUD chain ->
+wash -> cells -> pause; eight `02_*_er.gfx` movies in the mod dir; captures
+`menusfinal_{pausemenu,equipment,inventory}.png` in the session scratchpad,
+4K comparisons looked right). Each phase's numbers are in the survey doc.
+Premises the agents overturned: ER has ONE wash (the grid's), no panels
+under detail/status; the title strip is a LIGHT haze; body text was already
+ER's size and ER's text is neutral 204 grey, not warm; DS3 draws only the
+Cursor quad for a cell; the per-row stat icons are engine-filled
+DummyIcons; MENU_L_Title is the SHOP title, not the menu underline.
+Follow-ups seen in the integrated capture: the equipment-top slot GROUP
+borders and the diamond ornament between them are still DS3's; the thin
+gold rule under every stat row remains (MENU_Base rows 964..980 and
+DetailStatus_Base 812..816, phase A left them); no scene blur (ER's calm is
+the blur; a BLURFILTER on the BG placement is the only Scaleform route);
+the warm grade needs a MULTIPLY quad; unselected cells sit at +4 vs ER's
++9.5 (raise the unselected Cursor alpha in 02_020_inventory sprite 279);
+the red X and the 02_011_equip item list are unverified (harness cannot
+reach them).
+
+**3 Sep afternoon, Donnie's three notes on the menus** (he saw them on the TV):
+1. Pause menu navigates with Left/Right though the list is vertical: the
+   movie's ActionScript is linkage stubs only, navigation is engine-side.
+   EXPERIMENT queued: `er_pause_gfx.py --grid-rename` renames the tiles
+   Item_0_k -> Item_k_0 (rows) and quick items Item_1_k -> Item_k_1; the
+   harness got `DS3SHOT_PAUSE=down` (press Down, shoot pausemenu_down).
+   Build `02_000_ingametop_nav.gfx`; capture script `nav_capture.sh`.
+2. Pause tiles misaligned: ER's frame is 137x141 = the 142x146 cell at 1:1,
+   ours was drawn at 0.94 (127x119) and sat 8.5 px low, 3 px left. Fixed in
+   er_pause_menu.py (TILE_DRAW 1.0, TILE_CX 46.5, LABEL_BASELINE 53.25) and
+   er_pause_gfx.py (TILE_Y0 -392.75). Build `01_common_status2.tpf.dcx` +
+   `02_000_ingametop_er2.gfx`, UNVERIFIED (capture refused, TV busy).
+3. Status screen still DS3: er_menu_wash.py now blanks MENU_BaseU's whole
+   big block + [4..528,812..1612], MENU_Base [1160..1680,1780..2044] and the
+   per-row rule strips (rows 964..992), DetailStatus_Base rules,
+   MENU_StatusCharaNoise; harness got `DS3SHOT_STATUS=1` (a `status` shot).
+   UNVERIFIED for the same reason.
+RESULTS 15:55: (2) alignment VERIFIED, rows 816..958 / 1200..1341 vs ER
+817..958 / 1201..1342, x 107..245 vs 107..244 (TILE_DRAW 1.0, TILE_CX 46.5;
+TILE_Y0 stays -388.5, the "8.5 px low" reading was a polluted row). (3)
+Status VERIFIED on the wash, Equipment rows lost their rules, no regression.
+(1) NAVIGATION: with `--grid-rename` Down MOVED the highlight (row 1 lum
+124.7 -> 89.5, row 2 80.3 -> 107.0), so the engine builds its grid from the
+instance names. BUT the dimmed offline "Message" item moved from row 4 to
+row 5, so the engine's item order no longer matches the baked labels: next
+was a test build with the engine's own label visible and
+`DS3SHOT_PAUSE=downsweep`: after one Down the label read "Toolbelt" and the
+prompts became Close/Switch, i.e. the engine had switched to the QUICK-ITEM
+list and lit the tile now named Item_1_0. The engine addresses
+`Item_<list>_<index>` with fixed meaning (list 0 = menu, list 1 = toolbelt;
+Left/Right = index, Up/Down = list). Names do not define the grid.
+**DEAD END: Up/Down cannot walk the vertical list from the movie.** The
+rename is kept behind `--grid-rename` as the record, never deployed. The
+choice is Donnie's: ER's vertical list navigated with Left/Right, or a
+horizontal row in ER's tile style (er_pause_gfx.py can lay the same
+strips out in a row; TILE_X/TILE_Y0/ROW_PITCH).
+DEPLOYED 16:05: `01_common_menus.tpf.dcx` (= the status2 build: HUD chain
+-> wash with the Status blanks -> cells -> pause tiles at 1:1) +
+`02_000_ingametop_er.gfx` (= er2, TILE_CX 46.5) + the seven `02_*_er.gfx`
+typography movies. All verified in captures this afternoon.
+
+**3 Sep evening, GRAPHICS: fog and clouds** (docs/research/
+ds3-graphics-modernisation-20260903.md). Archdragon Peak's fog dissected:
+cloud-sea meshes with 1024 BC1 `kumo` tiles, wisps as 128 px flipbook
+billboards, 100 m haze billboards drawing a 64 px blob, and depth blending
+ON but with a 1 m fade distance (`unkDepthBlend1`), which is the
+"clips through everything". Two agents launched: `tools/ds3-fog-soften`
+(FXR depth-fade edit via @cccode/fxr in data/ds3-ui-port/fxr-node) and
+`tools/ds3-texup` (4x upscale + BC7 + binder repack). **THE SANDBOX SAVE
+IS NOW DONNIE'S** (refreshed 19:21, his character at Archdragon Peak, the
+baseline capture is build/fog/archdragon_baseline_4k.png); the harness
+character is kept as `tools/ds3-state load harness-cemetery-20260903`
+(restore it before any menu/HUD journey; the Continue-loads-Donnie's-save
+run may show a login dialog if his save is not Play Offline, it did not
+tonight). 19:45 FOG FIX DEPLOYED to the mod dir: mod/sfx/
+frpg_sfxbnd_m32_effect.ffxbnd.dcx with the depth fade at 2..5 m (tracer
+and 15 m builds proved the field on screen; numbers in the research doc).
+Donnie judges it on the TV at Archdragon Peak; the dial is
+`tools/ds3-fog-soften --fade-min/--fade-max`. Texture upscale pipeline
+(`tools/ds3-texup`) delivered 20:00 (33 textures, BC7 via bc7enc, previews
+good) but the FIRST IN-GAME CAPTURE WAS BROKEN: wrong textures on the
+arch, ceiling, floor and pillars, fog as white slabs
+(build/texup/BROKEN_ingame_4k.png). Rolled back from the mod dir at 20:08
+(mod/map removed, commoneffects _resource removed; the fog _effect binder
+stays). Suspect: the hand-rolled split BHD/BDT writer (soulstruct 2.3.2
+cannot write BND4 splits) and/or the resource ffxbnd rebuild. Agent patched
+entries IN PLACE (root cause: soulstruct's BND4 writer shifted the hash
+table 2 bytes and broke 16-byte alignment); `tools/ds3-texup check` is the
+structural test. 20:27 map-only and sfx-only captures both render
+correctly; BOTH DEPLOYED to the mod dir (map/m32 binders with the 4x
+kumo/sky/storm textures, sfx commoneffects _resource with the 4x fog
+sprites). Donnie judges the cloud sea outside. 20:30 LAYERED CONFIG LIVE in both
+the sandbox and the real launcher (data/ds3-mod/config_darksouls3.toml,
+backups *.single-mod.toml.bak in build/): mods = default (ours), mod-vo
+(Visual Overhaul 0.6: gparams, MSBs, lights, reflectance maps), mod-ti
+(Texture Improvement 4K, 69 GB at /mnt/disk1/ds3-mods/staging/ti via
+symlinks). Sandbox capture booted in 86 s and rendered correctly. 20:50 the m32 MERGE is
+deployed too: all four m32 binders = Texture Improvement base + Visual
+Overhaul `_r` entries + our 4x clouds/sky, patched in place
+(`tools/ds3-texup pack --base-dir --inject`, 1796/1796 entries verified
+against their sources, captured clean, build/texup/merged_ingame_4k.png).
+Two corrections: VO's binders were fine (its BHD uses single-byte names,
+header byte 0x30 = 0; the checker now honours it), and TI upscales eleven
+kumo tiles (ours win). Rollback = restore the .bak config and remove
+mod/map.
+
+**3 Sep ~21:10, wishlist 1 + 2:**
+1. FPS unlock: ported krob64/ds3fps (= 0dm/DS3DebugFPS) into
+   `tools/ds3-menu-watch` (`apply_fps`: exe+0x489DD10 -> SprjFlipper,
+   float cap at +0x354, byte 1 at +0x358; game 1.15.2), applied once the
+   pointer is non-null. `tools/ds3-modded-launch` exports DS3_FPS=120 by
+   default (DS3_FPS=0 disables). The box is on 4K60 (mode-keeper stopped,
+   see homelab-tv-control), so 120 only shows once 4K120 is back; with
+   vsync on at 60 Hz it is inert. Watch for fps-tied oddities (durability,
+   ladders) and drop to DS3_FPS=0 if seen.
+2. Jump from Neutral (Nexus 1911, main file): `mod-jump/action/script/
+   c0000.hks` (plain-text Lua; DS3 compiles it), layered second in both
+   ModEngine2 configs (default, jump-from-neutral, visual-overhaul,
+   texture-improvement). Kick = hold X (interact) + R1, jump attack = hold
+   X + R2; jump from standing. Variants downloaded to
+   /mnt/disk1/ds3-mods/staging/jump-{neutral,walk} if he prefers "walk".
+   Sandbox: hks loads and the HUD comes up; the jump itself is his test.
 
 Written but NOT deployed (unverifiable in the harness, needs a lock-on on
 the TV): `er_lockon.py`, ER's soft blue lock-on dot (RECIPE "The lock-on
@@ -497,74 +809,6 @@ the small next-item previews (field only, no rules yet). Bigger candidates
 left on the HUD: status-effect icon row under the bars (ER only; DS3 has no
 equivalent), boss bar, lock-on reticle, "YOU DIED" and area-name cards, the
 compass (ER only, would need new art and script).
-
-### ▶▶ Bloodborne: lock-on sprint (memory: bloodborne-lockon-sprint)
-SOLVED: the trigger. `tools/bb-lockon-sprint install lockspint` (installed):
-circle-held sprint fires in every direction while locked on. Seven
-MoveDirection gates in c0000.hks, 21 bytes; the behaviour graph has no
-conditions at all; the engine reports the sprint off-axis.
-DIRECTION: **v1 verified for the sprint 3 Sep ~00:10 ("works perfectly"),
-then Donnie found a plain locked-on JOG also turned the body (attacks miss).
-Cause: the engine's move state 1 is RUN, not sprint. v2 (circle-hold timer INP+0xd0 > the 0.4 s dash
-window at 0x5127b48, move state kept as a moving guard) VERIFIED: jog strafes,
-sprint turns. v3 (turn-anim picker hooks) STILL SKIDDED: the skid is
-the script's Act_Turn firing W_Turn_Dash off TurnAngle, which the rotation
-controller's unlocked path publishes, and v3 left a one-frame gap where the
-input asked for a 180 turn while the controller was still unlocked. v4
-(a/b following ROT bit 3) STOPPED THE TURNING: the flag-copy hook never
-runs for the player, so the player always rotated in the locked path. v5
-(zeroing the quantised turn angle) STILL SKIDDED: the script's TurnAngle is
-published by FUN_01a18bf0 as INP+0x24 * 57.3 (raw desired yaw). v6
-(TurnAngle zeroed) STILL skidded. Donnie's test: no skid when the stick
-stays pushed on release, skid only when everything is released = the 1.0 s
-DashEnd slide rotating with the snap-back, not a turn anim at all. v7
-(a facing-hold timer at scratch 0x56d3f00 keeps the stick facing for the
-1.0 s slide after a sprint ends with the stick released, a stick push
-cancels it; TurnAngle = 0 whenever locked) VERIFIED ~03:15: "that works
-perfectly". FEATURE COMPLETE. Keep script LOCKSPRINT + bundle DIRDASH5 +
-cheat ON together; revert lever `tools/bb-cheat off`. Not committed yet:
-tools/bb-cheat (new `add`), data/bb-eboot/{lockdash/,mkelf.py,FINDINGS.md}.**
-`bb-cheat on "Lock-on sprint faces the stick"` is enabled (standalone, no
-master hook). Ghidra (~/src/ghidra_12.1.3_PUBLIC, project ~/src/bb-ghidra)
-found that "locked-on facing" is ChrIns+0x245 (= NOT locked) read at three
-sites of the movement chain: the input update's top branch (0x15267b3), the
-additional-turn helper (0x152b020) and the rotation-controller flag copy
-(0x152b40d). Three caves at 0x50db000/40/80 make all three read "unlocked"
-while dashing (LOCO+0x138|2 == 3). Camera lock untouched. Full write-up:
-data/bb-eboot/FINDINGS.md section "3 Sep"; source data/bb-eboot/lockdash/.
-Keep all three layers installed: script LOCKSPRINT, bundle DIRDASH5 (selects
-the forward clip once MoveDirection is 0), cheat ON. Revert lever
-`tools/bb-cheat off`. Not committed yet: tools/bb-cheat (new `add`),
-data/bb-eboot/{lockdash/,mkelf.py,FINDINGS.md}.
-Dead ends, do not retry: cloned hkbClipGenerators never load an animation
-(any name); the script has no facing control; eboot flags 0x555428c and
-0x5128330 load and change nothing. bb-cheat's "master" hook CRASHES at world
-load (so the official cheats will too); ours are standalone and skip it.
-### ▶▶ Bloodborne: Enhanced mod dialogue / lamp problem: SOLVED AND VERIFIED (3 Sep ~01:20)
-Test A (bigger MAIN heap) did nothing, test B (Lamp Menu Disabled) brought
-the stock prompt back, so only the mod's own action button 6103 failed. Cause:
-**shadPS4 overlays the 1.09 patch folder over the base dump**, and four mod
-files have twins there (gameparam, event/m29.emevd, msg enggb+engus item),
-so the mod's params were NEVER loaded (no row 6103, no mod durability, and
-our 9999 edit never live either). `tools/bb-patchdir-fix install` (done,
-sha256 backups, `revert` exists) put the base copies into the patch folder;
-script/ is MODDED, Lamp Menu flags back to Enabled, MAIN-heap cheat off.
-VERIFIED at the TV ("ayyy it works"): lamp menu, Doll menu and dialogue are
-live. Levers if ever needed: `tools/bb-patchdir-fix revert` + `tools/bb-script-revert`.
-Not committed: tools/bb-patchdir-fix, bb-eventflags.py --set, bb-cheat add, lockdash/. Caveat inherent to
-the mod: its gameparam derives from 1.00 (12 Bullet rows etc. from 1.09 are
-absent), same as every merged-dump user of the mod. Lesson: any mod file
-whose path exists under CUSA00900-patch/dvdroot_ps4 is silently ignored.
-Also open: the QoL list
-(docs/research/bloodborne-qol-port-candidates-20260902.md): FOV, lock-on
-range, camera distance, logo skip, boss-lamp respawn setting.
-Tools: bb-lockon-sprint (script variants), bb-anibnd-swap (bundle), bb-cheat
-(now with `add <mod.json>`), ~/src/bb-ghidra (gq/dec helpers, dec-range-*.txt
-decompiles), data/bb-eboot/mkelf.py (SELF -> plain ELF for Ghidra),
-~/src/bb-havok (append_hkx.py, build_v7.py), ~/src/hksc (patched, big endian),
-data/bb-hks/ref/ (Enhanced Controls + Jump on L3 = full Lua SOURCE of c0000.hks).
-Traps: pgrep patterns match your own shell (exit 144 everywhere today); ds3-shot
-kills a foreground shell at teardown; the shadPS4 log has no timestamps.
 
 ### (superseded) Resume block from 2 Sep ~18:00 — DS3 "ELDEN RING EDITION": the bars are 1:1, the sandbox had been rendering 1080p)
 

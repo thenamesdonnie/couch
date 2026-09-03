@@ -58,12 +58,20 @@ def decode(d: bytes):
         order = "BGRA" if kind.endswith("_BGRA") else "RGBA"
         return Image.frombytes("RGBA", (width, height),
                                payload[:width * height * 4], "raw", order)
+    # DX10-header formats by DXGI code (map textures use these: 71/72 BC1,
+    # 74/75 BC2, 77/78 BC3, 80 BC4, 83 BC5); ATI1/ATI2 are BC4/BC5 with FourCC.
     if kind == "BC7":
         raw = texture2ddecoder.decode_bc7(payload, width, height)
-    elif kind in ("DXT1",):
+    elif kind in ("DXT1", "dxgi71", "dxgi72"):
         raw = texture2ddecoder.decode_bc1(payload, width, height)
-    elif kind in ("DXT5",):
+    elif kind in ("DXT3", "dxgi74", "dxgi75"):
+        raw = texture2ddecoder.decode_bc2(payload, width, height)
+    elif kind in ("DXT5", "dxgi77", "dxgi78"):
         raw = texture2ddecoder.decode_bc3(payload, width, height)
+    elif kind in ("ATI1", "BC4U", "dxgi80"):
+        raw = texture2ddecoder.decode_bc4(payload, width, height)
+    elif kind in ("ATI2", "BC5U", "dxgi83"):
+        raw = texture2ddecoder.decode_bc5(payload, width, height)
     else:
         return None
     # texture2ddecoder returns BGRA

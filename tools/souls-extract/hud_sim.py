@@ -86,10 +86,10 @@ never low - and the checker says why. Its two exact points, atlas 40 -> screen
 50 and atlas 80 -> screen 92, both invert to gamma 0.8795, and 0.87 is outside
 the round-to-nearest bracket either point allows ((0.8742, 0.8850) and
 (0.8748, 0.8841)). A global refit over all three bars agrees: 0.8795, mean abs
-0.17 versus 0.83 at 0.87. GAMMA IS LEFT AT 0.87 HERE ON PURPOSE: it is paired
-with er_hud_bars.SCREEN_GAMMA, which the graft uses to INVERT this transfer,
-and moving one without the other breaks the round trip. Change both together
-or neither.
+0.17 versus 0.83 at 0.87. GAMMA is paired with er_hud_bars.SCREEN_GAMMA, which
+the graft uses to INVERT this transfer, and moving one without the other
+breaks the round trip. Both moved from 0.87 to 0.8795 together on 3 Sep 2026
+(the flat fill rows had been rendering about one unit under ER's).
 
 KNOWN LIMITS: predicts the fill window only (the drawn rows), not the backdrop
 rows above/below; ignores the vkBasalt cap overlay and the bar's own left
@@ -108,7 +108,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 from PIL import Image
 
-GAMMA = 0.87
+GAMMA = 0.8795      # 3 Sep 2026: moved from 0.87 TOGETHER with er_hud_bars.SCREEN_GAMMA (see the header)
 VANILLA_CX = (230.0 / 256.0, 26.0)
 
 # base-256 atlas row of each fill block top; window = rows 6..18 inside it

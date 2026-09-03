@@ -1,0 +1,1654 @@
+#!/usr/bin/env python3
+"""ds3-texup: 4x the Archdragon Peak cloud sea and fog sprites, and repack the binders.
+
+Fixes B and C of docs/research/ds3-graphics-modernisation-20260903.md. The
+"outdated" look of that map is measurable, not vibes: the cloud sea is 1024 px
+BC1 tiles stretched over a hundred metres, and the fog wisps are 8x8 flipbooks
+whose individual frames are 128 px. This tool pulls those textures out of the
+archives, upscales them, re-encodes them as BC7/BC4 with a full mip chain, and
+PATCHES the binders they came from in place. It never touches the real install:
+it reads through souls-extract's DvdBnd and writes to data/ds3-ui-port/build/texup/.
+
+    tools/ds3-texup extract      archives -> build/texup/orig/*.png + manifest.json
+    tools/ds3-texup upscale      orig     -> build/texup/up/*.png
+    tools/ds3-texup encode       up       -> build/texup/dds/*.dds  (+ round-trip PSNR)
+    tools/ds3-texup pack         dds      -> build/texup/mod-map/ and mod-sfx/
+    tools/ds3-texup preview      original vs upscaled 1:1 crops
+    tools/ds3-texup seamcheck    the flipbook frame-boundary proof
+    tools/ds3-texup check FILE   structural check of any BND4/BXF4, ours or not
+    tools/ds3-texup all          everything above, in order
+    tools/ds3-texup report       the manifest as a table
+    tools/ds3-texup deploy-cmds  print the cp commands (it does NOT deploy)
+
+The map and sfx outputs are SEPARATE on purpose, so a capture can blame one of
+them rather than both.
+
+Flags: --only SUBSTR (restrict to matching texture names), --force (redo work
+whose output already exists), --quality N (bc7e level 0..6, default 6).
+
+MERGE FLAGS on `pack`, because ModEngine2 is first-match-wins per FILE and three
+mods that each ship a whole map/m32 binder do not layer, they shadow:
+
+    --base-dir DIR   use this pack's binders as the base (container included)
+    --inject DIR     patch in every entry DIR's binders changed against the game
+                     original (entry data only). Repeatable, later wins
+    --out-name NAME  build subdirectory for the map output (default mod-map)
+    --skip-sfx       map binders only
+
+Built 3 Sep 2026 for Archdragon Peak, where three sources touch map/m32:
+
+    tools/ds3-texup pack --skip-sfx --out-name mod-map-merged \
+      --base-dir /mnt/disk1/ds3-mods/staging/ti \
+      --inject   /mnt/disk1/ds3-mods/staging/visual-overhaul
+
+WHY THESE TOOLS.
+
+  Upscaler: realesrgan-ncnn-vulkan (~/src/realesrgan), model realesrgan-x4plus.
+  It is a static Vulkan binary, so it runs on the RX 9070 XT through RADV with
+  no PyTorch and no ROCm. Measured on this box: 1024x1024 -> 4096x4096 in 16.0 s
+  whole-sheet, 5.7 s as 64 separate 128 px frames. The general x4plus model, not
+  the anime one: clouds and smoke are photographic.
+
+  MEASURED TRAP, and the reason this tool splits channels. Feed
+  realesrgan-ncnn-vulkan an RGBA PNG and it runs the NETWORK on RGB only and
+  BICUBIC-resizes the alpha. Proved on s50065 (a 64x64 alpha blob): its alpha
+  output differs from a bicubic resize by mean 0.26/255 and from the network's
+  own output on the same channel by 1.66/255. Every fog sprite here IS its alpha
+  channel, so a naive RGBA run silently decides the most important channel with
+  the cheapest filter in the binary.
+
+  Splitting the channels then showed the network is the WRONG tool for that
+  channel anyway: on a fog puff it hardens the soft edge and turns the feather
+  into radial filaments (see `ai_upscale` for the three-way comparison). So RGB
+  goes through the network and alpha gets LANCZOS, per frame. RGB is dilated into
+  the transparent region first, so the network never drags whatever junk sits
+  behind alpha=0 into a visible edge.
+
+  Encoder: bc7enc_rdo (~/src/bc7enc_rdo, built here with bc7e.ispc for all BC7
+  modes). "Nothing on Linux encodes BC7" is no longer true. Two build fixes were
+  needed and are recorded in the Pipeline section of the research doc: ert.h
+  needs <cstdint> on GCC 13+, and the ispc objects need --pic or the link fails
+  with "relocation R_X86_64_32S ... can not be used when making a PIE object".
+  Measured: 4096x4096 BC7 at bc7e quality 6 in 6.1 s wall (48 s of CPU across
+  the pool), round-trip 52.2 dB against the source PNG.
+
+  Compressonator was not tried: bc7enc built and ran in under a minute once the
+  two fixes were in, and it is the encoder the RDO texture world actually uses.
+
+WHY THE FORMAT CHOICES.
+
+  The TPF entries hold COMPLETE DDS files, and DS3 reads the DDS header, not the
+  TPF format byte. Proof from its own data: m32_00_sky_02_a and the stormsky set
+  are TPF format 102 with DXGI 99 (BC7_UNORM_SRGB) while the sfx sprites are TPF
+  format 102 with DXGI 98 (BC7_UNORM). One TPF code, two DXGI codes. So the rule
+  here is: PRESERVE the original DDS header byte-for-byte and patch only
+  width/height/mipMapCount/linearSize, plus the DXGI code when a format actually
+  changes. Nothing else about the header is invented.
+
+  The one format change is the cloud albedo. Those ship BC1_UNORM_SRGB (DXGI 72,
+  TPF format 0/1), which is exactly what puts block artefacts on the soft
+  gradients. They go to BC7_UNORM_SRGB (DXGI 99, TPF format 102), which is a
+  combination DS3 already ships. Normals stay BC7 linear (DXGI 98, TPF 106/107),
+  masks stay BC4 (FourCC ATI1, TPF 103).
+
+  Uncompressed BGRA, the fallback replace_texture.py uses for UI atlases, is not
+  an option at this scale: one 4096x4096 texture would be 64 MB before mips.
+
+WHY MIPS ARE GENERATED HERE. Every original carries a full chain down to 1x1
+(kumo_20_a: 11 levels, 699,212 bytes). bc7enc cannot make mips, so this tool
+makes them itself and concatenates the encoded levels. Shipping a mip-less 4096
+texture would alias worse at distance than the 1024 original looks up close,
+which is the opposite of the point. sRGB albedo is downsampled in LINEAR light
+(decode sRGB, resize, re-encode); linear data (normals, masks, sprite alpha) is
+resized as-is.
+
+WHY MASKS AND NORMALS DO NOT GET THE AI. A BC4 mask and a two-channel normal are
+DATA, not a picture, and a hallucinating generator is exactly wrong for them.
+They get LANCZOS. Normals are then clamped so x^2 + y^2 <= 1 in the tangent
+plane (DS3 stores X in R and Y in G, B is a near-constant third channel and A is
+unused: measured on kumo_20_n, R and G span 66..189 around 127 while B sits at
+57..66), because LANCZOS overshoot can push a resampled normal off the unit
+sphere. Honest note: a LANCZOS mask upscale buys interpolation smoothness and
+nothing else. It is here because a 4x albedo against a 1x mask can beat on the
+block edges of the mask; skip it with --only if you disagree.
+
+WHY FLIPBOOKS ARE UPSCALED PER FRAME. A sprite sheet is 64 unrelated pictures in
+a trench coat, and any filter with a footprint, the network or LANCZOS, will drag
+frame N+1 into frame N's border if it is run over the whole sheet. Per frame is
+also 2.8x faster here (5.7 s against 16.0 s for s11630), because the binary's
+model load and Vulkan enumeration dominate a small tile. `seamcheck` measures the
+difference between the two as a function of distance from a frame edge; the
+numbers for s11630 are in the Pipeline section of the research doc. s11640 is the
+exception: it is 8 columns x 5 ROWS in a 2048x1024 sheet, so its cell height is
+204.8 px and there is no integer slice; it is upscaled whole.
+
+SIZE CAP. 4x, then capped at 4096 on the long side, so a 2048 source gets 2x and
+kumo_50_m (already 4096x1024) is skipped entirely. The one exception is the sky
+panorama m32_00_sky_02_a, 4096x2048, which is allowed 8192x4096 because it is
+the single texture wrapped round the whole sky and is therefore the most
+stretched thing on screen. It is produced by a 4x pass followed by a LANCZOS
+halving, which reads more detail out of the source than a native 2x pass would.
+
+VERIFICATION, and why the first version's verification was worthless. `encode`
+decodes every finished DDS back through tpf_png.decode and reports PSNR against
+the PNG it came from. That part was always fine.
+
+The binder part was not. Version 1 RE-SERIALISED the binders with soulstruct,
+proved it by reloading them with soulstruct, and shipped something that made the
+game draw the wrong textures on the Archdragon Peak arch, pillars and floor,
+white geometry chunks, and the fog as solid white slabs. A library re-parsing its
+own output proves only that the library is self-consistent. Two faults, both
+invisible to that check and both found with the reader in this file:
+
+  1. BND4's hash table stores `path_hashes_offset` as an ABSOLUTE FILE OFFSET,
+     and the table maps a path hash to an ENTRY INDEX. The re-serialised BHD came
+     out 2 bytes shorter, because soulstruct does not pad the UTF-16 name block
+     to 8 before the table, so the table moved to 23030 while its own header
+     still said 23032. Every lookup read the hash array 2 bytes skewed and the
+     last record ran off the end of the file.
+  2. soulstruct writes 10 pad bytes between entry data blocks, which destroys the
+     16-byte alignment the format requires: 228 of 245 entry offsets came out
+     misaligned, against 245 of 245 in the shipped file.
+
+So `pack` no longer serialises anything. It appends the new payloads to the end
+of the original bytes, 16-byte aligned, and rewrites ONLY the three fields of the
+replaced entries' own records (compressed size, uncompressed size, data offset).
+Everything else in both files keeps its bytes AND its file position. `_verify`
+then checks that with our own reader: the header, name block and hash table are
+untouched and in place, every path hash still resolves to an entry whose name
+hashes to it, every entry is 16-byte aligned, every untouched record is
+byte-identical, and the byte ranges that did change all lie inside a replaced
+record. `check` runs the same structural test on any binder, so the shipped file
+and a third-party pack that is known to work in game can be used as controls.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import hashlib
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+VENV_PY = REPO / "data/ds3-ui-port/.venv/bin/python"
+
+# Re-exec under the project venv: soulstruct, Pillow, numpy and texture2ddecoder
+# all live there and nowhere else on this box. The re-entry guard is an env var,
+# not a comparison of interpreter paths: .venv/bin/python is a symlink chain that
+# resolve()s to the same /usr/bin/python3.12 as the system interpreter, so a path
+# check says "already there" and the script dies on the import it just failed.
+try:
+    import soulstruct  # noqa: F401
+except ImportError:  # pragma: no cover
+    if VENV_PY.exists() and not os.environ.get("DS3_TEXUP_REEXEC"):
+        os.environ["DS3_TEXUP_REEXEC"] = "1"
+        os.execv(str(VENV_PY), [str(VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
+    raise
+
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
+
+sys.path.insert(0, str(REPO / "tools/souls-extract"))
+from oodle import dcx_compress_dflt, dcx_decompress  # noqa: E402
+from tpf_png import dds_describe, decode  # noqa: E402
+from soulstruct.containers import Binder, TPF  # noqa: E402
+
+Image.MAX_IMAGE_PIXELS = None
+
+# ---------------------------------------------------------------- configuration
+
+GAME = Path.home() / ".steam/steam/steamapps/common/DARK SOULS III/Game"
+KEYS_CS = REPO / "data/ds3-ui-port/uxm_keys.cs"
+BUILD = REPO / "data/ds3-ui-port/build/texup"
+DEPLOY = REPO / "data/ds3-shot/game/mod"
+
+REALESRGAN = Path.home() / "src/realesrgan/realesrgan-ncnn-vulkan"
+REALESRGAN_MODELS = Path.home() / "src/realesrgan/models"
+REALESRGAN_MODEL = "realesrgan-x4plus"
+BC7ENC = Path.home() / "src/bc7enc_rdo/build-bc7e/bc7enc"
+
+DXGI_BC1_UNORM = 71
+DXGI_BC1_UNORM_SRGB = 72
+DXGI_BC7_UNORM = 98
+DXGI_BC7_UNORM_SRGB = 99
+TPF_FORMAT_BC7 = 102          # DS3 uses this code for BOTH DXGI 98 and 99
+
+# Split map binders, archive-relative. Each holds one .tpf.dcx per texture.
+# Our own upscales only land in 0000 (the cloud sea) and 0003 (sky and storm),
+# but 0001 and 0002 are listed because `--inject` merges other packs' entries
+# and both Texture Improvement and Visual Overhaul change entries in all four.
+# A binder with nothing to do is skipped, so the plain build is unaffected.
+MAP_BINDERS = {
+    "m32_0000": "/map/m32/m32_0000",
+    "m32_0001": "/map/m32/m32_0001",
+    "m32_0002": "/map/m32/m32_0002",
+    "m32_0003": "/map/m32/m32_0003",
+}
+SFX_BINDER = "/sfx/frpg_sfxbnd_commoneffects_resource.ffxbnd.dcx"
+
+# The cloud sea (fix C). Everything named m32_00_kumo_* in m32_0000 plus the sky
+# panorama and the two storm strips in m32_0003. The _l twins are the game's own
+# low-detail set for lower texture settings and are deliberately left alone:
+# upscaling a LOD copy defeats the reason it exists.
+MAP_TARGETS = [
+    ("m32_0000", re.compile(r"^m32_00_kumo_\w+\.tpf\.dcx$")),
+    ("m32_0003", re.compile(r"^m32_00_(sky_02_a|stormsky_03_a|stormsky_04_a)\.tpf\.dcx$")),
+]
+
+# The fog wisps and the ambient haze (fix B), all in the commoneffects resource
+# binder. Grid is (cols, rows) of the flipbook, or None for a single image or a
+# sheet with no integer cell height.
+SFX_TARGETS = {
+    "s11617": (8, 8),
+    "s11621": (8, 4),
+    "s11623": (8, 4),
+    "s11624": (8, 8),
+    "s11626": (8, 4),
+    "s11630": (8, 8),
+    "s11633": (8, 8),
+    "s11640": None,      # 8 cols x 5 rows in 2048x1024 -> 204.8 px cells, no integer slice
+    "s50065": None,      # the 64x64 ambient haze blob
+    "s50255": None,      # a 256x256 blob
+}
+
+# Long-side cap. The sky panorama is the one texture allowed past 4096.
+DEFAULT_CAP = 4096
+CAP_OVERRIDES = {"m32_00_sky_02_a": 8192}
+
+
+def role_of(stem: str) -> str:
+    """albedo | normal | mask | sprite, from the name the artists gave it."""
+    if stem.startswith("s"):
+        return "sprite"
+    if stem.endswith("_n"):
+        return "normal"
+    if stem.endswith("_m"):
+        return "mask"
+    return "albedo"
+
+
+# ------------------------------------------------------------------- archives
+
+def ds3_keys() -> dict[str, str]:
+    txt = KEYS_CS.read_text(encoding="utf-8-sig")
+    m = re.search(r"DarkSouls3Keys\s*=\s*new Dictionary<string, string>\s*\{(.*?)\n\s*\};", txt, re.S)
+    return dict(re.findall(
+        r'\["([^"]+)"\]\s*=\s*@"(-----BEGIN RSA PUBLIC KEY-----.*?-----END RSA PUBLIC KEY-----)"',
+        m.group(1), re.S))
+
+
+_BND = None
+
+
+def dvd():
+    global _BND
+    if _BND is None:
+        from dvdbnd import DvdBnd, DS3
+        _BND = DvdBnd(GAME, ds3_keys(), DS3)
+    return _BND
+
+
+def load_map_binder(key: str) -> tuple[Binder, bytes, bytes]:
+    """The binder plus the raw bhd/bdt it came from; the patcher needs the raw bytes."""
+    base = MAP_BINDERS[key]
+    bhd, bdt = dvd().get(base + ".tpfbhd"), dvd().get(base + ".tpfbdt")
+    return Binder.from_bytes(bhd, bdt), bhd, bdt
+
+
+def load_sfx_binder() -> Binder:
+    return Binder.from_bytes(dcx_decompress(dvd().get(SFX_BINDER)))
+
+
+def entry_basename(entry) -> str:
+    """ffxbnd entries carry N:\\FDP\\... Windows paths; map entries are bare names."""
+    return entry.name.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+# BND4 / BXF4 on-disk layout, read off real DS3 files with tools/souls-extract and
+# cross-checked against soulstruct's PARSER (never its writer, which cannot write
+# these at all). Header, 0x40 bytes:
+#   0x00 magic "BND4" or "BHF4"      0x0C uint32 entry_count
+#   0x10 int64 header_size (0x40)    0x18 char[8] signature
+#   0x20 int64 entry_header_size     0x28 int64 data_offset
+#   0x30 u8 unicode, 0x31 u8 flags, 0x32 u8 hash_table_type, 5 pad
+#   0x38 int64 hash_table_offset     0x40 entry records
+# Entry record, 0x24 bytes for DS3's flags 0x74 (measured: 1+3+4+8+8+4+4+4 = 36):
+#   +0x00 u8 flags (0x40 here)       +0x01 pad3      +0x04 int32 = -1
+#   +0x08 int64 compressed_size      +0x10 int64 uncompressed_size
+#   +0x18 uint32 data_offset         +0x1C int32 entry_id
+#   +0x20 uint32 name_offset (UTF-16LE if header byte 0x30 is 1, else Shift-JIS)
+# Entry data is 16-BYTE ALIGNED (345/345 offsets in the shipped m32_0000 and
+# 349/349 in the commoneffects ffxbnd divide by 16; the gaps between consecutive
+# entries run 0..15, i.e. alignment padding and nothing else).
+ENTRY_RECORD_SIZE = 0x24
+BDT_ALIGN = 16
+_OFF_ENTRY_COUNT, _OFF_ENTRY_HEADER_SIZE = 0x0C, 0x20
+_OFF_UNICODE, _OFF_HASH_TABLE, _ENTRIES_START = 0x30, 0x38, 0x40
+_REC_CSIZE, _REC_USIZE, _REC_DATA_OFFSET, _REC_ID, _REC_NAME = 0x08, 0x10, 0x18, 0x1C, 0x20
+
+
+def bnd4_entries(d: bytes) -> list[dict]:
+    """Parse the entry table of a BND4 or BHF4 with our own reader, no soulstruct.
+
+    HEADER BYTE 0x30 IS THE NAME ENCODING and it is not decoration. FromSoft's
+    own binders set it to 1 (UTF-16LE, NUL-NUL terminated), and so does the
+    Texture Improvement pack, but DS3 Visual Overhaul's writer sets it to 0 and
+    stores single-byte (Shift-JIS) names. Reading a `unicode = 0` binder as
+    UTF-16 does not fail, it succeeds with the bytes shifted by one: VO's
+    `m32_00_c3010_Angle01_r.tpf.dcx` came back as `㍭弲〰...`, which
+    reads as mojibake but is really "m3" "2_" ... one byte out of phase. That
+    also made its path-hash table look 0/245 broken, when in fact it resolves
+    245/245 once the names are decoded the way its own header says they are.
+    """
+    if d[:4] not in (b"BND4", b"BHF4"):
+        raise SystemExit(f"not a BND4/BHF4: {d[:4]!r}")
+    count = struct.unpack_from("<I", d, _OFF_ENTRY_COUNT)[0]
+    rec_size = struct.unpack_from("<q", d, _OFF_ENTRY_HEADER_SIZE)[0]
+    if rec_size != ENTRY_RECORD_SIZE:
+        raise SystemExit(f"entry header size {rec_size:#x} is not the 0x24 layout this tool knows")
+    wide = d[_OFF_UNICODE] == 1
+    step, term, enc = (2, b"\0\0", "utf-16-le") if wide else (1, b"\0", "shift_jis")
+    out = []
+    for i in range(count):
+        o = _ENTRIES_START + i * rec_size
+        name_off = struct.unpack_from("<I", d, o + _REC_NAME)[0]
+        e = name_off
+        while d[e:e + step] != term:
+            e += step
+        out.append(dict(
+            i=i, rec=o, flags=d[o], csize=struct.unpack_from("<q", d, o + _REC_CSIZE)[0],
+            usize=struct.unpack_from("<q", d, o + _REC_USIZE)[0],
+            off=struct.unpack_from("<I", d, o + _REC_DATA_OFFSET)[0],
+            id=struct.unpack_from("<i", d, o + _REC_ID)[0], name_off=name_off,
+            name=d[name_off:e].decode(enc), raw=bytes(d[o:o + rec_size]),
+        ))
+    return out
+
+
+def hash_table_info(d: bytes) -> dict | None:
+    """The BND4 path-hash table. `path_hashes_offset` is an ABSOLUTE file offset.
+
+    THIS FIELD IS WHY THE FIRST BUILD BROKE THE GAME. Layout, read off a real
+    m32_0000.tpfbhd (soulstruct's `HashTableHeader` models a leading 8-byte pad
+    that is not there, but it never uses the table to find anything so it never
+    notices):
+        +0x00 int64  path_hashes_offset   ABSOLUTE, from the start of the FILE
+        +0x08 uint32 group_count
+        +0x0C int32  unknown = 0x00080810
+        +0x10 group_count * (int32 length, int32 first_index)
+        then  (uint32 path_hash, int32 ENTRY INDEX) pairs
+    The pairs point at entry INDICES, so the table is how the engine turns a
+    path into an entry, and it is only valid while both the entry order and the
+    table's own file position are untouched.
+    """
+    off = struct.unpack_from("<q", d, _OFF_HASH_TABLE)[0]
+    if off == 0:
+        return None
+    ph_off = struct.unpack_from("<q", d, off)[0]
+    group_count = struct.unpack_from("<I", d, off + 8)[0]
+    groups_end = off + 0x10 + group_count * 8
+    total = sum(struct.unpack_from("<i", d, off + 0x10 + n * 8)[0] for n in range(group_count))
+    return dict(offset=off, path_hashes_offset=ph_off, group_count=group_count,
+                groups_end=groups_end, hash_count=total,
+                stale=ph_off != groups_end, overruns=ph_off + total * 8 > len(d))
+
+
+def fs_path_hash(name: str) -> int:
+    """FromSoft's binder path hash: lowercase, backslashes to slashes, leading /.
+
+        h = h * 37 + c, over UTF-16 code units, wrapping at 32 bits
+
+    Taken from SoulsFormats' `SFUtil.FromPathHash` and confirmed against 42,548
+    records in 100 vanilla DS3 tpfbhd files. NOT soulstruct's version, which is
+    `h += i * 37 + ord(c)` with `i` the enumerate index and no lowercasing; that
+    is a different function and reproduces nothing, so soulstruct rebuilding a
+    hash table would produce a table that resolves every path to the wrong entry.
+    """
+    t = name.lower().replace("\\", "/")
+    if not t.startswith("/"):
+        t = "/" + t
+    h = 0
+    for c in t:
+        h = (h * 37 + ord(c)) & 0xFFFFFFFF
+    return h
+
+
+def check_hash_table(d: bytes, entries: list[dict]) -> dict:
+    """Resolve every path-hash record and confirm it lands on the right entry.
+
+    This is the check that would have caught the first build in a second. The
+    record is (uint32 hash, int32 ENTRY INDEX) and the index is the position in
+    the entry-header array, so a table that is stale, shifted, or built from a
+    reordered entry list still passes every structural check and still hands the
+    engine the wrong texture. Only resolving it catches that.
+    """
+    info = hash_table_info(d)
+    if info is None:
+        return dict(present=False)
+    ok = bad = 0
+    for n in range(info["hash_count"]):
+        o = info["path_hashes_offset"] + n * 8
+        if o + 8 > len(d):
+            bad += 1
+            continue
+        hv, idx = struct.unpack_from("<Ii", d, o)
+        if 0 <= idx < len(entries) and fs_path_hash(entries[idx]["name"]) == hv:
+            ok += 1
+        else:
+            bad += 1
+    return dict(present=True, ok=ok, bad=bad, **info)
+
+
+def patch_entries_in_place(records: bytearray, data: bytearray,
+                           new: dict[str, bytes]) -> list[dict]:
+    """Append each replacement to `data` and rewrite ONLY its own record fields.
+
+    `records` holds the entry table (the BHD of a split binder), `data` holds the
+    payloads (the BDT). For a single-file BND4 they are the SAME bytearray and
+    must be passed as the same object, because appending to the file also extends
+    the buffer the records live in.
+
+    Nothing moves. The header, the name block, the hash table and every record we
+    are not replacing keep their exact bytes and their exact file positions, so
+    the hash table's absolute `path_hashes_offset` stays correct by construction.
+    The cost is dead space: a replaced entry leaves its old payload behind. That
+    is the price of not moving anything, and it is worth paying.
+    """
+    entries = {e["name"]: e for e in bnd4_entries(bytes(records))}
+    changes = []
+    for name, payload in new.items():
+        e = entries.get(name)
+        if e is None:
+            raise SystemExit(f"no entry named {name!r}")
+        pad = (-len(data)) % BDT_ALIGN
+        data += b"\0" * pad
+        offset = len(data)
+        if offset > 0xFFFFFFFF:
+            raise SystemExit(f"{name}: data offset {offset} does not fit the record's uint32")
+        data += payload
+        before = bytes(records[e["rec"]:e["rec"] + ENTRY_RECORD_SIZE])
+        struct.pack_into("<q", records, e["rec"] + _REC_CSIZE, len(payload))
+        struct.pack_into("<q", records, e["rec"] + _REC_USIZE, len(payload))
+        struct.pack_into("<I", records, e["rec"] + _REC_DATA_OFFSET, offset)
+        changes.append(dict(name=name, rec=e["rec"], before=before,
+                            after=bytes(records[e["rec"]:e["rec"] + ENTRY_RECORD_SIZE]),
+                            old_off=e["off"], new_off=offset, pad=pad,
+                            old_size=e["csize"], new_size=len(payload)))
+    return changes
+
+
+def patch_bxf4(bhd: bytes, bdt: bytes, new: dict[str, bytes]) -> tuple[bytes, bytes, list[dict]]:
+    """Split binder: records live in the BHD, payloads in the BDT. Two buffers."""
+    out_bhd, out_bdt = bytearray(bhd), bytearray(bdt)
+    changes = patch_entries_in_place(out_bhd, out_bdt, new)
+    return bytes(out_bhd), bytes(out_bdt), changes
+
+
+class FileAppender:
+    """An append-only `data` sink for `patch_entries_in_place`, backed by a file.
+
+    WHY THIS EXISTS: memory. Merging on top of the Texture Improvement pack means
+    the base BDTs are 393 MB, 1.46 GB, 1.08 GB and 1.44 GB. The in-memory path
+    would hold the source bytes plus a bytearray copy, i.e. about 3 GB resident
+    for m32_0001 alone, on a box with other things running. The patcher only ever
+    asks `len(data)` and does `data += bytes`, so a file handle satisfies it
+    exactly and the base BDT is copied to the destination with `shutil.copyfile`
+    (streamed) and then appended to in place. Nothing changes about the algorithm:
+    payloads still go on the end, 16-byte aligned, and no existing byte moves.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.f = open(path, "r+b")
+        self.f.seek(0, os.SEEK_END)
+        self.n = self.f.tell()
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __iadd__(self, b: bytes) -> "FileAppender":
+        self.f.write(b)
+        self.n += len(b)
+        return self
+
+    def close(self) -> None:
+        self.f.flush()
+        os.fsync(self.f.fileno())
+        self.f.close()
+
+
+def sha_file(path: Path, length: int | None = None) -> str:
+    """sha256 of a file, or of its first `length` bytes. Streamed, 1 MB at a time."""
+    h = hashlib.sha256()
+    left = length if length is not None else path.stat().st_size
+    with open(path, "rb") as f:
+        while left > 0:
+            chunk = f.read(min(1 << 20, left))
+            if not chunk:
+                raise SystemExit(f"{path}: wanted {length} bytes, file is shorter")
+            h.update(chunk)
+            left -= len(chunk)
+    return h.hexdigest()
+
+
+def read_payload(bdt: Path, e: dict) -> bytes:
+    """One entry's payload, read by seek. The BDT is never loaded whole."""
+    with open(bdt, "rb") as f:
+        f.seek(e["off"])
+        d = f.read(e["csize"])
+    if len(d) != e["csize"]:
+        raise SystemExit(f"{bdt.name}: entry {e['name']} runs past the end of the file")
+    return d
+
+
+def find_pack_binder(root: Path, key: str) -> tuple[Path, Path] | None:
+    """Locate `<key>.tpfbhd` + `.tpfbdt` in a mod directory, laid out either way.
+
+    Accepts the pack root (`.../staging/ti`, which holds `map/m32/...`) or the
+    binder directory itself, because the Nexus packs and our own build tree
+    disagree about which one you point at.
+    """
+    for cand in (root / "map/m32" / key, root / key):
+        bhd, bdt = cand.with_suffix(".tpfbhd"), cand.with_suffix(".tpfbdt")
+        if bhd.exists() and bdt.exists():
+            return bhd, bdt
+    return None
+
+
+def entries_by_name(bhd: bytes) -> dict[str, dict]:
+    return {e["name"]: e for e in bnd4_entries(bhd)}
+
+
+def injected_payloads(inject_root: Path, key: str, orig_bhd: bytes,
+                      orig_bdt: bytes) -> dict[str, bytes]:
+    """Every entry in `inject_root`'s binder whose payload differs from the game's.
+
+    WHY DIFF AGAINST THE GAME ORIGINAL rather than trusting a mod's own file
+    list: these packs ship FULL binders, all 245/700/626/600 entries, of which
+    only a handful are actually edited (Visual Overhaul: 27/82/72/90 `_r`
+    reflectance maps). Copying the whole binder would overwrite the base pack's
+    work with vanilla bytes. The only honest definition of "what this mod
+    changed" is a payload-by-payload comparison with the archive.
+
+    Only the ENTRY DATA is taken. Visual Overhaul's container is never copied:
+    its BHD is written by a different tool (single-byte names, 18,080 bytes
+    against the shipped 24,992) and the merge keeps the base pack's container
+    byte for byte so the base's hash table stays valid by construction.
+    """
+    found = find_pack_binder(inject_root, key)
+    if found is None:
+        return {}
+    inj_bhd_path, inj_bdt_path = found
+    inj_bhd = inj_bhd_path.read_bytes()
+    inj = entries_by_name(inj_bhd)
+    orig = entries_by_name(orig_bhd)
+    missing = set(orig) - set(inj)
+    if missing:
+        raise SystemExit(f"{inj_bhd_path}: {len(missing)} entries the game has are absent, "
+                         f"e.g. {sorted(missing)[:3]}")
+    out = {}
+    with open(inj_bdt_path, "rb") as fi:
+        for name, oe in orig.items():
+            ie = inj[name]
+            a = orig_bdt[oe["off"]:oe["off"] + oe["csize"]]
+            fi.seek(ie["off"])
+            b = fi.read(ie["csize"])
+            if len(b) != ie["csize"]:
+                raise SystemExit(f"{inj_bdt_path.name}: {name} runs past the end of the file")
+            if a != b:
+                out[name] = b
+    return out
+
+
+def patch_bnd4(data: bytes, new: dict[str, bytes]) -> tuple[bytes, list[dict]]:
+    """Single-file binder: records and payloads share one buffer, so pass one."""
+    buf = bytearray(data)
+    changes = patch_entries_in_place(buf, buf, new)
+    return bytes(buf), changes
+
+
+def diff_ranges(a: bytes, b: bytes) -> list[tuple[int, int]]:
+    """Contiguous byte ranges where two buffers differ, over their common length."""
+    n = min(len(a), len(b))
+    out, start = [], None
+    for i in range(n):
+        if a[i] != b[i]:
+            if start is None:
+                start = i
+        elif start is not None:
+            out.append((start, i))
+            start = None
+    if start is not None:
+        out.append((start, n))
+    if len(a) != len(b):
+        out.append((n, max(len(a), len(b))))
+    return out
+
+
+# ----------------------------------------------------------------- DDS surgery
+
+def dds_fields(d: bytes) -> dict:
+    w, h, kind, off = dds_describe(d)
+    return {
+        "width": w, "height": h, "kind": kind, "data_offset": off,
+        "fourcc": d[84:88].decode("ascii", "replace"),
+        "dxgi": struct.unpack_from("<I", d, 128)[0] if d[84:88] == b"DX10" else None,
+        "mips": struct.unpack_from("<I", d, 28)[0],
+        "linear_size": struct.unpack_from("<I", d, 20)[0],
+        "bytes": len(d),
+    }
+
+
+def block_bytes(kind_dxgi_fourcc: tuple, w: int, h: int) -> int:
+    """Encoded size of one mip level, honouring the 4x4 block minimum."""
+    dxgi, fourcc = kind_dxgi_fourcc
+    bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4)
+    if fourcc == "ATI1" or dxgi == 80:
+        return bw * bh * 8
+    if dxgi in (DXGI_BC1_UNORM, DXGI_BC1_UNORM_SRGB):
+        return bw * bh * 8
+    return bw * bh * 16          # BC7
+
+
+def rebuild_dds(original: bytes, w: int, h: int, levels: list[bytes],
+                dxgi_override: int | None = None) -> bytes:
+    """The original header with new dimensions. Nothing else is touched.
+
+    Cloning beats constructing: the DS3 headers carry flags 0xa1007 and caps
+    0x401008 (TEXTURE|COMPLEX|MIPMAP), and a header we invented would be one
+    forgotten bit away from a texture the game silently refuses.
+    """
+    _, _, _, off = dds_describe(original)
+    head = bytearray(original[:off])
+    struct.pack_into("<I", head, 12, h)
+    struct.pack_into("<I", head, 16, w)
+    struct.pack_into("<I", head, 20, len(levels[0]))     # DDSD_LINEARSIZE value
+    struct.pack_into("<I", head, 28, len(levels))
+    if dxgi_override is not None and original[84:88] == b"DX10":
+        struct.pack_into("<I", head, 128, dxgi_override)
+    return bytes(head) + b"".join(levels)
+
+
+# ------------------------------------------------------------- colour helpers
+
+def srgb_to_linear(a: np.ndarray) -> np.ndarray:
+    a = a / 255.0
+    return np.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(a: np.ndarray) -> np.ndarray:
+    out = np.where(a <= 0.0031308, a * 12.92, 1.055 * np.clip(a, 0, None) ** (1 / 2.4) - 0.055)
+    return np.clip(out * 255.0, 0, 255)
+
+
+def resize_planes(a: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """LANCZOS on a float HxWxC array, one plane at a time (PIL 'F' mode)."""
+    out = [np.asarray(Image.fromarray(a[..., c].astype(np.float32), "F").resize(size, Image.LANCZOS))
+           for c in range(a.shape[2])]
+    return np.stack(out, axis=2)
+
+
+def mip_chain(img: Image.Image, srgb: bool) -> list[Image.Image]:
+    """Full chain down to 1x1. sRGB colour is halved in LINEAR light.
+
+    Halving sRGB bytes directly brightens every mip, which on a cloud sea shows
+    up as a horizon that gets paler with distance. Alpha is linear either way.
+    """
+    a = np.asarray(img.convert("RGBA")).astype(np.float64)
+    rgb = srgb_to_linear(a[..., :3]) if srgb else a[..., :3] / 255.0
+    work = np.concatenate([rgb, a[..., 3:] / 255.0], axis=2)
+    levels, w, h = [img.convert("RGBA")], img.width, img.height
+    while w > 1 or h > 1:
+        w, h = max(1, w // 2), max(1, h // 2)
+        work = np.clip(resize_planes(work, (w, h)), 0.0, 1.0)
+        rgb_out = linear_to_srgb(work[..., :3]) if srgb else work[..., :3] * 255.0
+        px = np.concatenate([rgb_out, work[..., 3:] * 255.0], axis=2)
+        levels.append(Image.fromarray(np.clip(px + 0.5, 0, 255).astype(np.uint8), "RGBA"))
+    return levels
+
+
+def dilate_rgb(img: Image.Image) -> Image.Image:
+    """Push the nearest opaque colour into every transparent texel.
+
+    Without this, the network upscales whatever junk the artists left behind
+    alpha=0 and then the resampled alpha uncovers a slice of it at the sprite
+    edge. Standard alpha-bleed, done with an exact distance transform.
+    """
+    from scipy import ndimage
+
+    a = np.asarray(img.convert("RGBA")).copy()
+    empty = a[..., 3] == 0
+    if not empty.any() or empty.all():
+        return img
+    _, idx = ndimage.distance_transform_edt(empty, return_indices=True)
+    a[..., :3] = a[idx[0], idx[1], :3]
+    return Image.fromarray(a, "RGBA")
+
+
+# --------------------------------------------------------------- the upscalers
+
+def _run(cmd: list[str]) -> None:
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"{cmd[0]} failed ({r.returncode}):\n{r.stderr[-2000:]}")
+
+
+def esrgan_batch(pngs: dict[str, Image.Image], workdir: Path) -> dict[str, Image.Image]:
+    """Upscale a batch of images 4x through realesrgan-ncnn-vulkan on the GPU.
+
+    Batch mode (directory in, directory out) rather than one call per image: the
+    binary reloads the model and re-enumerates Vulkan devices on every start,
+    which is most of the cost for small tiles. 64 flipbook frames take 5.7 s in
+    one batch versus 16.0 s for the same pixels as one 1024x1024 sheet.
+    """
+    src, dst = workdir / "in", workdir / "out"
+    shutil.rmtree(src, ignore_errors=True)
+    shutil.rmtree(dst, ignore_errors=True)
+    src.mkdir(parents=True)
+    dst.mkdir(parents=True)
+    for name, im in pngs.items():
+        im.save(src / f"{name}.png")
+    _run([str(REALESRGAN), "-i", str(src), "-o", str(dst), "-n", REALESRGAN_MODEL,
+          "-m", str(REALESRGAN_MODELS), "-s", "4", "-f", "png"])
+    out = {}
+    for name in pngs:
+        p = dst / f"{name}.png"
+        if not p.exists():
+            raise SystemExit(f"realesrgan produced no output for {name}")
+        out[name] = Image.open(p).convert("RGBA")
+        out[name].load()
+    return out
+
+
+def ai_upscale(img: Image.Image, grid, workdir: Path, alpha_ai: bool = False) -> Image.Image:
+    """4x an RGBA image: the network on RGB, LANCZOS on ALPHA.
+
+    THE ALPHA RULE, and it was measured, not assumed. realesrgan-ncnn-vulkan
+    bicubics the alpha of an RGBA input rather than running the network on it, so
+    the obvious fix was to feed alpha through as its own greyscale image. Looked
+    at, on one 128 px frame of s11630 blown up 4x:
+
+      LANCZOS          the soft feathered edge survives, no invented structure
+      realesrgan-x4plus  the edge hardens and the feather becomes RADIAL
+                         FILAMENTS, a hairy fringe all round the puff
+      realesr-animevideov3-x4  the feather is smoothed away into a flat blob
+
+    A smoke billboard IS its soft edge, so the filaments are not detail, they are
+    damage, and they would be drawn 7 to 30 m tall. Alpha therefore gets LANCZOS.
+    The channel split still earns its place: it is what lets alpha take a
+    different path from RGB at all, LANCZOS beats the built-in bicubic, and RGB
+    gets dilated into the transparent region first so the network never drags
+    junk from behind alpha=0 into a visible edge. `alpha_ai=True` puts the
+    network back on alpha if a future sheet ever wants it.
+
+    Flipbook sheets are sliced into frames first, for BOTH paths: LANCZOS at 4x
+    reaches about four source texels either side, so resizing a whole sheet would
+    smear one frame's alpha into its neighbour's border just as surely as a
+    convolution would.
+    """
+    img = img.convert("RGBA")
+    a = np.asarray(img)
+    has_alpha = a[..., 3].min() < 255
+    rgb_src = dilate_rgb(img) if has_alpha else img
+
+    def alpha_for(box, size):
+        crop = Image.fromarray(a[box[1]:box[3], box[0]:box[2], 3])
+        return np.asarray(crop.resize(size, Image.LANCZOS))
+
+    if grid:
+        cols, rows = grid
+        cw, ch = img.width // cols, img.height // rows
+        if cw * cols != img.width or ch * rows != img.height:
+            raise SystemExit(f"grid {grid} does not divide {img.size}")
+        tiles = {}
+        for r in range(rows):
+            for c in range(cols):
+                box = (c * cw, r * ch, c * cw + cw, r * ch + ch)
+                tiles[f"c{r:02d}_{c:02d}"] = rgb_src.crop(box).convert("RGB")
+                if has_alpha and alpha_ai:
+                    tiles[f"a{r:02d}_{c:02d}"] = Image.fromarray(
+                        a[box[1]:box[3], box[0]:box[2], 3]).convert("RGB")
+        up = esrgan_batch(tiles, workdir)
+        out = Image.new("RGBA", (img.width * 4, img.height * 4))
+        for r in range(rows):
+            for c in range(cols):
+                box = (c * cw, r * ch, c * cw + cw, r * ch + ch)
+                t = np.asarray(up[f"c{r:02d}_{c:02d}"]).copy()
+                if not has_alpha:
+                    t[..., 3] = 255
+                elif alpha_ai:
+                    t[..., 3] = np.asarray(up[f"a{r:02d}_{c:02d}"])[..., 0]
+                else:
+                    t[..., 3] = alpha_for(box, (cw * 4, ch * 4))
+                out.paste(Image.fromarray(t, "RGBA"), (c * cw * 4, r * ch * 4))
+        return out
+
+    batch = {"c": rgb_src.convert("RGB")}
+    if has_alpha and alpha_ai:
+        batch["a"] = Image.fromarray(a[..., 3]).convert("RGB")
+    up = esrgan_batch(batch, workdir)
+    t = np.asarray(up["c"]).copy()
+    if not has_alpha:
+        t[..., 3] = 255
+    elif alpha_ai:
+        t[..., 3] = np.asarray(up["a"])[..., 0]
+    else:
+        t[..., 3] = alpha_for((0, 0, img.width, img.height), (img.width * 4, img.height * 4))
+    return Image.fromarray(t, "RGBA")
+
+
+def lanczos_upscale(img: Image.Image, scale: int, role: str) -> tuple[Image.Image, int]:
+    """LANCZOS for data channels. Returns (image, texels clamped back onto the disc).
+
+    Normals: DS3 keeps X in R and Y in G with B a near-constant third channel.
+    A resampled (x, y) only has to satisfy x^2 + y^2 <= 1 for the shader's
+    reconstructed Z to be real, and LANCZOS overshoot can break that, so any
+    texel that lands outside the unit disc is scaled back onto it.
+    """
+    size = (img.width * scale, img.height * scale)
+    a = np.asarray(img.convert("RGBA")).astype(np.float64)
+    up = np.clip(resize_planes(a, size), 0, 255)
+    clamped = 0
+    if role == "normal":
+        x, y = up[..., 0] / 127.5 - 1.0, up[..., 1] / 127.5 - 1.0
+        length = np.sqrt(x * x + y * y)
+        bad = length > 1.0
+        clamped = int(bad.sum())
+        if clamped:
+            s = np.where(bad, 1.0 / np.maximum(length, 1e-9), 1.0)
+            up[..., 0] = np.clip((x * s + 1.0) * 127.5, 0, 255)
+            up[..., 1] = np.clip((y * s + 1.0) * 127.5, 0, 255)
+    return Image.fromarray(np.clip(up + 0.5, 0, 255).astype(np.uint8), "RGBA"), clamped
+
+
+# ------------------------------------------------------------------ subcommands
+
+def cmd_extract(args) -> None:
+    out = BUILD / "orig"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = []
+
+    for key, pattern in MAP_TARGETS:
+        binder, _, _ = load_map_binder(key)
+        for e in binder.entries:
+            name = entry_basename(e)
+            if not pattern.match(name) or name.endswith("_l.tpf.dcx"):
+                continue
+            tpf = TPF.from_bytes(dcx_decompress(e.data))
+            for t in tpf.textures:
+                manifest.append(_record(t, out, source="map", binder=key, entry=e.name,
+                                        entry_bytes=len(e.data)))
+
+    binder = load_sfx_binder()
+    for e in binder.entries:
+        stem = entry_basename(e).removesuffix(".tpf")
+        if stem not in SFX_TARGETS:
+            continue
+        tpf = TPF.from_bytes(e.data)
+        for t in tpf.textures:
+            manifest.append(_record(t, out, source="sfx", binder="commoneffects", entry=e.name,
+                                    entry_bytes=len(e.data), grid=SFX_TARGETS[stem]))
+
+    manifest.sort(key=lambda r: (r["source"], r["name"]))
+    (BUILD / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    print(f"extracted {len(manifest)} textures to {out}")
+    print(f"manifest: {BUILD / 'manifest.json'}")
+    _print_table(manifest)
+
+
+def _record(tex, out: Path, source: str, binder: str, entry: str, entry_bytes: int,
+            grid=None) -> dict:
+    f = dds_fields(tex.data)
+    img = decode(tex.data)
+    if img is None:
+        raise SystemExit(f"{tex.stem}: cannot decode {f['kind']}")
+    img.save(out / f"{tex.stem}.png")
+    (out / f"{tex.stem}.dds").write_bytes(tex.data)      # kept: the header we clone
+
+    role = role_of(tex.stem)
+    cap = CAP_OVERRIDES.get(tex.stem, DEFAULT_CAP)
+    scale = 4
+    while scale > 1 and max(f["width"], f["height"]) * scale > cap:
+        scale //= 2
+
+    dxgi_out = f["dxgi"]
+    tpf_format_out = tex.format
+    if f["dxgi"] == DXGI_BC1_UNORM_SRGB:                 # the BC1 -> BC7 upgrade
+        dxgi_out, tpf_format_out = DXGI_BC7_UNORM_SRGB, TPF_FORMAT_BC7
+    elif f["dxgi"] == DXGI_BC1_UNORM:
+        dxgi_out, tpf_format_out = DXGI_BC7_UNORM, TPF_FORMAT_BC7
+
+    return {
+        "name": tex.stem, "source": source, "binder": binder, "entry": entry,
+        "role": role, "grid": list(grid) if grid else None,
+        "width": f["width"], "height": f["height"], "fourcc": f["fourcc"],
+        "dxgi": f["dxgi"], "tpf_format": tex.format, "mips": f["mips"],
+        "dds_bytes": f["bytes"], "entry_bytes": entry_bytes,
+        "scale": scale, "out_width": f["width"] * scale, "out_height": f["height"] * scale,
+        "out_dxgi": dxgi_out, "out_tpf_format": tpf_format_out,
+        "srgb": f["dxgi"] in (DXGI_BC1_UNORM_SRGB, DXGI_BC7_UNORM_SRGB),
+        "skipped": scale == 1,
+    }
+
+
+def _manifest() -> list[dict]:
+    p = BUILD / "manifest.json"
+    if not p.exists():
+        raise SystemExit("no manifest; run `ds3-texup extract` first")
+    return json.loads(p.read_text())
+
+
+def _selected(args) -> list[dict]:
+    rows = [r for r in _manifest() if not r["skipped"]]
+    if args.only:
+        rows = [r for r in rows if args.only in r["name"]]
+    if not rows:
+        raise SystemExit("nothing selected")
+    return rows
+
+
+def cmd_upscale(args) -> None:
+    src, dst = BUILD / "orig", BUILD / "up"
+    dst.mkdir(parents=True, exist_ok=True)
+    work = BUILD / "work"
+    work.mkdir(exist_ok=True)
+    notes = {}
+    for r in _selected(args):
+        out_png = dst / f"{r['name']}.png"
+        if out_png.exists() and not args.force:
+            print(f"  {r['name']}: have it")
+            continue
+        img = Image.open(src / f"{r['name']}.png").convert("RGBA")
+        t0 = time.time()
+        if r["role"] in ("albedo", "sprite"):
+            up = ai_upscale(img, tuple(r["grid"]) if r["grid"] else None, work)
+            if r["scale"] != 4:                          # 4x then halve: reads more detail
+                up = up.resize((r["out_width"], r["out_height"]), Image.LANCZOS)
+            note = "AI x4" if r["scale"] == 4 else f"AI x4 then LANCZOS down to x{r['scale']}"
+            note += " on RGB" + (", LANCZOS alpha" if r["role"] == "sprite" else "")
+            if r["grid"]:
+                note += f", per frame {r['grid'][0]}x{r['grid'][1]}"
+        else:
+            up, clamped = lanczos_upscale(img, r["scale"], r["role"])
+            note = f"LANCZOS x{r['scale']}"
+            if r["role"] == "normal":
+                note += f", {clamped} texels renormalised onto the unit disc"
+        up.save(out_png)
+        notes[r["name"]] = note
+        print(f"  {r['name']}: {r['width']}x{r['height']} -> {up.width}x{up.height}  "
+              f"{note}  [{time.time() - t0:.1f}s]")
+    if notes:
+        p = BUILD / "upscale_notes.json"
+        old = json.loads(p.read_text()) if p.exists() else {}
+        old.update(notes)
+        p.write_text(json.dumps(old, indent=2))
+    print(f"upscaled into {dst}")
+
+
+def _encode_level(img: Image.Image, role: str, quality: int, tmp: Path) -> bytes:
+    """One mip level through bc7enc. BC4 for masks (red channel), BC7 otherwise."""
+    png = tmp / "level.png"
+    dds = tmp / "level.dds"
+    for p in (png, dds):
+        p.unlink(missing_ok=True)
+    if role == "mask":
+        a = np.asarray(img.convert("RGBA"))
+        Image.fromarray(np.stack([a[..., 0]] * 3, axis=2), "RGB").save(png)
+        cmd = [str(BC7ENC), "-4", "-f", "-g", "-q", "-o", str(png)]
+    else:
+        img.convert("RGBA").save(png)
+        cmd = [str(BC7ENC), "-U", f"-u{quality}", "-g", "-q", "-o", str(png)]
+    _run(cmd)
+    if not dds.exists():
+        raise SystemExit(f"bc7enc wrote no DDS for a {img.size} level")
+    d = dds.read_bytes()
+    _, _, _, off = dds_describe(d)
+    return d[off:]
+
+
+def cmd_encode(args) -> None:
+    src, orig, dst = BUILD / "up", BUILD / "orig", BUILD / "dds"
+    dst.mkdir(parents=True, exist_ok=True)
+    results = {}
+    old = json.loads((BUILD / "psnr.json").read_text()) if (BUILD / "psnr.json").exists() else {}
+    for r in _selected(args):
+        out = dst / f"{r['name']}.dds"
+        if out.exists() and not args.force:
+            print(f"  {r['name']}: have it")
+            continue
+        up = Image.open(src / f"{r['name']}.png").convert("RGBA")
+        original = (orig / f"{r['name']}.dds").read_bytes()
+        t0 = time.time()
+        with tempfile.TemporaryDirectory(prefix="texup-") as td:
+            tmp = Path(td)
+            levels = [_encode_level(im, r["role"], args.quality, tmp)
+                      for im in mip_chain(up, srgb=r["srgb"])]
+        d = rebuild_dds(original, up.width, up.height, levels,
+                        dxgi_override=r["out_dxgi"] if r["out_dxgi"] != r["dxgi"] else None)
+
+        # Read-back proof: decode the finished bytes and score them against the
+        # PNG they were made from. A silent bad encode looks exactly like a good
+        # one until the game shows a black tile.
+        back = decode(d)
+        if back is None or back.size != (up.width, up.height):
+            raise SystemExit(f"{r['name']}: finished DDS does not decode back")
+        a, b = np.asarray(up).astype(float), np.asarray(back).astype(float)
+        chans = [0] if r["role"] == "mask" else [0, 1, 2, 3]
+        mse = ((a[..., chans] - b[..., chans]) ** 2).mean()
+        psnr = float("inf") if mse == 0 else 10 * np.log10(255.0 * 255.0 / mse)
+        out.write_bytes(d)
+        results[r["name"]] = round(psnr, 2)
+        print(f"  {r['name']}: {up.width}x{up.height} {len(levels)} mips  "
+              f"{len(d):,}B  PSNR {psnr:.2f} dB  [{time.time() - t0:.1f}s]")
+    old.update(results)
+    (BUILD / "psnr.json").write_text(json.dumps(old, indent=2))
+    if old:
+        vals = list(old.values())
+        print(f"round-trip PSNR: min {min(vals):.2f}  median {sorted(vals)[len(vals) // 2]:.2f}  "
+              f"max {max(vals):.2f} dB over {len(vals)} textures")
+
+
+def cmd_pack(args) -> None:
+    """Patch the shipped binders IN PLACE and prove, byte by byte, what moved.
+
+    The first build of this tool re-SERIALISED the binders with soulstruct and
+    the game rendered Archdragon Peak with the wrong textures on the arch,
+    pillars and floor, white geometry chunks, and the fog as solid white slabs,
+    while soulstruct happily reloaded the same files. The cause was found with
+    the reader in this file: BND4's hash table stores `path_hashes_offset` as an
+    ABSOLUTE file offset, and a re-serialised BHD came out 2 bytes shorter (the
+    UTF-16 name block packs slightly differently), so the table moved to 23030
+    while its own header still pointed at 23032. Every path the engine looked up
+    read the hash array 2 bytes skewed, and the last pair ran off the end of the
+    file. soulstruct never noticed because it finds entries by walking the record
+    array and only ever copies the hash table as opaque bytes.
+
+    So: nothing is re-serialised. New payloads are appended to the end, only the
+    replaced entries' own size and offset fields are rewritten, and every other
+    byte of both files stays where it was.
+
+    Two outputs, deliberately separate, so a capture can blame one of them:
+        mod-map/map/m32/...   the cloud sea and sky
+        mod-sfx/sfx/...       the fog sprites
+
+    MERGING OTHER PACKS (`--base-dir`, `--inject`, `--out-name`).
+
+    ModEngine2's mod loader is FIRST MATCH WINS on whole files, so three mods that
+    each ship a full `map/m32/m32_0000.tpfbhd` do not layer: the first one in the
+    list shadows the other two completely. Ours was first, so the Texture
+    Improvement 4K stone and Visual Overhaul's reflectance maps were both dead in
+    that map. The fix is one binder that carries all three sets of entries.
+
+        --base-dir DIR   start from this pack's binders instead of the archive
+                         originals. The base supplies the CONTAINER as well as
+                         the bytes: header, name block, hash table and every
+                         record we do not replace stay exactly where the base put
+                         them, so the base's hash table remains valid.
+        --inject DIR     take every entry in DIR's binders whose payload differs
+                         from the game original, and patch it into the base.
+                         Repeatable; later ones win over earlier ones. ONLY THE
+                         ENTRY DATA is taken, never the container.
+        --out-name NAME  the build subdirectory (default mod-map / mod-sfx).
+        --skip-sfx       map binders only.
+
+    Precedence is base, then each --inject in order, then our own upscales, and
+    every override is printed with where it came from.
+    """
+    dds_dir = BUILD / "dds"
+    rows = [r for r in _manifest() if not r["skipped"]]
+    have = {r["name"]: r for r in rows if (dds_dir / f"{r['name']}.dds").exists()}
+    if args.only:
+        have = {k: v for k, v in have.items() if args.only in k}
+    if not have:
+        raise SystemExit("no encoded DDS files; run `ds3-texup encode` first")
+
+    base_root = Path(args.base_dir).expanduser() if args.base_dir else None
+    inject_roots = [Path(p).expanduser() for p in (args.inject or [])]
+    map_out = BUILD / (args.out_name or "mod-map")
+    shutil.rmtree(BUILD / "mod", ignore_errors=True)          # the broken rewrite
+    if not args.only:
+        # a full build owns its output directory, so stale binders from an
+        # earlier merge cannot survive into it. A --only build touches one
+        # binder and must NOT delete the siblings it is not rebuilding.
+        shutil.rmtree(map_out, ignore_errors=True)
+    written = []
+
+    for key in MAP_BINDERS:
+        picked = {r["entry"]: r for r in have.values()
+                  if r["source"] == "map" and r["binder"] == key}
+        if not picked and not inject_roots and not base_root:
+            continue
+
+        orig_bhd = dvd().get(MAP_BINDERS[key] + ".tpfbhd")
+        orig_bdt = dvd().get(MAP_BINDERS[key] + ".tpfbdt")
+        orig = entries_by_name(orig_bhd)
+
+        if base_root is not None:
+            found = find_pack_binder(base_root, key)
+            if found is None:
+                raise SystemExit(f"{base_root}: no {key}.tpfbhd/.tpfbdt")
+            base_bhd_path, base_bdt_path = found
+            base_bhd = base_bhd_path.read_bytes()
+            base_changed = len(injected_payloads(base_root, key, orig_bhd, orig_bdt))
+        else:
+            base_bhd_path = base_bdt_path = None
+            base_bhd = orig_bhd
+            base_changed = 0
+        base = entries_by_name(base_bhd)
+
+        # base -> each --inject in order -> our own upscales
+        payloads: dict[str, bytes] = {}
+        provenance: dict[str, str] = {}
+        counts = []
+        for root in inject_roots:
+            got = injected_payloads(root, key, orig_bhd, orig_bdt)
+            counts.append((root.name, len(got)))
+            for name, data in got.items():
+                payloads[name] = data
+                provenance[name] = root.name
+        for name, r in picked.items():
+            cur = payloads.get(name)
+            if cur is None:
+                e = base[name]
+                cur = (read_payload(base_bdt_path, e) if base_bdt_path is not None
+                       else orig_bdt[e["off"]:e["off"] + e["csize"]])
+            tpf = TPF.from_bytes(dcx_decompress(cur))
+            _swap(tpf, r, dds_dir)
+            if name in provenance:
+                print(f"    note: {name} was also changed by {provenance[name]}; ours wins")
+            payloads[name] = dcx_compress_dflt(tpf.to_bytes())
+            provenance[name] = "ours"
+        if not payloads and base_root is None:
+            continue
+
+        dest_bhd = map_out / f"map/m32/{key}.tpfbhd"
+        dest_bdt = map_out / f"map/m32/{key}.tpfbdt"
+        dest_bhd.parent.mkdir(parents=True, exist_ok=True)
+        if base_bdt_path is not None:
+            shutil.copyfile(base_bdt_path, dest_bdt)          # streamed, not slurped
+        else:
+            dest_bdt.write_bytes(orig_bdt)
+        base_bdt_len = dest_bdt.stat().st_size
+        base_bdt_sha = sha_file(dest_bdt)
+
+        out_bhd = bytearray(base_bhd)
+        sink = FileAppender(dest_bdt)
+        try:
+            changes = patch_entries_in_place(out_bhd, sink, payloads)
+        finally:
+            sink.close()
+        dest_bhd.write_bytes(bytes(out_bhd))
+
+        written.append(dict(kind="bxf4", key=key, bhd=dest_bhd, bdt=dest_bdt,
+                            orig_bhd=base_bhd, base_bdt_len=base_bdt_len,
+                            base_bdt_sha=base_bdt_sha, changes=changes,
+                            names=set(payloads), payloads=payloads,
+                            provenance=provenance))
+        added = sum(len(v) for v in payloads.values())
+        src = f"{base_root.name} ({base_changed} entries changed vs the archive)" \
+            if base_root else "the archive original"
+        tally = ", ".join(f"{n} {c}" for n, c in counts) or "none"
+        print(f"  {key}: base {src}, {len(base)} entries; injected {tally}; "
+              f"ours {sum(1 for v in provenance.values() if v == 'ours')}")
+        print(f"    {len(payloads)} entries patched in place, "
+              f"bhd {len(base_bhd):,} -> {len(out_bhd):,} bytes (equal: "
+              f"{len(base_bhd) == len(out_bhd)}), "
+              f"bdt {base_bdt_len:,} -> {dest_bdt.stat().st_size:,} "
+              f"({added:,} appended + {sum(c['pad'] for c in changes)} alignment bytes; "
+              f"{sum(c['old_size'] for c in changes):,} of the base is now dead space)")
+
+    picked = [r for r in have.values() if r["source"] == "sfx"]
+    if picked and not args.skip_sfx:
+        raw = dvd().get(SFX_BINDER)
+        plain = dcx_decompress(raw)
+        binder = Binder.from_bytes(plain)
+        payloads = {}
+        for e in binder.entries:
+            r = {x["entry"]: x for x in picked}.get(e.name)
+            if r is None:
+                continue
+            tpf = TPF.from_bytes(e.data)
+            _swap(tpf, r, dds_dir)
+            payloads[e.name] = tpf.to_bytes()
+        new_plain, changes = patch_bnd4(plain, payloads)
+        dest = BUILD / "mod-sfx/sfx/frpg_sfxbnd_commoneffects_resource.ffxbnd.dcx"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(dcx_compress_dflt(new_plain))
+        written.append(dict(kind="bnd4", key="commoneffects", bhd=dest, bdt=None,
+                            orig_bhd=plain, orig_bdt=None, changes=changes,
+                            names=set(payloads), payloads=payloads,
+                            provenance={n: "ours" for n in payloads}, plain=new_plain))
+        print(f"  commoneffects: {len(payloads)} entries patched in place, "
+              f"{len(plain):,} -> {len(new_plain):,} bytes uncompressed, "
+              f"{dest.stat().st_size:,} DFLT-compressed")
+
+    _verify(written, have)
+    print("\ncopy commands (nothing has been deployed):")
+    cmd_deploy_cmds(args)
+
+
+def _swap(tpf: TPF, r: dict, dds_dir: Path) -> None:
+    tex = next(t for t in tpf.textures if t.stem == r["name"])
+    d = (dds_dir / f"{r['name']}.dds").read_bytes()
+    f = dds_fields(d)
+    tex.data = d
+    tex.format = r["out_tpf_format"]
+    tex.mipmap_count = f["mips"]
+
+
+def _verify(written: list, have: dict[str, dict]) -> None:
+    """Prove it with our own reader, not with the library that wrote it.
+
+    The old proof (soulstruct reloads the file) is exactly the proof that passed
+    while the game was rendering garbage, so it is worth nothing on its own. What
+    is checked here: the BHD is the same length, the header, name block and hash
+    table are untouched, the hash table's absolute offset still lands on its own
+    data, every record we did not replace is byte-identical, and the ranges that
+    DID change are listed and confirmed to be inside a replaced entry's record.
+
+    "the original" here means THE BASE: the archive binder for a plain build, the
+    `--base-dir` pack's binder for a merge. Everything the base did stays put and
+    the merge only adds. The BDT is compared by streamed sha256 over its first
+    `base_bdt_len` bytes rather than by loading it, because a Texture Improvement
+    base BDT is 1.46 GB and holding two copies of that to run `==` is how a
+    verification step becomes the reason a build cannot run.
+    """
+    for w in written:
+        print(f"\n=== {w['bhd'].name} ===")
+        if w["kind"] == "bxf4":
+            new_bhd = w["bhd"].read_bytes()
+            new_bdt = w["bdt"]                 # a Path: read by seek, never slurped
+            old_bhd = w["orig_bhd"]
+        else:
+            new_bhd = w["plain"]
+            new_bdt = None
+            old_bhd = w["orig_bhd"]
+
+        if len(new_bhd) != len(old_bhd) and w["kind"] == "bxf4":
+            raise SystemExit("BHD length changed; the hash table would move")
+        before = {e["name"]: e for e in bnd4_entries(old_bhd)}
+        after = {e["name"]: e for e in bnd4_entries(new_bhd)}
+        ho, hn = hash_table_info(old_bhd), hash_table_info(new_bhd)
+
+        # 1. header, name block and hash table must not have moved or changed
+        ent_end = _ENTRIES_START + len(before) * ENTRY_RECORD_SIZE
+        tail_ok = old_bhd[ent_end:ho["offset"]] == new_bhd[ent_end:hn["offset"]]
+        table_end = ho["path_hashes_offset"] + ho["hash_count"] * 8
+        print(f"  header 0x00..0x40 identical: {old_bhd[:0x40] == new_bhd[:0x40]}")
+        print(f"  name block identical and in place: {tail_ok}")
+        print(f"  hash table at {hn['offset']:#x} (was {ho['offset']:#x}), "
+              f"bytes identical: {old_bhd[ho['offset']:table_end] == new_bhd[hn['offset']:table_end]}")
+        print(f"  path_hashes_offset {hn['path_hashes_offset']} vs groups end {hn['groups_end']}: "
+              f"{'STALE, THIS IS THE BUG' if hn['stale'] else 'consistent'}; "
+              f"overruns the file: {hn['overruns']}")
+        if hn["stale"] or hn["overruns"]:
+            raise SystemExit("hash table is not valid in the output")
+
+        # the check that would have caught the first build: resolve every record
+        cb = check_hash_table(old_bhd, list(before.values()))
+        ca = check_hash_table(new_bhd, list(after.values()))
+        print(f"  path hashes that resolve to the right entry: "
+              f"before {cb['ok']}/{cb['ok'] + cb['bad']}, after {ca['ok']}/{ca['ok'] + ca['bad']}")
+        if ca["bad"]:
+            raise SystemExit(f"{ca['bad']} path hashes resolve to the wrong entry")
+
+        # 16-byte data alignment, the second thing the re-serialised build broke
+        # (228/245 offsets were misaligned there, against 245/245 in the vanilla file)
+        al_b = sum(1 for e in before.values() if e["off"] % BDT_ALIGN == 0)
+        al_a = sum(1 for e in after.values() if e["off"] % BDT_ALIGN == 0)
+        print(f"  entry data 16-byte aligned: before {al_b}/{len(before)}, "
+              f"after {al_a}/{len(after)}")
+        if al_a != len(after):
+            raise SystemExit("an entry is not 16-byte aligned")
+
+        # 2. records: only the replaced ones may differ, and only in 3 fields
+        untouched = [n for n in before if n not in w["names"]]
+        same = sum(before[n]["raw"] == after[n]["raw"] for n in untouched)
+        print(f"  untouched entry records byte-identical: {same}/{len(untouched)}")
+        if same != len(untouched):
+            raise SystemExit("an untouched record changed")
+        # the entry table, read with our own reader, for everything we touched
+        # plus three untouched neighbours. There are no sha or aes fields in a
+        # BXF4 record: per-entry keys and hashed ranges are a BHD5 feature and
+        # these binders are not BHD5. The record is exactly the seven fields below.
+        touched_idx = sorted(after[n]["i"] for n in w["names"])
+        neighbours = []
+        for i in touched_idx:
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(after) and j not in touched_idx and j not in neighbours:
+                    neighbours.append(j)
+        by_index = {e["i"]: e for e in after.values()}
+        old_by_index = {e["i"]: e for e in before.values()}
+        # A merge replaces 100+ entries per binder, so the full before/after table
+        # is a wall. Show one sample from each provenance plus three untouched
+        # neighbours; the byte proofs below cover all of them.
+        prov = w.get("provenance", {})
+        sample_idx, seen = [], set()
+        for n in sorted(w["names"], key=lambda n: after[n]["i"]):
+            src = prov.get(n, "?")
+            if src not in seen or len(sample_idx) < 3:
+                seen.add(src)
+                sample_idx.append(after[n]["i"])
+        show = sorted(set(sample_idx) | set(neighbours[:3]))
+        print(f"\n  entry table, our own reader, {len(sample_idx)} of {len(touched_idx)} "
+              f"touched + {min(3, len(neighbours))} untouched neighbours:")
+        print(f"    {'idx':>4} {'id':>7} {'name':38s} {'flags':>5} {'csize':>12} "
+              f"{'usize':>12} {'offset':>12}  state")
+        for i in show:
+            b, a = old_by_index[i], by_index[i]
+            tag = f"REPLACED from {prov.get(a['name'], '?')}" if a["name"] in w["names"] else (
+                "identical" if b["raw"] == a["raw"] else "CHANGED (must not happen)")
+            for lbl, e in (("before", b), ("after ", a)):
+                print(f"    {e['i']:>4} {e['id']:>7} "
+                      f"{e['name'].rsplit(chr(92), 1)[-1][:38]:38s} {e['flags']:#05x} "
+                      f"{e['csize']:>12,} {e['usize']:>12,} {e['off']:>12,}  {lbl} {tag}")
+
+        # 3. the byte diff of the BHD, as ranges
+        ranges = diff_ranges(old_bhd, new_bhd)
+        appended = 0
+        if w["kind"] == "bnd4" and ranges and ranges[-1][0] == len(old_bhd):
+            # a single-file BND4 grows in the same buffer the records live in, so
+            # the final range IS the appended payload, not a corrupted record
+            appended = ranges[-1][1] - ranges[-1][0]
+            ranges = ranges[:-1]
+        recs = {(e["rec"], e["rec"] + ENTRY_RECORD_SIZE) for e in after.values()
+                if e["name"] in w["names"]}
+        outside = [r for r in ranges if not any(lo <= r[0] and r[1] <= hi for lo, hi in recs)]
+        print(f"  byte-diff over the original {len(old_bhd):,} bytes: {len(ranges)} ranges, "
+              f"all inside a replaced entry's record: {not outside}"
+              + (f"; {appended:,} bytes appended after them" if appended else ""))
+        if outside:
+            raise SystemExit(f"BHD changed outside a replaced record: {outside[:5]}")
+        shown = sorted(ranges)[:4]
+        print("    first ranges: " + ", ".join(f"{lo}..{hi}" for lo, hi in shown))
+
+        # 4. the BDT: untouched prefix must be byte-identical, growth is append-only
+        if new_bdt is not None:
+            base_len, base_sha = w["base_bdt_len"], w["base_bdt_sha"]
+            got = sha_file(new_bdt, base_len)
+            print(f"  BDT first {base_len:,} bytes identical to the base "
+                  f"(sha256 {base_sha[:16]}): {got == base_sha}")
+            if got != base_sha:
+                raise SystemExit("the BDT prefix changed")
+            print(f"  BDT grew by {new_bdt.stat().st_size - base_len:,} bytes, all appended")
+
+        # 5. every replaced payload reads back byte-for-byte out of the finished
+        #    file at the offset its own record now points at, and our own textures
+        #    decode at their new size. The byte-equality half is what proves a
+        #    MERGE: an injected entry has no manifest row to decode against, and
+        #    "the bytes we handed in are the bytes at that offset" is the whole
+        #    claim being made about it.
+        reader = None if new_bdt is None else open(new_bdt, "rb")
+        n = mismatched = 0
+        try:
+            for name in sorted(w["names"]):
+                e = after[name]
+                if reader is not None:
+                    reader.seek(e["off"])
+                    raw = reader.read(e["csize"])
+                else:
+                    raw = new_bhd[e["off"]:e["off"] + e["csize"]]
+                if raw != w["payloads"][name]:
+                    mismatched += 1
+                    continue
+                if w["provenance"].get(name) != "ours":
+                    continue
+                tpf = TPF.from_bytes(dcx_decompress(raw) if raw[:4] == b"DCX\0" else raw)
+                for t in tpf.textures:
+                    r = have.get(t.stem)
+                    if r is None:
+                        continue
+                    img = decode(t.data)
+                    if img is None or img.size != (r["out_width"], r["out_height"]):
+                        raise SystemExit(
+                            f"{t.stem} does not decode at {r['out_width']}x{r['out_height']}")
+                    n += 1
+        finally:
+            if reader is not None:
+                reader.close()
+        print(f"  replaced payloads that read back byte-identical: "
+              f"{len(w['names']) - mismatched}/{len(w['names'])}")
+        if mismatched:
+            raise SystemExit(f"{mismatched} replaced payloads do not match what was written")
+        print(f"  {n} of our own textures read straight out of the patched bytes and decode")
+
+
+def cmd_preview(args) -> None:
+    """Original vs upscaled at 1:1, so the difference is looked at, not asserted.
+
+    1:1 means one output pixel per screen pixel on BOTH sides, with the original
+    scaled up by nearest neighbour to the same crop extent. Anything else is a
+    picture of a resampler, not of the upscale.
+    """
+    rows = {r["name"]: r for r in _manifest()}
+    wanted = args.names or ["m32_00_kumo_20_a", "s11630", "m32_00_stormsky_03_a"]
+    for name in wanted:
+        r = rows.get(name)
+        if r is None or r["skipped"]:
+            print(f"  {name}: not in the manifest, skipped")
+            continue
+        up_path = BUILD / "up" / f"{name}.png"
+        if not up_path.exists():
+            print(f"  {name}: not upscaled yet")
+            continue
+        orig = Image.open(BUILD / "orig" / f"{name}.png").convert("RGBA")
+        up = Image.open(up_path).convert("RGBA")
+        s = up.width // orig.width
+        crop = min(512, up.width, up.height)
+        # Centre the crop on the busiest 256px of the ORIGINAL, so the panel is
+        # never a flat patch of sky that proves nothing.
+        a = np.asarray(orig.convert("L")).astype(float)
+        step = max(1, orig.width // 32)
+        best, bx, by = -1.0, 0, 0
+        cs = crop // s
+        for y in range(0, max(1, orig.height - cs), step):
+            for x in range(0, max(1, orig.width - cs), step):
+                v = a[y:y + cs, x:x + cs].std()
+                if v > best:
+                    best, bx, by = v, x, y
+        o = orig.crop((bx, by, bx + cs, by + cs)).resize((crop, crop), Image.NEAREST)
+        u = up.crop((bx * s, by * s, bx * s + crop, by * s + crop))
+        _preview_sheet(name, r, o, u, BUILD / f"preview_{name}.png")
+
+
+def _preview_sheet(name: str, r: dict, left: Image.Image, right: Image.Image, path: Path) -> None:
+    from PIL import ImageDraw
+
+    pad, label = 12, 26
+    bg = (58, 58, 64)
+    w = pad * 3 + left.width + right.width
+    h = pad * 2 + label * 2 + left.height
+    sheet = Image.new("RGB", (w, h), bg)
+    for i, im in enumerate((left, right)):
+        tile = Image.new("RGBA", im.size, (*bg, 255))
+        tile.alpha_composite(im)
+        sheet.paste(tile.convert("RGB"), (pad + i * (left.width + pad), pad + label))
+    d = ImageDraw.Draw(sheet)
+    d.text((pad, pad // 2), f"{name}  ({r['role']}, {r['fourcc']}/dxgi {r['dxgi']} "
+                            f"-> dxgi {r['out_dxgi']})", fill=(235, 235, 240))
+    d.text((pad, pad + label + left.height + 4),
+           f"original {r['width']}x{r['height']}, shown nearest-neighbour at 1:1",
+           fill=(215, 215, 222))
+    d.text((pad * 2 + left.width, pad + label + left.height + 4),
+           f"upscaled {r['out_width']}x{r['out_height']}, 1:1", fill=(215, 215, 222))
+    sheet.save(path)
+    print(f"  {path}  ({sheet.width}x{sheet.height})")
+
+
+def cmd_seamcheck(args) -> None:
+    """Prove per-frame upscaling does not bleed across a flipbook frame boundary.
+
+    Runs the same sheet twice, whole and per frame, and reports the absolute
+    difference as a function of distance from a frame edge. If the whole-sheet
+    pass were dragging neighbouring frames together, the difference would spike
+    at distance 0 and decay. Measured on s11630, 3 Sep 2026: 1.31 at the edge
+    against 1.14 at 256 px in, and the ALPHA channel bit-identical at every seam
+    column, i.e. no bleed on this sheet at all.
+    """
+    name = args.name or "s11630"
+    r = next((x for x in _manifest() if x["name"] == name), None)
+    if r is None:
+        raise SystemExit(f"{name} is not in the manifest")
+    img = Image.open(BUILD / "orig" / f"{name}.png").convert("RGBA")
+    work = BUILD / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    whole = np.asarray(ai_upscale(img, None, work)).astype(int)
+    grid = tuple(r["grid"]) if r["grid"] else None
+    if grid is None:
+        print(f"{name} has no integer frame grid; only the whole-sheet pass exists")
+        return
+    per = np.asarray(ai_upscale(img, grid, work)).astype(int)
+    cols, rows_n = grid
+    cw = img.width // cols * 4
+    d = np.abs(whole - per)
+    print(f"{name}: whole-sheet vs per-frame ({cols}x{rows_n} frames, {cw} px each after 4x)")
+    for off in (0, 1, 2, 4, 8, 16, 32, 64, cw // 4, cw // 2):
+        idx = [(c * cw + off) % whole.shape[1] for c in range(cols)]
+        rgba = d[:, idx].max(axis=2)
+        alpha = d[:, idx, 3]
+        print(f"  {off:4d} px from a frame edge: rgba mean {rgba.mean():5.2f} max {rgba.max():3d}"
+              f" | alpha mean {alpha.mean():5.2f} max {alpha.max():3d}")
+    print(f"  whole-image mean |difference| {d.max(axis=2).mean():.2f}/255")
+
+
+def cmd_report(args) -> None:
+    _print_table(_manifest())
+
+
+def _print_table(manifest: list[dict]) -> None:
+    psnr = json.loads((BUILD / "psnr.json").read_text()) if (BUILD / "psnr.json").exists() else {}
+    notes = (json.loads((BUILD / "upscale_notes.json").read_text())
+             if (BUILD / "upscale_notes.json").exists() else {})
+    print(f"\n{'texture':24s} {'role':7s} {'from':>11s} {'fmt':>16s}  "
+          f"{'to':>11s} {'fmt':>16s} {'PSNR':>7s}  method")
+    print("-" * 122)
+    for r in sorted(manifest, key=lambda x: (x["source"], x["name"])):
+        fro = f"{r['width']}x{r['height']}"
+        to = "(skipped)" if r["skipped"] else f"{r['out_width']}x{r['out_height']}"
+        f_in = f"{r['fourcc']}/dxgi{r['dxgi']}" if r["dxgi"] else r["fourcc"]
+        f_out = "-" if r["skipped"] else (f"{r['fourcc']}/dxgi{r['out_dxgi']}"
+                                          if r["dxgi"] else r["fourcc"])
+        p = psnr.get(r["name"])
+        print(f"{r['name']:24s} {r['role']:7s} {fro:>11s} {f_in:>16s}  {to:>11s} {f_out:>16s} "
+              f"{(f'{p:.2f}' if p else '-'):>7s}  {notes.get(r['name'], '')}")
+    n_skip = sum(1 for r in manifest if r["skipped"])
+    print(f"\n{len(manifest)} textures, {n_skip} already at the cap and skipped")
+
+
+def cmd_check(args) -> None:
+    """Structurally check ANY BND4/BXF4 with our own reader. `check <bhd> [bdt]`.
+
+    Deliberately usable on files this tool did not make, so a known-good binder
+    can be used as a control. Run it on the shipped m32_0000 and on the Nexus
+    Texture Improvement pack's rebuilt copy: both pass, which is what makes a
+    pass on our own output mean something.
+    """
+    if not args.names:
+        raise SystemExit("usage: ds3-texup check <file.tpfbhd|file.ffxbnd.dcx> [file.tpfbdt]")
+    path = Path(args.names[0])
+    d = path.read_bytes()
+    if d[:4] == b"DCX\0":
+        d = dcx_decompress(d)
+    entries = bnd4_entries(d)
+    info = hash_table_info(d)
+    chk = check_hash_table(d, entries)
+    aligned = sum(1 for e in entries if e["off"] % BDT_ALIGN == 0)
+    print(f"{path.name}: {d[:4].decode()} {len(d):,} bytes, {len(entries)} entries, "
+          f"record size {ENTRY_RECORD_SIZE:#x}")
+    if info is None:
+        print("  no hash table (hash_table_offset is 0)")
+    else:
+        print(f"  hash table @{info['offset']:#x}: {info['group_count']} groups, "
+              f"{info['hash_count']} path hashes")
+        print(f"  path_hashes_offset {info['path_hashes_offset']} vs groups end "
+              f"{info['groups_end']}: {'STALE' if info['stale'] else 'consistent'}, "
+              f"overruns file: {info['overruns']}")
+        print(f"  path hashes resolving to the right entry: {chk['ok']}/"
+              f"{chk['ok'] + chk['bad']}")
+    print(f"  entry data 16-byte aligned: {aligned}/{len(entries)}")
+    bad = (info is not None and (info["stale"] or info["overruns"] or chk["bad"])) \
+        or aligned != len(entries)
+    if len(args.names) > 1:
+        # size only, never the bytes: a merged BDT is 1.5 GB and the question here
+        # is whether any record points past the end of it
+        bdt_len = Path(args.names[1]).stat().st_size
+        over = [e["name"] for e in entries if e["off"] + e["csize"] > bdt_len]
+        print(f"  entries whose data runs past the end of {Path(args.names[1]).name} "
+              f"({bdt_len:,} bytes): {len(over)}")
+        bad = bad or bool(over)
+    print("  VERDICT:", "BROKEN" if bad else "structurally sound")
+    return 1 if bad else 0
+
+
+def cmd_deploy_cmds(args) -> None:
+    """Print the copies for each test output separately. Deploys nothing.
+
+    They are separate on purpose: after a build that broke the map, "which half
+    breaks it" is a question a capture can answer only if the halves ship alone.
+    """
+    wanted = [(getattr(args, "out_name", None) or "mod-map",
+               "MAP: the cloud sea, sky and storm strips, plus anything merged in"),
+              ("mod-sfx", "SFX ONLY: the ten fog and haze sprites")]
+    for name, what in wanted:
+        root = BUILD / name
+        if not root.exists():
+            continue
+        print(f"\n  # {what}")
+        dirs = sorted({str(DEPLOY / f.parent.relative_to(root))
+                       for f in root.rglob("*") if f.is_file()})
+        print(f"  mkdir -p {' '.join(dirs)}")
+        for f in sorted(root.rglob("*")):
+            if f.is_file():
+                print(f"  cp {f} {DEPLOY / f.relative_to(root)}")
+
+
+def cmd_all(args) -> None:
+    cmd_extract(args)
+    cmd_upscale(args)
+    cmd_encode(args)
+    cmd_preview(args)
+    cmd_pack(args)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", choices=["extract", "upscale", "encode", "pack", "preview",
+                                        "seamcheck", "report", "check", "deploy-cmds", "all"])
+    ap.add_argument("names", nargs="*",
+                    help="preview: which textures to show; check: the binder file(s)")
+    ap.add_argument("--only", help="restrict upscale/encode/pack to names containing this")
+    ap.add_argument("--force", action="store_true", help="redo work that already has output")
+    ap.add_argument("--quality", type=int, default=6, help="bc7e level 0..6 (default 6)")
+    ap.add_argument("--name", help="seamcheck: which flipbook (default s11630)")
+    ap.add_argument("--base-dir", help="pack: start from this mod's binders instead of "
+                                       "the archive originals (its container is kept)")
+    ap.add_argument("--inject", action="append", metavar="DIR",
+                    help="pack: patch in every entry this mod changed vs the game "
+                         "original (entry DATA only, never the container). Repeatable, "
+                         "later ones win")
+    ap.add_argument("--out-name", help="pack: build subdirectory for the map binders "
+                                       "(default mod-map)")
+    ap.add_argument("--skip-sfx", action="store_true",
+                    help="pack: map binders only, leave the sfx sprite binder alone")
+    args = ap.parse_args()
+
+    for tool, what in ((REALESRGAN, "realesrgan-ncnn-vulkan"), (BC7ENC, "bc7enc")):
+        if args.command in ("upscale", "encode", "seamcheck", "all") and not tool.exists():
+            raise SystemExit(f"{what} not found at {tool}; see the Pipeline section of "
+                             "docs/research/ds3-graphics-modernisation-20260903.md")
+    BUILD.mkdir(parents=True, exist_ok=True)
+    {"extract": cmd_extract, "upscale": cmd_upscale, "encode": cmd_encode, "pack": cmd_pack,
+     "preview": cmd_preview, "seamcheck": cmd_seamcheck, "report": cmd_report,
+     "check": cmd_check, "deploy-cmds": cmd_deploy_cmds, "all": cmd_all}[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

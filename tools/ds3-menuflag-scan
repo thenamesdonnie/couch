@@ -1,0 +1,293 @@
+#!/home/ds2000/couch/data/ds3-ui-port/.venv/bin/python
+"""Find the byte in DarkSoulsIII.exe's memory that says "the pause menu is open".
+
+WHY. The pause menu is now laid out as Elden Ring's vertical list, but the
+engine walks that list with Left/Right (it addresses Item_<list>_<index> with
+fixed meaning; renaming instances only sent Down into the toolbelt list, see
+docs/research/ds3-er-menus-survey-20260903.md). The fix has to live in OUR
+input layer: inputproc can swap D-pad Up/Down for Left/Right while the pause
+menu is open, if something tells it when that is. This tool finds that
+something: a differential scan of the sandbox game's writable memory across
+closed -> open -> closed -> open -> open-with-another-item.
+
+HOW IT READS MEMORY WITHOUT SUDO. kernel.yama.ptrace_scope is 1 on this box
+(descendants only). The harness backgrounds the game and exits, which would
+orphan it to init, so this process makes itself a CHILD SUBREAPER first
+(prctl PR_SET_CHILD_SUBREAPER): every orphan under it reparents to us, the
+game stays our descendant, and /proc/<pid>/mem opens. Nothing is written.
+
+    tools/ds3-menuflag-scan            # ~3 min, prints candidate addresses
+
+Reads the harness's dev primitives (tools/ds3-shot _dev ...). Keep this
+file's name and arguments free of "ds3-shot/game" and "compatdata-374320":
+the harness teardown pkills any process whose command line matches those.
+"""
+import ctypes
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+COUCH = Path.home() / "couch"
+HARNESS = COUCH / "tools/ds3-shot"
+SHOTS = COUCH / "data/ds3-shot/shots"
+ENV = dict(os.environ, DS3SHOT_MOD="1", DS3SHOT_W="1920", DS3SHOT_H="1080")
+MAX_REGION = 256 << 20          # skip anything bigger (GPU staging, arenas)
+MAX_TOTAL = 3 << 30             # cap the snapshot at 3 GB
+
+
+def dev(*args, check=True, capture=False):
+    r = subprocess.run([str(HARNESS), "_dev", *args], env=ENV, check=check,
+                       capture_output=capture, text=True)
+    return r.stdout.strip() if capture else None
+
+
+def say(msg):
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
+
+
+def game_pid():
+    out = subprocess.run(["pgrep", "-f", "DarkSoulsIII.exe"], capture_output=True, text=True).stdout.split()
+    best, rss = None, 0
+    for p in out:
+        try:
+            st = open(f"/proc/{p}/statm").read().split()
+            r = int(st[1])
+            if r > rss:
+                best, rss = int(p), r
+        except OSError:
+            pass
+    return best
+
+
+def regions(pid):
+    exe_base = None
+    out = []
+    for line in open(f"/proc/{pid}/maps"):
+        m = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
+        if not m:
+            continue
+        a, b, perms, path = int(m.group(1), 16), int(m.group(2), 16), m.group(3), m.group(4)
+        if "DarkSoulsIII.exe" in path and exe_base is None:
+            exe_base = a
+        if not perms.startswith("rw"):
+            continue
+        if path and not ("DarkSoulsIII.exe" in path or path.startswith("[heap]")):
+            continue
+        if b - a > MAX_REGION:
+            continue
+        out.append((a, b, path))
+    return exe_base, out
+
+
+def read(mem, a, n):
+    try:
+        return os.pread(mem, n, a)
+    except OSError:
+        return b""
+
+
+def wait_hud(timeout=150):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        dev("shot", "_probe", check=False)
+        if dev("probe", "hud", str(SHOTS / "_probe.png"), check=False, capture=True) == "yes":
+            return True
+        time.sleep(3)
+    return False
+
+
+def main():
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:          # PR_SET_CHILD_SUBREAPER
+        sys.exit("prctl failed")
+    say("launching the sandbox game (1080p, mod build)")
+    dev("start")
+    dev("frame")
+    dev("menu")
+    dev("key", "e")
+    say("waiting for the HUD")
+    if not wait_hud():
+        dev("stop", check=False)
+        sys.exit("no HUD")
+    time.sleep(3)
+    pid = game_pid()
+    say(f"game pid {pid}")
+    exe_base, regs = regions(pid)
+    say(f"exe base {exe_base:#x}, {len(regs)} rw regions, {sum(b - a for a, b, _ in regs) >> 20} MB")
+    mem = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+
+    # A: menu closed
+    snapA = {}
+    total = 0
+    for a, b, path in regs:
+        if total > MAX_TOTAL:
+            break
+        d = read(mem, a, b - a)
+        if d:
+            snapA[a] = np.frombuffer(d, dtype=np.uint8)
+            total += len(d)
+    say(f"snapshot A: {total >> 20} MB in {len(snapA)} regions")
+
+    # B: menu open
+    dev("key", "Escape"); time.sleep(2.0)
+    cands = []
+    for a, arrA in snapA.items():
+        d = read(mem, a, len(arrA))
+        if len(d) != len(arrA):
+            continue
+        arrB = np.frombuffer(d, dtype=np.uint8)
+        mask = (arrA != arrB) & (arrA <= 1) & (arrB <= 1)
+        for i in np.nonzero(mask)[0]:
+            cands.append((a + int(i), int(arrA[i]), int(arrB[i])))
+    del snapA
+    say(f"A->B: {len(cands)} bytes flipped between 0 and 1")
+
+    def sample(addrs):
+        return [read(mem, x, 1)[0] if read(mem, x, 1) else -1 for x in addrs]
+
+    # C: closed again
+    dev("key", "Escape"); time.sleep(2.0)
+    valC = sample([c[0] for c in cands])
+    cands = [c for c, v in zip(cands, valC) if v == c[1]]
+    say(f"C (closed): {len(cands)} still match")
+    # D: open again
+    dev("key", "Escape"); time.sleep(2.0)
+    valD = sample([c[0] for c in cands])
+    cands = [c for c, v in zip(cands, valD) if v == c[2]]
+    say(f"D (open): {len(cands)} still match")
+    # E: open, another item highlighted
+    dev("key", "Right"); time.sleep(1.5)
+    valE = sample([c[0] for c in cands])
+    cands = [c for c, v in zip(cands, valE) if v == c[2]]
+    say(f"E (open, Right): {len(cands)} still match")
+    dev("key", "Left"); time.sleep(0.5)
+    # F: closed once more, the last word
+    dev("key", "Escape"); time.sleep(2.0)
+    valF = sample([c[0] for c in cands])
+    cands = [c for c, v in zip(cands, valF) if v == c[1]]
+    say(f"F (closed): {len(cands)} survive all six states")
+
+    # G: open the bar, enter Equipment (a submenu). The swap must apply only
+    # while the TOP BAR is up, so the flag we want reads "closed" here.
+    dev("key", "Escape"); time.sleep(2.0)
+    dev("key", "e"); time.sleep(2.5)
+    valG = sample([c[0] for c in cands])
+    top_only = [c for c, v in zip(cands, valG) if v == c[1]]
+    any_menu = [c for c, v in zip(cands, valG) if v == c[2]]
+    say(f"G (Equipment screen): {len(top_only)} read closed (top-bar-only flags), {len(any_menu)} read open (any-menu flags)")
+    # H: back to the bar
+    dev("key", "q"); time.sleep(2.0)
+    valH = sample([c[0] for c in top_only])
+    top_only = [c for c, v in zip(top_only, valH) if v == c[2]]
+    say(f"H (bar again): {len(top_only)} top-bar-only flags survive")
+    dev("key", "Escape"); time.sleep(1.5)
+
+    # Context dump for the cross-run signature match (tools/ds3-menuflag-sig):
+    # 128 bytes around every top-bar-only flag, read in the CLOSED state,
+    # with the exe base so pointer-like qwords can be masked.
+    import json
+    ctx = []
+    for addr, va, vb in top_only:
+        around = read(mem, addr - 64, 160)
+        if len(around) == 160:
+            ctx.append({"addr": addr, "closed": va, "open": vb, "ctx": around.hex()})
+    out = Path(os.environ.get("MENUFLAG_CTX", f"/tmp/menuflag_ctx_{int(time.time())}.json"))
+    out.write_text(json.dumps({"exe_base": exe_base, "flags": ctx}))
+    say(f"context of {len(ctx)} flags written to {out}")
+
+    # Pointer hunt: chains from the exe's static data into the candidates.
+    #   static S -> P1 (heap object), flag = P1 + d1            (1 level)
+    #   static S -> P1, [P1 + d1] = P2, flag = P2 + d2          (2 levels)
+    STEP = 0x2000
+    statics = []
+    for a, b, path in regs:
+        if "DarkSoulsIII.exe" not in path:
+            continue
+        d = read(mem, a, b - a)
+        if len(d) < 8:
+            continue
+        q = np.frombuffer(d[: len(d) - len(d) % 8], dtype=np.uint64)
+        for i in np.nonzero((q > 0x10000) & (q < (1 << 47)))[0]:
+            statics.append((a + 8 * int(i), int(q[i])))
+    say(f"{len(statics)} pointer-like qwords in the exe's data")
+    targets = {c[0]: c for c in top_only}
+    tlist = np.array(sorted(targets), dtype=np.int64)
+    chains = []
+    def hits(base):
+        lo = np.searchsorted(tlist, base); hi = np.searchsorted(tlist, base + STEP)
+        return [int(x) for x in tlist[lo:hi]]
+    for saddr, p1 in statics:
+        for t in hits(p1):
+            chains.append((saddr - exe_base, t - p1, None, t))
+        obj = read(mem, p1, STEP)
+        if len(obj) >= 8:
+            q = np.frombuffer(obj[: len(obj) - len(obj) % 8], dtype=np.uint64)
+            for i in np.nonzero((q > 0x10000) & (q < (1 << 47)))[0]:
+                p2 = int(q[i])
+                for t in hits(p2):
+                    chains.append((saddr - exe_base, 8 * int(i), t - p2, t))
+    say(f"{len(chains)} chains from static data reach a top-bar-only flag")
+    for soff, d1, d2, t in sorted(chains, key=lambda c: (c[0], c[1], c[2] or 0))[:80]:
+        va, vb = targets[t][1], targets[t][2]
+        print(f"  exe+{soff:#x} -> +{d1:#x}" + (f" -> +{d2:#x}" if d2 is not None else "") + f"  = {t:#x}  closed={va} open={vb}")
+    if not chains:
+        for addr, va, vb in top_only[:60]:
+            print(f"  {addr:#x}  closed={va} open={vb}  heap")
+
+    # Fingerprint each top-bar-only flag by its OBJECT: the nearest qword
+    # before it that points into the exe image (a vtable) and the flag's
+    # offset from that qword. Heap addresses change per launch; a vtable
+    # offset into the exe does not, so (vtable, delta) pairs that recur
+    # across runs identify the byte, and a watcher can find the object by
+    # scanning for that vtable pointer at launch.
+    img_lo, img_hi = exe_base, exe_base + (128 << 20)
+    fps = {}
+    for addr, va, vb in top_only:
+        back = read(mem, addr - 0x4000, 0x4000)
+        if len(back) < 8:
+            continue
+        q = np.frombuffer(back[len(back) % 8:], dtype=np.uint64)
+        idx = np.nonzero((q >= img_lo) & (q < img_hi))[0]
+        if len(idx) == 0:
+            continue
+        i = int(idx[-1])                               # the nearest one before the flag
+        vaddr = addr - 0x800 + len(back) % 8 + 8 * i
+        vt = int(q[i]) - exe_base
+        fps.setdefault((vt, addr - vaddr), []).append((addr, va, vb))
+    say(f"{len(fps)} (vtable, delta) fingerprints among {len(top_only)} top-bar-only flags")
+    for (vt, delta), lst in sorted(fps.items()):
+        print(f"  FP vtable=exe+{vt:#x} delta={delta:#x} n={len(lst)} closed={lst[0][1]} open={lst[0][2]}")
+
+    # Verify the saved chain (data/ds3-shot/menuflag.json) end to end, the
+    # way tools/ds3-menu-watch will read it: closed, open, Equipment, closed.
+    cfg = COUCH / "data/ds3-shot/menuflag.json"
+    if cfg.exists():
+        import json
+        ch = json.loads(cfg.read_text())
+        def via_chain():
+            try:
+                p = int.from_bytes(read(mem, exe_base + ch["static"], 8), "little") + ch["d1"]
+                if ch.get("d2") is not None:
+                    p = int.from_bytes(read(mem, p, 8), "little") + ch["d2"]
+                return read(mem, p, 1)[0]
+            except Exception as e:
+                return f"ERR {e}"
+        seq = []
+        seq.append(("closed", via_chain()))
+        dev("key", "Escape"); time.sleep(1.5); seq.append(("bar open", via_chain()))
+        dev("key", "e"); time.sleep(2.0); seq.append(("Equipment", via_chain()))
+        dev("key", "q"); time.sleep(1.5); seq.append(("bar again", via_chain()))
+        dev("key", "Escape"); time.sleep(1.5); seq.append(("closed", via_chain()))
+        say("saved chain reads: " + ", ".join(f"{k}={v}" for k, v in seq))
+    os.close(mem)
+    dev("stop", check=False)
+    say("done")
+
+
+if __name__ == "__main__":
+    main()

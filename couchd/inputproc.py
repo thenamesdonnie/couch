@@ -151,6 +151,38 @@ def scale_stick(value):
     return max(-32768, min(32767, int(value) * 257 - 32768))
 
 
+# --- D-pad rotate: Up/Down become Left/Right while a flag file exists ------
+# WHY (3 Sep 2026): DS3's pause menu is restyled as Elden Ring's VERTICAL
+# list, but the engine walks it with Left/Right (it addresses the list as
+# Item_<list>_<index>; Up/Down switch lists, and nothing in the movie can
+# change that). tools/ds3-menu-watch reads the game's "top bar open" flag and
+# holds this file while it is set; inputproc then turns Up into Left and Down
+# into Right, and only then. The file is checked at most every 50 ms so the
+# stream never waits on the filesystem.
+DPAD_ROTATE_FLAG = os.environ.get('COUCHD_DPAD_ROTATE_FLAG', '/tmp/couch-dpad-rotate')
+_dpad_rotate = {'at': 0.0, 'on': False}
+ABS_HAT0X, ABS_HAT0Y = 0x10, 0x11        # evdev codes, spelled out so the pure helper needs no device
+
+
+def dpad_rotate_active(now=None):
+    now = time.monotonic() if now is None else now
+    if now - _dpad_rotate['at'] >= 0.05:
+        _dpad_rotate['at'] = now
+        _dpad_rotate['on'] = os.path.exists(DPAD_ROTATE_FLAG)
+    return _dpad_rotate['on']
+
+
+def rotate_dpad(etype, code, value, active):
+    """Up (-1) -> Left (-1), Down (+1) -> Right (+1) while `active`.
+
+    Pure. HAT0X events pass through unchanged either way, so a physical Left
+    still works in the rotated state.
+    """
+    if active and etype == gesture.EV_ABS and code == ABS_HAT0Y:
+        return etype, ABS_HAT0X, value
+    return etype, code, value
+
+
 def translate(etype, code, value):
     """One physical event -> one virtual event, or None to drop it.
 
@@ -1077,6 +1109,7 @@ class InputProc:
             if etype == gesture.EV_KEY and code == gesture.BTN_MODE:
                 self.on_guide(k, value, sec, usec)
                 continue
+            etype, code, value = rotate_dpad(etype, code, value, dpad_rotate_active())
             out = translate(etype, code, value)
             if out is None:
                 self.counts['dropped'] += 1

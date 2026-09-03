@@ -38,4 +38,18 @@ fi
 [ -x "$LAUNCHER" ] || [ -f "$LAUNCHER" ] || { echo "launcher missing at $LAUNCHER; launching unmodified" >> "$LOG"; exec "$@"; }
 args+=(-t ds3 -c "$CONFIG" -p "$game")
 echo "modded launch (OFFLINE ONLY): exec ${args[*]}" >> "$LOG"
+# D-pad rotate for the ER-style pause menu (3 Sep 2026): when the menu-flag
+# chain exists, run the game UNDER tools/ds3-menu-watch, which must be the
+# game's ancestor to read its memory without sudo (yama ptrace_scope 1). It
+# execs the same command and only adds the flag file; see the tool's header.
+# Frame-rate unlock (3 Sep 2026): the watcher patches DS3's 60 fps cap to
+# DS3_FPS once the engine is up (see the watcher's apply_fps). Default 120
+# for the LG C5; DS3_FPS=0 in the launch options disables it. With vsync on
+# and a 60 Hz mode the game still runs at 60, so the default is safe.
+export DS3_FPS="${DS3_FPS-120}"
+WATCH="$HOME/couch/tools/ds3-menu-watch"
+if [ -x "$WATCH" ] && [ -z "${DS3_NO_MENU_WATCH:-}" ]; then
+  echo "running under ds3-menu-watch (screen mode)" >> "$LOG"
+  exec "$WATCH" --screen -- "${args[@]}"
+fi
 exec "${args[@]}"

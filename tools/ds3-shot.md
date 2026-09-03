@@ -191,3 +191,27 @@ YES. The key/click grammar is in the traps below and in the tool's comments.
 - The real save's md5 was checked repeatedly through the session and never
   changed: `136380b6fddc850f40e139d0f7326d76`, mtime 30 Aug 01:52 throughout.
 - "Offline" proven by capture at the main menu after the setting persisted.
+
+## Traps found 3 Sep 2026 (agents and captures)
+
+* `teardown` pkills anything whose command line matches `ds3-shot/game` or
+  `compatdata-374320`. That includes the shell that called it, background
+  waiters of the calling session, and a `pgrep` you typed with those strings.
+  Put deploy+capture+copy in a script file, run it under
+  `flock data/ds3-shot/agent.lock`, poll its log, and write such patterns as
+  `D[a]rkSoulsIII` when you grep for the game yourself.
+* `DS3SHOT_FAST=1` exits the journey before the pause-menu shot, so
+  `DS3SHOT_PAUSE=...` needs a non-fast run. Modes: `1` (one shot), `sweep`
+  (Right x4), `down` (one Down), `downsweep` (Down x5). `DS3SHOT_STATUS=1`
+  adds a Status screen shot; `DS3SHOT_EARLY=1` a sweep during the load.
+* A run that dies without `_dev stop` leaves the gamescope session and
+  `data/ds3-shot/lock` behind, and the next launch never renders a frame
+  ("no rendered frame within 180s"). Kill the leftovers by pid, remove the
+  lock file.
+* `--refresh-save` needs `DS3SHOT_MOD=1` too when mod overrides are staged
+  (the preflight guard runs for every verb). It replaces the harness
+  character with the real save; `tools/ds3-state load harness-cemetery-20260903`
+  brings the Cemetery character back.
+* Reading a sandbox game's memory without sudo: make your process a child
+  subreaper before `_dev start` (tools/ds3-menuflag-scan does it), and walk
+  children per thread (Wine forks from worker threads).

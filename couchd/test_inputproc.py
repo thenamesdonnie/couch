@@ -948,3 +948,29 @@ def test_reacquire_requires_both_interlocks_and_ignores_a_held_baseline(
     proc.on_guide(2001.0, 1, 2001, 0)
     proc.on_guide(2001.1, 0, 2001, 100000)
     assert [f['value'] for k, f in proc.wire.msgs if k == 'press'] == [1, 0]
+
+
+# --- D-pad rotate (3 Sep 2026): Up/Down become Left/Right only while the
+# flag file exists, and HAT0X always passes through.
+def test_rotate_dpad_maps_updown_to_leftright_when_active():
+    assert inputproc.rotate_dpad(gesture.EV_ABS, inputproc.ABS_HAT0Y, -1, True) == (gesture.EV_ABS, inputproc.ABS_HAT0X, -1)
+    assert inputproc.rotate_dpad(gesture.EV_ABS, inputproc.ABS_HAT0Y, 1, True) == (gesture.EV_ABS, inputproc.ABS_HAT0X, 1)
+    assert inputproc.rotate_dpad(gesture.EV_ABS, inputproc.ABS_HAT0Y, 0, True) == (gesture.EV_ABS, inputproc.ABS_HAT0X, 0)
+
+
+def test_rotate_dpad_is_identity_when_inactive_or_not_hat_y():
+    assert inputproc.rotate_dpad(gesture.EV_ABS, inputproc.ABS_HAT0Y, -1, False) == (gesture.EV_ABS, inputproc.ABS_HAT0Y, -1)
+    assert inputproc.rotate_dpad(gesture.EV_ABS, inputproc.ABS_HAT0X, 1, True) == (gesture.EV_ABS, inputproc.ABS_HAT0X, 1)
+    assert inputproc.rotate_dpad(gesture.EV_KEY, gesture.BTN_MODE, 1, True) == (gesture.EV_KEY, gesture.BTN_MODE, 1)
+
+
+def test_dpad_rotate_flag_file_is_polled_not_stat_per_event(tmp_path, monkeypatch):
+    flag = tmp_path / 'rotate'
+    monkeypatch.setattr(inputproc, 'DPAD_ROTATE_FLAG', str(flag))
+    monkeypatch.setattr(inputproc, '_dpad_rotate', {'at': 0.0, 'on': False})
+    assert inputproc.dpad_rotate_active(now=1.0) is False
+    flag.write_text('')
+    assert inputproc.dpad_rotate_active(now=1.01) is False     # cached, under 50 ms
+    assert inputproc.dpad_rotate_active(now=1.06) is True      # re-checked
+    flag.unlink()
+    assert inputproc.dpad_rotate_active(now=1.20) is False

@@ -1,0 +1,15 @@
+{
+  "name": "fxr-node",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@cccode/fxr": "^32.1.1"
+  }
+}

@@ -1,0 +1,494 @@
+#!/usr/bin/python3
+"""Hold /tmp/couch-dpad-rotate while Dark Souls III's pause bar is open.
+
+WHY. The pause menu is restyled as Elden Ring's vertical list but the engine
+still walks it with Left/Right (docs/research/ds3-er-menus-survey-20260903.md,
+"Navigation, DEAD END"). inputproc turns Up/Down into Left/Right while the
+flag file exists; this tool decides when, by reading one byte out of the
+running game through the pointer chain that tools/ds3-menuflag-scan found
+(data/ds3-shot/menuflag.json: {"static": exe offset, "d1": ..., "d2": ...,
+"open": value}).
+
+HOW IT READS MEMORY WITHOUT SUDO. kernel.yama.ptrace_scope is 1 on this
+box (descendants only), so this tool must be an ANCESTOR of the game: it is
+run BY tools/ds3-modded-launch, spawns the game command itself, makes itself
+a child subreaper (Proton and ModEngine2 re-exec and orphan freely), finds
+DarkSoulsIII.exe among its descendants and polls /proc/<pid>/mem at 30 Hz.
+Nothing is ever written to the game.
+
+    ds3-menu-watch --screen -- <game command ...>   # SHIPPING: watch the screen, exit with the game
+    ds3-menu-watch --screen-probe                   # print the detector's reading twice a second
+    ds3-menu-watch -- <game command ...>            # memory mode (needs menuflag.json; did not pan out)
+    ds3-menu-watch --probe <pid>                    # memory mode, one reading
+
+Failure is safe: no chain, no game, or an unreadable byte just means the
+flag file is never raised and the D-pad behaves as before.
+"""
+import ctypes
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CHAIN = Path.home() / "couch/data/ds3-shot/menuflag.json"
+FLAG = "/tmp/couch-dpad-rotate"
+LOG = Path("/tmp/ds3-menu-watch.log")
+POLL = 1 / 30
+
+
+def log(msg):
+    with LOG.open("a") as f:
+        f.write(time.strftime("%F %T ") + msg + "\n")
+
+
+def exe_base(pid):
+    for line in open(f"/proc/{pid}/maps"):
+        if "DarkSoulsIII.exe" in line:
+            return int(line.split("-")[0], 16)
+    return None
+
+
+def descendants(root):
+    """Every process below `root`. Children are listed per THREAD in
+    /proc/<pid>/task/<tid>/children, and Wine forks from worker threads, so
+    the main thread's list alone misses the game (3 Sep sandbox test)."""
+    out, todo, seen = [], [root], set()
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        kids = set()
+        try:
+            for tid in os.listdir(f"/proc/{p}/task"):
+                try:
+                    kids.update(int(k) for k in open(f"/proc/{p}/task/{tid}/children").read().split())
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        out.extend(kids)
+        todo.extend(kids)
+    return out
+
+
+def find_game(root):
+    for p in descendants(root):
+        try:
+            cmd = open(f"/proc/{p}/cmdline", "rb").read()
+        except OSError:
+            continue
+        if b"DarkSoulsIII.exe" in cmd and exe_base(p):
+            return p
+    return None
+
+
+class Reader:
+    """Two ways to find the byte. "chain": static pointer hops (fast, but the
+    3 Sep scans showed two-hop chains do not recur across launches). "vtable":
+    the object is found by scanning the heap once for the qword
+    exe+vtable (a vtable pointer is a constant exe offset), the flag is at
+    +delta; every instance found is polled and the flag is on if any reads
+    the open value (the count is logged so a false positive is visible)."""
+
+    def __init__(self, pid, chain):
+        self.mem = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        self.base = exe_base(pid)
+        self.chain = chain
+        self.addrs = []
+        if "pattern" in chain:
+            self.addrs = self.scan_pattern(pid, chain)
+            log(f"pattern scan: {len(self.addrs)} instance(s) -> {[hex(a) for a in self.addrs[:8]]}")
+        elif "vtable" in chain:
+            self.addrs = self.scan_vtable(pid, self.base + chain["vtable"], chain["delta"])
+            log(f"vtable scan: {len(self.addrs)} instance(s) -> {[hex(a) for a in self.addrs[:8]]}")
+
+    def scan_pattern(self, pid, chain):
+        """AOB scan: find the anchor (longest fixed run) with bytes.find, then
+        verify every fixed byte of the pattern; return flag addresses."""
+        toks = chain["pattern"].split()
+        fixed = [(i, int(t, 16)) for i, t in enumerate(toks) if t != "??"]
+        anchor = bytes.fromhex(chain["anchor"]); aoff = chain["anchor_offset"]
+        found = []
+        for line in open(f"/proc/{pid}/maps"):
+            m = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
+            if not m or not m.group(3).startswith("rw"):
+                continue
+            a, b, path = int(m.group(1), 16), int(m.group(2), 16), m.group(4)
+            if path and not path.startswith("[heap]"):
+                continue
+            if b - a > (256 << 20):
+                continue
+            try:
+                d = os.pread(self.mem, b - a, a)
+            except OSError:
+                continue
+            k = d.find(anchor)
+            while k != -1:
+                start = k - aoff
+                if 0 <= start and start + len(toks) <= len(d) and all(d[start + i] == v for i, v in fixed):
+                    found.append(a + start + chain["flag_offset"])
+                k = d.find(anchor, k + 1)
+        return found
+
+    def rescan(self, pid):
+        if "pattern" in self.chain:
+            return self.scan_pattern(pid, self.chain)
+        return self.scan_vtable(pid, self.base + self.chain["vtable"], self.chain["delta"])
+
+    def scan_vtable(self, pid, vt, delta):
+        import numpy as np
+        found = []
+        for line in open(f"/proc/{pid}/maps"):
+            m = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
+            if not m or not m.group(3).startswith("rw"):
+                continue
+            a, b, path = int(m.group(1), 16), int(m.group(2), 16), m.group(4)
+            if path and not path.startswith("[heap]"):
+                continue
+            if b - a > (256 << 20):
+                continue
+            try:
+                d = os.pread(self.mem, b - a, a)
+            except OSError:
+                continue
+            q = np.frombuffer(d[: len(d) - len(d) % 8], dtype=np.uint64)
+            for i in np.nonzero(q == vt)[0]:
+                found.append(a + 8 * int(i) + delta)
+        return found
+
+    def q(self, addr):
+        d = os.pread(self.mem, 8, addr)
+        return int.from_bytes(d, "little") if len(d) == 8 else None
+
+    def flag(self):
+        if self.addrs:
+            vals = []
+            for a in self.addrs:
+                try:
+                    d = os.pread(self.mem, 1, a)
+                    vals.append(d[0] if d else None)
+                except OSError:
+                    vals.append(None)
+            return self.chain["open"] if self.chain["open"] in vals else (vals[0] if vals else None)
+        try:
+            p = self.q(self.base + self.chain["static"])
+            if not p:
+                return None
+            p += self.chain["d1"]
+            if self.chain.get("d2") is not None:
+                p = self.q(p)
+                if not p:
+                    return None
+                p += self.chain["d2"]
+            d = os.pread(self.mem, 1, p)
+            return d[0] if d else None
+        except OSError:
+            return None
+
+
+# --- screen mode (the one that ships) ---------------------------------------
+# Memory chains and byte signatures did not recur across launches (3 Sep
+# scans 2..8: the flags live among pointers and zeros), so the watcher looks
+# at the SCREEN instead: the pause bar is the only thing that ever puts our
+# ER-style first tile (a gold 137x141 frame at 4K x 107..244, y 426..580 on
+# the lit Equipment row) and its bone "Equipment" label at those pixels. The
+# game window's own pixmap is grabbed through the compositor (0.3 ms for the
+# region, the same XGetImage route pause-snap uses), coordinates scaled by the
+# window's width over 3840 so a 1080p sandbox window tests the same code.
+SCREEN_REF_W = 3840.0
+TILE_LEFT_COL = (105, 111, 440, 570)      # x0, x1, y0, y1 at 4K: the frame's left edge
+TILE_TOP_ROW = (115, 240, 427, 436)       # the frame's top edge
+LABEL_BOX = (283, 560, 480, 530)          # "Equipment"
+MIN_EDGE_FRACTION = 0.15                  # measured 0.23..0.42 with the bar up, 0.00 otherwise (3 Sep sandbox test)
+MIN_LABEL_PIXELS = 120                    # bone text pixels at 4K, scaled by area (measured 367 at 0.5 scale)
+
+
+def find_game_window(disp):
+    """The DS3 window on the display, or a gamescope window (the sandbox)."""
+    root = disp.screen().root
+    best = None
+    todo = [root]
+    while todo:
+        w = todo.pop()
+        try:
+            kids = w.query_tree().children
+        except Exception:
+            continue
+        for k in kids:
+            try:
+                cls = k.get_wm_class() or ("", "")
+                name = k.get_wm_name() or ""
+                g = k.get_geometry()
+            except Exception:
+                continue
+            tag = (" ".join(cls) + " " + str(name)).lower()
+            if g.width >= 640 and ("darksoulsiii" in tag or "dark souls" in tag or "gamescope" in tag):
+                if best is None or g.width > best[1]:
+                    best = (k, g.width)
+            todo.append(k)
+    return best[0] if best else None
+
+
+def grab(win, box, scale):
+    """RGB bytes of a window region given in 4K coordinates."""
+    from Xlib import X
+    x0, x1, y0, y1 = box
+    x, y = int(x0 * scale), int(y0 * scale)
+    w, h = max(1, int((x1 - x0) * scale)), max(1, int((y1 - y0) * scale))
+    im = win.get_image(x, y, w, h, X.ZPixmap, 0xffffffff)
+    return im.data, w, h
+
+
+def gold_fraction(data, w, h):
+    n = g = 0
+    for i in range(0, len(data) - 3, 4):
+        b, gr, r = data[i], data[i + 1], data[i + 2]
+        n += 1
+        if r - b > 25 and r > 80 and gr > 70:
+            g += 1
+    return g / max(n, 1)
+
+
+def bone_pixels(data):
+    c = 0
+    for i in range(0, len(data) - 3, 4):
+        b, gr, r = data[i], data[i + 1], data[i + 2]
+        if r > 150 and gr > 140 and b > 110 and r - b > 15 and r - b < 70:
+            c += 1
+    return c
+
+
+def is_active(disp, win):
+    """True when the game window is the focused top-level (so a frozen game
+    left showing its bar behind Kodi never rotates Kodi's D-pad)."""
+    try:
+        root = disp.screen().root
+        prop = root.get_full_property(disp.intern_atom("_NET_ACTIVE_WINDOW"), 0)
+        if not prop or not prop.value:
+            return True
+        active = int(prop.value[0])
+        w = win
+        for _ in range(8):                  # the game window may be a child of the focused frame
+            if w.id == active:
+                return True
+            q = w.query_tree()
+            w = q.parent
+            if w == root or w is None:
+                break
+        # or the active window is a child of ours (gamescope wraps the game)
+        a = disp.create_resource_object("window", active)
+        for _ in range(8):
+            if a.id == win.id:
+                return True
+            a = a.query_tree().parent
+            if a == root or a is None:
+                break
+        return False
+    except Exception:
+        return True
+
+
+def bar_visible(win, scale, disp=None):
+    if disp is not None and not is_active(disp, win):
+        return False
+    d, w, h = grab(win, TILE_LEFT_COL, scale)
+    if gold_fraction(d, w, h) < MIN_EDGE_FRACTION:
+        return False
+    d, w, h = grab(win, TILE_TOP_ROW, scale)
+    if gold_fraction(d, w, h) < MIN_EDGE_FRACTION:
+        return False
+    d, w, h = grab(win, LABEL_BOX, scale)
+    return bone_pixels(d) >= MIN_LABEL_PIXELS * scale * scale
+
+
+def screen_loop(child, fps_wanted=0):
+    from Xlib import display
+    disp = display.Display(os.environ.get("DISPLAY", ":0"))
+    win, scale, last, misses = None, 1.0, None, 0
+    fps_done = False
+    while True:
+        if child is not None and child.poll() is not None and not descendants(os.getpid()):
+            break
+        if fps_wanted and not fps_done:
+            pid = find_game(os.getpid())
+            if pid:
+                log(f"fps unlock: {apply_fps(pid, fps_wanted)}")
+                fps_done = True
+        if win is None:
+            win = find_game_window(disp)
+            if win is None:
+                time.sleep(1.0)
+                continue
+            scale = win.get_geometry().width / SCREEN_REF_W
+            log(f"watching window {win.id:#x} scale {scale:.3f}")
+        try:
+            on = bar_visible(win, scale, disp)
+            misses = 0
+        except Exception as e:
+            misses += 1
+            if misses > 20:
+                log(f"window gone ({e}), searching again")
+                win, misses = None, 0
+            time.sleep(0.2)
+            continue
+        if on != last:
+            set_flag(on)
+            log(f"flag {'ON' if on else 'off'} (screen)")
+            last = on
+        time.sleep(POLL)
+    set_flag(False)
+
+
+# --- frame-rate unlock ----------------------------------------------------
+# WHY (3 Sep 2026, Donnie's wishlist item 1). DS3 caps itself at 60. The
+# community unlock (0dm/DS3DebugFPS, ported to Linux as krob64/ds3fps) is
+# two writes: the SprjFlipper object's pointer sits at DarkSoulsIII.exe
+# +0x489DD10 (game 1.15.2); at +0x354 in that object is the float frame cap
+# and at +0x358 a byte that enables the "debug" cap path. ds3fps needs
+# ptrace rights on the game; under yama scope 1 only an ancestor has them,
+# and this watcher IS the game's ancestor, so the patch lives here. Set
+# DS3_FPS=120 in the launch options (or pass --fps 120). 0 or unset = no
+# patch. The flipper pointer is null until the engine is up, so we poll.
+FPS_FLIPPER_PTR = 0x489DD10
+FPS_CAP_OFF, FPS_DEBUG_OFF = 0x354, 0x358
+
+
+def apply_fps(pid, fps, tries=120):
+    import struct
+    base = exe_base(pid)
+    if not base:
+        return "no exe base"
+    try:
+        fd = os.open(f"/proc/{pid}/mem", os.O_RDWR)
+    except OSError as e:
+        return f"cannot open mem rw: {e}"
+    try:
+        for _ in range(tries):
+            d = os.pread(fd, 8, base + FPS_FLIPPER_PTR)
+            p = int.from_bytes(d, "little") if len(d) == 8 else 0
+            if p:
+                os.pwrite(fd, struct.pack("<f", float(fps)), p + FPS_CAP_OFF)
+                os.pwrite(fd, b"\x01", p + FPS_DEBUG_OFF)
+                back = struct.unpack("<f", os.pread(fd, 4, p + FPS_CAP_OFF))[0]
+                return f"fps cap {back:g} written at {p + FPS_CAP_OFF:#x} (flipper {p:#x})"
+            time.sleep(0.5)
+        return "flipper pointer stayed null"
+    finally:
+        os.close(fd)
+
+
+def set_flag(on):
+    if on:
+        Path(FLAG).touch()
+    else:
+        try:
+            os.unlink(FLAG)
+        except FileNotFoundError:
+            pass
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv[:1] == ["--fps-probe"]:
+        # read the current cap of a running game (needs ptrace rights)
+        import struct
+        pid = int(argv[1]); base = exe_base(pid); fd = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        p = int.from_bytes(os.pread(fd, 8, base + FPS_FLIPPER_PTR), "little")
+        print("flipper", hex(p), "cap", struct.unpack("<f", os.pread(fd, 4, p + FPS_CAP_OFF))[0] if p else None, "debug", os.pread(fd, 1, p + FPS_DEBUG_OFF) if p else None)
+        return
+    if argv[:1] == ["--screen-probe"]:
+        # print the detector's verdict every poll; Ctrl-C to stop
+        from Xlib import display
+        disp = display.Display(os.environ.get("DISPLAY", ":0"))
+        win = find_game_window(disp)
+        if win is None:
+            sys.exit("no game window")
+        scale = win.get_geometry().width / SCREEN_REF_W
+        print(f"window {win.id:#x} scale {scale:.3f}")
+        while True:
+            d, w, h = grab(win, TILE_LEFT_COL, scale); a = gold_fraction(d, w, h)
+            d, w, h = grab(win, TILE_TOP_ROW, scale); b = gold_fraction(d, w, h)
+            d, w, h = grab(win, LABEL_BOX, scale); c = bone_pixels(d)
+            print(time.strftime("%H:%M:%S"), f"left {a:.2f} top {b:.2f} label {c}  -> {'BAR' if bar_visible(win, scale) else '-'}", flush=True)
+            time.sleep(0.5)
+    if argv[:1] == ["--screen"] or (argv[:1] == ["--"] and not CHAIN.exists()):
+        # the shipping mode: run the game, watch the screen
+        if argv[:1] == ["--screen"]:
+            argv = argv[1:]
+        fps_wanted = 0
+        if argv[:1] == ["--fps"]:
+            fps_wanted, argv = float(argv[1]), argv[2:]
+        elif os.environ.get("DS3_FPS"):
+            fps_wanted = float(os.environ["DS3_FPS"])
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(36, 1, 0, 0, 0)
+        set_flag(False)
+        child = subprocess.Popen(argv[1:]) if argv[:1] == ["--"] else None
+        if child is not None:
+            log(f"spawned {argv[1:3]} pid {child.pid} (screen mode)")
+            signal.signal(signal.SIGTERM, lambda *_: (set_flag(False), child.terminate(), sys.exit(0)))
+        screen_loop(child, fps_wanted)
+        log("game gone, exit")
+        return
+    if not CHAIN.exists():
+        log("no menuflag.json, running the game unwatched")
+        if argv and argv[0] == "--":
+            os.execvp(argv[1], argv[1:])
+        sys.exit(1)
+    chain = json.loads(CHAIN.read_text())
+    if argv[:1] == ["--probe"]:
+        r = Reader(int(argv[1]), chain)
+        print(r.flag())
+        return
+    if argv[:1] != ["--"] or len(argv) < 2:
+        sys.exit(__doc__)
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl(36, 1, 0, 0, 0)                      # PR_SET_CHILD_SUBREAPER
+    set_flag(False)
+    child = subprocess.Popen(argv[1:])
+    log(f"spawned {argv[1:3]} pid {child.pid}")
+    signal.signal(signal.SIGTERM, lambda *_: (set_flag(False), child.terminate(), sys.exit(0)))
+    reader, last, t0 = None, None, time.time()
+    while True:
+        if child.poll() is not None and not descendants(os.getpid()):
+            break
+        if reader is None:
+            pid = find_game(os.getpid())
+            if pid:
+                try:
+                    reader = Reader(pid, chain)
+                    reader_pid = pid
+                    log(f"watching DarkSoulsIII.exe pid {pid}, base {reader.base:#x}")
+                except OSError as e:
+                    log(f"cannot open mem: {e}")
+                    time.sleep(2)
+                    continue
+            else:
+                time.sleep(0.5)
+                continue
+        if ("vtable" in chain or "pattern" in chain) and not reader.addrs:
+            # the menu objects are built after the title screen: rescan until found
+            if time.time() - t0 > 5:
+                reader.addrs = reader.rescan(reader_pid)
+                log(f"rescan: {len(reader.addrs)} instance(s)")
+                t0 = time.time()
+            time.sleep(0.5)
+            continue
+        v = reader.flag()
+        on = v == chain["open"]
+        if on != last:
+            set_flag(on)
+            log(f"flag {'ON' if on else 'off'} (byte={v})")
+            last = on
+        time.sleep(POLL)
+    set_flag(False)
+    log("game gone, exit")
+
+
+if __name__ == "__main__":
+    main()
