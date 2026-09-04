@@ -229,3 +229,90 @@ script LOCKSPRINT (`tools/bb-lockon-sprint install lockspint`, the trigger),
 bundle DIRDASH5 (`tools/bb-anibnd-swap`, clip selection), and the cheat
 "Lock-on sprint faces the stick" (`tools/bb-cheat on`, the facing: v2 hooks +
 the 1.0 s facing hold through DashEnd + TurnAngle zeroed while locked).
+
+## 3 Sep 2026 (afternoon): crash during a scripted event, both v7 code-cave patches disabled pending investigation
+
+Donnie: game crashed to a "Dantelion2 Panic ... Mutex is not initialized"
+cascade (repeating PthreadMutex EINVAL/EAGAIN panics) right as the screen
+went dark using the Crown of Illusions. Log shows this happened during a
+scene transition: `remo/s25_00_0010.remobnd.dcx` (cutscene camera file) and
+`chr/c0000.chrbnd.dcx` (the PLAYER CHARACTER BUNDLE) both reloaded moments
+before the panic, i.e. the character object was being reconstructed. A save
+write-probe completed cleanly just before, so no save corruption.
+
+That signature (mutex object corrupted, not a plain access violation) is
+consistent with heap/memory corruption, not a normal engine crash - compare
+the earlier 14 Aug crash, `Unhandled access violation, read from 0x44`, a
+different and unrelated signature.
+
+**Two suspects, both exercised for the first time tonight in a scene-transit
+context, both DISABLED pending proof:**
+1. Lock-on sprint v7's `cave_a` writes a running float into scratch memory at
+   0x56d3f00 every frame while sprinting/holding-facing. That address was
+   reasoned to be "the zero-filled tail of the RW segment's last mapped page"
+   (memsz 0x56d30f4, page end 0x56d4000) but never verified against what the
+   game's own allocator actually does with that page. If the runtime reuses
+   it for anything (plausible exactly during a scene reload, when new heap
+   objects get placed), our per-frame write would corrupt it.
+2. The FOV cave hooks 0x143af5e inside the player camera FOV-easing function.
+   Cutscene cameras may share that same routine on a different object (r13
+   pointing at a scene/remo camera instead of the live player camera), in
+   which case our patch writes a plausible float into the wrong struct's
+   field - could land on anything, including a mutex.
+
+**Status: `tools/bb-cheat off` on both.** Everything else (lock-on range x3,
+bb-patchdir-fix, script/) is untouched - data edits and file swaps, not code,
+much lower suspicion. Awaiting Donnie's retry with both off as the test.
+
+**If confirmed (no crash with both off), do not re-enable blind:**
+* Suspect 1 fix: either find genuinely free memory (needs verifying what, if
+  anything, the SprjMemory heap system places right after the module's
+  mapped pages) or drop the scratch dependency entirely and go back to the
+  HKS-script fallback already identified (gate Act_Turn's W_Turn_Dash on
+  env("ロック中か")==FALSE, a bytecode edit via tools/bb-lockon-sprint, no
+  eboot scratch memory needed at all).
+* Suspect 2 fix: confirm whether 0x143af5e is reached during remo/cutscene
+  camera playback (trace a launch through a known-cutscene moment with the
+  FOV cheat live and watch for the write firing outside gameplay), or key
+  the hook on something that is only true during live player control.
+
+## 3 Sep 2026 (evening): VERDICT on the Crown-cutscene crash. Engine HUD lifetime race, both caves cleared, both re-enabled
+
+Evidence, not reasoning: bb-crash-watch caught a full core (25 GB,
+/var/lib/apport/coredump/core.*639078*, readable by ds2000) and the Ghidra
+project named the whole chain (data/bb-eboot/crash-20260903-hud-race-ghidra.txt).
+
+* The emulator died on `Unhandled access violation at 0x801f591c7: Read from
+  0x0` on GXRenderThread, inside FUN_01f59150 = the per-movie Scaleform render
+  command for the HUD movie "playerstatus_equipment.gfx" (the equipment panel),
+  queued by SprjGraphics (FUN_01f5c1b0) and dispatched by the GX command-list
+  interpreter (FUN_021b4d00) via the tail-jump thunk at 0x1f644d0. Stock engine
+  code end to end, no patched site or cave anywhere in the chain (xref-swept).
+* The "Mutex is not initialized / EINVAL / EAGAIN / Runtime Error" block is ONE
+  DLLightMutex::Lock (FUN_0207ee90) on the movie item's own mutex at this+0x38:
+  in the core its handle is 0x2 = the emulator's THR_MUTEX_DESTROYED sentinel
+  (mutex.cpp) and its init byte is 0, i.e. pthread_mutex_destroy had already run
+  on it. The object at 0x3e27710f0 was DESTRUCTED while a render command still
+  pointed at it; DL_PANIC only logs, so the code carried on and dereferenced
+  the stale movie->[0x940] pointer. Use-after-destroy, game thread vs render
+  thread, during the remo/s25_00_0010 transition that rebuilt the HUD right
+  after hd_a_5100 (the Crown) was equipped. The global Scaleform mutex at
+  0x5594200 was fine (vptr, handle, init=1, guard=1).
+* Suspect 1 (scratch word 0x56d3f00) CLEARED: in the core it holds the hold
+  timer (0x3d53448c) and every other byte of 0x56d30f4..0x56d4040 is zero; the
+  eboot has zero references to it; cave_a only writes it while locked on.
+* Suspect 2 (FOV cave) CLEARED: it adds a constant to a float target and
+  writes no memory; the camera function is not in the chain.
+* Neither cave can produce a pointer-level corruption at all (they write one
+  float and touch only registers documented dead at their sites).
+* Frequency: one panic in ~125 logged sessions since 2 Aug; the one session
+  with both caves on is also the only session where a fresh equip triggered a
+  cutscene within the same second. Donnie's retry loaded with the Crown
+  already worn, so the HUD was settled when the cutscene ran.
+* Open question, emulator side: how the game thread got ahead of the render
+  thread. Vanilla PS4 must serialise this; a lost/early wake in the emulated
+  DLConditionSignal (scePthread cond) would do it. Not chased. If it recurs,
+  bb-crash-watch will have the core again and the signature is "Scaleform
+  object destroyed under a queued render command at a scene transition".
+
+Re-enabled both via `tools/bb-cheat on` (boot mode, next launch).

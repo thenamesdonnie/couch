@@ -41,6 +41,13 @@ if [ "${2:-}" = dashb ]; then PATCHED="$DIR/c0000.DASHB.hks"; PATCH_SHA="a0a153b
 # still needs circle held; the engine's own sprint level still gates
 # DashStart -> Dash. Direction of the dash is the graph's job, not this file's.
 if [ "${2:-}" = lockspint ]; then PATCHED="$DIR/c0000.LOCKSPRINT.hks"; PATCH_SHA="7a6ce8006558abaf8"; fi
+# `install jumpl3` = the Nexus "Jump on L3" mod (N3R4i, mod 156, Modern / Jump
+# only, v2.1: L3 jumps even when standing still) MERGED with lockspint. The mod
+# ships c0000.hks as plain Lua SOURCE (the game loads source as-is), so the
+# merge is textual: data/bb-hks/c0000.JUMPL3-LOCKSPRINT.hks is the mod's file
+# with the same seven MoveDirection exits removed. Unmerged mod copy kept at
+# data/bb-hks/c0000.JUMPL3-MODERN.stock-mod.hks. 3 Sep 2026.
+if [ "${2:-}" = jumpl3 ]; then PATCHED="$DIR/c0000.JUMPL3-LOCKSPRINT.hks"; PATCH_SHA="3f62d3b0d72de81e1"; fi
 sha() { sha256sum "$1" | cut -c1-17; }
 cur=$(sha "$GAME")
 case "${1:-status}" in
@@ -53,12 +60,13 @@ case "${1:-status}" in
     elif [ "$cur" = "57c40011194c49b43" ]; then echo "game script: DASHA (dashtest + speed-level check restored)";
     elif [ "$cur" = "a0a153be3cf329971" ]; then echo "game script: DASHB (dashtest + sprint-hold check restored)";
     elif [ "$cur" = "7a6ce8006558abaf8" ]; then echo "game script: LOCKSPRINT (all direction exits removed, circle required)";
+    elif [ "$cur" = "3f62d3b0d72de81e1" ]; then echo "game script: JUMPL3+LOCKSPRINT (Jump on L3 Modern, lock-on sprint exits removed)";
     else echo "game script: UNKNOWN sha $cur - neither stock nor our patch; do not touch it blind"; exit 2; fi ;;
   install)
     pgrep -x shadps4 >/dev/null && { echo "shadPS4 is running; quit it first"; exit 1; }
     [ "$(sha "$PATCHED")" = "$PATCH_SHA" ] || { echo "patched file sha mismatch, refusing"; exit 1; }
     if [ "$cur" = "$PATCH_SHA" ]; then echo "already installed"; exit 0; fi
-    [ "$cur" = "$STOCK_SHA" ] || [ "$cur" = "65c3098591f21ca85" ] || [ "$cur" = "21c14804be9ca4803" ] || [ "$cur" = "d695522844e1ea351" ] || [ "$cur" = "1b7df6c6ddabf9f70" ] || [ "$cur" = "57c40011194c49b43" ] || [ "$cur" = "a0a153be3cf329971" ] || [ "$cur" = "7a6ce8006558abaf8" ] || { echo "game script is not a known file (sha $cur), refusing"; exit 1; }
+    [ "$cur" = "$STOCK_SHA" ] || [ "$cur" = "65c3098591f21ca85" ] || [ "$cur" = "21c14804be9ca4803" ] || [ "$cur" = "d695522844e1ea351" ] || [ "$cur" = "1b7df6c6ddabf9f70" ] || [ "$cur" = "57c40011194c49b43" ] || [ "$cur" = "a0a153be3cf329971" ] || [ "$cur" = "7a6ce8006558abaf8" ] || [ "$cur" = "3f62d3b0d72de81e1" ] || { echo "game script is not a known file (sha $cur), refusing"; exit 1; }
     [ -f "$STOCK" ] || cp -a "$GAME" "$STOCK"
     [ "$(sha "$STOCK")" = "$STOCK_SHA" ] || { echo "stock backup sha mismatch, refusing"; exit 1; }
     cp -a "$PATCHED" "$GAME.tmp" && mv "$GAME.tmp" "$GAME"
@@ -69,5 +77,5 @@ case "${1:-status}" in
     [ "$(sha "$STOCK")" = "$STOCK_SHA" ] || { echo "stock backup sha mismatch, refusing"; exit 1; }
     cp -a "$STOCK" "$GAME.tmp" && mv "$GAME.tmp" "$GAME"
     echo "reverted to the stock script" ;;
-  *) echo "usage: bb-lockon-sprint install [canary|levelblind|dashtest|dasha|dashb|lockspint]|revert|status"; exit 1 ;;
+  *) echo "usage: bb-lockon-sprint install [canary|levelblind|dashtest|dasha|dashb|lockspint|jumpl3]|revert|status"; exit 1 ;;
 esac

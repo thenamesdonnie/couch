@@ -423,3 +423,28 @@ this machine, and the only `.hks` files present are Bloodborne's own set under
 
 Tools live at `~/src/hksc` (binary `~/src/hksc/src/hksc-be`) and
 `~/src/hksc-disassembler`. `~/src/hksdisasm` was cloned but is unused.
+
+## 3 Sep 2026: Jump on L3 (Nexus 156) merged with lockspint, installed
+
+N3R4i's mod ships `c0000.hks` as PLAIN LUA SOURCE (UTF-8 BOM, a decompile of
+stock 1.09 plus the jump: `Arm_L3` request with `アクション継続時間 2 <= 0` fires
+`W_Jump`, Modern = works standing still; the zip's Backup/ is byte-identical
+stock 335a1af8). So no bytecode surgery: the seven lockspint sites map to seven
+source lines and the merge is textual, each asserted to match exactly once
+inside the named function:
+  Walk_onUpdate  drop `and MoveDirection == 0` from the SlowMove==1 Walk->Run
+  Run_onUpdate   drop `and MoveDirection == 0` from Run->DashStart
+  DashStart      drop `or 0 < MoveDirection` from the ->Run speed test, the
+                 `(MoveSpeedLevel == 1 or 0 < MoveDirection)` timer test, and
+                 the ->Walk test
+  Dash           drop `or 0 < MoveDirection` from ->Run and ->Walk
+(cross-checked against the LOCKSPRINT bytecode: the five LT_BK sites became
+jumps to the next elseif = the disjunct treated as false; the two EQ+JMP sites
+became JMP 0 = the conjunct dropped.) `hksc-be -p` parses both files.
+Files: data/bb-hks/c0000.JUMPL3-LOCKSPRINT.hks (installed, sha 3f62d3b0d),
+c0000.JUMPL3-MODERN.stock-mod.hks (the unmerged mod). Lever:
+`tools/bb-lockon-sprint install jumpl3` / `install lockspint` (back to
+no-jump) / `revert`. Downloaded with the new `tools/nexus-dl 156 1085`
+(premium API downloads work since 3 Sep). Classic variant (dash-to-jump) and
+both Enhanced variants (jump attack, ladder drop) are in the same zips in
+~/fileshare/bloodborne-mods if he wants them; each would need the same merge.

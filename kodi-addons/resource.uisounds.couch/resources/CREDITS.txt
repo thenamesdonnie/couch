@@ -1,0 +1,10 @@
+Couch UI sounds: where each file comes from (built by tools/uisounds-curate).
+
+cursor.wav mat-hover-tap        <- navigation_hover-tap                          Material Design sound resources (Google, CC BY 4.0)
+select.wav mat-forward-min      <- navigation_forward-selection-minimal          Material Design sound resources (Google, CC BY 4.0)
+back.wav mat-back-min         <- navigation_backward-selection-minimal         Material Design sound resources (Google, CC BY 4.0)
+error.wav mat-unavailable      <- navigation_unavailable-selection              Material Design sound resources (Google, CC BY 4.0)
+launch.wav mat-complete         <- navigation_selection-complete-celebration     Material Design sound resources (Google, CC BY 4.0)
+
+Material Design sound resources: CC BY 4.0, https://material.io/design/sound/sound-resources.html
+SND kits: https://snd.dev (free for any use; copyright stays with the credited designer).

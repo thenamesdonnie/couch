@@ -1,0 +1,466 @@
+================================================================================
+BLOODBORNE 1.09 (shadPS4) CRASH CHAIN REPORT
+GXRenderThread / DLLightMutex "Mutex is not initialized" -> fault at 0x1f591c7
+Ghidra project ~/src/bb-ghidra, program "full", bb109.elf, image base 0.
+Guest 0x8xxxxxxxx == Ghidra 0xxxxxxxx (all addresses below are module VAs).
+================================================================================
+
+--------------------------------------------------------------------------------
+0. SUMMARY IN ONE LINE
+--------------------------------------------------------------------------------
+The GX render thread was executing a queued Scaleform/GFx draw command for the
+HUD movie "playerstatus_equipment.gfx". The command handler tried to take the
+GLOBAL DLLightMutex of the Scaleform work-dispatch singleton at VA 0x5594200,
+that mutex reported itself uninitialised (its DAT_05594210 flag was 0), the
+underlying scePthreadMutexLock then returned EINVAL, and because DL_PANIC is
+not "noreturn" in this build the handler carried on WITHOUT the lock and
+immediately dereferenced a stale pointer field (movie+0x940) belonging to a
+GFx movie object that the scene transition had already torn down. The faulting
+instruction is a vtable load for a virtual call.
+
+--------------------------------------------------------------------------------
+1. THE RETURN ADDRESSES, FRAME BY FRAME
+--------------------------------------------------------------------------------
+Each entry: return address -> containing function (entry-end), what it does,
+and which instruction that return address actually follows.
+
+(1) 0x21b4dca  in FUN_021b4d00 (0x21b4d00 - 0x21b4edd)
+    THE GX RENDER-COMMAND INTERPRETER. It walks a submitted command list:
+    each entry has a 4-byte header; opcode 0x01 means "call this command's
+    function pointer", opcode 0x00 means "accumulate this pointer into a
+    72-slot batch and flush it via FUN_0216a980 + memset of ctx+0xb730 size
+    0x23a8". The producer side is FUN_021b4b00, which allocates a 0x1c-byte
+    entry and stores {fn, arg1, arg2}; the consumer invokes it as
+    fn(renderCtx, arg1, arg2).
+    0x21b4dca is the instruction AFTER `CALL qword ptr [RBX]` at 0x21b4dc8,
+    i.e. the indirect dispatch of one render command. This is the live
+    innermost frame. No mutex, no strings.
+
+(2) 0xe46de7  in FUN_00e46860 (0xe46860 - 0xe46f2f)
+    GRAPHICS STATE-STACK PUSH. Copies viewport arrays (ctx+0xb978, count
+    ctx+0xbbf8) and scissor arrays (ctx+0xbaf8, count ctx+0xbbfc) into a
+    per-level stack inside its own object (this+0x514 / this+0x694, level
+    counter this[0xa2]), then re-emits them. Called from FUN_00e467c0,
+    FUN_00e46f40, FUN_00e46fd0, FUN_00e47060, FUN_00e47100.
+    0xe46de7 is the instruction after `CALL 0x02169420`.
+    NO - this is NOT a DLLightMutex::Lock routine and it contains no mutex
+    code, no DL panic strings, no Scaleform names. (The three "strings" the
+    scan reported for it are Ghidra misreading a 0xbc20 displacement.)
+
+(3) 0x21a1f45  in FUN_021a1e90 (0x21a1e90 - 0x21a1f6b)
+    "SET DEFAULT VIEWPORT FROM THE CURRENT RENDER TARGET". Reads the bound
+    render target (this+0x18, else this+0x58), checks its format byte at
+    +0x38 == 3, takes width/height (ushorts at +0x44 / +0x46) shifted by the
+    mip level, writes a 1-entry viewport (0,0,w,h,0.0,1.0) into this+0xcc and
+    pushes it to the device context at ctx+0xb978 / ctx+0xbbf8.
+    0x21a1f45 is the instruction after `CALL 0x026d3350` (an array-reserve
+    helper). Single call, no strings, no mutex.
+
+(4) 0x21a1d7c  in FUN_021a1c50 (0x21a1c50 - 0x21a1d90)
+    "APPLY VIEWPORT + SCISSOR TO THE DEVICE CONTEXT". Calls (3) first, then
+    computes the default scissor from the same render target, writes the
+    viewport block (ctx+0xb978/0xb988), the scissor array (ctx+0xbaf8) and
+    their counts, then clears bits 2-3 of the dirty-flag byte at this+0x1670.
+    0x21a1d7c is the instruction after `CALL 0x0261a1b0`, which is a memcpy.
+    A memcpy cannot be an ancestor of frame (3), which is why this pair
+    proves the supplied list is a stack SCAN, not a pure call chain (see
+    section 2). No strings, no mutex.
+
+(5) 0x2198f1a  in FUN_02198c10 (0x2198c10 - 0x2198fc2)
+    "BEGIN FRAME / RESET THE RENDER CONTEXT". Sets ctx+0xb656, seeds the
+    viewport from the swapchain size (renderer+0x180 + backbuffer index*0x18),
+    and on first use zeroes a 0x1718-byte block at ctx+0x10 and seeds ~20
+    default render states (values 0x10, 0x0e, 0x3b repeated for 6 stages,
+    plus 8 and 0x20). Then binds colour/depth targets through
+    FUN_00e46f40 / FUN_00e46fd0 (which reach frame (2)), computes a state
+    hash with FUN_00e47840, and calls FUN_021a1c50 (frame (4)).
+    0x2198f1a is the instruction after `CALL 0x021a1c50`.
+    No mutex, no strings of interest.
+
+(6) 0x2199bbe  in FUN_02199af0 (0x2199af0 - 0x2199bd6)
+    "RENDER ONE SUBMITTED COMMAND LIST" - the render thread's per-list entry
+    point. It appends an end-of-frame callback (FUN_021b4b00 with the
+    callback FUN_02199a40), runs a fixup pass over the list entries
+    (FUN_021b4f70), optionally calls FUN_021c17b0, then FUN_02198c10 (frame
+    5) and finally FUN_021b4d00 (frame 1).
+    0x2199bbe is the instruction after `CALL 0x021b4d00` at 0x2199bb9.
+    So (6) is genuinely the caller of (1). No mutex.
+
+(7) 0x207e8a7  in FUN_0207e780 (0x207e780 - 0x207e8ed)
+    DLConditionSignal::SetSignal(bool). Asserts the sync object exists
+    ("DLConditionSignal.cpp", line 0x87 "Sync object not created"), locks its
+    pthread mutex at this+8, updates the signal bit in this+0x18, optionally
+    broadcasts the condition at this+0x10 ("PthreadCondition.cpp" line 0x6a),
+    then unlocks. It carries the full PthreadMutex.cpp panic ladder:
+    line 0x80=128 EDEADLK, 0x82=130 EINVAL, 0x84=132 EAGAIN, 0x86=134
+    "Runtime Error." on lock, and 0xc0=192 / 0xc5=197 on unlock.
+    0x207e8a7 is the instruction after `CALL 0x02bbff08`
+    (scePthreadMutexUnlock). This is a STALE frame, see section 2.
+
+(8) 0x21b69d5  in FUN_021b6910 (0x21b6910 - 0x21b6a9e)
+    THE GXRenderThread MAIN LOOP. Proven by the vtable at 0x535fbc0, whose
+    only writer is FUN_021b6620 - and FUN_021b6620 is also the only place in
+    the whole binary that references the string "GXRenderThread" at
+    0x494022c. So FUN_021b6910 is the thread's virtual Run/Execute.
+    The loop: optional 40ms sleep gate (DAT_055406c0), if a command list is
+    pending at this+0x18 -> FUN_0207e780(this+0x48, 0) (clear the "idle"
+    signal), then FUN_02199af0(DAT_055406c8 /*the global renderer*/, list),
+    then FUN_0207e780(this+0x48, 1), propagate the vsync/frame byte
+    DAT_0513ac84, fire the completion callback at this+0x20, signal
+    this+0x68, and wait on the object at this+0x28 (vtable +0x18) until
+    this+0x10 says stop.
+    0x21b69d5 is the instruction after `CALL 0x02199af0` at 0x21b69d0.
+
+(9) 0x263b246  in FUN_0263b1e0 (0x263b1e0 - 0x263b27c)
+    THE THREAD ENTRY TRAMPOLINE. Strings:
+    "...\ps4\DLThreadHandle_ps4.cpp" line 0x2f "Logical Error. ThreadHandle
+    got null object." and line 0x40 "Runtime error. Thread has no runnable
+    target on execution." Sets a TLS byte, runs FUN_0207d430 / FUN_0208baf0 /
+    FUN_0208bb00 (thread registration), then calls the runnable's first
+    virtual method with (runnable, this+0x70).
+    0x263b246 is the instruction after `CALL qword ptr [RAX]` at 0x263b244,
+    i.e. the virtual dispatch into the thread body.
+
+--------------------------------------------------------------------------------
+2. LIVE FRAMES vs STALE FRAMES
+--------------------------------------------------------------------------------
+The supplied list cannot be a pure call chain. Frame (4)'s return address
+follows a call to a memcpy (FUN_0261a1b0), and a memcpy cannot be the caller
+of frame (3). Likewise frame (7) is inside DLConditionSignal::SetSignal, which
+only calls pthread wrappers and DL_PANIC and cannot reach frame (6).
+What the list actually is, is a scan of the render thread's stack that picked
+up both live frames and leftovers from calls that had already returned at the
+same stack depth. Reconstructed:
+
+  LIVE:
+    0x263b246   DLThreadHandle trampoline
+    0x21b69d5   GXRenderThread loop, at `CALL FUN_02199af0`
+    0x2199bbe   FUN_02199af0, at `CALL FUN_021b4d00`
+    0x21b4dca   FUN_021b4d00, at `CALL qword ptr [RBX]`  <- the render command
+    (then the command thunk at 0x1f644d0, which TAIL-JUMPS, so it leaves no
+     frame of its own, into FUN_01f59150 where the fault happened)
+
+  STALE, in stack order:
+    0x207e8a7   leftover of `FUN_0207e780(this+0x48, 0)` at 0x21b69bd, made
+                11 bytes before the live FUN_02199af0 call
+    0x2198f1a / 0x21a1d7c / 0x21a1f45 / 0xe46de7
+                leftovers of the FUN_02198c10 "begin frame" descent that
+                FUN_02199af0 made at 0x2199ba9 and that had already returned
+
+This matters for triage: the PthreadMutex.cpp 130/132/134 trio in the log did
+NOT come from frame (7). It came from the live path, see section 3.
+
+--------------------------------------------------------------------------------
+3. WHERE THE PANIC MESSAGES ACTUALLY COME FROM
+--------------------------------------------------------------------------------
+String search in the ELF (file offset = VA + 0x4000):
+  VA 0x493bcaa  "N:\SPRJ\...\ps4\DLLightMutex.cpp"
+  VA 0x493bd11  "Mutex is not initialized."
+  VA 0x493c20e  "N:\SPRJ\...\ps4\PthreadMutex.cpp"
+  VA 0x493c2f3  "Logical Error. Invalid mutex.(EINVAL)"
+  VA 0x493c319  "Logical Error. Max number of lock exceeded.(EAGAIN)"
+  VA 0x493c34d  "Runtime Error."
+DL_PANIC itself is FUN_020b55b0(file, line, message, ...).
+
+"Mutex is not initialized." has hundreds of xrefs because DLLightMutex::Lock is
+inlined all over the game. The out-of-line DLLightMutex methods are its vtable
+at 0x53b2fa0:
+  [+0x00] FUN_0207ed40  dtor
+  [+0x08] FUN_0207ecc0
+  [+0x10] FUN_0207ee80  IsInitialized()  -> `return *(byte*)(this+0x10);`
+  [+0x18] FUN_0207ee90  Lock()      DLLightMutex.cpp line 0x7e = 126
+  [+0x20] FUN_0207ef80  TryLock()   line 0x8c = 140
+  [+0x28] FUN_0207f070  Unlock()    line 0x99 = 153
+
+FUN_0207ee90 (Lock) is EXACTLY the observed log:
+  if (!IsInitialized()) DL_PANIC(DLLightMutex.cpp, 126, "Mutex is not initialized.");
+  r = scePthreadMutexLock(this+8);
+  EDEADLK -> DL_PANIC(PthreadMutex.cpp, 128, ...)
+  EINVAL  -> DL_PANIC(PthreadMutex.cpp, 130, "Logical Error. Invalid mutex.(EINVAL)")
+             then FALLS THROUGH to
+             DL_PANIC(PthreadMutex.cpp, 132, "...(EAGAIN)")
+             then FALLS THROUGH to
+             DL_PANIC(PthreadMutex.cpp, 134, "Runtime Error.")
+The three PthreadMutex lines in the log are a single EINVAL. The compiler laid
+the panic calls out as a fall-through ladder because DL_PANIC is not noreturn
+in this build. So the whole log block "126 / 130 / 132 / 134" is ONE call to
+DLLightMutex::Lock on an uninitialised mutex.
+
+ANSWER to the specific question: 0xe46de7 is NOT inside a DLLightMutex::Lock.
+The Lock is FUN_0207ee90, and it was called from the crashing function
+FUN_01f59150 at 0x1f5919b - a frame that left no return address in the list
+because FUN_01f59150 was itself entered by a TAIL JUMP.
+
+--------------------------------------------------------------------------------
+4. THE CRASH SITE: FUN_01f59150 (0x1f59150 - 0x1f592c6)
+--------------------------------------------------------------------------------
+0x1f591c7 is inside FUN_01f59150. Disassembly around it:
+
+  01f5919b  CALL 0x0207ee90        ; DLLightMutex::Lock(&DAT_05594200)  <-- PANIC
+  01f591a0  LEA  R15,[RBX + 0x38]
+  01f591a4  MOV  RAX,[RBX + 0x38]
+  01f591ad  MOV  RDI,R15
+  01f591b0  CALL [RAX + 0x18]      ; second lock, this+0x38, vtable Lock
+  01f591b3  MOV  RAX,[RBX + 8]     ; RAX = the GFx movie object
+  01f591b7  MOV  RDI,[RAX + 0x940] ; RDI = movie->m_something
+  01f591be  TEST RDI,RDI
+  01f591c1  JZ   0x01f591fd        ; <-- null is EXPLICITLY handled
+  01f591c3  LEA  R12,[RBX + 0x30]
+  01f591c7  MOV  RAX,[RDI]         ; <== FAULT: load the vtable pointer
+  01f591ca  CALL [RAX + 0x98]      ; virtual call
+
+Note the guard at 0x1f591be/0x1f591c1: if RDI were NULL the code would have
+branched away. So this is NOT a "deliberate null read" and it is not DL_PANIC's
+abort (DL_PANIC is FUN_020b55b0, 0x20b55b0-0x20b5841, and it does not contain
+this address; it logs and returns). It is a genuine USE AFTER FREE: RDI was a
+non-null pointer into memory that had already been released, so the vtable load
+faulted.
+
+REGISTER CORROBORATION (this pins the object identities beyond doubt):
+  RBX = this = 0x3e27710f0
+  R12 = 0x3e2771120 = RBX + 0x30   (matches `LEA R12,[RBX+0x30]`)
+  R15 = 0x3e2771128 = RBX + 0x38   (matches `LEA R15,[RBX+0x38]`)
+  R14 = 0x3e2771168 = RBX + 0x78   (matches the earlier `param_1+0x78` lock)
+  RAX = 0x3e245c580 = *(RBX + 8)   -> the object preceded in memory by the
+                                      string "playerstatus_equipment.gfx"
+  the faulting pointer = *(0x3e245c580 + 0x940)
+
+What FUN_01f59150 does, in words:
+  lock this+0x78 (vtable +0x18), read the pending-work counter at this+0x88,
+  unlock (vtable +0x28);
+  if the counter is non-zero:
+    FUN_01f36d40()                       // lazily construct the global singleton
+    DLLightMutex::Lock(&DAT_05594200)    // THE GLOBAL LOCK -> the panic
+    lock this+0x38 (vtable +0x18)
+    p = movie->[0x940]; if (p) { id = p->vtable[0x98](); if (map_find(this+0x30, id))
+        FUN_000961d0(movie->[0x940], map_get(this+0x30)); }
+    re-lock this+0x78, decrement this+0x88, unlock this+0x78 and this+0x38,
+    FUN_01f36d40(); DLLightMutex::Unlock(&DAT_05594200) (line 153 / 192 / 197)
+
+WHICH MUTEX: it is NOT a field of the object. It is the file-scope global
+DLLightMutex at module VA 0x5594200 (guest 0x805594200), part of a small
+singleton at 0x55941f0:
+    0x55941f0  heap/allocator handle (taken from the CSEzWorkPool singleton)
+    0x55941f8  refcounted worker object (DLReferenceCountObject)
+    0x5594200  DLLightMutex vptr (= 0x53b2fa0)
+    0x5594208  the scePthreadMutex handle
+    0x5594210  the "initialized" byte that IsInitialized() returns
+    0x5594218  the __cxa_guard byte for the lazy construction
+It is built by FUN_01f36d40 (a Meyers singleton: __cxa_guard_acquire on
+0x5594218, pull the heap from the CSEzWorkPool FD4 singleton, install the
+vtable, scePthreadMutexInit into 0x5594208, set 0x5594210 = 1, register the
+destructor FUN_01f37180 via __cxa_atexit, __cxa_guard_release).
+FUN_01f37180, the destructor, does pthread_mutex_destroy and sets 0x5594210 = 0.
+Only six functions in the whole binary touch that mutex: FUN_01f36d40 (init),
+FUN_01f58670, FUN_01f59150, FUN_01f62ae0, FUN_01f62d10, FUN_01f62e30.
+
+WHICH SUBSYSTEM: the 0x1f5xxxx band is unambiguously the Scaleform/GFx HUD and
+menu layer. Class-name strings referenced from it:
+  "SprjGraphics"           (FD4Singleton) - in FUN_01f5c1b0
+  "ScaleformTexRepository" (FD4Singleton) - in FUN_01f5b140
+  "SprjScaleformSwfPlayer"                - in FUN_01f594f0
+  "SprjScaleformStep"                     - in FUN_01f551b0
+  "font.swf", "KoreanNMJM"                - in FUN_01f5ca90
+  "MENU_Icon_00001" / "MENU_DummyIcon_..." - in FUN_01f5e200
+  "Static", "Text_", "RegionText_", "LineHelp_" - in FUN_01f58c10/0x1f58c30
+FUN_01f62ae0, which runs under the SAME global mutex, allocates a 0x980-byte
+object - and the faulting read is at movie+0x940, inside that 0x980 object. So
+the object at 0x3e245c580 is one of these, created and destroyed under that
+same lock.
+
+--------------------------------------------------------------------------------
+5. HOW THE COMMAND GOT ONTO THE RENDER THREAD - the chain closes
+--------------------------------------------------------------------------------
+At 0x1f644d0 there is a three-instruction render-command thunk:
+
+  01f644c0  MOV RDI,RSI  /  JMP 0x01f62640      ; command thunk A
+  01f644d0  TEST RDX,RDX / JZ 0x01f644dd
+  01f644d5  MOV RDI,RDX
+  01f644d8  JMP 0x01f59150                      ; command thunk B  <-- ours
+  01f644dd  RET
+
+Its only producer is FUN_01f5c1b0 (0x1f5c1b0 - 0x1f5c79f), the SprjGraphics
+draw-dispatch on the game/main side:
+
+  FUN_021b4b00(commandList, &LAB_01f644d0, param_1, item, 0xffffffff);
+
+FUN_01f5c1b0, in words: assert the SprjGraphics FD4 singleton (DAT_05540190),
+tick the frame, release the old work reference, queue thunk A (0x1f644c0 ->
+FUN_01f62640), then under its OWN DLLightMutex (this+0xbe8 vptr / this+0xbf0
+handle) snapshot the active movie list at this+0x990 (a DLFixedVector capped at
+32, entries filtered on +0x70 != 0 and insertion-sorted by the draw key at
++0x20) into a local array, unlock, and for each snapshotted item queue thunk B
+with that item as arg2. If the renderer is in single-thread mode
+(renderCtx+0x2093) it calls FUN_01f59150 directly instead of queueing.
+
+Because 0x1f644d8 is a JMP, not a CALL, FUN_01f59150 inherits FUN_021b4d00's
+return address - which is precisely why 0x21b4dca is the innermost entry in
+your list with nothing between it and the fault. The chain is closed and
+consistent end to end:
+
+  DLThreadHandle trampoline (0x263b1e0)
+    -> GXRenderThread::Run (0x21b6910)
+      -> render one command list (0x2199af0)
+        -> command interpreter (0x21b4d00), indirect CALL at 0x21b4dc8
+          -> thunk 0x1f644d0 (tail jump)
+            -> FUN_01f59150
+              -> DLLightMutex::Lock(0x5594200) = FUN_0207ee90  ... PANIC 126/130/132/134
+              -> MOV RAX,[RDI] at 0x1f591c7                    ... FAULT
+
+--------------------------------------------------------------------------------
+6. QUESTION 2: THE THREE "VTABLES"
+--------------------------------------------------------------------------------
+Checked directly. 0x5699e68, 0x569b628 and 0x569b6d0 are NOT vtables, and they
+cannot be: the eboot's RW segment is file-backed only to VA 0x53e5b38, and .bss
+runs from there to 0x56d30f4. All three addresses are in .bss, i.e. zero on
+disk and filled at runtime. They are also not code-adjacent - PtrsAt on each
+returns only zeroes.
+
+What they really are: slots inside two large global singleton objects built by
+the C++ static-initialiser block at 0x1fc2600-0x1fc2d00. The pattern, twice:
+
+  LEA R12,[0x5358b60]  ; class vtable
+  MOV [0x5699e48],R12  ; <- object A base = 0x5699e48
+  LEA R13,[0x53aefa0]  ; sub-object vtable
+  MOV [0x5699e68],R13  ; <- base+0x20, the EMBEDDED sub-object's vptr slot
+  LEA RDI,[0x5699e70]; memset(RDI, 0, 0x448)
+  ... scePthreadMutexInit(0x569a2c8, ..., spin 0x30d40)
+      on failure: DL_PANIC("...CSPlainAdaptiveMutexImp_sce.cpp", 0x51,
+                           "DLAdaptiveMutex initialization error")
+
+  identically for object B: base 0x569b608, vtable slot 0x569b628 = base+0x20,
+  memset from 0x569b630 size 0x448, DLAdaptiveMutex at 0x569ba88.
+  0x569b6d0 = 0x569b628 + 0xa8, i.e. inside that memset region - it is a plain
+  field of object B, nothing in the binary references it directly.
+
+The class: vtable 0x5358b60, destructor FUN_01fc5ac0. That destructor frees the
+backing buffer through an allocator interface (`allocator->vtable[0x70](alloc,
+ptr)`), zeroes a 0x400-byte table of 16-byte entries, then finalises its
+DLAdaptiveMutex ("DLAdaptiveMutex finalization error. Maybe it's still locked.",
+CSPlainAdaptiveMutexImp_sce.cpp line 0x5d). Sibling class at 0x53b1ab0 /
+FUN_01fc63a0 is the smaller variant.
+So: these are the game's GLOBAL ALLOCATORS / HEAPS - Dantelion DLAllocator-style
+objects with a 64-entry free-list table guarded by a DLAdaptiveMutex - not any
+GFx, Movie, PlayerStatus, SprjMenu or DLLightMutex class. There are no RTTI
+typeinfo records to read (the binary is built with RTTI off; the class identity
+above comes from the CSPlainAdaptiveMutexImp / DLAdaptiveMutex assert strings
+in the same basic block).
+
+CONSEQUENCE FOR THE DUMP READING: a heap object whose qword reads 0x5699e68 or
+0x569b628 is almost certainly carrying an ALLOCATOR BACK-POINTER (the standard
+Dantelion `m_allocator` member that FD4/DL objects store next to the vptr), not
+a vtable pointer. That is consistent with everything else here: the objects at
+r13 = 0x20008cd20, at rax+0x40 and at 0x3e26cdbc0 are ordinary heap objects
+tagged with which global heap they came from. It also means those values tell
+us nothing about the crash and should not be chased further.
+(For contrast, the one REAL vtable in this crash is 0x53b2fa0, DLLightMutex,
+listed in section 3.)
+
+--------------------------------------------------------------------------------
+7. QUESTION 3: WHAT THE RENDER THREAD WAS DOING - the reading
+--------------------------------------------------------------------------------
+The render thread was draining the frame's GX command list and reached the
+per-movie Scaleform draw command that the game thread had queued from
+FUN_01f5c1b0 for the equipment HUD movie "playerstatus_equipment.gfx". That
+handler, FUN_01f59150, wants the process-wide Scaleform dispatch lock - the
+DLLightMutex at 0x5594200 that guards the ScaleformTexRepository/SprjGraphics
+work objects, the same lock under which FUN_01f62ae0 allocates and FUN_01f62e30
+retires the 0x980-byte movie-render objects. That lock answered "not
+initialized" (its DAT_05594210 flag was 0) and the emulated scePthreadMutexLock
+then answered EINVAL, so the whole critical section ran UNSERIALISED, and one
+instruction later the handler read `movie->[0x940]`, a field that the tear-down
+side had already freed and that the null guard could not catch because the
+pointer was stale rather than nulled. This is a game-thread versus render-thread
+LIFETIME RACE, not a rendering bug: the head-armour equip plus the
+remo/s25_00_0010 cutscene transition (with chr/c0000.chrbnd.dcx reloaded)
+destroyed and rebuilt the equipment HUD movie and its GFx texture bindings on
+the game thread while the render thread still held a command referencing the
+old instance, and the mutex that exists precisely to prevent that overlap was
+not usable at the moment it was needed. Two things can leave 0x5594210 at zero:
+the singleton's static destructor FUN_01f37180 having run (a shutdown or
+re-init of the Scaleform layer), or the original scePthreadMutexInit in
+FUN_01f36d40 having failed while __cxa_guard_release still marked the singleton
+as constructed - and under an emulator the second is the more suspicious of the
+two, because a host-side pthread failure would leave every later Lock and
+Unlock on that global silently no-op, which is exactly the condition needed to
+turn a normally-safe teardown into this use-after-free. Practically: this crash
+signature is "HUD/Scaleform object destroyed underneath a queued render command
+during a scene transition", it will reproduce around scene transitions that
+rebuild the HUD, and it is unrelated to the movement or camera work.
+
+--------------------------------------------------------------------------------
+8. QUESTION 4: DOES ANY OF THIS TOUCH THE MOD PATCH SITES?
+--------------------------------------------------------------------------------
+NO. Verified with xrefs and with a reference sweep, not assumed.
+
+a) The nine chain functions between them reference only 63 distinct addresses
+   (data + call targets). None of them is 0x143af5e, 0x15267b3, 0x152b020,
+   0x152b40d or 0x1a19109, and none falls inside the enclosing functions of
+   those sites: FUN_0143ac60 (0x143ac60-0x143facc), FUN_01526750
+   (0x1526750-0x1529459), FUN_0152b380 (0x152b380-0x152b5d0), FUN_01a18bf0
+   (0x1a18bf0-0x1a19b50). 0x152b020 has no function at all in the project,
+   only a vtable slot reference from 0x5370690.
+
+b) Those patch sites are reached from a completely different subsystem:
+     FUN_0143ac60  <- FUN_014368b0 (2 call sites, camera)
+     FUN_01526750  <- player vtable slot at 0x5370478 only
+     FUN_0152b380  <- player vtable slot at 0x53706c8 only
+     FUN_01a18bf0  <- FUN_01514380
+   None of these appears anywhere in the render-thread chain, and none of the
+   chain functions is reachable from them.
+
+c) Code caves 0x50db000-0x50db400: I enumerated every reference to every byte
+   in that range across the whole program. There are ZERO references anywhere
+   in the eboot. (Expected - it is unused padding at the end of the r-x
+   segment, which is why it was chosen as a cave. Any code running there in the
+   dump would have been injected, and nothing in this chain jumps to it.)
+
+d) 0x56d3f00: ZERO references anywhere in the program (I swept
+   0x56d3ef0-0x56d3f10). Note this address is past the last real .bss variable:
+   the RW segment's memsz ends at 0x56d30f4, so 0x56d3f00 only exists because
+   the last page is padded. The game itself never reads or writes it. DL_PANIC
+   does reference 0x56d30f0, which is the last legitimate global before the end.
+
+So the crash chain is entirely stock engine code and does not run through, call
+into, or read any of the lock-on-sprint / FOV / movement patch sites or caves.
+If a mod is implicated, it is implicated indirectly (by timing, by memory
+pressure, or by whatever else destabilised the Scaleform teardown ordering),
+not by any of these functions executing patched bytes.
+
+--------------------------------------------------------------------------------
+9. FUNCTION NAME CHEAT SHEET
+--------------------------------------------------------------------------------
+  0x0207ecc0  DLLightMutex (vtable slot +0x08)
+  0x0207ed40  DLLightMutex dtor
+  0x0207ee80  DLLightMutex::IsInitialized      -> byte at this+0x10
+  0x0207ee90  DLLightMutex::Lock               DLLightMutex.cpp 126
+  0x0207ef80  DLLightMutex::TryLock            DLLightMutex.cpp 140
+  0x0207f070  DLLightMutex::Unlock             DLLightMutex.cpp 153
+  0x0207e780  DLConditionSignal::SetSignal(bool)
+  0x020b55b0  DL_PANIC(file, line, msg, ...)   - logs, does NOT abort
+  0x0263b1e0  DLThreadHandle thread trampoline
+  0x021b6620  GXRenderThread construction (owns the "GXRenderThread" string)
+  0x021b6910  GXRenderThread::Run  (vtable 0x535fbc0)
+  0x02199af0  render one submitted command list
+  0x02198c10  begin frame / reset render context
+  0x021a1c50  apply viewport + scissor to the context
+  0x021a1e90  default viewport from the bound render target
+  0x00e46860  graphics state-stack push (viewport/scissor)
+  0x021b4b00  append a command to a GX command list
+  0x021b4d00  GX command-list interpreter (the indirect dispatch at 0x21b4dc8)
+  0x01f5c1b0  SprjGraphics Scaleform draw dispatch (queues the commands)
+  0x01f644d0  render-command thunk -> tail jump to FUN_01f59150
+  0x01f59150  the crashing per-movie Scaleform render command
+  0x01f36d40  lazy construction of the global Scaleform dispatch singleton
+  0x01f37180  its __cxa_atexit destructor (clears 0x5594210)
+  0x01f62ae0  allocate a 0x980-byte movie-render object (same global lock)
+  0x01f62e30  post Scaleform work items to CSEzWorkPool (same global lock)
+  0x05594200  THE global DLLightMutex that reported "not initialized"
+  0x053b2fa0  DLLightMutex vtable
+  0x05358b60  global allocator/heap class vtable (objects at 0x5699e48 /
+              0x569b608, sub-object vptrs at 0x5699e68 / 0x569b628)
+
+Working files: crashchain.txt, crashchain2.txt, crashchain3.txt,
+crashchain4.txt, crashchain5.txt and scripts/ in this scratchpad directory.
+Nothing outside the scratchpad was modified; all Ghidra runs used -readOnly.
+================================================================================

@@ -1,0 +1,9 @@
+SND UI sound kits (https://snd.dev, https://github.com/snd-lib/snd-lib v1.2.4)
+by Dentsu Customer Experience Creative Center.
+  SND01 "sine"       Yasuhiro Tsuchiya
+  SND02 "piano"      Ayako Taniguchi
+  SND03 "industrial" INDUSTRIAL JP
+Terms (README, "License"): the audio may be used free of charge, commercial
+or not; copyright stays with the credited sound designer. The .ogg files are
+the library's audio sprites (44.1 kHz mono Vorbis); the .json files are the
+sprite maps. tools/uisounds-curate cuts the individual sounds out of them.

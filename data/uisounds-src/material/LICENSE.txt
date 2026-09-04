@@ -1,0 +1,7 @@
+Material Design sound resources, by Google.
+Source: https://material.io/design/sound/sound-resources.html
+(mirror: https://archive.org/details/material-design-sound-resources)
+License: Creative Commons Attribution 4.0 (CC BY 4.0)
+         https://creativecommons.org/licenses/by/4.0/
+These are the unmodified 24-bit 48 kHz originals of the files the couch UI
+sound set draws on. tools/uisounds-curate trims and level-matches them.

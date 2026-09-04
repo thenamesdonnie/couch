@@ -1,5 +1,61 @@
 # Couch — todo / resume
 
+## ▶ RESUME HERE (4 Sep 2026 — big Bloodborne session)
+
+**Bloodborne is LOCKED AT 60 fps** (`tools/bb-fps 60`, armed, applies next
+launch; eboot's baked 60, vblank 60, display already 4K60 so it matches). All
+graphics mods kept. This was the conclusion of the 40ms-hitch deep-dive below.
+
+**FOR A FABLE MODEL to look into (Donnie's ask): the 40ms autosave hitch.**
+A dead-regular 40-53ms frametime spike every 4.04s at 90fps (smooth sky, drops
+on ground). FULLY DIAGNOSED, no clean fix found, so we locked 60. Everything
+is in auto-memory `homelab-bloodborne-mods.md` "4 Sep 2026: 40ms autosave-hitch
+deep-dive CONCLUDED": it is GUEST-CPU work (the game's own autosave
+serialisation) run under emulation - NOT the save I/O, NOT the fault storm
+(Aug fix confirmed working), NOT the render lock (all ruled out with the live
+log + a perf profile). perf capture saved at
+`/tmp/.../scratchpad/emu.perf.data` (978MB, will be gone after a reboot - re-run
+`tools/uisounds-curate`-style headless probe: scratch `perf-probe.sh` is the
+harness). Only real lever left = a mod to cut Bloodborne's autosave frequency
+(unresearched) or deep emulator work on the gettimeofday-wrapper / allocator
+churn (16% of Game:Main is guest gettimeofday via Core::HostCallWrapperImpl).
+NOTE: needs `sudo sysctl kernel.perf_event_paranoid=1` to profile (see human
+to-do to restore it).
+
+**What else shipped this session (all verified, all in auto-memory):**
+- **BB Reborne back IN** + a 3-way MSB merge that keeps Enhanced's Auto Refill
+  (tool in `data/bb-msbmerge/`); Gparam/Menu/Sfx deliberately out. Smoke-tested
+  headless, not play-tested. See `homelab-bloodborne-mods.md`.
+- **vkBasalt** (SMAA+CAS) wired into `~/.local/bin/shadps4`, config
+  `data/vkbasalt-bloodborne.conf`, kill switch `touch data/vkbasalt-off`. Proven.
+- **VRR FIXED** by turning ON the TV's AMD FreeSync Premium (it publishes the
+  AMD range the DP->HDMI adapter needs). BUT 4K120+FreeSync threw a blue
+  colour-cast tint tonight, so display is PARKED at 4K60 with **mode-keeper
+  STOPPED** (`systemctl --user start mode-keeper.service` to re-enable when the
+  4K120 tint is sorted; 90fps would need the 1440p120 path). See
+  `homelab-tv-control.md`.
+- **Nexus PREMIUM**: `tools/nexus-dl` downloads via the API. **Jump on L3**
+  (mod 156) merged with the lock-on sprint into the player script
+  (`tools/bb-lockon-sprint install jumpl3`). Not play-tested.
+- **Crown-of-Illusions CRASH resolved**: stock-engine HUD use-after-destroy
+  read from a core dump; the sprint v7 + FOV caves were cleared and RE-ENABLED
+  (`bb-cheat on`). FOV +15 is a keeper. See `bloodborne-lockon-sprint.md`.
+- **UI sounds REWRITTEN as curated library sounds** (Material Design + SND),
+  Donnie's picks live and level-raised to be audible (`data/uisounds-picks.json`,
+  `tools/uisounds-curate`). See `couch-ui-sounds.md`.
+- **Bloodborne companion**: he beat Logarius (lvl 52), joined the Vilebloods,
+  gave the Summons to Alfred (safe order), visited Gilbert. Pre-lake list:
+  Alfred's 2 beats, Gaol lap in Black Church Set, Tonsil Stone opt. Rom is the
+  next line. Ledger: `docs/research/bloodborne-progress.md`.
+
+## ▶ HUMAN TO-DO (Donnie)
+- **Restore the profiler permission:** `sudo sysctl kernel.perf_event_paranoid=4`
+  (I set it to 1 for the perf profile; it does not survive a reboot but restore
+  it now if you are not rebooting).
+- When you want 4K120 back for movies/general use, we need to sort the
+  FreeSync-on + 4K120 blue-tint interaction (or move gaming to 1440p120).
+
+
 Phone-first web remote for the living-room Kodi box. Node/Express backend
 (`server/`) brokering Kodi JSON-RPC + kodi-send + games/TV/lights, Svelte 5 +
 Vite frontend (`web/`), served at `http://192.168.4.147:8790`. Runs as the
@@ -448,7 +504,101 @@ there is a ~4.3k token floor per invocation; and piping `codex exec` into
   character: `tools/ds3-state load harness-cemetery-20260903` (restore it
   before HUD/menu journeys, they expect the Cemetery).
 
+### ▶▶ DS3 ReShade: BOLD + GI IS THE LIVE PRESET (4 Sep ~05:00, Donnie picked it)
+"the bold + gi looks very nice". `data/ds3-mod/preset/current.ini` =
+`presets-modern/modern-gi.ini` (modern-bold + NGLighting GI after MXAO). Live
+on the real launch. TWO PATH FIXES made when deploying (the showcase used
+ReShade.ini.showcase2, the farm ini lacked them): added NiceGuy-Shaders\Shaders
+to EffectSearchPaths (or NGLighting silently drops) and NiceGuy-Shaders\Textures
+to TextureSearchPaths (the blue-noise dither the agent flagged missing) in
+data/ds3-mod/game/ReShade.ini. NOT YET verified on a real launch with these
+paths (the showcase captures predate the texture fix, which only improves the
+dither): run `tools/ds3-reshade-realtest` at a terminal to confirm NGLighting
+compiles and the frame holds 120. OPEN: GI cost not measured (run staged behind
+the Bloodborne session's GPU window); GI ~halved the darkest 1%% at Grand
+Archives, watch OLED blacks. Three-strength artifacts: "Grand Archives / Anor
+Londo / Untended Graves, three strengths". Dial back = `cp
+presets-modern/modern-bold.ini data/ds3-mod/preset/current.ini` (or modern.ini
+for the timid one). Off = touch data/ds3-reshade/OFF.
+
+### ▶▶ DS3 SHOWCASE (4 Sep ~04:00): six atmospheric spots, off vs chain, ranked
+Whole-frame luma difference: Grand Archives 3.40, Anor Londo 2.89, Untended
+Graves 2.54, Central Irithyll 2.00, Cathedral of the Deep 1.81, Lothric Castle
+1.79. Artifacts "<Place>, lighting pass" x6 (sliders + measured native crops;
+regenerated with tools/ds3-reshade-compare from scratchpad/showcase/*_off|full|lite.png,
+crops in crops.json). HOW IT TRAVELLED IN ONE BOOT: johndisandonato's DS3
+Practice Tool v1.7.1 injected beside the exe via ME2 external_dlls in the
+sandbox, hotkey `t` = the game's native warp menu (Left/Right region tab,
+Up/Down bonfire, e/q), press counts per bonfire in data/ds3-reshade/SHOWCASE.md.
+Traps: the tool's digit hotkeys collide with DS3 quick-item slots; mouse
+clicks reach the game not the overlay; the L1/R1 tab prompt = Left/Right keys.
+Not captured, one boot away: Undead Settlement, Farron Keep, Profaned Capital.
+
+### ▶▶ DS3 ReShade: TUNED CHAIN IS THE LIVE PRESET (4 Sep 02:30)
+`data/ds3-mod/preset/current.ini` = `data/ds3-reshade/presets-modern/modern.ini`
+(MXAO r2.5 q4 + IL 1.5, qUINT bloom 0.6 with adaptation OFF and compression
+10, Lightroom contrast .08 vibrance .12, CAS .35). Cost +0.72 ms/frame at 4K
+(lite = MXAO+CAS, +0.56). Rejected with numbers in data/ds3-reshade/TUNING.md:
+ZenRCAO (reads as dimming), qUINT SSR (nothing to reflect on matte stone),
+SMAA (softens 14.5%), bloom defaults (a hidden whole-frame tonemap). Swap:
+`cp data/ds3-reshade/presets-modern/modern-lite.ini data/ds3-mod/preset/current.ini`.
+Compare pages for Donnie: artifacts "Cemetery of Ash, lighting pass" and
+"Archdragon Peak, lighting pass" (tools/ds3-reshade-compare). NEEDS HIS EYES
+ON THE TV: AO in motion, HUD gets sharpened/bloomed (ReShade runs after the
+HUD), grade strength in a dark room, CAS .35 vs .5 from the sofa, a boss
+fight, a wet area. Measurement traps: at the 120 cap gpu_load does not move
+(clocks boost instead) and uncapped the sandbox is CPU bound at ~151 fps;
+use GPU busy x frame period with clocks flat, and diff the HUD not the scene.
+
+### ▶▶ DS3 ReShade LIVE ON THE REAL LAUNCH (4 Sep 01:56, Donnie ran the test)
+`data/ds3-reshade/ON` exists -> ds3-modded-launch runs the game from the
+symlink farm `data/ds3-mod/game` (tools/ds3-farm; Steam install untouched)
+with `config_darksouls3_reshade.toml` (external_dlls ReShade64.dll), ReShade
+6.8.0 Addon + genuine d3dcompiler_47 beside the exe, ReShade.ini in the
+farm, preset `data/ds3-mod/preset/current.ini` (MXAO defaults for now; point
+it at presets/modern.ini once tuned). Verified: ReShade.log in the farm,
+MXAO compiled, 4k120 held, cap written +5 s, 120.03 fps median. Kill switch:
+`touch data/ds3-reshade/OFF` or remove ON. Two traps fixed on the way: (1)
+the watcher's find_game matched modengine2_launcher's "-p ...DarkSoulsIII.exe"
+cmdline and read the LAUNCHER's memory ("flipper pointer stayed null"), now
+argv[0] must be the game and the unlock retries; (2) ReShade's swapchain hook
+dropped the display to 60 Hz, fixed with [APP] ForceDefaultRefreshRate=1.
+Re-test: `tools/ds3-reshade-realtest` (needs a terminal; the auto-mode
+classifier blocks anything naming the DLLs from Claude's shell).
+
+### ▶▶ DS3 MODERN LIGHTING (ReShade) - GO, 4 Sep 00:30
+Donnie's ask (3 Sep night): not ER theming, "the modern features and polish
+and graphics the younger game has". Chosen: a depth-aware ReShade pass (AO,
+SSR, GI, bloom, grade, sharpen). PROVEN in the sandbox by capture
+(docs/research/ds3-reshade-depth-20260904.md): ReShade 6.8.0 Addon loads
+inside DS3 under Proton/DXVK by dxgi.dll proxy AND by ModEngine2
+external_dlls (the real-launch route, nothing in the Steam dir); depth
+correct with `RESHADE_DEPTH_INPUT_IS_REVERSED=0` (mandatory); ZenRCAO gives a
+clean 4K AO buffer. Library + catalogue + starter preset: data/ds3-reshade
+(9 free packs; NOT Marty's RTGI). Cost tool: tools/ds3-perf (baseline 4.8
+ms/frame at 4K, budget 8.3 ms at 120 Hz). Compiler trap: E5017 'fastopt' =
+Wine's built-in d3dcompiler; fix = real d3dcompiler_47.dll via WINEPATH +
+override (agent in flight). Plan: cost table -> tune per scene (cemetery +
+Donnie's Archdragon copy) -> side-by-side artifact for Donnie -> real launch
+via ds3-mod config behind a kill switch.
+
+### ▶▶ DS3: 120 FPS IS LIVE (4 Sep 00:10, verified by a real launch)
+Display holds `4k120` through a DS3 session (mode-keeper is running again since
+the 1 Sep reboot), the watcher writes the cap at +5 s, MangoHud read 120.03 fps
+median at the title screen. `touch /tmp/ds3-perflog` before a launch to log a
+session's frames to data/ds3-perf/raw-real (tools/ds3-perf summarise). Open:
+Bloodborne/shadPS4 still drops the display to 4K60 at launch (3 Sep 21:0x).
+Observed on that test launch: after `game-launch quit` (desktop-mode Steam,
+TV free) Steam's own "Steam" window (steamwebhelper) was left FOCUSED over
+Kodi; /api/windows/activate did not move it. Closed it to the tray with a
+WM_DELETE_WINDOW and raised Kodi by hand. Worth a guard in game-launch quit.
+
 ### ▶▶ DS3: EXACT NEXT STEPS
+0. READ docs/research/ds3-er-more-ports-20260903.md (3 Sep 23:30 survey, ranked
+   by payoff per hour). First: check the boss bar in a fight (the graft may
+   have rewritten MENU_PlayerHUD2 rows 6..22, shared with the boss frame);
+   then camera FOV 43 -> 48 via the regulation; Souls -> Runes id-join;
+   Lost Grace card repaint. Drop er_lockon.py (ER reuses DS3's marker).
 1. After Donnie's verdicts: fog dial (`--fade-max 4` if too thick); if the
    pause list should be horizontal, `er_pause_gfx.py` TILE_X/TILE_Y0/
    ROW_PITCH lay the same strips in a row.
@@ -728,6 +878,16 @@ rename is kept behind `--grid-rename` as the record, never deployed. The
 choice is Donnie's: ER's vertical list navigated with Left/Right, or a
 horizontal row in ER's tile style (er_pause_gfx.py can lay the same
 strips out in a row; TILE_X/TILE_Y0/ROW_PITCH).
+**3 Sep 22:40, "options menu icons still off centre" (Donnie):** the earlier
+alignment check measured Status and System, the two tiles whose atlas crops
+were right. Equipment, Inventory and Message were cropped from SB_In_GameTop by
+alpha bbox, 13..16 rows too high and 4 columns too far right, so each carried
+the cell ABOVE's bottom frame line and lost its own, and the icon sat high-left.
+Cell = the frame's outer alpha edge (142x146, 4-texel gutters); ER_CELLS in
+er_pause_menu.py now hold those bounds. Rebuilt `01_common_pause3.tpf.dcx`
+(= the new `01_common_menus.tpf.dcx`, DEPLOYED), captured at 4K: frame rows
+623..764 / 814..956 / 1199..1340 vs ER 624..766 / 816..958 / 1200..1342, all
+five frames complete. Sandbox save restored to Donnie's copy afterwards.
 DEPLOYED 16:05: `01_common_menus.tpf.dcx` (= the status2 build: HUD chain
 -> wash with the Status blanks -> cells -> pause tiles at 1:1) +
 `02_000_ingametop_er.gfx` (= er2, TILE_CX 46.5) + the seven `02_*_er.gfx`

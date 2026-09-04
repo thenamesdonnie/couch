@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Download a Nexus Mods file through the API (premium account needed).
+
+  nexus-dl MOD_ID                 list the mod's files (MAIN ones first)
+  nexus-dl MOD_ID FILE_ID         download that file to ~/fileshare/bloodborne-mods
+  nexus-dl MOD_ID --latest        download the newest MAIN file
+  nexus-dl --game GAME ...        another game domain (default bloodborne)
+  nexus-dl --search WORDS         trending + latest-updated Bloodborne mods
+                                  whose name/summary match (cheap browse)
+
+Key: ~/.config/nexus/apikey (Donnie's personal key; premium since 3 Sep 2026,
+which is what makes /download_link.json return CDN URLs - without premium the
+API only answers metadata and downloads have to go through the website).
+Files land in the same drop folder tools/bb-mod-install already watches, so
+the install path is unchanged: download here, then install as before.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.parse
+import urllib.request
+
+API = 'https://api.nexusmods.com/v1'
+KEY_FILE = os.path.expanduser('~/.config/nexus/apikey')
+DROP = os.path.expanduser('~/fileshare/bloodborne-mods')
+
+
+def key():
+    try:
+        return open(KEY_FILE).read().strip()
+    except OSError:
+        sys.exit('no API key at %s' % KEY_FILE)
+
+
+def get(path):
+    req = urllib.request.Request(API + path, headers={'apikey': key(), 'accept': 'application/json'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
+def files(game, mod):
+    fl = get('/games/%s/mods/%d/files.json' % (game, mod))['files']
+    order = {'MAIN': 0, 'UPDATE': 1, 'OPTIONAL': 2, 'MISCELLANEOUS': 3, 'OLD_VERSION': 8, 'ARCHIVED': 9}
+    return sorted(fl, key=lambda f: (order.get(f['category_name'], 5), -f['uploaded_timestamp']))
+
+
+def download(game, mod, fid, dest_dir):
+    links = get('/games/%s/mods/%d/files/%d/download_link.json' % (game, mod, fid))
+    if not links:
+        sys.exit('no download links (is the account premium?)')
+    # The CDN URI comes back with the raw file name in the path (spaces and
+    # all); quote the path so http.client accepts it.
+    u = urllib.parse.urlsplit(links[0]['URI'])
+    url = urllib.parse.urlunsplit((u.scheme, u.netloc, urllib.parse.quote(u.path), u.query, u.fragment))
+    meta = get('/games/%s/mods/%d/files/%d.json' % (game, mod, fid))
+    name = meta['file_name']
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, name)
+    if os.path.exists(dest) and os.path.getsize(dest) == meta['size_in_bytes']:
+        print('already have', dest)
+        return dest
+    print('downloading %s (%d KB) from %s' % (name, meta['size_kb'], links[0].get('short_name', 'cdn')))
+    req = urllib.request.Request(url, headers={'User-Agent': 'couch-nexus-dl'})
+    with urllib.request.urlopen(req, timeout=60) as r, open(dest + '.part', 'wb') as out:
+        done = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            out.write(chunk)
+            done += len(chunk)
+            if meta['size_in_bytes'] > 50 << 20:
+                print('\r  %d / %d MB' % (done >> 20, meta['size_in_bytes'] >> 20), end='', flush=True)
+    if meta['size_in_bytes'] > 50 << 20:
+        print()
+    os.replace(dest + '.part', dest)
+    print('saved', dest)
+    return dest
+
+
+def search(game, words):
+    seen = {}
+    for route in ('trending', 'latest_updated', 'latest_added'):
+        for m in get('/games/%s/mods/%s.json' % (game, route)):
+            seen[m['mod_id']] = m
+    pat = re.compile('|'.join(re.escape(w) for w in words), re.I)
+    hits = [m for m in seen.values() if pat.search(m.get('name', '') + ' ' + m.get('summary', ''))]
+    for m in sorted(hits, key=lambda m: -m.get('endorsement_count', 0)):
+        print('%5d  %-45s v%-8s %6d endorsements  %s' % (
+            m['mod_id'], m['name'][:45], m.get('version', '?'), m.get('endorsement_count', 0),
+            (m.get('summary') or '')[:90]))
+    if not hits:
+        print('no matches in the trending/latest lists; the API has no free-text search, use the site for the long tail')
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('mod', nargs='?', type=int)
+    ap.add_argument('file', nargs='?', type=int)
+    ap.add_argument('--latest', action='store_true')
+    ap.add_argument('--game', default='bloodborne')
+    ap.add_argument('--dest', default=DROP)
+    ap.add_argument('--search', nargs='+', metavar='WORD')
+    a = ap.parse_args()
+    if a.search:
+        return search(a.game, a.search)
+    if a.mod is None:
+        ap.print_help()
+        return 2
+    if a.file is None and not a.latest:
+        info = get('/games/%s/mods/%d.json' % (a.game, a.mod))
+        print('%s v%s by %s' % (info['name'], info['version'], info['author']))
+        for f in files(a.game, a.mod):
+            print('%6d  %-14s %-40s v%-7s %8d KB' % (f['file_id'], f['category_name'], f['name'][:40], f['version'], f['size_kb']))
+        return 0
+    fid = a.file
+    if a.latest:
+        main_files = [f for f in files(a.game, a.mod) if f['category_name'] == 'MAIN']
+        if not main_files:
+            sys.exit('no MAIN file')
+        fid = main_files[0]['file_id']
+    download(a.game, a.mod, fid, a.dest)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

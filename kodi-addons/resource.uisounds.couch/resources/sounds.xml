@@ -6,7 +6,8 @@
      during playback (guisoundmode = 1, "only when playback stopped") - a
      tick over a film would be wrong and we get that for free.
 
-     The wavs come from couch/tools/make-uisounds. Only wav is supported.
+     The wavs come from couch/tools/uisounds-curate (produced library sounds,
+     see CREDITS.txt). Only wav is supported.
 
      ONE SOUND PER PRESS is the rule here. Kodi fires both the action sound
      and any window activate/deactivate sound, so mapping `parentdir` to

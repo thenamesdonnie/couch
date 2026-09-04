@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Build the console's UI sound set from PRODUCED sound libraries.
+
+Donnie, 3 Sep 2026: "the ones now are shit i want something that sounds like
+effort's been put in and is actually been produced". Two synthesised sets
+(24 Aug sines, 30 Aug three-layer) were both rejected on hearing, so this
+tool stops synthesising and curates instead. Every sound in the set is a real
+studio-produced asset from one of two libraries staged in data/uisounds-src/:
+
+  material  Google's Material Design sound resources (CC BY 4.0). 24-bit
+            48 kHz stereo wavs. Soft, wooden/glassy taps, a coherent system
+            with primary (navigation), secondary (taps) and hero sounds.
+  snd       SND kits by Dentsu CXCC (free for any use, copyright stays with
+            the designer): SND01 "sine" (Yasuhiro Tsuchiya), SND02 "piano"
+            (Ayako Taniguchi), SND03 "industrial" (INDUSTRIAL JP). Shipped
+            as audio sprites; the json maps say where each sound starts.
+
+The DESIGN is still numbers, not wav edits: CANDIDATES lists, per role, the
+sounds that fit it in preference order, each with a loud50 target (dBFS, the
+RMS of the hottest 50 ms window, see tools/make-uisounds for why whole-file
+RMS lies) and an optional hard length cap. The chosen candidate per role
+comes from data/uisounds-picks.json (written from Donnie's audition), falling
+back to the first entry.
+
+Processing per sound: decode to 48 kHz stereo float, drop leading silence
+(so the attack lands on the button press, not 30 ms later), drop the
+inaudible tail, cap the length with a fade if asked, gain to the loud50
+target under a -1 dBFS peak ceiling, 8 ms fade-out, write 16-bit wav.
+
+  uisounds-curate --candidates DIR   render every candidate (wav + mp3 +
+                                     manifest.json) for an audition page
+  uisounds-curate --build            write the addon wavs from the picks
+  uisounds-curate --measure          table of what the addon currently holds
+
+Kodi plays the wavs itself (GUI sounds volume applies, silenced during
+playback). After --build: tools/deploy-addons then tools/kodi-restart, the
+sound skin is cached at Kodi startup.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import wave
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SRC = os.path.join(ROOT, 'data', 'uisounds-src')
+ADDON = os.path.join(ROOT, 'kodi-addons', 'resource.uisounds.couch', 'resources')
+PICKS = os.path.join(ROOT, 'data', 'uisounds-picks.json')
+SR = 48000
+PEAK_CEILING_DB = -1.0
+
+# Staged levels: the cursor fires on every d-pad step and wants to read as
+# texture; select/back/error are events; launch is the console taking the
+# machine, and it is layered over the select click (games.py plays it one
+# statement before the handoff).
+TARGET = {'cursor': -15.0, 'select': -13.0, 'back': -13.0, 'error': -13.0,
+          'launch': -11.0}
+
+# role -> [(candidate id, source spec, {options})]. Source spec is
+# ('material', filename) or ('snd', kit, sprite key). First entry = default.
+CANDIDATES = {
+    'cursor': [
+        ('mat-tap-01', ('material', 'ui_tap-variant-01'), {}),
+        ('mat-hover-tap', ('material', 'navigation_hover-tap'), {}),
+        ('snd01-tap', ('snd', '01', 'tap_01'), {}),
+        ('snd03-tap', ('snd', '03', 'tap_01'), {}),
+        ('snd02-tap', ('snd', '02', 'tap_01'), {'max_ms': 250}),
+    ],
+    'select': [
+        ('mat-forward-min', ('material', 'navigation_forward-selection-minimal'), {}),
+        ('snd01-button', ('snd', '01', 'button'), {}),
+        ('snd03-button', ('snd', '03', 'button'), {}),
+        ('mat-confirm-up', ('material', 'state-change_confirm-up'), {}),
+        ('snd02-select', ('snd', '02', 'select'), {}),
+        ('mat-forward', ('material', 'navigation_forward-selection'), {'max_ms': 600}),
+    ],
+    'back': [
+        ('mat-back-min', ('material', 'navigation_backward-selection-minimal'), {}),
+        ('snd01-down', ('snd', '01', 'transition_down'), {}),
+        ('snd03-down', ('snd', '03', 'transition_down'), {}),
+        ('mat-cancel', ('material', 'navigation-cancel'), {}),
+        ('mat-confirm-down', ('material', 'state-change_confirm-down'), {}),
+    ],
+    'error': [
+        ('mat-unavailable', ('material', 'navigation_unavailable-selection'), {}),
+        ('snd01-disabled', ('snd', '01', 'disabled'), {}),
+        ('snd03-caution', ('snd', '03', 'caution'), {}),
+        ('mat-error-03', ('material', 'alert_error-03'), {}),
+    ],
+    'launch': [
+        ('mat-hero-simple-01', ('material', 'hero_simple-celebration-01'), {}),
+        ('mat-complete', ('material', 'navigation_selection-complete-celebration'), {}),
+        ('snd01-celebration', ('snd', '01', 'celebration'), {}),
+        ('snd03-celebration', ('snd', '03', 'celebration'), {}),
+        ('mat-hero-simple-03', ('material', 'hero_simple-celebration-03'), {}),
+        ('mat-hero-deco-03', ('material', 'hero_decorative-celebration-03'), {}),
+    ],
+}
+
+CREDIT = {
+    'material': 'Material Design sound resources (Google, CC BY 4.0)',
+    '01': 'SND01 "sine" by Yasuhiro Tsuchiya (snd.dev)',
+    '02': 'SND02 "piano" by Ayako Taniguchi (snd.dev)',
+    '03': 'SND03 "industrial" by INDUSTRIAL JP (snd.dev)',
+}
+
+
+def db(v):
+    return 20.0 * np.log10(max(float(v), 1e-9))
+
+
+def decode(path, start=None, dur=None):
+    """ffmpeg -> float32 stereo 48 kHz, shape (n, 2)."""
+    cmd = ['ffmpeg', '-v', 'quiet']
+    if start is not None:
+        cmd += ['-ss', '%.6f' % start]
+    cmd += ['-i', path]
+    if dur is not None:
+        cmd += ['-t', '%.6f' % dur]
+    cmd += ['-f', 'f32le', '-ac', '2', '-ar', str(SR), '-']
+    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.float32).reshape(-1, 2).astype(np.float64)
+
+
+def load_source(spec):
+    if spec[0] == 'material':
+        return decode(os.path.join(SRC, 'material', spec[1] + '.wav'))
+    _, kit, key = spec
+    smap = json.load(open(os.path.join(SRC, 'snd', kit + '.json')))['spritemap']
+    start = smap[key]['start']
+    # The map's `end` is the nominal length; the sounds are laid out on a 2 s
+    # grid, so take the whole slot and let trim() find the real tail.
+    nxt = min([v['start'] for v in smap.values() if v['start'] > start] + [start + 2.0])
+    return decode(os.path.join(SRC, 'snd', kit + '.ogg'), start, nxt - start - 0.05)
+
+
+def loud50(x):
+    m = x.mean(axis=1)
+    w = SR * 50 // 1000
+    if len(m) < w:
+        return db(np.sqrt((m ** 2).mean()))
+    c = np.cumsum(np.concatenate([[0.0], m ** 2]))
+    return db(np.sqrt(((c[w:] - c[:-w]) / w).max()))
+
+
+def trim(x, head_db=-50.0, tail_db=-66.0, preroll_ms=2):
+    a = np.abs(x).max(axis=1)
+    peak = a.max()
+    if peak <= 0:
+        return x
+    idx = np.where(a > peak * 10 ** (head_db / 20))[0]
+    s = max(0, idx[0] - SR * preroll_ms // 1000)
+    idx = np.where(a > 10 ** (tail_db / 20))[0]
+    e = min(len(x), idx[-1] + SR * 20 // 1000)
+    return x[s:e]
+
+
+def cap(x, max_ms):
+    n = SR * max_ms // 1000
+    if len(x) <= n:
+        return x
+    x = x[:n].copy()
+    f = min(len(x), SR * 60 // 1000)
+    x[-f:] *= np.linspace(1.0, 0.0, f)[:, None]
+    return x
+
+
+def fade_out(x, ms=8):
+    f = min(len(x), SR * ms // 1000)
+    x = x.copy()
+    x[-f:] *= np.linspace(1.0, 0.0, f)[:, None]
+    return x
+
+
+def level(x, target_db):
+    g = 10 ** ((target_db - loud50(x)) / 20)
+    ceiling = 10 ** (PEAK_CEILING_DB / 20)
+    peak = np.abs(x).max() * g
+    limited = peak > ceiling
+    if limited:
+        g *= ceiling / peak
+    return x * g, limited
+
+
+def render(role, spec, opts):
+    x = trim(load_source(spec))
+    if opts.get('max_ms'):
+        x = cap(x, opts['max_ms'])
+    x = fade_out(x)
+    x, limited = level(x, TARGET[role])
+    return x, limited
+
+
+def write_wav(path, x):
+    pcm = np.clip(np.round(x * 32767.0), -32768, 32767).astype('<i2')
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(pcm.tobytes())
+
+
+def read_wav(path):
+    with wave.open(path, 'rb') as w:
+        n, ch, sw, sr = w.getnframes(), w.getnchannels(), w.getsampwidth(), w.getframerate()
+        raw = w.readframes(n)
+    if sw != 2:
+        raise SystemExit('%s: not 16-bit' % path)
+    x = np.frombuffer(raw, '<i2').astype(np.float64) / 32768.0
+    x = x.reshape(-1, ch)
+    if ch == 1:
+        x = np.repeat(x, 2, axis=1)
+    if sr != SR:
+        raise SystemExit('%s: %d Hz, expected %d' % (path, sr, SR))
+    return x
+
+
+def describe(x, limited=False):
+    return '%5.0fms  peak %6.1f  loud50 %6.1f dBFS%s' % (
+        len(x) * 1000 / SR, db(np.abs(x).max()), loud50(x), '  (peak-limited)' if limited else '')
+
+
+def picks():
+    chosen = {}
+    if os.path.exists(PICKS):
+        chosen = json.load(open(PICKS))
+    out = {}
+    for role, cands in CANDIDATES.items():
+        ids = [c[0] for c in cands]
+        want = chosen.get(role, ids[0])
+        if want not in ids:
+            raise SystemExit('picks: %s=%s is not a candidate (%s)' % (role, want, ', '.join(ids)))
+        out[role] = cands[ids.index(want)]
+    return out
+
+
+def credit_for(spec):
+    return CREDIT['material'] if spec[0] == 'material' else CREDIT[spec[1]]
+
+
+def do_candidates(outdir):
+    os.makedirs(outdir, exist_ok=True)
+    manifest = []
+    for role, cands in CANDIDATES.items():
+        for cid, spec, opts in cands:
+            x, limited = render(role, spec, opts)
+            wav = os.path.join(outdir, '%s-%s.wav' % (role, cid))
+            write_wav(wav, x)
+            mp3 = wav[:-4] + '.mp3'
+            subprocess.run(['ffmpeg', '-v', 'quiet', '-y', '-i', wav, '-codec:a', 'libmp3lame',
+                            '-b:a', '128k', mp3], check=True)
+            manifest.append({'role': role, 'id': cid, 'file': os.path.basename(mp3),
+                             'ms': int(len(x) * 1000 / SR), 'loud50': round(loud50(x), 1),
+                             'credit': credit_for(spec), 'default': cid == cands[0][0]})
+            print('%-7s %-20s %s' % (role, cid, describe(x, limited)))
+    json.dump(manifest, open(os.path.join(outdir, 'manifest.json'), 'w'), indent=1)
+
+
+def do_build():
+    chosen = picks()
+    lines = ['Couch UI sounds: where each file comes from (built by tools/uisounds-curate).', '']
+    for role, (cid, spec, opts) in chosen.items():
+        x, limited = render(role, spec, opts)
+        write_wav(os.path.join(ADDON, role + '.wav'), x)
+        src = spec[1] if spec[0] == 'material' else 'SND%s %s' % (spec[1], spec[2])
+        lines.append('%-8s %-20s <- %-45s %s' % (role + '.wav', cid, src, credit_for(spec)))
+        print('%-7s %-20s %s' % (role, cid, describe(x, limited)))
+    lines += ['', 'Material Design sound resources: CC BY 4.0, https://material.io/design/sound/sound-resources.html',
+              'SND kits: https://snd.dev (free for any use; copyright stays with the credited designer).']
+    open(os.path.join(ADDON, 'CREDITS.txt'), 'w').write('\n'.join(lines) + '\n')
+    # in/out ship unmapped (see sounds.xml); keep them as copies of select/back
+    # so nothing references a file that does not exist.
+    for a, b in (('in', 'select'), ('out', 'back')):
+        write_wav(os.path.join(ADDON, a + '.wav'), read_wav(os.path.join(ADDON, b + '.wav')))
+
+
+def do_measure():
+    for role in list(CANDIDATES) + ['in', 'out']:
+        p = os.path.join(ADDON, role + '.wav')
+        if os.path.exists(p):
+            print('%-7s %s' % (role, describe(read_wav(p))))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--candidates', metavar='DIR')
+    ap.add_argument('--build', action='store_true')
+    ap.add_argument('--measure', action='store_true')
+    a = ap.parse_args()
+    if a.candidates:
+        do_candidates(a.candidates)
+    if a.build:
+        do_build()
+    if a.measure:
+        do_measure()
+    if not (a.candidates or a.build or a.measure):
+        ap.print_help()
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

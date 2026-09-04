@@ -1,0 +1,1191 @@
+BLOODBORNE MSB THREE-WAY MERGE
+==============================================================================
+
+  merged = REBORNE + (ENHANCED - VANILLA)
+
+  VANILLA   /home/ds2000/couch/data/bb-mod-backups-copy/BloodborneEnhanced-0.11.2-fix9/files/map/mapstudio
+  ENHANCED  /home/ds2000/games/ps4/CUSA00900/dvdroot_ps4/map/mapstudio
+  REBORNE   /tmp/claude-1000/-home-ds2000-couch/bb334b67-8a0b-4c04-8c9b-e05214c498f5/scratchpad/rmap/BBReborne_map/map/mapstudio
+  OUTPUT    /tmp/claude-1000/-home-ds2000-couch/bb334b67-8a0b-4c04-8c9b-e05214c498f5/scratchpad/merged-map/map/mapstudio
+  16 maps merged.  Enhanced contributions carried: 495 added, 0 removed, 55 modified. 0 conflicts.
+  All outputs round-trip: True
+
+WHAT THE TWO MODS ACTUALLY TOUCH, AND WHY THIS MERGE IS CLEAN
+------------------------------------------------------------------------------
+
+  The two mods do not overlap at all.  Across all 16 maps, not one entry is
+  modified by both Bloodborne Enhanced and BB Reborne.  Every conflict count
+  below is therefore a real zero, not a merge that quietly dropped something.
+
+  ENHANCED works almost entirely by ADDING.  It adds regions, objects, enemies
+  and the models they need, and it edits a handful of vanilla respawn-point
+  regions.  All 55 of its modifications are the EntityID field of an existing
+  region, which is how it re-points vanilla respawn points at its own scripts.
+
+  REBORNE works almost entirely by REWRITING existing parts.  Its dominant
+  edit by a wide margin is the LanternID/LodParamID word in each part's entity
+  data, followed by the gparam block (LightSetID, FogParamID,
+  LightScatteringID, EnvMapID) and the draw/disp/backread group masks.  It also
+  adds map pieces and objects, moves a small number of parts, and removes some
+  map pieces.  That is exactly the shape of a lighting and placement rework.
+
+  Because Enhanced's contribution is additions plus region EntityID edits, and
+  Reborne's is lighting fields on parts, the two sets are disjoint and the
+  merge is a union rather than a negotiation.
+
+  One trap worth recording.  In m33_00_00_00 Bloodborne Enhanced adds an Enemy
+  part named "c0000_0003", and vanilla already has a PLAYER part of the same
+  name.  Enemy parts are written before Player parts, so under SoulsFormats'
+  global name disambiguation the new Enemy takes the plain name and vanilla's
+  Player is pushed to "c0000_0003 {2}".  Keyed on that disambiguated name the
+  Player looks deleted and re-added, and the merge silently substituted
+  Enhanced's copy of it for Reborne's.  This tool therefore keys entries on
+  (supertype, subtype, name, occurrence within that subtype) instead, which is
+  stable against a different subtype stealing a name.  Both parts now survive
+  with their own entity IDs, 3300910 and 3300999.
+
+
+HOW THIS WAS BUILT
+------------------------------------------------------------------------------
+
+  soulstruct (current main, python 3.13) cannot read a Bloodborne MSB at all.
+  Past the constrata padding assertion and the MSBPlatoonEvent keyword typo the
+  task description mentions, its Bloodborne part classes are simply incomplete:
+  MSBMapPiece has no scene_gparam_data member, so a vanilla m21_00_00_00 dies
+  on "Offset for unused struct `scene_gparam_data` in `MSBMapPiece` is
+  non-zero".  Fixing that means rewriting soulstruct's Bloodborne part
+  definitions and still leaves its writer free to re-derive padding, so the
+  byte-identical requirement would stay unproven.  soulstruct is used here only
+  for DCX compress/decompress, which is exact.
+
+  Instead msbmerge/msbb.py is a purpose-built MSBB reader/writer ported from
+  the SoulsFormats reference (MSBB.cs, ModelParam.cs, EventParam.cs,
+  PointParam.cs, PartsParam.cs, MSB.cs).  Every offset inside an MSBB entry is
+  relative to that entry's own start, so an entry is a position-independent
+  byte blob.  The reader carries each entry verbatim and parses only what the
+  merge needs: supertype, subtype, name, every index field that references
+  another list, and a field decomposition (named header fields, per-block
+  4-byte words, null-terminated UTF-16 strings) used for the 3-way diff.
+  Writing re-emits the header, the four param tables and the blobs, so an
+  unedited read/write cycle is byte identical by construction.
+
+  Index fields covered (all of them, per SoulsFormats):
+    Part.ModelIndex; Object/DummyObject CollisionIndex; Enemy/DummyEnemy
+    CollisionIndex and MovePointIndices[8]; ConnectCollision CollisionIndex
+    (which indexes the Collision SUBLIST, not the whole parts list);
+    Event PartIndex and RegionIndex; Treasure TreasurePartIndex; Generator
+    SpawnPointIndices[8] and SpawnPartIndices[32]; ObjAct ObjActPartIndex;
+    SpawnPoint SpawnPointIndex; Navmesh NavmeshRegionIndex; WindSFX
+    WindRegionIndex; PatrolInfo WalkPointIndices[32]; PlatoonInfo
+    GroupPartsIndices[32].  All are stored by identity and rewritten from
+    identity on save.
+
+  Two derived fields are recomputed rather than carried: Model.InstanceCount
+  (count of parts using that model) and the per-subtype running "id" field.
+  The id needs care.  From's own vanilla m23_00_00_01 numbers its "Other"
+  events 1 and 2 instead of 0 and 1, so recomputing it canonically would break
+  a byte-identical round trip.  Existing entries therefore keep the id byte
+  they shipped with and only appended entries get a fresh one.
+
+
+ACCEPTANCE TEST: byte-identical round trip of all 16 vanilla files
+------------------------------------------------------------------------------
+    m21_00_00_00     388552 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m21_01_00_00     167400 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m22_00_00_00     820824 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m23_00_00_01    1221400 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m24_00_00_01    2596840 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m24_01_00_01    2981584 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m24_02_00_01     493048 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m25_00_00_00     585176 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m26_00_00_00    1903224 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m27_00_00_01    2073536 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m28_00_00_01    1797496 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m32_00_00_01    1227688 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m33_00_00_00     680928 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m34_00_00_00    1638120 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m35_00_00_00    2255112 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    m36_00_00_00     993520 bytes  decompress -> MSB.from_bytes -> bytes(msb) == original: True
+    ALL 16 VANILLA FILES ROUND TRIP BYTE-IDENTICALLY: True
+
+    The same test passes on all 24 Enhanced map files and all 16 Reborne
+    map files, so the reader is exact on every input this merge touches.
+
+
+------------------------------------------------------------------------------
+m21_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           196      200      196      200
+    EVENT_PARAM_ST            97       99       97       99
+    POINT_PARAM_ST           112      121      112      121
+    PARTS_PARAM_ST           811      822      811      822
+
+  ENHANCED added 26, removed 0, modified 2 entries vs vanilla
+      + Object "o000260"
+      + Object "o009901"
+      + Object "o009910"
+      + Enemy "c9011"
+      + SFX "【BBE】ghost_shop_sfx" entity_id=2100509 region=【BBE】ghost_shop_sfx_region
+      + SpawnPoint "broken_lamp_spawn" entity_id=2102969
+      + Region "【BBE】gehrman_rematch" shape=Box entity_id=2102810 pos=(28.4,-9.2,5.6)
+      + Region "【BBE】moon_presence_rematch" shape=Point entity_id=2102805 pos=(25.1,-12.9,-28.8)
+      + Region "【BBE】item_dump - temp" shape=Box entity_id=2102308 pos=(-9.2,-12.8,-19.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - hidden" shape=Box entity_id=2102328 pos=(-4.2,-12.8,-19.4)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - main" shape=Box entity_id=2102318 pos=(-9.2,-7.8,-19.4)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn - broken lamp" shape=Point entity_id=2102967 pos=(-8.8,-6.2,-26.2)
+      + Region "【BBE】spawn_checker - broken lamp" shape=Box entity_id=2102968 pos=(-8.8,-7.2,-26.2)   <== AUTO REFILL machinery
+      + Region "【BBE】ghost_shop_sfx_region" shape=Point entity_id=-1 pos=(5.4,-6.4,-23.1)
+      + Region "ghost_animation_region" shape=Box entity_id=2212599 pos=(3.8,-8.0,-25.2)
+      + Object "【BBE】o210210" model=o009901 entity_id=2105099
+      + Object "【BBE】oXXXXXX_XXXX" model=o000260 entity_id=2211001
+      + Object "【BBE】token_0000" model=o009910 entity_id=2108500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2108501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2108502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2108503
+      + Enemy "【BBE】c9020_0023" model=c9020 entity_id=2100250
+      + Enemy "【BBE】c9010_0005" model=c9010 entity_id=2100500
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】c9010_0006" model=c0000 entity_id=2100501
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2108600
+    Auto Refill regions carried into the merge (4): "【BBE】item_dump - temp" (entity 2102308), "【BBE】item_dump - hidden" (entity 2102328), "【BBE】spawn_checker - main" (entity 2102318), "【BBE】spawn_checker - broken lamp" (entity 2102968)
+      ~ Region "Event_復活ポイント11_拠点で死亡したときのリスタート地点" shape=Point entity_id=2102319 pos=(-9.2,-6.8,-19.4)  [EntityID]
+      ~ Region "Event_復活ポイント12_初回死亡ポリ劇後" shape=Point entity_id=2102309 pos=(-9.2,-6.8,-19.4)  [EntityID]
+
+  REBORNE added 0, removed 0, modified 766 entries vs vanilla
+      fields Reborne rewrote (entry count per field):
+             741  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+             214  PARTS.gparam.LightSetID
+               1  PARTS.pos_x
+               1  PARTS.pos_y
+               1  PARTS.pos_z
+               1  PARTS.rot_x
+               1  PARTS.rot_y
+               1  PARTS.rot_z
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 395176 raw bytes -> 37847 packed bytes
+
+------------------------------------------------------------------------------
+m21_01_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           101      101      101      101
+    EVENT_PARAM_ST            29       29       29       29
+    POINT_PARAM_ST            31       35       31       35
+    PARTS_PARAM_ST           358      362      358      362
+
+  ENHANCED added 8, removed 0, modified 1 entries vs vanilla
+      + Region "【BBE】spawn_checker" shape=Box entity_id=2113950 pos=(129.8,-21.0,140.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - temp" shape=Box entity_id=2114950 pos=(129.8,-26.0,140.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - hidden" shape=Box entity_id=2117950 pos=(134.8,-26.0,140.9)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2113930 pos=(131.8,-20.0,140.5)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2118500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2118501
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2118600
+    Auto Refill regions carried into the merge (3): "【BBE】spawn_checker" (entity 2113950), "【BBE】item_dump - temp" (entity 2114950), "【BBE】item_dump - hidden" (entity 2117950)
+      ~ Region "Event_復活ポイント00" shape=Point entity_id=2115950 pos=(129.8,-20.0,140.9)  [EntityID]
+
+  REBORNE added 0, removed 0, modified 345 entries vs vanilla
+      fields Reborne rewrote (entry count per field):
+             345  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               1  PARTS.pos_x
+               1  PARTS.pos_y
+               1  PARTS.pos_z
+               1  PARTS.rot_y
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 169536 raw bytes -> 15545 packed bytes
+
+------------------------------------------------------------------------------
+m22_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           669      669      669      669
+    EVENT_PARAM_ST           234      235      234      235
+    POINT_PARAM_ST           451      463      451      463
+    PARTS_PARAM_ST          1482     1496     1634     1648
+
+  ENHANCED added 27, removed 0, modified 3 entries vs vanilla
+      + SFX "【BBE】henriet_summon_sign" entity_id=2203910 region=【BBE】henriett_spawn part=h000101
+      + Region "【BBE】spawn_checker - lamp 1" shape=Box entity_id=2203950 pos=(-172.0,-23.0,485.5)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - witches" shape=Box entity_id=2203951 pos=(-336.3,1.5,733.0)   <== AUTO REFILL machinery
+      + Region "【BBE】witches_return" shape=Point entity_id=2201899 pos=(-329.8,3.2,696.9)
+      + Region "【BBE】npc_boss_entry" shape=Box entity_id=2202911 pos=(-329.8,2.4,698.4)
+      + Region "【BBE】witches_rematch" shape=Box entity_id=2206951 pos=(-336.3,2.1,741.3)
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2204950 pos=(-172.0,-28.0,485.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2207950 pos=(-177.0,-28.0,485.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - witches - temp" shape=Box entity_id=2204951 pos=(-336.3,-3.5,733.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - witches - hidden" shape=Box entity_id=2207951 pos=(-341.3,-3.5,733.0)   <== AUTO REFILL machinery
+      + Region "【BBE】henriett_spawn" shape=Box entity_id=2202910 pos=(-170.0,-22.1,496.4)
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2203930 pos=(-173.3,-21.7,487.2)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2203932 pos=(-336.3,2.8,736.3)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2208500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2208501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2208502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2208503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2208504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2208505
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】c0000_0028" model=c0000 entity_id=2200910
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2208600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2208601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2208602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2208603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2208604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2208605
+    Auto Refill regions carried into the merge (6): "【BBE】spawn_checker - lamp 1" (entity 2203950), "【BBE】spawn_checker - witches" (entity 2203951), "【BBE】item_dump - lamp1 - temp" (entity 2204950), "【BBE】item_dump - lamp1 - hidden" (entity 2207950), "【BBE】item_dump - witches - temp" (entity 2204951), "【BBE】item_dump - witches - hidden" (entity 2207951)
+      ~ Region "Event_復帰ポイント01_入口" shape=Point entity_id=2205950 pos=(-172.0,-22.0,485.5)  [EntityID]
+      ~ Region "Event_復帰ポイント02_ボス部屋" shape=Point entity_id=2205951 pos=(-336.3,2.5,733.0)  [EntityID]
+      ~ Collision "h005500" model=h005500 entity_id=2202109  [EntityID, instance_id]
+
+  REBORNE added 152, removed 0, modified 930 entries vs vanilla
+      added:   146 MapPiece, 6 Object; e.g. MapPiece "m000009_1010" model=m000009 entity_id=-1 | MapPiece "m000037_0071" model=m000037 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+             885  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+              54  PARTS.gparam.LightSetID
+              12  PARTS.pos_y
+              10  PARTS.pos_z
+               8  PARTS.pos_x
+               5  PARTS.gparam.FogParamID
+               4  PARTS.rot_z
+               3  PARTS.rot_x
+               3  PARTS.rot_y
+               3  PARTS.gparam.EnvMapID
+               1  PARTS.sceneGparam.Unk00
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 890536 raw bytes -> 80115 packed bytes
+
+------------------------------------------------------------------------------
+m23_00_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           436      436      436      436
+    EVENT_PARAM_ST           324      324      324      324
+    POINT_PARAM_ST           469      488      469      488
+    PARTS_PARAM_ST          2477     2493     2486     2502
+
+  ENHANCED added 35, removed 0, modified 3 entries vs vanilla
+      + Region "【BBE】antal_bsb" shape=Box entity_id=2302729 pos=(-88.1,-126.5,12.9)
+      + Region "【BBE】yamamura_bsb" shape=Box entity_id=2302728 pos=(-87.1,-126.5,14.0)
+      + Region "【BBE】alfred_paarl" shape=Box entity_id=2302915 pos=(135.4,-120.3,-86.4)
+      + Region "【BBE】bsb_return" shape=Point entity_id=2301899 pos=(-86.4,-126.4,12.5)
+      + Region "【BBE】paarl_return" shape=Point entity_id=2301759 pos=(137.3,-119.4,-86.6)
+      + Region "【BBE】paarl_rematch" shape=Box entity_id=2306952 pos=(133.0,-119.8,-84.7)
+      + Region "【BBE】bsb_rematch" shape=Box entity_id=2306951 pos=(-114.1,-126.2,35.8)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2303950 pos=(126.4,-66.2,36.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2304950 pos=(126.4,-71.2,36.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2307950 pos=(131.4,-71.2,36.0)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - bsb" shape=Box entity_id=2303951 pos=(-140.0,-127.8,57.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_drop - bsb - temp" shape=Box entity_id=2304951 pos=(-140.0,-132.8,57.4)
+      + Region "【BBE】item_drop - bsb - hidden" shape=Box entity_id=2307951 pos=(-135.0,-132.8,57.4)
+      + Region "【BBE】spawn_checker - paarl" shape=Box entity_id=2303952 pos=(115.2,-121.8,-66.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - paarl - temp" shape=Box entity_id=2304952 pos=(115.2,-126.8,-66.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - paarl - hidden" shape=Box entity_id=2307952 pos=(120.2,-126.8,-66.5)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2303930 pos=(124.3,-64.8,36.5)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2303932 pos=(-141.4,-126.3,58.7)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=2303934 pos=(112.9,-120.2,-64.7)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2308500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2308501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2308502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2308503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2308504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2308505
+      + Object "【BBE】token_0006" model=o009910 entity_id=2308506
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990002
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2308600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2308601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2308602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2308603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2308604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2308605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2308606
+      + Enemy "【BBE】ghost_0007" model=c0000 entity_id=2308607
+    Auto Refill regions carried into the merge (7): "【BBE】spawn_checker - lamp1" (entity 2303950), "【BBE】item_dump - lamp1 - temp" (entity 2304950), "【BBE】item_dump - lamp1 - hidden" (entity 2307950), "【BBE】spawn_checker - bsb" (entity 2303951), "【BBE】spawn_checker - paarl" (entity 2303952), "【BBE】item_dump - paarl - temp" (entity 2304952), "【BBE】item_dump - paarl - hidden" (entity 2307952)
+      ~ Region "復活ポイント00" shape=Point entity_id=2305950 pos=(126.4,-65.2,36.0)  [EntityID]
+      ~ Region "復活ポイント02_ボス部屋" shape=Point entity_id=2305951 pos=(-140.0,-126.8,57.4)  [EntityID]
+      ~ Region "復活ポイント03_ボス部屋_嵐獣骨" shape=Point entity_id=2305952 pos=(115.2,-120.8,-66.5)  [EntityID]
+
+  REBORNE added 9, removed 0, modified 2088 entries vs vanilla
+      added:   5 MapPiece, 4 Object; e.g. MapPiece "m000500_0001" model=m000500 entity_id=-1 | MapPiece "m009230_0026" model=m009230 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            2069  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+              25  PARTS.gparam.LightSetID
+              18  PARTS.gparam.EnvMapID
+              16  PARTS.pos_y
+              11  PARTS.rot_y
+               7  PARTS.pos_x
+               7  PARTS.pos_z
+               7  PARTS.DrawGroups[0]
+               7  PARTS.DrawGroups[1]
+               7  PARTS.DrawGroups[2]
+               7  PARTS.DrawGroups[3]
+               7  PARTS.BackreadGroups[0]
+               7  PARTS.BackreadGroups[1]
+               7  PARTS.BackreadGroups[2]
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 1234336 raw bytes -> 110857 packed bytes
+
+------------------------------------------------------------------------------
+m24_00_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           951      951      951      951
+    EVENT_PARAM_ST           386      387      386      387
+    POINT_PARAM_ST           666      677      666      677
+    PARTS_PARAM_ST          5254     5270     5383     5399
+
+  ENHANCED added 28, removed 0, modified 2 entries vs vanilla
+      + SpawnPoint "bridge_door_spawn_point" entity_id=2408088
+      + Region "【BBE】amelia_return" shape=Point entity_id=2401899 pos=(49.6,35.9,308.3)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2403950 pos=(17.6,-10.5,102.7)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - amelia" shape=Box entity_id=2403951 pos=(67.8,34.7,339.8)   <== AUTO REFILL machinery
+      + Region "【BBE】amelia_rematch" shape=Box entity_id=2406951 pos=(57.3,35.7,321.5)
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2404950 pos=(17.6,-15.5,102.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2407950 pos=(22.6,-20.5,102.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - amelia - temp" shape=Box entity_id=2404951 pos=(67.8,29.7,339.8)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - amelia - hidden" shape=Box entity_id=2407951 pos=(72.8,29.7,339.8)   <== AUTO REFILL machinery
+      + Region "【BBE】bridge_door_cw_spawn_region" shape=Point entity_id=-1 pos=(-115.9,-26.6,79.2)
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2403930 pos=(16.1,-8.9,103.5)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2403932 pos=(68.8,35.7,341.5)
+      + Object "【BBE】o009910_0020" model=o009910 entity_id=2400869
+      + Object "【BBE】token_0000" model=o009910 entity_id=2408500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2408501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2408502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2408503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2408504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2408505
+      + Object "【BBE】token_0006" model=o009910 entity_id=2408506
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2408600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2408601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2408602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2408603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2408604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2408605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2408606
+    Auto Refill regions carried into the merge (6): "【BBE】spawn_checker - lamp1" (entity 2403950), "【BBE】spawn_checker - amelia" (entity 2403951), "【BBE】item_dump - lamp1 - temp" (entity 2404950), "【BBE】item_dump - lamp1 - hidden" (entity 2407950), "【BBE】item_dump - amelia - temp" (entity 2404951), "【BBE】item_dump - amelia - hidden" (entity 2407951)
+      ~ Region "復活ポイント01_スタート地点" shape=Point entity_id=2405950 pos=(17.6,-9.5,102.7)  [EntityID]
+      ~ Region "復活ポイント02_ボス部屋" shape=Point entity_id=2405951 pos=(67.8,35.7,339.8)  [EntityID]
+
+  REBORNE added 156, removed 27, modified 4313 entries vs vanilla
+      added:   117 Object, 39 MapPiece; e.g. MapPiece "m000481_0001" model=m000481 entity_id=-1 | MapPiece "m000481_0003" model=m000481 entity_id=-1
+      removed: 26 MapPiece, 1 Object; e.g. MapPiece "m050000" model=m050000 entity_id=-1 | MapPiece "m050001" model=m050001 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            4194  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+             172  PARTS.DrawGroups[0]
+             157  PARTS.DrawGroups[3]
+             149  PARTS.gparam.LightSetID
+             148  PARTS.DrawGroups[2]
+             147  PARTS.DrawGroups[1]
+             129  PARTS.DrawGroups[5]
+             111  PARTS.DrawGroups[4]
+             105  PARTS.DrawGroups[7]
+              71  PARTS.DrawGroups[6]
+              59  PARTS.BackreadGroups[6]
+              51  PARTS.BackreadGroups[2]
+              50  PARTS.BackreadGroups[0]
+              50  PARTS.BackreadGroups[3]
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 2662672 raw bytes -> 232850 packed bytes
+
+------------------------------------------------------------------------------
+m24_01_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST          1216     1216     1216     1216
+    EVENT_PARAM_ST           462      463      462      463
+    POINT_PARAM_ST           591      614      591      614
+    PARTS_PARAM_ST          6172     6191     6177     6196
+
+  ENHANCED added 43, removed 0, modified 7 entries vs vanilla
+      + SpawnPoint "【BBE】bridge_door_spawn_point" entity_id=2418089
+      + Region "【BBE】Alfred_gascoigne" shape=Box entity_id=2412819 pos=(-50.8,-41.0,71.2)
+      + Region "【BBE】Gascoigne_gascoigne" shape=Box entity_id=2412818 pos=(-49.4,-41.0,69.8)
+      + Region "【BBE】cleric_beast_rematch" shape=Box entity_id=2416952 pos=(-136.8,-27.0,53.0)
+      + Region "【BBE】gascoigne_return" shape=Point entity_id=2411859 pos=(-52.0,-40.6,69.1)
+      + Region "【BBE】cleric_beast_return" shape=Point entity_id=2411759 pos=(-156.2,-26.8,33.1)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2413950 pos=(-199.7,-51.8,179.4)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp2" shape=Box entity_id=2413951 pos=(-193.4,-29.6,68.5)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - cleric beast" shape=Box entity_id=2413952 pos=(-124.8,-27.9,64.3)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - gascoigne" shape=Box entity_id=2413953 pos=(-36.8,-41.8,84.3)   <== AUTO REFILL machinery
+      + Region "【BBE】gascoigne_rematch" shape=Box entity_id=2416953 pos=(-47.4,-40.8,73.3)
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2414950 pos=(-199.7,-56.8,179.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2417950 pos=(-194.7,-56.8,179.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - temp" shape=Box entity_id=2414951 pos=(-193.4,-34.7,68.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - hidden" shape=Box entity_id=2417951 pos=(-198.4,-34.7,68.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - cleric beast - temp" shape=Box entity_id=2414952 pos=(-124.8,-32.9,64.3)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - cleric beast - hidden" shape=Box entity_id=2417952 pos=(-129.8,-32.9,69.3)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - gascoigne - temp" shape=Box entity_id=2414953 pos=(-36.8,-46.8,84.3)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - gascoigne - hidden" shape=Box entity_id=2417953 pos=(-41.8,-46.8,84.3)   <== AUTO REFILL machinery
+      + Region "【BBE】bridge_door_cy_spawn_region" shape=Point entity_id=-1 pos=(-113.4,-26.9,75.1)
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2413930 pos=(-201.0,-50.7,177.9)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2413932 pos=(-196.8,-28.6,65.4)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=2413934 pos=(-123.3,-27.0,65.6)
+      + Region "【BBE】lamp4_music" shape=Point entity_id=2413936 pos=(-33.5,-40.8,88.1)
+      + Object "【BBE】o009910_0010" model=o009910 entity_id=2410874
+      + Object "【BBE】token_0000" model=o009910 entity_id=2418500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2418501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2418502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2418503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2418504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2418505
+      + Object "【BBE】token_0006" model=o009910 entity_id=2418506
+      + Object "【BBE】token_0007" model=o009910 entity_id=2418507
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2418600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2418601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2418602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2418603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2418604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2418605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2418606
+      + Enemy "【BBE】ghost_0007" model=c0000 entity_id=2418607
+      + Enemy "【BBE】ghost_0008" model=c0000 entity_id=2418608
+    Auto Refill regions carried into the merge (12): "【BBE】spawn_checker - lamp1" (entity 2413950), "【BBE】spawn_checker - lamp2" (entity 2413951), "【BBE】spawn_checker - cleric beast" (entity 2413952), "【BBE】spawn_checker - gascoigne" (entity 2413953), "【BBE】item_dump - lamp1 - temp" (entity 2414950), "【BBE】item_dump - lamp1 - hidden" (entity 2417950), "【BBE】item_dump - lamp2 - temp" (entity 2414951), "【BBE】item_dump - lamp2 - hidden" (entity 2417951), "【BBE】item_dump - cleric beast - temp" (entity 2414952), "【BBE】item_dump - cleric beast - hidden" (entity 2417952), "【BBE】item_dump - gascoigne - temp" (entity 2414953), "【BBE】item_dump - gascoigne - hidden" (entity 2417953)
+      ~ Region "Event_新NPC召喚_ガスコイン_出現領域" shape=Box entity_id=2412920 pos=(-181.2,-40.5,-27.9)  [rot_y]
+      ~ Region "復活ポイント00_診療所" shape=Point entity_id=2415950 pos=(-199.7,-50.8,179.4)  [EntityID]
+      ~ Region "復活ポイント01_はしごの上" shape=Point entity_id=2415951 pos=(-193.4,-28.6,68.5)  [EntityID]
+      ~ Region "復活ポイント02_教区長" shape=Point entity_id=2415952 pos=(-124.8,-26.9,64.3)  [EntityID]
+      ~ Region "復活ポイント03_ボス部屋_ガスコイン神父" shape=Point entity_id=2415953 pos=(-36.8,-40.8,84.3)  [EntityID]
+      ~ Object "o240308_0000" model=o240308 entity_id=2411810  [pos_x, pos_z, rot_y]
+      ~ Enemy "c2710_0001" model=c2710 entity_id=2410158  [collision (by name), rot_y]
+
+  REBORNE added 26, removed 21, modified 5270 entries vs vanilla
+      added:   20 MapPiece, 4 Object, 2 Collision; e.g. MapPiece "m009007_3902" model=m009007 entity_id=-1 | MapPiece "m003050_0001" model=m003050 entity_id=-1
+      removed: 21 MapPiece; e.g. MapPiece "m009127_4200" model=m009127 entity_id=-1 | MapPiece "m050002" model=m050002 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            4823  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+            1040  PARTS.gparam.LightSetID
+             564  PARTS.gparam.EnvMapID
+             409  PARTS.gparam.FogParamID
+             366  PARTS.gparam.LightScatteringID
+             184  PARTS.DrawGroups[3]
+             176  PARTS.DrawGroups[1]
+             160  PARTS.DrawGroups[2]
+             146  PARTS.BackreadGroups[1]
+             137  PARTS.BackreadGroups[2]
+             118  PARTS.DrawGroups[0]
+             118  PARTS.BackreadGroups[0]
+             118  PARTS.BackreadGroups[5]
+             104  PARTS.DrawGroups[5]
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 2995048 raw bytes -> 258890 packed bytes
+
+------------------------------------------------------------------------------
+m24_02_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           322      322      322      322
+    EVENT_PARAM_ST           182      182      182      182
+    POINT_PARAM_ST           241      258      241      258
+    PARTS_PARAM_ST           929      942      943      956
+
+  ENHANCED added 30, removed 0, modified 4 entries vs vanilla
+      + Region "【BBE】ebrietas_rematch_boss_spawn" shape=Box entity_id=2422809 pos=(124.7,4.6,430.6)
+      + Region "【BBE】ebrietas_return" shape=Point entity_id=2421899 pos=(93.0,4.2,385.2)
+      + Region "【BBE】ebrietas_rematch" shape=Box entity_id=2426951 pos=(114.8,5.0,415.4)
+      + Region "【BBE】celestial_emissary_return" shape=Point entity_id=2421759 pos=(-7.4,55.7,294.5)
+      + Region "【BBE】celestial_emissary_rematch" shape=Box entity_id=2426952 pos=(40.9,51.3,293.5)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2423950 pos=(-24.6,39.8,250.3)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - ebrietas" shape=Box entity_id=2423951 pos=(114.9,3.4,425.0)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - emissary" shape=Box entity_id=2423952 pos=(45.3,50.4,300.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2424950 pos=(-24.6,34.8,250.3)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2427950 pos=(-19.6,34.8,245.3)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - ebrietas - temp" shape=Box entity_id=2424951 pos=(114.9,-1.6,425.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - ebrietas - hidden" shape=Box entity_id=2427951 pos=(119.9,-1.6,425.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - emissary - temp" shape=Box entity_id=2424952 pos=(45.3,45.4,300.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - emissary - hidden" shape=Box entity_id=2427952 pos=(50.3,45.4,300.4)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2423930 pos=(-25.4,40.6,251.2)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2423932 pos=(114.9,4.5,426.9)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=2423934 pos=(44.7,51.4,299.4)
+      + MapPiece "m900020" model=m900020 entity_id=2424000
+      + Object "【BBE】token_0000" model=o009910 entity_id=2428500
+      + Object "【BBE】token_0001 (dummy)" model=o009910 entity_id=2428501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2428502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2428503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2428504
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2428600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2428601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2428602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2428603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2428604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2428605
+    Auto Refill regions carried into the merge (9): "【BBE】spawn_checker - lamp1" (entity 2423950), "【BBE】spawn_checker - ebrietas" (entity 2423951), "【BBE】spawn_checker - emissary" (entity 2423952), "【BBE】item_dump - lamp1 - temp" (entity 2424950), "【BBE】item_dump - lamp1 - hidden" (entity 2427950), "【BBE】item_dump - ebrietas - temp" (entity 2424951), "【BBE】item_dump - ebrietas - hidden" (entity 2427951), "【BBE】item_dump - emissary - temp" (entity 2424952), "【BBE】item_dump - emissary - hidden" (entity 2427952)
+      ~ Region "Event_新召喚NPC_ボス部屋" shape=Box entity_id=2422912 pos=(121.1,-19.3,429.1)  [pos_y]
+      ~ Region "復活ポイント00" shape=Point entity_id=2425950 pos=(-24.6,40.8,250.3)  [EntityID]
+      ~ Region "復活ポイント01" shape=Point entity_id=2425951 pos=(114.9,4.4,425.0)  [EntityID]
+      ~ Region "復活ポイント02" shape=Point entity_id=2425952 pos=(45.3,51.4,300.4)  [EntityID]
+
+  REBORNE added 14, removed 0, modified 622 entries vs vanilla
+      added:   14 MapPiece; e.g. MapPiece "m001356_0002" model=m001356 entity_id=-1 | MapPiece "m001356_0004" model=m001356 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+             620  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               8  PARTS.pos_x
+               8  PARTS.pos_z
+               6  PARTS.rot_y
+               4  PARTS.DrawGroups[0]
+               3  PARTS.DrawGroups[3]
+               2  PARTS.gparam.LightSetID
+               1  PARTS.BackreadGroups[6]
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 506536 raw bytes -> 49738 packed bytes
+
+------------------------------------------------------------------------------
+m25_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           374      374      374      374
+    EVENT_PARAM_ST           251      251      251      251
+    POINT_PARAM_ST           272      286      272      286
+    PARTS_PARAM_ST          1109     1123     1114     1128
+
+  ENHANCED added 28, removed 0, modified 3 entries vs vanilla
+      + Region "【BBE】logarius_return" shape=Point entity_id=2501899 pos=(32.7,112.3,-328.9)
+      + Region "【BBE】rematch_trigger" shape=Box entity_id=2506952 pos=(35.5,111.9,-332.9)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2503950 pos=(-4.6,32.9,-188.0)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - logarius" shape=Box entity_id=2503952 pos=(47.8,110.9,-350.4)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - queen" shape=Box entity_id=2503951 pos=(122.4,128.2,-455.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2504950 pos=(-4.6,27.9,-188.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2507950 pos=(-4.6,31.9,-188.1)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - queen - temp" shape=Box entity_id=2504951 pos=(122.4,123.2,-455.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - queen - hidden" shape=Box entity_id=2507951 pos=(127.4,123.2,-455.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - logarius - temp" shape=Box entity_id=2504952 pos=(47.8,105.9,-350.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - logarius - hidden" shape=Box entity_id=2507952 pos=(52.8,105.9,-350.4)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2503930 pos=(-3.6,33.9,-188.1)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2503932 pos=(124.5,129.2,-454.5)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=2503934 pos=(48.7,111.6,-351.5)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2508500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2508501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2508502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2508503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2508504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2508505
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2508600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2508601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2508602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2508603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2508604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2508605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2508606
+    Auto Refill regions carried into the merge (9): "【BBE】spawn_checker - lamp1" (entity 2503950), "【BBE】spawn_checker - logarius" (entity 2503952), "【BBE】spawn_checker - queen" (entity 2503951), "【BBE】item_dump - lamp1 - temp" (entity 2504950), "【BBE】item_dump - lamp1 - hidden" (entity 2507950), "【BBE】item_dump - queen - temp" (entity 2504951), "【BBE】item_dump - queen - hidden" (entity 2507951), "【BBE】item_dump - logarius - temp" (entity 2504952), "【BBE】item_dump - logarius - hidden" (entity 2507952)
+      ~ Region "復活ポイント_古城スタート地点" shape=Point entity_id=2505950 pos=(-4.6,33.9,-188.0)  [EntityID]
+      ~ Region "復活ポイント_古城ボス部屋" shape=Point entity_id=2505952 pos=(47.8,111.9,-350.4)  [EntityID]
+      ~ Region "復活ポイント_古城女王の間" shape=Point entity_id=2505951 pos=(122.4,129.2,-455.0)  [EntityID]
+
+  REBORNE added 5, removed 0, modified 238 entries vs vanilla
+      added:   5 MapPiece; e.g. MapPiece "m005053_0001" model=m005053 entity_id=-1 | MapPiece "m005053_0002" model=m005053 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+             224  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+              22  PARTS.DrawGroups[0]
+              16  PARTS.DrawGroups[2]
+              14  PARTS.DrawGroups[1]
+              14  PARTS.DrawGroups[3]
+              12  PARTS.gparam.LightSetID
+               1  PARTS.pos_x
+               1  PARTS.gparam.EnvMapID
+               1  PARTS.pos_y
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 594856 raw bytes -> 50899 packed bytes
+
+------------------------------------------------------------------------------
+m26_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           993      993      993      993
+    EVENT_PARAM_ST           392      392      392      392
+    POINT_PARAM_ST           451      471      451      471
+    PARTS_PARAM_ST          3839     3857     3839     3857
+
+  ENHANCED added 38, removed 0, modified 4 entries vs vanilla
+      + Region "【BBE】wet_nurse_return" shape=Point entity_id=2601899 pos=(120.1,1125.3,-37.8)
+      + Region "【BBE】wet_nurse_rematch" shape=Box entity_id=2606951 pos=(131.0,1124.8,-37.8)
+      + Region "【BBE】micolash_return" shape=Point entity_id=2601889 pos=(144.2,1033.0,-14.7)
+      + Region "【BBE】boss_rematch" shape=Box entity_id=2606952 pos=(155.8,1033.0,-14.7)
+      + Region "【BBE】spawn_checker - micolash" shape=Box entity_id=2603952 pos=(136.7,1060.3,-14.9)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - nurse" shape=Box entity_id=2603951 pos=(140.7,1123.3,-38.0)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2603950 pos=(-56.8,973.0,18.9)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp2" shape=Box entity_id=2603953 pos=(84.6,985.7,-0.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2604950 pos=(-56.8,968.0,18.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2607950 pos=(-51.8,968.0,18.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - nurse - temp" shape=Box entity_id=2604951 pos=(140.7,1118.3,-38.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - nurse - hidden" shape=Box entity_id=2607951 pos=(145.7,1118.3,-38.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - micolash - temp" shape=Box entity_id=2604952 pos=(136.7,1055.3,-14.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - micolash - hidden" shape=Box entity_id=2607952 pos=(141.7,1055.3,-14.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - temp" shape=Box entity_id=2604953 pos=(84.6,980.7,-0.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - hidden" shape=Box entity_id=2607953 pos=(89.6,980.7,-0.4)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2603930 pos=(-54.8,974.5,18.3)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2603932 pos=(141.9,1124.4,-37.9)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=2603934 pos=(138.7,1061.2,-14.9)
+      + Region "【BBE】lamp4_music" shape=Point entity_id=2603936 pos=(86.1,986.7,-1.4)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2608500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2608501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2608502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2608503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2608504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2608505
+      + Object "【BBE】token_0006" model=o009910 entity_id=2608506
+      + Object "【BBE】token_0007" model=o009910 entity_id=2608507
+      + Object "【BBE】token_0008" model=o009910 entity_id=2608508
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2608600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2608601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2608602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2608603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2608604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2608605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2608606
+      + Enemy "【BBE】ghost_0007" model=c0000 entity_id=2608607
+    Auto Refill regions carried into the merge (12): "【BBE】spawn_checker - micolash" (entity 2603952), "【BBE】spawn_checker - nurse" (entity 2603951), "【BBE】spawn_checker - lamp1" (entity 2603950), "【BBE】spawn_checker - lamp2" (entity 2603953), "【BBE】item_dump - lamp1 - temp" (entity 2604950), "【BBE】item_dump - lamp1 - hidden" (entity 2607950), "【BBE】item_dump - nurse - temp" (entity 2604951), "【BBE】item_dump - nurse - hidden" (entity 2607951), "【BBE】item_dump - micolash - temp" (entity 2604952), "【BBE】item_dump - micolash - hidden" (entity 2607952), "【BBE】item_dump - lamp2 - temp" (entity 2604953), "【BBE】item_dump - lamp2 - hidden" (entity 2607953)
+      ~ Region "復活ポイント_トラップロードボス部屋（悪夢の主）" shape=Point entity_id=2605952 pos=(136.7,1061.3,-14.9)  [EntityID]
+      ~ Region "復活ポイント_トラップロードボス部屋（死と闇レッサー）" shape=Point entity_id=2605951 pos=(140.7,1124.3,-38.0)  [EntityID]
+      ~ Region "復活ポイント_トラップロード橋の手前" shape=Point entity_id=2605950 pos=(-56.8,974.0,18.9)  [EntityID]
+      ~ Region "復活ポイント_第一SCエレベーター前" shape=Point entity_id=2605953 pos=(84.6,986.7,-0.4)  [EntityID]
+
+  REBORNE added 0, removed 0, modified 2286 entries vs vanilla
+      fields Reborne rewrote (entry count per field):
+            2276  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               8  PARTS.gparam.LightSetID
+               7  PARTS.gparam.EnvMapID
+               3  PARTS.pos_x
+               3  PARTS.rot_y
+               2  PARTS.pos_y
+               2  PARTS.DrawGroups[0]
+               2  PARTS.DrawGroups[1]
+               1  PARTS.rot_x
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 1913304 raw bytes -> 148372 packed bytes
+
+------------------------------------------------------------------------------
+m27_00_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST          1145     1145     1145     1145
+    EVENT_PARAM_ST           235      235      235      235
+    POINT_PARAM_ST           307      317      307      317
+    PARTS_PARAM_ST          4263     4281     4791     4809
+
+  ENHANCED added 28, removed 0, modified 2 entries vs vanilla
+      + Region "【BBE】shadows_return" shape=Point entity_id=2701899 pos=(-321.4,-185.9,495.9)
+      + Region "【BBE】boss_rematch" shape=Box entity_id=2706951 pos=(-328.6,-186.4,488.6)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2703950 pos=(-190.1,-77.3,252.2)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - shadows" shape=Box entity_id=2703951 pos=(-334.9,-187.5,479.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2704950 pos=(-190.1,-82.3,252.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2707950 pos=(-185.1,-82.3,252.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - shadows - temp" shape=Box entity_id=2704951 pos=(-334.9,-192.5,479.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - shadows - hidden" shape=Box entity_id=2707951 pos=(-329.9,-192.5,479.0)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2703930 pos=(-193.2,-76.7,252.6)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2703932 pos=(-337.8,-186.3,478.5)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2708500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2708501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2708502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2708503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2708504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2708505
+      + Object "【BBE】token_0006" model=o009910 entity_id=2708506
+      + Object "【BBE】token_0007" model=o009910 entity_id=2708507
+      + Object "【BBE】token_0008" model=o009910 entity_id=2708508
+      + Object "【BBE】token_0009" model=o009910 entity_id=2708509
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990002
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2708600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2708601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2708602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2708603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2708604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2708605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2708606
+    Auto Refill regions carried into the merge (6): "【BBE】spawn_checker - lamp1" (entity 2703950), "【BBE】spawn_checker - shadows" (entity 2703951), "【BBE】item_dump - lamp1 - temp" (entity 2704950), "【BBE】item_dump - lamp1 - hidden" (entity 2707950), "【BBE】item_dump - shadows - temp" (entity 2704951), "【BBE】item_dump - shadows - hidden" (entity 2707951)
+      ~ Region "復活ポイント01_石像前" shape=Point entity_id=2705950 pos=(-190.1,-76.3,252.2)  [EntityID]
+      ~ Region "復活ポイント02_ボス部屋" shape=Point entity_id=2705951 pos=(-334.9,-186.5,479.0)  [EntityID]
+
+  REBORNE added 529, removed 1, modified 3763 entries vs vanilla
+      added:   318 MapPiece, 211 Enemy; e.g. MapPiece "m001033_0001" model=m001033 entity_id=-1 | MapPiece "m001033_0002" model=m001033 entity_id=-1
+      removed: 1 MapPiece; e.g. MapPiece "m005941" model=m005941 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            3755  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               9  PARTS.pos_y
+               5  PARTS.gparam.LightSetID
+               4  PARTS.pos_x
+               3  PARTS.pos_z
+               3  PARTS.rot_y
+               3  PARTS.rot_z
+               1  PARTS.rot_x
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 2296496 raw bytes -> 203239 packed bytes
+
+------------------------------------------------------------------------------
+m28_00_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           644      644      644      644
+    EVENT_PARAM_ST           313      313      313      313
+    POINT_PARAM_ST           427      445      427      445
+    PARTS_PARAM_ST          3685     3703     3686     3704
+
+  ENHANCED added 36, removed 0, modified 4 entries vs vanilla
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=2803950 pos=(257.4,-52.4,69.9)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - one reborn" shape=Box entity_id=2803951 pos=(418.8,-124.7,-253.4)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp3" shape=Box entity_id=2803952 pos=(219.6,-98.7,-78.9)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp2" shape=Box entity_id=2803953 pos=(260.4,-89.0,-55.6)   <== AUTO REFILL machinery
+      + Region "【BBE】one_reborn_return" shape=Point entity_id=2801899 pos=(378.4,-122.2,-213.0)
+      + Region "【BBE】boss_rematch" shape=Box entity_id=2806951 pos=(389.6,-123.3,-224.1)
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=2804950 pos=(257.4,-57.4,69.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=2807950 pos=(262.4,-57.4,68.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - one reborn - temp" shape=Box entity_id=2804951 pos=(418.8,-129.7,-253.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - one reborn - hidden" shape=Box entity_id=2807951 pos=(423.8,-129.7,-253.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp3 - temp" shape=Box entity_id=2804952 pos=(207.9,-103.7,-78.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp3 - hidden" shape=Box entity_id=2807952 pos=(212.9,-103.7,-82.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - temp" shape=Box entity_id=2804953 pos=(267.8,-94.0,-55.6)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - hidden" shape=Box entity_id=2807953 pos=(263.3,-94.0,-49.4)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=2803930 pos=(257.4,-51.4,67.9)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=2803932 pos=(420.2,-123.7,-254.8)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=2803934 pos=(258.7,-88.1,-56.6)
+      + Region "【BBE】lamp4_music" shape=Point entity_id=2803936 pos=(217.9,-97.6,-79.9)
+      + Object "【BBE】token_0000" model=o009910 entity_id=2808500
+      + Object "【BBE】token_0001" model=o009910 entity_id=2808501
+      + Object "【BBE】token_0002" model=o009910 entity_id=2808502
+      + Object "【BBE】token_0003" model=o009910 entity_id=2808503
+      + Object "【BBE】token_0004" model=o009910 entity_id=2808504
+      + Object "【BBE】token_0005" model=o009910 entity_id=2808505
+      + Object "【BBE】token_0006" model=o009910 entity_id=2808506
+      + Object "【BBE】token_0007" model=o009910 entity_id=2808507
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=2808600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=2808601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=2808602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=2808603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=2808604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=2808605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=2808606
+      + Enemy "【BBE】ghost_0007" model=c0000 entity_id=2808607
+      + Enemy "【BBE】ghost_0008" model=c0000 entity_id=2808608
+    Auto Refill regions carried into the merge (12): "【BBE】spawn_checker - lamp1" (entity 2803950), "【BBE】spawn_checker - one reborn" (entity 2803951), "【BBE】spawn_checker - lamp3" (entity 2803952), "【BBE】spawn_checker - lamp2" (entity 2803953), "【BBE】item_dump - lamp1 - temp" (entity 2804950), "【BBE】item_dump - lamp1 - hidden" (entity 2807950), "【BBE】item_dump - one reborn - temp" (entity 2804951), "【BBE】item_dump - one reborn - hidden" (entity 2807951), "【BBE】item_dump - lamp3 - temp" (entity 2804952), "【BBE】item_dump - lamp3 - hidden" (entity 2807952), "【BBE】item_dump - lamp2 - temp" (entity 2804953), "【BBE】item_dump - lamp2 - hidden" (entity 2807953)
+      ~ Region "Event_復活ポイント00" shape=Box entity_id=2805950 pos=(257.4,-51.4,69.9)  [EntityID]
+      ~ Region "Event_復活ポイント01" shape=Box entity_id=2805951 pos=(418.8,-123.7,-253.4)  [EntityID]
+      ~ Region "Event_復活ポイント02" shape=Box entity_id=2805952 pos=(219.6,-97.7,-78.9)  [EntityID]
+      ~ Region "Event_復活ポイント03" shape=Box entity_id=2805953 pos=(260.4,-88.0,-55.6)  [EntityID]
+
+  REBORNE added 1, removed 0, modified 2965 entries vs vanilla
+      added:   1 Object; e.g. Object "o281510_0816" model=o281510 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            2953  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+              16  PARTS.pos_x
+              16  PARTS.pos_z
+              13  PARTS.rot_y
+              11  PARTS.gparam.LightSetID
+               1  PARTS.DrawGroups[1]
+               1  PARTS.DrawGroups[2]
+               1  PARTS.BackreadGroups[1]
+               1  PARTS.BackreadGroups[2]
+               1  PARTS.BackreadGroups[3]
+               1  PARTS.gparam.EnvMapID
+               1  PARTS.pos_y
+               1  PARTS.rot_z
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 1807768 raw bytes -> 139069 packed bytes
+
+------------------------------------------------------------------------------
+m32_00_00_01
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           320      320      320      320
+    EVENT_PARAM_ST           150      150      150      150
+    POINT_PARAM_ST           187      206      187      206
+    PARTS_PARAM_ST          2442     2457     2519     2534
+
+  ENHANCED added 34, removed 0, modified 3 entries vs vanilla
+      + Region "【BBE】spawn_checker - b-lamp1" shape=Box entity_id=3203950 pos=(-400.5,-181.8,414.6)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lh-lamp1" shape=Box entity_id=3203951 pos=(-472.4,-186.2,594.9)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - rom" shape=Box entity_id=3203952 pos=(-509.0,-272.2,371.0)   <== AUTO REFILL machinery
+      + Region "【BBE】boss_rematch" shape=Box entity_id=3206952 pos=(-509.0,-271.1,371.0)
+      + Region "【BBE】short_warp" shape=Box entity_id=3205953 pos=(-444.2,-177.2,514.2)
+      + Region "【BBE】spawn_checker - lh-lamp2" shape=Box entity_id=3203953 pos=(-444.2,-178.2,514.2)   <== AUTO REFILL machinery
+      + Region "【BBE】rom_return" shape=Point entity_id=3201899 pos=(-451.2,-175.4,393.3)
+      + Region "【BBE】item_dump - b-lamp1 - temp" shape=Box entity_id=3204950 pos=(-400.5,-186.8,414.6)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - b-lamp1 - hidden" shape=Box entity_id=3207950 pos=(-395.5,-186.8,414.6)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lh-lamp1 - temp" shape=Box entity_id=3204951 pos=(-472.4,-191.2,594.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lh-lamp1 - hidden" shape=Box entity_id=3207951 pos=(-467.4,-191.2,594.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - rom - temp" shape=Box entity_id=3204952 pos=(-509.0,-277.2,274.8)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - rom - hidden" shape=Box entity_id=3207952 pos=(-514.0,-277.2,274.8)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lh-lamp2 - temp" shape=Box entity_id=3204953 pos=(-472.4,-191.2,594.9)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lh-lamp2 - hidden" shape=Box entity_id=3207953 pos=(-467.4,-191.2,594.9)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=3203930 pos=(-402.4,-180.8,413.9)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=3203932 pos=(-473.1,-185.2,596.8)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=3203934 pos=(-510.9,-270.7,370.3)
+      + Region "【BBE】lamp4_music" shape=Point entity_id=3203936 pos=(-444.9,-177.2,515.9)
+      + Object "【BBE】token_0000" model=o009910 entity_id=3208500
+      + Object "【BBE】token_0001" model=o009910 entity_id=3208501
+      + Object "【BBE】token_0002" model=o009910 entity_id=3208502
+      + Object "【BBE】token_0003" model=o009910 entity_id=3208503
+      + Object "【BBE】token_0004" model=o009910 entity_id=3208504
+      + Object "【BBE】token_0005" model=o009910 entity_id=3208505
+      + Object "【BBE】token_0006" model=o009910 entity_id=3208506
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=3208600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=3208601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=3208602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=3208603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=3208604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=3208605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=3208606
+    Auto Refill regions carried into the merge (12): "【BBE】spawn_checker - b-lamp1" (entity 3203950), "【BBE】spawn_checker - lh-lamp1" (entity 3203951), "【BBE】spawn_checker - rom" (entity 3203952), "【BBE】spawn_checker - lh-lamp2" (entity 3203953), "【BBE】item_dump - b-lamp1 - temp" (entity 3204950), "【BBE】item_dump - b-lamp1 - hidden" (entity 3207950), "【BBE】item_dump - lh-lamp1 - temp" (entity 3204951), "【BBE】item_dump - lh-lamp1 - hidden" (entity 3207951), "【BBE】item_dump - rom - temp" (entity 3204952), "【BBE】item_dump - rom - hidden" (entity 3207952), "【BBE】item_dump - lh-lamp2 - temp" (entity 3204953), "【BBE】item_dump - lh-lamp2 - hidden" (entity 3207953)
+      ~ Region "Event_復活ポイント00_スタート" shape=Point entity_id=3205950 pos=(-400.5,-180.8,414.6)  [EntityID]
+      ~ Region "Event_復活ポイント01_悪夢校舎1F" shape=Point entity_id=3205951 pos=(-472.4,-185.2,594.9)  [EntityID]
+      ~ Region "Event_復活ポイント02_白痴の蜘蛛" shape=Box entity_id=3205952 pos=(-509.0,-271.2,371.0)  [EntityID]
+
+  REBORNE added 78, removed 1, modified 2205 entries vs vanilla
+      added:   58 MapPiece, 19 Object, 1 Collision; e.g. MapPiece "m000160_0001" model=m000160 entity_id=-1 | MapPiece "m000160_0002" model=m000160 entity_id=-1
+      removed: 1 MapPiece; e.g. MapPiece "m002531_0080" model=m002531 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            2197  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+             214  PARTS.gparam.LightSetID
+             213  PARTS.gparam.LightScatteringID
+             213  PARTS.gparam.EnvMapID
+             212  PARTS.gparam.FogParamID
+              54  PARTS.rot_y
+              38  PARTS.rot_z
+              35  PARTS.rot_x
+               7  PARTS.pos_x
+               7  PARTS.pos_y
+               7  PARTS.pos_z
+               7  PARTS.DrawGroups[3]
+               6  PARTS.DrawGroups[0]
+               4  PARTS.scale_x
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 1269888 raw bytes -> 95146 packed bytes
+
+------------------------------------------------------------------------------
+m33_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           498      499      498      499
+    EVENT_PARAM_ST           172      173      172      173
+    POINT_PARAM_ST           216      228      216      228
+    PARTS_PARAM_ST          1310     1324     1320     1334
+
+  ENHANCED added 28, removed 0, modified 2 entries vs vanilla
+      + Object "o009910"
+      + SFX "【BBE】henryk_summon_sfx" entity_id=3303910 region=【BBE】henryk_summon_region part=h000000
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=3303950 pos=(0.3,1499.0,0.0)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - amygdala" shape=Box entity_id=3303951 pos=(-104.7,1461.3,-42.7)   <== AUTO REFILL machinery
+      + Region "【BBE】amygdala_return" shape=Point entity_id=3301899 pos=(-45.5,1461.4,-69.7)
+      + Region "【BBE】amygdala_rematch" shape=Box entity_id=3306951 pos=(-68.5,1461.9,-60.4)
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=3304950 pos=(0.3,1489.0,-42.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=3307950 pos=(5.3,1489.0,-42.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - amygdala - temp" shape=Box entity_id=3304951 pos=(-104.7,1456.3,-42.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - amygdala - hidden" shape=Box entity_id=3307951 pos=(-99.7,1456.3,-42.7)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=3303930 pos=(1.8,1500.5,-3.5)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=3303932 pos=(-107.5,1462.2,-41.4)
+      + Region "【BBE】henryk_summon_region" shape=Box entity_id=3302910 pos=(-7.3,1500.2,-18.3)
+      + Region "【BBE】npc_boss_entry" shape=Box entity_id=3302911 pos=(-47.3,1461.4,-69.2)
+      + Object "【BBE】token_0000" model=o009910 entity_id=3308500
+      + Object "【BBE】token_0001" model=o009910 entity_id=3308501
+      + Object "【BBE】token_0002" model=o009910 entity_id=3308502
+      + Object "【BBE】token_0003" model=o009910 entity_id=3308503
+      + Object "【BBE】token_0004" model=o009910 entity_id=3308504
+      + Object "【BBE】token_0005" model=o009910 entity_id=3308505
+      + Object "【BBE】token_0006" model=o009910 entity_id=3308506
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=3308600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=3308601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=3308602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=3308603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=3308604
+      + Enemy "c0000_0003" model=c0000 entity_id=3300910
+    Auto Refill regions carried into the merge (6): "【BBE】spawn_checker - lamp1" (entity 3303950), "【BBE】spawn_checker - amygdala" (entity 3303951), "【BBE】item_dump - lamp1 - temp" (entity 3304950), "【BBE】item_dump - lamp1 - hidden" (entity 3307950), "【BBE】item_dump - amygdala - temp" (entity 3304951), "【BBE】item_dump - amygdala - hidden" (entity 3307951)
+      ~ Region "Event_復帰ポイント00_スタート地点" shape=Point entity_id=3305950 pos=(0.3,1500.0,0.0)  [EntityID]
+      ~ Region "Event_復帰ポイント01_ボス部屋" shape=Point entity_id=3305951 pos=(-104.7,1462.3,-42.7)  [EntityID]
+
+  REBORNE added 10, removed 0, modified 886 entries vs vanilla
+      added:   10 MapPiece; e.g. MapPiece "m000123_3008" model=m000123 entity_id=-1 | MapPiece "m000123_3009" model=m000123 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+             882  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               4  PARTS.gparam.LightSetID
+               1  PARTS.pos_x
+               1  PARTS.pos_y
+               1  PARTS.pos_z
+               1  PARTS.rot_x
+               1  PARTS.rot_y
+               1  PARTS.rot_z
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 692696 raw bytes -> 62565 packed bytes
+
+------------------------------------------------------------------------------
+m34_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           641      641      641      641
+    EVENT_PARAM_ST           237      237      237      237
+    POINT_PARAM_ST           335      355      335      355
+    PARTS_PARAM_ST          3447     3466     3459     3478
+
+  ENHANCED added 39, removed 0, modified 11 entries vs vanilla
+      + Region "【BBE】lawrence_rematch" shape=Box entity_id=3406953 pos=(-449.6,1535.9,-290.4)
+      + Region "【BBE】ludwig_return" shape=Point entity_id=3401899 pos=(-407.9,1503.9,-714.5)
+      + Region "【BBE】ludwig_rematch" shape=Box entity_id=3406952 pos=(-407.9,1503.8,-721.3)
+      + Region "【BBE】laurence_return" shape=Point entity_id=3401859 pos=(-452.1,1535.9,-294.7)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=3403950 pos=(-481.7,1489.5,-497.7)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp2" shape=Box entity_id=3403951 pos=(-434.1,1502.2,-594.5)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - ludwig" shape=Box entity_id=3403952 pos=(-406.8,1502.8,-743.0)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lawrence" shape=Box entity_id=3403953 pos=(-433.1,1534.7,-261.6)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=3404950 pos=(-481.7,1484.5,-497.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=3407950 pos=(-486.7,1484.5,-497.7)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - temp" shape=Box entity_id=3404951 pos=(-434.1,1497.2,-594.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - hidden" shape=Box entity_id=3407951 pos=(-439.1,1497.2,-594.5)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - ludwig - temp" shape=Box entity_id=3404952 pos=(-406.8,1497.8,-743.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - ludwig - hidden" shape=Box entity_id=3407952 pos=(-411.8,1497.8,-743.0)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lawrence - temp" shape=Box entity_id=3404953 pos=(-433.1,1529.7,-261.6)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lawrence - hidden" shape=Box entity_id=3407953 pos=(-438.1,1529.7,-261.6)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=3403930 pos=(-483.7,1490.5,-496.4)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=3403932 pos=(-434.5,1503.1,-597.3)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=3403934 pos=(-407.9,1503.8,-744.6)
+      + Region "【BBE】lamp4_music" shape=Point entity_id=3403936 pos=(-431.2,1535.9,-258.5)
+      + Object "【BBE】token_0000" model=o009910 entity_id=3408500
+      + Object "【BBE】token_0001" model=o009910 entity_id=3408501
+      + Object "【BBE】token_0002" model=o009910 entity_id=3408502
+      + Object "【BBE】token_0003" model=o009910 entity_id=3408503
+      + Object "【BBE】token_0004" model=o009910 entity_id=3408504
+      + Object "【BBE】token_0005" model=o009910 entity_id=3408505
+      + Object "【BBE】token_0006" model=o009910 entity_id=3408506
+      + Object "【BBE】token_0007" model=o009910 entity_id=3408507
+      + Object "【BBE】token_0008" model=o009910 entity_id=3408508
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=3408600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=3408601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=3408602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=3408603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=3408604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=3408605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=3408606
+      + Enemy "【BBE】ghost_0007" model=c0000 entity_id=3408607
+      + Enemy "【BBE】ghost_0008" model=c0000 entity_id=3408608
+    Auto Refill regions carried into the merge (12): "【BBE】spawn_checker - lamp1" (entity 3403950), "【BBE】spawn_checker - lamp2" (entity 3403951), "【BBE】spawn_checker - ludwig" (entity 3403952), "【BBE】spawn_checker - lawrence" (entity 3403953), "【BBE】item_dump - lamp1 - temp" (entity 3404950), "【BBE】item_dump - lamp1 - hidden" (entity 3407950), "【BBE】item_dump - lamp2 - temp" (entity 3404951), "【BBE】item_dump - lamp2 - hidden" (entity 3407951), "【BBE】item_dump - ludwig - temp" (entity 3404952), "【BBE】item_dump - ludwig - hidden" (entity 3407952), "【BBE】item_dump - lawrence - temp" (entity 3404953), "【BBE】item_dump - lawrence - hidden" (entity 3407953)
+      ~ Region "Event_新召喚NPC_ルドウイーク_ボス部屋領域" shape=Box entity_id=3402940 pos=(-407.9,1495.4,-744.1)  [pos_y]
+      ~ Region "Event_新召喚NPC_連長ありvsルド_出現領域" shape=Box entity_id=3402922 pos=(-415.6,1498.8,-656.9)  [pos_x, pos_y, pos_z, rot_y]
+      ~ Region "Event_新召喚NPC_連長ありｖｓΩ_出現領域" shape=Box entity_id=3402925 pos=(-469.1,1525.8,-327.8)  [pos_x, pos_z, rot_y]
+      ~ Region "Event_新召喚NPC_連長なしvsΩ_出現領域" shape=Box entity_id=3402926 pos=(-471.8,1525.8,-326.2)  [pos_x, pos_z, rot_y]
+      ~ Region "復活ポイント00スタート地点" shape=Box entity_id=3405950 pos=(-481.7,1490.5,-497.7)  [EntityID]
+      ~ Region "復活ポイント01中間地点" shape=Box entity_id=3405951 pos=(-434.1,1503.2,-594.5)  [EntityID]
+      ~ Region "復活ポイント02ボス部屋(ルドウイーク)" shape=Box entity_id=3405952 pos=(-406.8,1503.8,-743.0)  [EntityID]
+      ~ Region "復活ポイント03ボス部屋(教区長Ω)" shape=Box entity_id=3405953 pos=(-433.1,1535.7,-261.6)  [EntityID]
+      ~ Enemy "c0000_0010" model=c0000 entity_id=3400922  [pos_x, pos_y, pos_z, rot_y]
+      ~ Enemy "c0000_0013" model=c0000 entity_id=3400925  [pos_x, pos_z, rot_y]
+      ~ Enemy "c0000_0014" model=c0000 entity_id=3400926  [pos_x, pos_z, rot_y]
+
+  REBORNE added 12, removed 0, modified 2726 entries vs vanilla
+      added:   12 MapPiece; e.g. MapPiece "m007050_0018" model=m007050 entity_id=-1 | MapPiece "m007050_0019" model=m007050 entity_id=-1
+      fields Reborne rewrote (entry count per field):
+            2725  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               4  PARTS.gparam.LightSetID
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 1653584 raw bytes -> 142362 packed bytes
+
+------------------------------------------------------------------------------
+m35_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           454      453      453      453
+    EVENT_PARAM_ST           201      201      201      201
+    POINT_PARAM_ST           464      483      464      483
+    PARTS_PARAM_ST          4936     4951     4936     4951
+
+  ENHANCED added 34, removed 0, modified 1 entries vs vanilla
+      + Region "maria_npc_entry_check" shape=Box entity_id=3502814 pos=(-454.3,1595.3,-824.4)
+      + Region "maria_npc_trigger" shape=Box entity_id=3502931 pos=(-452.2,1595.5,-824.4)
+      + Region "【BBE】maria_rematch" shape=Point entity_id=3502997 pos=(-492.1,1595.3,-824.6)
+      + Region "【BBE】failures_return" shape=Point entity_id=3501859 pos=(-376.2,1593.0,-824.5)
+      + Region "【BBE】boss_rematch" shape=Box entity_id=3506951 pos=(-381.6,1592.9,-824.5)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=3503950 pos=(-318.7,1552.0,-824.2)   <== AUTO REFILL machinery
+      + Region "【BBE】short_warp - failues" shape=Point entity_id=3505951 pos=(-432.2,1593.0,-824.4)
+      + Region "【BBE】spawn_checker - failures" shape=Box entity_id=3503951 pos=(-432.2,1591.9,-824.4)   <== AUTO REFILL machinery
+      + Region "【BBE】short_warp - maria" shape=Box entity_id=3505952 pos=(-454.9,1595.6,-824.4)
+      + Region "【BBE】spawn_checker - maria" shape=Box entity_id=3503952 pos=(-454.9,1594.6,-824.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=3504950 pos=(-318.7,1547.0,-824.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=3507950 pos=(-323.7,1547.0,-824.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - failures - temp" shape=Box entity_id=3504951 pos=(-432.1,1586.9,-824.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - failures - hidden" shape=Box entity_id=3507951 pos=(-427.1,1586.9,-824.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - maria - temp" shape=Box entity_id=3504952 pos=(-454.9,1589.6,-824.4)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - maria - hidden" shape=Box entity_id=3507952 pos=(-449.9,1589.6,-824.4)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Point entity_id=3503930 pos=(-320.9,1553.0,-825.9)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=3503932 pos=(-434.2,1593.0,-826.4)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=3503934 pos=(-456.9,1595.4,-822.4)
+      + Object "【BBE】token_0000" model=o009910 entity_id=3508500
+      + Object "【BBE】token_0001" model=o009910 entity_id=3508501
+      + Object "【BBE】token_0002" model=o009910 entity_id=3508502
+      + Object "【BBE】token_0003" model=o009910 entity_id=3508503
+      + Object "【BBE】token_0004" model=o009910 entity_id=3508504
+      + Object "【BBE】token_0005" model=o009910 entity_id=3508505
+      + Object "【BBE】token_0006" model=o009910 entity_id=3508506
+      + Object "【BBE】token_0007" model=o009910 entity_id=3508507
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990001
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=3508600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=3508601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=3508602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=3508603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=3508604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=3508605
+    Auto Refill regions carried into the merge (9): "【BBE】spawn_checker - lamp1" (entity 3503950), "【BBE】spawn_checker - failures" (entity 3503951), "【BBE】spawn_checker - maria" (entity 3503952), "【BBE】item_dump - lamp1 - temp" (entity 3504950), "【BBE】item_dump - lamp1 - hidden" (entity 3507950), "【BBE】item_dump - failures - temp" (entity 3504951), "【BBE】item_dump - failures - hidden" (entity 3507951), "【BBE】item_dump - maria - temp" (entity 3504952), "【BBE】item_dump - maria - hidden" (entity 3507952)
+      ~ Region "復活ポイント00スタート地点" shape=Point entity_id=3505950 pos=(-318.7,1553.0,-824.2)  [EntityID]
+
+  REBORNE added 0, removed 1, modified 4215 entries vs vanilla
+      removed: 1 Other; e.g. Other "l005510"
+      fields Reborne rewrote (entry count per field):
+            4210  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+               9  PARTS.gparam.LightSetID
+               5  PARTS.gparam.EnvMapID
+               1  PARTS.pos_x
+               1  PARTS.pos_z
+               1  PARTS.rot_y
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 2263680 raw bytes -> 164174 packed bytes
+
+------------------------------------------------------------------------------
+m36_00_00_00
+------------------------------------------------------------------------------
+    supertype            vanilla enhanced  reborne   merged
+    MODEL_PARAM_ST           413      413      413      413
+    EVENT_PARAM_ST           152      152      152      152
+    POINT_PARAM_ST           308      323      308      323
+    PARTS_PARAM_ST          2129     2147     2129     2147
+
+  ENHANCED added 33, removed 0, modified 3 entries vs vanilla
+      + Region "【BBE】orphan_rematch" shape=Box entity_id=3606952 pos=(-703.7,1578.2,-934.8)
+      + Region "【BBE】orphan_return" shape=Point entity_id=3601899 pos=(-700.2,1580.6,-904.8)
+      + Region "【BBE】spawn_checker - lamp1" shape=Box entity_id=3603950 pos=(-619.2,1593.7,-817.2)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - lamp2" shape=Box entity_id=3603951 pos=(-645.2,1613.6,-867.2)   <== AUTO REFILL machinery
+      + Region "【BBE】spawn_checker - orphan" shape=Box entity_id=3603952 pos=(-695.2,1576.3,-943.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - temp" shape=Box entity_id=3604950 pos=(-619.2,1588.7,-817.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp1 - hidden" shape=Box entity_id=3607950 pos=(-614.2,1588.7,-817.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - temp" shape=Box entity_id=3604951 pos=(-645.2,1608.6,-867.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - lamp2 - hidden" shape=Box entity_id=3607951 pos=(-640.2,1608.6,-867.2)   <== AUTO REFILL machinery
+      + Region "【BBE】item_dump - orphan - temp" shape=Box entity_id=3604952 pos=(-695.2,1571.3,-943.2)   <== AUTO REFILL machinery
+      + Region "【BBE】orphan_dead_warp" shape=Box entity_id=3604965 pos=(-670.5,1575.7,-943.2)
+      + Region "【BBE】item_dump - orphan - hidden" shape=Box entity_id=3607952 pos=(-690.2,1571.3,-943.2)   <== AUTO REFILL machinery
+      + Region "【BBE】lamp1_music" shape=Box entity_id=3603930 pos=(-623.2,1594.7,-817.2)
+      + Region "【BBE】lamp2_music" shape=Point entity_id=3603932 pos=(-647.2,1614.8,-869.3)
+      + Region "【BBE】lamp3_music" shape=Point entity_id=3603934 pos=(-695.2,1577.2,-945.2)
+      + Object "【BBE】token_0000" model=o009910 entity_id=3608500
+      + Object "【BBE】token_0001" model=o009910 entity_id=3608501
+      + Object "【BBE】token_0002" model=o009910 entity_id=3608502
+      + Object "【BBE】token_0003" model=o009910 entity_id=3608503
+      + Object "【BBE】token_0004" model=o009910 entity_id=3608504
+      + Object "【BBE】token_0005" model=o009910 entity_id=3608505
+      + Object "【BBE】token_0006" model=o009910 entity_id=3608506
+      + Object "【BBE】token_0007" model=o009910 entity_id=3608507
+      + Enemy "【BBE】c9010_0077" model=c9010 entity_id=2990000
+      + Enemy "【BBE】ghost_0000" model=c0000 entity_id=3608600
+      + Enemy "【BBE】ghost_0001" model=c0000 entity_id=3608601
+      + Enemy "【BBE】ghost_0002" model=c0000 entity_id=3608602
+      + Enemy "【BBE】ghost_0003" model=c0000 entity_id=3608603
+      + Enemy "【BBE】ghost_0004" model=c0000 entity_id=3608604
+      + Enemy "【BBE】ghost_0005" model=c0000 entity_id=3608605
+      + Enemy "【BBE】ghost_0006" model=c0000 entity_id=3608606
+      + Enemy "【BBE】ghost_0007" model=c0000 entity_id=3608607
+      + Enemy "【BBE】ghost_0008" model=c0000 entity_id=3608608
+    Auto Refill regions carried into the merge (9): "【BBE】spawn_checker - lamp1" (entity 3603950), "【BBE】spawn_checker - lamp2" (entity 3603951), "【BBE】spawn_checker - orphan" (entity 3603952), "【BBE】item_dump - lamp1 - temp" (entity 3604950), "【BBE】item_dump - lamp1 - hidden" (entity 3607950), "【BBE】item_dump - lamp2 - temp" (entity 3604951), "【BBE】item_dump - lamp2 - hidden" (entity 3607951), "【BBE】item_dump - orphan - temp" (entity 3604952), "【BBE】item_dump - orphan - hidden" (entity 3607952)
+      ~ Region "復活ポイント00スタート地点" shape=Point entity_id=3605950 pos=(-619.2,1594.7,-817.2)  [EntityID]
+      ~ Region "復活ポイント01中間地点" shape=Point entity_id=3605951 pos=(-645.2,1614.6,-867.2)  [EntityID]
+      ~ Region "復活ポイント02ボス部屋" shape=Point entity_id=3605952 pos=(-695.2,1577.3,-943.2)  [EntityID]
+
+  REBORNE added 0, removed 0, modified 1660 entries vs vanilla
+      fields Reborne rewrote (entry count per field):
+            1660  PARTS.LanternID/LodParamID/UnkE0E/UnkE0F
+              98  PARTS.gparam.LightSetID
+               3  PARTS.DrawGroups[1]
+               2  PARTS.BackreadGroups[0]
+               2  PARTS.BackreadGroups[1]
+               2  PARTS.gparam.EnvMapID
+               1  PARTS.DrawGroups[0]
+
+  CONFLICTS: none
+
+  round trip: merged MSB re-read and re-serialised identically = True; DCX type 6 (DCX_DFLT_10000_44_9) decompresses back to the merged bytes = True; 1002800 raw bytes -> 81383 packed bytes
+
+==============================================================================
+INDEPENDENT VERIFICATION OF THE WRITTEN FILES
+==============================================================================
+
+  Each written file was decompressed, re-parsed and checked against all three
+  inputs again, without reusing anything from the merge pass:
+
+       495  entries Enhanced added, present in merged and field-identical
+         0  entries Enhanced deleted, confirmed absent from merged
+        55  entries Enhanced modified, carrying Enhanced's values
+     64247  Reborne entries carrying Reborne's values untouched
+      6855  distinct entity IDs across both mods, all still resolvable
+             (this is the check that matters for the EMEVD scripts: every
+              region, part and event ID either mod's scripts address by
+              number still exists, and merged adds no ID from neither input)
+    every merged file re-serialises identically, has canonical subtype
+    ordering, no dangling index, and no part pointing at an absent model
+
+  PROBLEMS FOUND: 0
+
+==============================================================================
+WHAT COULD NOT BE DONE
+==============================================================================
+
+  1. Nothing was installed and nothing was run in the game.  These files were
+     written to the scratchpad only.  The merge is proven structurally and by
+     identity, not by playing Bloodborne.
+
+  2. soulstruct's Bloodborne MSB support was not repaired.  It is used only for
+     DCX compress/decompress.  See HOW THIS WAS BUILT above for why.
+
+  3. The output DCX is not byte-identical to From's, only equivalent.  From's
+     deflate stream does not match python zlib at any level, so the compressed
+     payload differs.  The 0x4C DCX header our writer emits is byte-identical
+     to the original apart from the compressed-size field, the type is the same
+     DCX_DFLT_10000_44_9, and each output was decompressed again and re-read to
+     confirm it yields exactly the merged bytes.
+
+  4. Field granularity is 4 bytes, not the true field width.  Fields narrower
+     than a word that share a word (for example Collision's HitFilterID,
+     SoundSpaceType and EnvLightMapSpotIndex, or a part's LanternID,
+     LodParamID, UnkE0E and UnkE0F) merge as a group.  If the two mods had ever
+     touched different sub-fields of the same word this would have been
+     reported as a conflict rather than silently split.  They never did: zero
+     entries in the whole 16-map set were modified by both mods.
+
+  5. Only the MSB layout files were merged.  Neither mod's other assets were
+     touched: no EMEVD, no params, no gparam, no textures, no ESD.  A working
+     install still needs each mod's own non-MSB files, and Bloodborne
+     Enhanced's map scripts (event/mXX_XX_XX_XX.emevd.dcx) are what actually
+     drive the regions carried over here.
+
+  6. The Bloodborne 1.09 patch-folder shadowing trap is out of scope and still
+     applies at install time: CUSA00900-patch contains twins of several mod
+     files, and a twin there wins over dvdroot_ps4.  Check for a patch-folder
+     copy of map/mapstudio before concluding these merged files are live.
+

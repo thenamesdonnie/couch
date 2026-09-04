@@ -42,7 +42,7 @@ before answering any game question. Update this file at every milestone.
   beast-warding incense object); circumstances they're found in.
   Plus: the send system announces itself - no offer, no stakes.
 
-## Progress (updated 31 Aug 2026)
+## Progress (updated 3 Sep 2026: Logarius dead, Vileblood joined, Summons given to Alfred - see the 3 Sep entries at the bottom)
 - 31 Aug: **HE IS IN CAINHURST, AT THE ROOFTOP BOSS** (asked for tips, then
   "what resistance do i need, his spells do so much damage"). So the summons
   chain is running and the lake is still untouched. Given, combat only:
@@ -321,3 +321,35 @@ Items, Infinite BloodEcho, Infinite Lucidity.
     either the patched or the original set before writing, and reads back after.
   * **Needs `sudo sysctl kernel.yama.ptrace_scope=0`** (scope is 1 by default,
     which forbids cross-process memory writes). Handed to Donnie to paste.
+
+## 3 Sep 2026: Logarius down
+
+Beaten. Companion notes: keep to mechanics-only until he asks for more; no
+spoilers about what follows.
+
+## 3 Sep 2026 (later): Logarius, Alfred, Vilebloods
+
+Confirmed: gave the Unopened Summons to Alfred, joined the Vileblood
+covenant. Beat Logarius at character level 52 (community-recommended ~75).
+Order was the safe one (queen first, then Alfred), so both chains stay open;
+told him nothing was lost. Given, directions only: Alfred's chain has TWO more
+beats, the throne room in Cainhurst first, then the spot where he first met
+Alfred in Cathedral Ward (left-side door by the Old Yharnam lever), pick up
+anything left lying in either place, and do both before the lake (the
+anecdotal Blood Moon vanish). NOT told what he will find (Annalise pulped,
+Roar gesture, Alfred's corpse + Radiance rune, Queenly Flesh / Altar of
+Despair revival - all withheld; the Queenly Flesh payoff is post-Rom and on me
+to raise when live). Told the Wheel Hunter Badge he now holds puts a STRENGTH
+weapon in the Dream shop (his mainstay ask). Vileblood side: no deadline, no
+outcome given. Rom is still the next line; pre-lake list unchanged (Alfred
+beats, Gaol return lap in the Black Church Set, Gilbert, Tonsil Stone optional).
+Eileen's post-Rom beat still on me.
+- 3 Sep: **GILBERT VISITED** ("why did the gods do this to me", he has gotten
+  a lot worse). The pre-lake visit is done; Flamesprayer was already his.
+  Nothing flagged, no trajectory given (his transformation and what it drops
+  are withheld). Pre-lake list: Alfred's two beats, Gaol lap, Tonsil Stone opt.
+- 3 Sep: the crash at the Crown cutscene was read from the core dump: a
+  stock-engine HUD race at the scene transition (equip + cutscene in the same
+  second), nothing to do with the sprint or FOV patches. Both re-enabled.
+- 3 Sep: Jump on L3 (Modern: jumps standing still) installed, merged with the
+  lock-on sprint; not yet play-tested. Ask him to check a lamp on first load.

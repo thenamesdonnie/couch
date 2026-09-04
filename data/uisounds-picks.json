@@ -1,0 +1,7 @@
+{
+  "cursor": "mat-hover-tap",
+  "select": "mat-forward-min",
+  "back": "mat-back-min",
+  "error": "mat-unavailable",
+  "launch": "mat-complete"
+}
