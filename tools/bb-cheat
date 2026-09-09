@@ -50,6 +50,9 @@ Usage:
   bb-cheat live on "Infinite Health"    toggle in the running game, now
   bb-cheat live off "Infinite Health"
   bb-cheat live status                  what is actually live in memory
+  bb-cheat upstream [on|off <name>]     list, enable or disable the OFFICIAL
+                                        patch-file blocks (camera distance,
+                                        auto-rotation, region unlock...)
   bb-cheat add <mod.json>               install our own mod definition (a
                                         {"name","memory":[{offset,on,off}]}
                                         object, "standalone": true for plain
@@ -245,8 +248,17 @@ def cmd_off(tree: ET.ElementTree, root: ET.Element, names: list[str]) -> None:
         root.remove(md)
         if short != "master":
             removed.append(short)
-    # No cheats left means the master hook is dead weight; take it out too.
-    if not [m for m in ours(root) if m.get("Name") != MASTER_NAME]:
+    # The master hook is dead weight unless a remaining cheat actually jumps
+    # through it. Standalone byte patches (our own caves) never do, and the
+    # hook on its own CRASHES the game at world load (it writes to guest
+    # address 0x4000, unmapped on shadPS4) - 5 Sep 2026: turning Infinite
+    # Health on and back off left the master behind next to two standalone
+    # cheats and every launch died at "loading the world".
+    by_name = {m["name"]: m for m in load_cheats()["mods"]}
+    still_hooked = [m for m in ours(root)
+                    if m.get("Name") != MASTER_NAME
+                    and not by_name.get(m.get("Name")[len(TAG):], {}).get("standalone")]
+    if not still_hooked:
         for md in ours(root):
             if md.get("Name") == MASTER_NAME:
                 root.remove(md)
@@ -384,6 +396,31 @@ def cmd_live(cheats: dict, args: list[str]) -> None:
     print(f"live {action}: {', '.join(wanted)} - takes effect immediately")
 
 
+def cmd_upstream(tree: ET.ElementTree, root: ET.Element, state: str, names: list[str]) -> None:
+    """Enable or disable one of the UPSTREAM patch blocks (the 59 shipped in
+    the official Bloodborne.xml, e.g. "Increased camera distance"). Those are
+    plain byte patches applied at load like ours; only the isEnabled attribute
+    changes, and the XML is backed up first. Never touches our own blocks."""
+    ups = [m for m in root.findall("Metadata") if not m.get("Name", "").startswith(TAG)]
+    if not names:
+        for m in ups:
+            print(f"  [{'ON ' if m.get('isEnabled') == 'true' else '   '}] {m.get('Name')}")
+        return
+    picked = []
+    for n in names:
+        match = [m for m in ups if m.get("Name", "").lower() == n.lower()]
+        if not match:
+            die(f"no upstream patch called {n!r}. Run 'bb-cheat upstream' to list them.")
+        picked.append(match[0])
+    bak = backup()
+    for m in picked:
+        m.set("isEnabled", "true" if state == "on" else "false")
+    write(tree, root)
+    print(f"upstream {state}: {', '.join(m.get('Name') for m in picked)}")
+    print(f"backup:  {bak.name}")
+    print("Applies on the NEXT game launch.")
+
+
 def cmd_add(cheats: dict, path: str) -> None:
     """Merge one of OUR mod definitions into the official cheat JSON.
 
@@ -462,6 +499,11 @@ def main() -> None:
 
     if cmd == "json":
         cmd_json(cheats, root)
+    elif cmd == "upstream":
+        if args and args[0] in ("on", "off"):
+            cmd_upstream(tree, root, args[0], args[1:])
+        else:
+            cmd_upstream(tree, root, "list", [])
     elif cmd == "add":
         if len(args) != 1:
             die("add needs exactly one mod JSON file")

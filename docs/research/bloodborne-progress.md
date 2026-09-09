@@ -353,3 +353,80 @@ Eileen's post-Rom beat still on me.
   second), nothing to do with the sprint or FOV patches. Both re-enabled.
 - 3 Sep: Jump on L3 (Modern: jumps standing still) installed, merged with the
   lock-on sprint; not yet play-tested. Ask him to check a lamp on first load.
+- 5 Sep: **HE FOUND WILLEM ("the man in the rocking chair") on the Byrgenwerth
+  balcony**, so the Lunarium Key + ladder are done and he is standing on the
+  line. Restated: the drop/pier off that balcony is the watershed, do NOT
+  follow the gesture yet. Pre-lake list repeated: Alfred's two beats
+  (Cainhurst throne room, then Alfred's first spot by the Old Yharnam lever),
+  Gaol lap in the Black Church chest, chapel tenants one last time, Tonsil
+  Stone optional. Willem's identity/lore withheld; told only to exhaust him
+  and watch what he does.
+- 5 Sep: **HE FOUND ANNALISE PULPED** ("pop queen vile blood is dead"). Alfred
+  beat 1 reached. Told: nothing he held is lost, take what is left in that
+  room and KEEP it (never sell/drop), I raise its use when it is live
+  (post-Rom, Altar of Despair, still withheld), exhaust whoever is in the
+  room, then beat 2 (Alfred's first spot). Who did it and why: withheld, he
+  works it out.
+- 5 Sep: Lonely Old Dame gave him a Sedative and laughs oddly (post-Amelia
+  chapel lines). Nothing flagged; told to keep the Sedative for Frenzy.
+- 5 Sep: Gaol lap clarified: the church chest was only for Adella (done);
+  only a loot check of the cells remains (Tonitrus, tier 1 as "one weapon in
+  a cell"). Willem: told plainly he never speaks, the arm is the whole thing.
+- 5 Sep: Pre-lake double-check run against the crib's Blood Moon table: every
+  item ticked (sends, Adella, beggar, Eileen/Henryk, Gilbert, brooch, Tonsil
+  Stone held, Alfred done, Cainhurst joined + Queenly Flesh held, cord A,
+  Gaol looted incl. Tonitrus). Cleared him for the drop. Rom identified as
+  "the spider from the notes"; combat tips only (children first, flank, bolt).
+- 5 Sep: **ROM DEAD, BLOOD MOON UP** ("ritual secret broken"). He asked if the
+  woman in white was "the moon presence" (he knows the name from somewhere,
+  probably the trophy list): told NO, she has a name the game gives later,
+  nothing more. Also spelled out (his ask) the Logarius/Annalise/Alfred
+  reading from lines he already held: Logarius = jailer not prisoner, the
+  mask, the crown, Alfred's "freed" master. Read Alfred's and Annalise's
+  dialogue back to him verbatim (wikidot), pre-throne-room only.
+  **POST-ROM LIVE LIST GIVEN:** (1) Eileen at the Grand Cathedral steps, do
+  NOT attack her, talk, the hunter inside is solo + very hard, kill him FIRST
+  then talk to her again; (2) clinic rule LIFTED: back door, the woman is on
+  the table, what she leaves is another cord (ending-relevant, no deadline);
+  (3) the clinic's blue creatures drop their things, the beggar's is worth
+  having; (4) check the Insight messenger's stock (chunks expected); (5)
+  someone new may be at the brooch girl's window, nothing hinges (no ribbon
+  exists); (6) Gaol lamp gone, snatchers gone, new area open.
+  STILL ON ME: Queenly Flesh payoff when he reaches Upper Cathedral Ward
+  (key in Yahar'gul chapel side room, altar beneath Ebrietas); Micolash ->
+  Arianna's baby (cord C) when Mensis is live; Patches forgive at Lecture 2F;
+  cords-consumed nudge before the tree.
+- 5 Sep: Gilbert killed (Blood Moon beast); told him there was no saving him.
+  Adella "heh heh" = Blood Moon line; asked him to report if she ever says
+  "tainted" (jealousy armed). Arianna "not feeling well" = Blood Moon, nothing
+  said. He quit; **Reborne LIGHTING modules reverted for an A/B** (see memory
+  homelab-bloodborne-mods, lever tools/bb-reborne-lighting).
+- 5 Sep (evening): **THE ONE REBORN DEAD** (combat tips only: chanters first,
+  fire, back legs). Told: the village holds a key (not named, no deadline),
+  ping me when he finds what it opens (= Upper Cathedral Ward -> Altar of
+  Despair / Queenly Flesh, still withheld). Standing rule given: "if anyone
+  ever asks your forgiveness, give it" (Patches, Lecture 2F, rune) with the
+  Frontier detour framed as worth doing before the next big boss run.
+  STILL ON ME: Micolash -> chapel -> below the chapel (cord C); cords-consumed
+  nudge before the tree; Eileen finale still parked (he bounced off the Crow).
+  Tech: crash 19:22 = VRAM OOM on a Yahar'gul->Central Yharnam warp with the
+  2x textures (buffer.cpp:89 ErrorOutOfDeviceMemory, 9.3->14.2 GB in 10 s);
+  Reborne Textures 0-3 reverted; 90 fps armed on 2560x1440@120 + VRR (TV
+  FreeSync ON); he reports "pretty stable 90" and PREFERS THE LOOK WITHOUT
+  THE MODS. Reborne Flver/Obj still in, offered to pull them next quit.
+- 5 Sep: **CORD B CONFIRMED** (clinic table done). Cords: A + B held, C rides on
+  Arianna (post-Micolash), D unmissable. Told to hold them until "the tree"
+  talk. He is in the Lecture Building ("nightmare library"); told both floors,
+  the optional side door (Frontier) before the next boss run, forgiveness rule.
+- 5 Sep (late): **EBRIETAS DEAD, QUEENLY FLESH PLACED at the Altar of Despair**
+  ("time flows in reverse for this scrap of flesh"). Told him: go back to the
+  Cainhurst throne room. Upper Cathedral Ward done (Emissary + Ebrietas).
+  Damian summoned once; particle bug on that boss handed to a subagent.
+- 6 Sep 00:15: Donnie: "with BB Enhanced the NG+ does not happen
+  automatically". CHECKED: Enhanced setting "Prevent Auto NG+" flag 12100873
+  (Enabled) = True in the live save, 12100973 = False, and all 18 Enhanced
+  event scripts (incl. common.emevd) are byte-identical to the effective
+  loaded copies (no patch-dir twins except m29, already handled). Delivery
+  never tested; cheap proof = the Doll shows the mod's extra menu (talk layer
+  live since 3 Sep). Told him: he is probably right, DLC order is his choice,
+  still ping before the tree.

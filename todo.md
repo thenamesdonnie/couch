@@ -1,6 +1,104 @@
 # Couch — todo / resume
 
-## ▶ RESUME HERE (4 Sep 2026 — big Bloodborne session)
+## ▶ RESUME HERE (9 Sep 2026 — Bloodborne companion past the Blood Moon, 3 crashes read, Steam library moved to disk1)
+
+**Bloodborne companion (blind run) — state:** Rom dead, Blood Moon up, The One
+Reborn dead, Frontier + Amygdala done, Upper Cathedral Ward done (Emissary +
+Ebrietas), Queenly Flesh placed (Annalise revived), Patches forgiven-ish (rune
+check pending), cords A + B held. Gilbert killed at the moon. Level ~65-70.
+**NEXT for him: Nightmare of Mensis.** ON ME when live: after the named Mensis
+boss -> "go to the chapel, then below it" (cord C); Make Contact at the dropped
+brain (Moon rune); Eileen's Crow (parked, he bounced off it); the DLC eye;
+cords-consumed talk BEFORE the tree (Prevent Auto NG+ flag is ON and its
+scripts are the loaded ones, delivery untested). Ledger:
+`docs/research/bloodborne-progress.md` (5-6 Sep entries at the bottom).
+
+**Tech, all 5-6 Sep, all in auto-memory `homelab-bloodborne-mods.md`:**
+- Reborne LIGHTING reverted (lever `tools/bb-reborne-lighting on|off|status`,
+  patch-dir m29 twin handled) and Reborne TEXTURES 0-3 reverted after a VRAM
+  OOM crash on a big warp. **Donnie: "the game looks so much better without all
+  the mods."** Still in: Reborne Flver + Obj (offered to pull them, not asked).
+- 3 crashes read from cores: (1) VRAM OOM `buffer.cpp:89` on Yahar'gul->Central
+  warp with 2x textures; (2) SRT walker null read at Ebrietas -> FIXED in
+  shadps4-dbg `fabc12a` (handler now covers cache-restored walkers; upstream
+  main has the same bug, PR-worthy); (3) `bb-cheat off` left the official
+  `master` hook behind -> crash at world load -> bb-cheat FIXED.
+- Ebrietas infinite "pebbles" = the 60fps eboot, not the emulator (subagent,
+  `data/shadps4-particles/REPORT.md`). One-file fix STAGED at
+  `data/shadps4-particles/staging/fix/` — **install when the game is closed**
+  (back up `sfx/frpg_sfxbnd_m24_02.ffxbnd.dcx` first).
+- 90 fps tried on 2560x1440@120 + VRR (TV FreeSync ON, "pretty stable 90"),
+  then back to `bb-fps 60` for Ebrietas; display is back on 4k120 now.
+  MangoHud font scales per launch (temp conf copy; MANGOHUD_CONFIG env
+  REPLACES the file, never use it).
+- OPEN BUG (his report): locked-on sprint-attack then dodge always goes
+  FORWARD. Suspect v7 facing-hold (`data/bb-eboot/lockdash/cave.s`). Ask the two
+  discriminators (unlocked? wait a beat?), see the 5 Sep todo entry below.
+
+**9 Sep: Steam library MOVED to /mnt/disk1/SteamLibrary** (270 GB, verified,
+symlink at `~/.steam/debian-installation/steamapps`, all 11 apps loaded, root
+81% -> 52%). See `homelab-console-setup.md`. Restarting Steam from a shell
+needs the X env AND check /tmp/game-session first (I put Big Picture over his
+game and he died).
+
+**Human to-do (sudo):** `sudo sysctl kernel.yama.ptrace_scope=1` when done with
+live cheats (it is 0). Crash cores already cleared.
+
+**Git:** this session's files committed on master (bb-reborne-lighting, bb-cheat
+fix, ledger, todo, particles report, lighting twin copies). The big mixed set of
+M/untracked files from OTHER sessions is still uncommitted, untouched.
+Emulator fix committed in ~/src/shadps4-dbg (fabc12a).
+
+---
+## ▶ (5 Sep 2026 — savestate + arena-measurement session)
+
+**Stutter levers are NOW LIVE on the real game.** All five opt-in levers ON
+(`data/shadps4-fetch-memo`, `-lazy-pending-ops`, `-lock-keep`,
+`-precompile-tilers`, `-epoll-sleep`) plus `data/shadps4-local-build`, so
+`~/.local/bin/shadps4` runs the tuned local build by default. These are the
+measured ~half-stutter win. See `shadps4-directional-stutter.md`.
+
+**shadPS4 savestate V1.5a — DONE + verified.** In-place restore ~5-6s (same pid,
+via control file), real audio + vkBasalt confirmed. Use it:
+`~/couch/tools/shadps4-state save|restore|list|status`. Arm it on the real game
+with `touch ~/couch/data/shadps4-savestate-build` (currently OFF, correct default
+— it is for iteration sessions). Residuals: cloth cape vanishes on rebuild,
+MangoHud off, save slow ~130s (restore is the fast bit). Branch `savestate`,
+build `/mnt/disk1/shadps4-builds/savestate/`. V1.5b cross-build WISHLISTED
+(`/mnt/disk1/shadps4-savestate/WISHLIST.md`). See `shadps4-savestate.md`.
+
+**Arena fixes (Astra/Fable bake-off) — MEASURED, clean negative.** All 8
+candidates measured on the modded game (3 ON + 3 OFF repeats each). NONE beats
+the noise floor; GpuComm stays saturated regardless; WSI mutex fix NOT justified.
+RESULTS.md at `/mnt/disk1/shadps4-builds/arena-fixes/`.
+**ACTIVATION CONFIRMED (5 Sep, code read):** all 6 env vars match the harness,
+each gates a real live branch — the A/B was valid, the null is genuine. It is
+also mechanistically expected (only TC_FIRSTBUCKET was a fair hot-path test; the
+rest are 2nd-order refinements or paths that rarely fire in BB). Verdict: correct
+code, no headroom on this workload. **Arena is CLOSED.**
+
+**NEXT STEP:** nothing pending on the arena. If a future itch wants to chase the
+one fair test (TC_FIRSTBUCKET), use the savestate for many low-noise repeats —
+but even a perfect FindImage will not uncork the frame (GpuComm bottleneck).
+
+**Human to-do (your terminal, sudo):** clear the crash cores, boot drive at 86%.
+`sudo rm /var/lib/apport/coredump/core._mnt_disk1_shadps4-builds_savestate_shadps4.*` (71G)
+and `sudo rm -f /var/lib/apport/coredump/core.*shadps4*` (older ~92G if not done).
+Also `sudo sysctl kernel.yama.ptrace_scope=1` to re-lock cross-process memory
+reads when done cheat-experimenting.
+
+**Git:** working tree has a large mixed set of M/untracked files from this
+marathon (showcase tools, ds3 work, bb-hks, savestate `tools/shadps4-state`).
+NOT committed this session on purpose — too entangled for a clean commit. The
+durable artifacts live under `/mnt/disk1` + auto-memory, not the repo.
+
+**Showcase (earlier this session):** modded-vs-vanilla gallery published
+(https://claude.ai/code/artifact/078e5492-ba2d-4f8b-bd59-2d3b7b601ed4), plus
+Reborne-vs-Tuned and Tuned-vs-Vanilla. Deterministic warp `bb-save-setlamp.py`
+and TRUE vanilla at `/mnt/disk1/bb-vanilla/`. See `bloodborne-save-warp-vanilla.md`.
+
+---
+## ▶ (4 Sep 2026 — big Bloodborne session)
 
 **Bloodborne is LOCKED AT 60 fps** (`tools/bb-fps 60`, armed, applies next
 launch; eboot's baked 60, vblank 60, display already 4K60 so it matches). All
@@ -503,6 +601,45 @@ there is a ~4.3k token floor per invocation; and piping `codex exec` into
 * Sandbox save = DONNIE'S (refreshed 19:21, at Archdragon Peak). Harness
   character: `tools/ds3-state load harness-cemetery-20260903` (restore it
   before HUD/menu journeys, they expect the Cemetery).
+
+### ▶▶ DS3 ReShade: OFF after a bad live session (4 Sep ~15:35, Donnie playing)
+Bold+GI looked great in stills but on the REAL 4K120 panel in motion: (1) GI +
+indirect light drew PALE HALOS/embossed rims around all stone geometry ("shadows
+wrong"), and (2) GI dropped fps 120 -> ~79, which at a 120Hz vsync cap judders
+and "does not feel like 70". So the sandbox cost run (0.12ms) BADLY understated
+GI on the real panel - it was CPU-bound at the cap and idle-scene, never showed
+the true GPU cost. Fallback to modern-lite (MXAO+CAS) restored frames BUT the
+MXAO edge-outline itself is what he calls "shadow outlines", and ReShade.log
+showed CAS failed to load ("unknown technique ContrastAdaptiveSharpen@CAS.fx" -
+the farm ReShade.ini SweetFX path or the technique name is wrong), so lite was
+JUST the disliked AO. Set data/ds3-reshade/OFF -> next launch is stock DS3, 120,
+no artifacts. LESSON: never ship an unverified preset to his real game again;
+every future preset must be proven in a live real-launch capture (the sandbox
+was ALSO down with a no-first-frame failure, so nothing could be tested). To
+revisit AO: tune MXAO to NOT rim every edge (higher MXAO_SAMPLE_NORMAL_BIAS,
+smaller radius, lower amount, maybe SMOOTHNORMALS off) and FIX the CAS load
+(check the SweetFX technique name in ReShade.log), prove it on the panel, THEN
+offer. Remove OFF + set a preset only after that. ReShade delivery itself
+(farm + 120 + real launch) is proven and fine; the PRESET was the problem.
+
+### ▶▶ DS3 CAMERA FOV: BUILT + VERIFIED BUT PARKED, NOT DEPLOYED (4 Sep ~06:10)
+tools/ds3-param builds a camera regulation (LOCK_CAM_PARAM_ST, FovYChange @0x14,
+CamDistTarget @0x00; AES key from SFUtil.cs). FOV58 (BB's +15) / 53 / 48 / 53+camdist4.8
+all byte-verified (`ds3-param check` PASS) in scratchpad. NOT PROVEN IN A RENDER
+and NOT DEPLOYED: the deployed Data0.bdt was PULLED from data/ds3-shot/game/mod
+(shared with the real launch) to keep the real game safe. WHY unproven: the
+sandbox has a persistent "no rendered frame within 180s" failure since ~05:00
+that is NOT the regulation - a plain DS3SHOT_MOD=1 boot with NO Data0.bdt also
+failed to render (boot_test.log). The showcase + cost runs earlier tonight
+rendered fine, so it is an environment regression (suspect wedged amdgpu/wine
+state after hours of headless 4K boots; disk is fine at 52G free, no process
+leak - clean after _dev stop). The camera agent hit the SAME wall for 3 h and
+misattributed it to ME2 (ME2 log shows clean boots at 04:41). NEXT: retry the
+FOV capture after the box is quiet / rebooted; the real launch renders fine, so
+the true test is re-deploy Data0.FOV58 (kept in scratchpad) + tools/ds3-reshade-realtest,
+but do NOT deploy to the real launch until one render with it is seen. Deployed
+FOV58 file kept at scratchpad/Data0.FOV58.deployed.bdt; rebuild in
+docs/research/ds3-camera-fov-20260904.md.
 
 ### ▶▶ DS3 ReShade: BOLD + GI IS THE LIVE PRESET (4 Sep ~05:00, Donnie picked it)
 "the bold + gi looks very nice". `data/ds3-mod/preset/current.ini` =
@@ -4295,3 +4432,22 @@ guard SIGTERM cleanup, 5s ACL retry.
   in-app bar; the lock screen has no scrubber, see 4 Aug.)
 - **TV power toggle on the Remote page** — top row, blue when on, `/api/tv` on/off.
 - **Volume row added to Now Playing** (Playing.svelte).
+
+## 5 Sep: BB dodge-after-sprint-attack goes straight forward (Donnie, mid Bloody Crow fight)
+Report: locked on, sprint at an enemy, sprint attack, then dodge -> the dodge
+always goes forward regardless of the stick. Vanilla lets you quickstep any way
+out of a dash attack, so suspect our stack: v7 facing-hold (cave_a, 1.0 s
+after sprint end with stick released, `data/bb-eboot/lockdash/cave.s`) or the
+seven MoveDirection gate removals in the script. Discriminators to get from
+him: does it happen UNLOCKED, and does it stop if he waits a beat after the
+hit. Fix idea: cancel the hold on any attack/dodge input, not just a stick
+push. Needs a rebuild + bb-cheat re-add + a lamp check. Not touched during
+his session.
+
+## 5 Sep: Ebrietas infinite particles = the 60fps eboot, NOT the emulator (subagent, REPORT in data/shadps4-particles/)
+Her ground-break SFX never retires above 30 fps (ps4_cheats issue #72). Fix
+is ONE file: Nexus mod 41 "Stand Alone Ebrietas Sfx Fix" =
+sfx/frpg_sfxbnd_m24_02.ffxbnd.dcx, STAGED at data/shadps4-particles/staging/fix/,
+NOT installed. TODO when the game is closed: back up the vanilla file, copy in
+(no patch-dir twin exists). She is dead this run, so it only matters for a
+rematch/NG+. MangoHud fps is useless as the judge (presenter paces to vblank).

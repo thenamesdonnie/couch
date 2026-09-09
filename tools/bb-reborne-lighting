@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# bb-reborne-lighting on|off|status
+#
+# Toggles the BB Reborne LIGHTING modules only (GI, Maplight, Sparam, Param =
+# drawparam, and the Map MERGED MSBs whose per-part light-set fields point at
+# Reborne's drawparams). Textures / Flver / Obj stay put either way.
+# 5 Sep 2026: Donnie wanted to compare the look. Quit the game first.
+#
+# Trap handled here: CUSA00900-patch shadows base files, and it carries a twin
+# of param/drawparam/m29_00_0000.gparambnd.dcx (Cainhurst). With Reborne ON the
+# twin must be Reborne's copy, OFF it must be the 1.09 patch original. Both
+# copies live in ~/couch/data/bb-reborne-lighting-twin/.
+set -euo pipefail
+DROP="$HOME/fileshare/bloodborne-mods"
+STATE="$HOME/games/ps4/bloodborne/mod-backups"
+PATCH="$HOME/games/ps4/CUSA00900-patch/dvdroot_ps4/param/drawparam/m29_00_0000.gparambnd.dcx"
+TWIN="$HOME/couch/data/bb-reborne-lighting-twin"
+ORIG="$TWIN/patchdir-twin/param/drawparam/m29_00_0000.gparambnd.dcx"   # 1.09 patch original
+REB="$TWIN/m29_00_0000.gparambnd.dcx.reborne"                            # Reborne's copy
+# install order (revert runs it backwards)
+MODS=(
+  "BBReborne GI-503-1-1780270094"
+  "BBReborne Maplight-503-1-1780271721"
+  "BBReborne Sparam-503-1-1780272132"
+  "BBReborne Param-503-1-1780272092"
+  "BBReborne Map MERGED with Enhanced 503 v1 2026-09-03"
+)
+sha() { sha256sum "$1" | cut -c1-12; }
+running() { pgrep -f '[s]hadps4' >/dev/null; }
+case "${1:-status}" in
+  status)
+    for m in "${MODS[@]}"; do [ -d "$STATE/$m" ] && echo "IN   $m" || echo "OUT  $m"; done
+    t=$(sha "$PATCH")
+    if [ "$t" = "$(sha "$REB")" ]; then echo "m29 patch twin: REBORNE ($t)"
+    elif [ "$t" = "$(sha "$ORIG")" ]; then echo "m29 patch twin: ORIGINAL ($t)"
+    else echo "m29 patch twin: UNKNOWN ($t)"; fi ;;
+  on)
+    running && { echo "quit the game first"; exit 1; }
+    for m in "${MODS[@]}"; do
+      [ -d "$STATE/$m" ] && { echo "already in: $m"; continue; }
+      bb-mod-install install "$DROP/$m.zip"
+    done
+    cp -p "$REB" "$PATCH"; echo "m29 patch twin -> Reborne ($(sha "$PATCH"))" ;;
+  off)
+    running && { echo "quit the game first"; exit 1; }
+    for ((i=${#MODS[@]}-1; i>=0; i--)); do
+      m="${MODS[$i]}"
+      [ -d "$STATE/$m" ] || { echo "already out: $m"; continue; }
+      bb-mod-install revert "$m"
+    done
+    cp -p "$ORIG" "$PATCH"; echo "m29 patch twin -> original ($(sha "$PATCH"))" ;;
+  *) echo "usage: bb-reborne-lighting on|off|status"; exit 1 ;;
+esac
