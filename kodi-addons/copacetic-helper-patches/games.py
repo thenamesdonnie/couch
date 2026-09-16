@@ -364,9 +364,21 @@ def _art(appid):
             if art.get(alt):
                 art['thumb'] = art[alt]
                 break
-    logo = os.path.join(base, 'logo.png')
-    if os.path.exists(logo):
-        art['clearlogo'] = logo
+    # Newer Steam caches nest each asset in a hashed subfolder (The Witcher 3
+    # arrived that way); older caches keep logo.png at the top level. Same
+    # recursive glob as the art above - '**' also matches zero directories,
+    # so the flat layout still hits.
+    logos = glob.glob(os.path.join(base, '**', 'logo.png'), recursive=True)
+    if logos:
+        art['clearlogo'] = logos[0]
+    # A placed logo beats Steam's cached one - same logos/ dir the PS4 tiles
+    # use, keyed by appid. Steam's cache sometimes carries an edition-badged
+    # logo floating on a padded canvas (The Witcher 3), which renders tiny in
+    # the skin's keep-aspect box; the CDN's logo_2x.png is the clean wordmark.
+    override = os.path.expanduser(
+        '~/.local/share/game-tiles/logos/%s.png' % appid)
+    if os.path.isfile(override):
+        art['clearlogo'] = override
     hero2x = os.path.join(HERO_DIR, '%s.jpg' % appid)
     if os.path.isfile(hero2x):
         art['fanart'] = hero2x

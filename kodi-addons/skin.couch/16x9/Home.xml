@@ -630,46 +630,74 @@
 				<visible>Control.HasFocus(9500) + String.IsEmpty(Container(9500).ListItem.Property(unlocked))</visible>
 			</control>
 
+			<!-- left/top/width/height carry HEADROOM beyond the old 96,980,1740,96
+			     strip: a list clips its items to its own bounds, and the travelling
+			     halo (a 132 box around a 64 icon) would be sliced flat at the first
+			     slot, along the top, and at the scroll edge on the right without
+			     it. Every x inside the layouts is +24 and every y +20 to
+			     compensate, so no icon moved on screen. -->
 			<control type="list" id="9500">
-				<left>96</left>
-				<top>980</top>
-				<width>1740</width>
-				<height>96</height>
+				<left>72</left>
+				<top>960</top>
+				<width>1812</width>
+				<height>132</height>
 				<orientation>horizontal</orientation>
 				<scrolltime tween="sine" easing="out">200</scrolltime>
 				<onup>9000</onup>
 				<ondown>9500</ondown>
-				<itemlayout width="84" height="96">
+				<itemlayout width="84" height="132">
 					<control type="image">
-						<left>10</left>
-						<top>14</top>
+						<left>34</left>
+						<top>34</top>
 						<width>64</width>
 						<height>64</height>
 						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
 						<colordiffuse>$VAR[Couch_Ach_Tint]</colordiffuse>
 					</control>
 				</itemlayout>
-				<focusedlayout width="84" height="96">
+				<!-- The halo TRAVELS with the cursor (Donnie, 2 Sep: "the icon is
+				     stuck inside the halo rather than slides in"), so the selector
+				     lives in the focusedlayout - but gated on real focus, because
+				     Kodi keeps drawing focusedlayout for the remembered position
+				     while focus sits elsewhere (the phantom highlight on the first
+				     achievement). Unfocused, this cell renders exactly like
+				     itemlayout - the same gating the game row's focused tile uses. -->
+				<focusedlayout width="84" height="132">
 					<control type="image">
-						<left>-6</left>
-						<top>0</top>
-						<width>96</width>
-						<height>96</height>
-						<texture border="48" infill="false" colordiffuse="c8e8a849">couch/halo-glow.png</texture>
-					</control>
-					<control type="image">
-						<left>-6</left>
-						<top>0</top>
-						<width>96</width>
-						<height>96</height>
-						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
-					</control>
-					<control type="image">
-						<left>10</left>
-						<top>14</top>
+						<left>34</left>
+						<top>34</top>
 						<width>64</width>
 						<height>64</height>
 						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<colordiffuse>$VAR[Couch_Ach_Tint]</colordiffuse>
+						<visible>!Control.HasFocus(9500)</visible>
+					</control>
+					<!-- 132 boxes, not 96: border="48" slices 48px off each texture
+					     edge, so a box of 96 or less has no interior and draws
+					     NOTHING. -->
+					<control type="image">
+						<left>0</left>
+						<top>0</top>
+						<width>132</width>
+						<height>132</height>
+						<texture border="48" infill="false" colordiffuse="c8e8a849">couch/halo-glow.png</texture>
+						<visible>Control.HasFocus(9500)</visible>
+					</control>
+					<control type="image">
+						<left>0</left>
+						<top>0</top>
+						<width>132</width>
+						<height>132</height>
+						<texture border="48" infill="false" colordiffuse="dcffffff">couch/halo-core.png</texture>
+						<visible>Control.HasFocus(9500)</visible>
+					</control>
+					<control type="image">
+						<left>28</left>
+						<top>28</top>
+						<width>76</width>
+						<height>76</height>
+						<texture diffuse="couch/mask-round.png">$INFO[ListItem.Art(thumb)]</texture>
+						<visible>Control.HasFocus(9500)</visible>
 					</control>
 				</focusedlayout>
 				<content target="videos">plugin://script.copacetic.helper/?info=couch_achievements&amp;appid=$INFO[Container(9000).ListItem.Property(appid)]</content>
