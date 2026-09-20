@@ -822,26 +822,17 @@ app.get('/api/discover/popular', wrap(async (req) => ({
 
 // --- the rest of the fleet: every web UI on the box, with reachability ---
 
-// Host comes from COUCH_LAN_HOST so no LAN address is baked into the source.
-const SERVICES = [
-  { name: 'Jellyfin', desc: 'Media server', port: 8096 },
-  { name: 'Jellyseerr', desc: 'Requests', port: 5055 },
-  { name: 'Sonarr', desc: 'Shows', port: 8989 },
-  { name: 'Radarr', desc: 'Films', port: 7878 },
-  { name: 'Bazarr', desc: 'Subtitles', port: 6767 },
-  { name: 'Prowlarr', desc: 'Indexers', port: 9696 },
-  { name: 'qBittorrent', desc: 'Downloads', port: 8080 },
-  { name: 'Autobrr', desc: 'Auto grabbing', port: 7474 },
-  { name: 'File browser', desc: 'Drop zone', port: 8082 },
-  { name: 'Crafty', desc: 'Minecraft', port: 8443, scheme: 'https' },
-  { name: 'Glances', desc: 'System monitor', port: 61208 },
-  { name: 'WireGuard', desc: 'VPN', port: 51821 },
-  { name: 'Rota', desc: 'Work rota', port: 8787 },
-  { name: 'Norish', desc: 'Recipes', port: 3000 },
-  { name: 'Howff', desc: 'Nights out', port: 3310 },
-  { name: 'MacroLog', desc: 'Macros', port: 8321 },
-  { name: 'Easy Cribs', desc: 'Property', port: 3005 },
-].map((s) => ({ name: s.name, desc: s.desc, url: `${s.scheme || 'http'}://${LAN_HOST}:${s.port}` }));
+// Host comes from COUCH_LAN_HOST so no LAN address is baked into the source, and the list of
+// services is YOUR house's inventory, so it lives in data/services.json rather than in here.
+// Copy data/services.example.json to get started; the real one is gitignored.
+function loadServices() {
+  for (const f of ['services.json', 'services.example.json']) {
+    try { return JSON.parse(fs.readFileSync(new URL(`../data/${f}`, import.meta.url), "utf8")); }
+    catch { /* try the next one */ }
+  }
+  return [];
+}
+const SERVICES = loadServices().map((s) => ({ name: s.name, desc: s.desc, url: `${s.scheme || 'http'}://${LAN_HOST}:${s.port}` }));
 
 // Reachability by TCP connect: works for self-signed https (Crafty) and
 // auth-walled UIs alike.

@@ -384,7 +384,9 @@ export async function health() {
   services.kodi = kodiPid ? 'active' : 'down';
   services.steam = steamPid ? 'active' : 'down';
   const docker = (dockerRaw || '').split('\n').filter(Boolean);
-  for (const want of ['jellyseerr', 'qbittorrent', 'cloudflared-donflix']) {
+  // Container names differ per house; COUCH_DOCKER_SERVICES overrides the defaults.
+  const want_ = (process.env.COUCH_DOCKER_SERVICES || 'jellyseerr,qbittorrent,cloudflared').split(',').map((x) => x.trim()).filter(Boolean);
+  for (const want of want_) {
     services[want] = docker.includes(want) ? 'active' : 'down';
   }
   return {

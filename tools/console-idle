@@ -54,11 +54,26 @@ import sys
 import time
 import urllib.request
 
+def _kodi_auth():
+    """user:password for Kodi's JSON-RPC, from the environment.
+
+    Never hardcode it: this file used to carry the real password, which meant the credential
+    lived in six places instead of one. ~/couch/.env is the single source; systemd loads it
+    with EnvironmentFile, and a shell needs `set -a; . ~/couch/.env; set +a` first.
+    """
+    import os
+    pw = os.environ.get('KODI_PASSWORD')
+    if not pw:
+        raise SystemExit('KODI_PASSWORD is not set (source ~/couch/.env)')
+    return f"{os.environ.get('KODI_USER', 'kodi')}:{pw}"
+
+
+
 HOME = os.path.expanduser('~')
 SESSION = '/tmp/game-session'
 SUSPENDED = '/tmp/game-suspended'
 KODI = 'http://localhost:8090/jsonrpc'
-KODI_AUTH = base64.b64encode(b'kodi:$KODI_PASSWORD').decode()
+KODI_AUTH = base64.b64encode(_kodi_auth().encode()).decode()
 TV = os.path.join(HOME, '.local/bin/tv')
 
 #: Input idle beyond this is "nobody is at the sofa". Ten minutes is long

@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Jellyfin",
+    "desc": "Media server",
+    "port": 8096
+  },
+  {
+    "name": "File browser",
+    "desc": "Drop zone",
+    "port": 8082
+  },
+  {
+    "name": "Glances",
+    "desc": "System monitor",
+    "port": 61208
+  }
+]

@@ -23,7 +23,7 @@ IDLE="${2:-10800}"
 BASE=~/src/shadps4-dbg
 OUT="${RIG_OUT:-$HOME/couch/data/gamescope-soak}"
 KODI=http://localhost:8090/jsonrpc
-AUTH=kodi:$KODI_PASSWORD
+AUTH="${KODI_USER:-kodi}:${KODI_PASSWORD:?set KODI_PASSWORD, or source ~/couch/.env}"
 
 say() { echo "$(date +%H:%M:%S) soak: $*"; }
 kodi_joystick() {

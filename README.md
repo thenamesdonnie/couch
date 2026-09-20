@@ -63,4 +63,6 @@ generalise.
 
 ## Licence
 
-MIT.
+Couch's own code is MIT. **The Kodi skin is not:** `kodi-addons/skin.couch/` is a fork of
+Copacetic and stays under GPLv3 and CC BY-NC-SA 4.0, which means non-commercial. Full breakdown in
+[LICENSES.md](LICENSES.md).

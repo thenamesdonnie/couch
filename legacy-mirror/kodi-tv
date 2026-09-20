@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Kodi credentials come from the environment (~/couch/.env), never this file.
+AUTH="${KODI_USER:-kodi}:${KODI_PASSWORD:?set KODI_PASSWORD, or source ~/couch/.env}"
 # Launches Kodi the way a television wants it, rather than the way a desk does.
 #
 # A monitor going dark after ten minutes is a screensaver; a television going
@@ -116,12 +119,12 @@ done
 # Flatpak answers on the same :8090 with the same credentials.
 (
   unmute() {
-    curl -s -m 3 -u kodi:$KODI_PASSWORD -H 'content-type: application/json' \
+    curl -s -m 3 -u "$AUTH" -H 'content-type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"Application.SetMute","params":{"mute":false}}' \
       http://localhost:8090/jsonrpc >/dev/null
   }
   for _ in $(seq 60); do
-    curl -s -m 2 -u kodi:$KODI_PASSWORD -H 'content-type: application/json' \
+    curl -s -m 2 -u "$AUTH" -H 'content-type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"XBMC.GetInfoBooleans","params":{"booleans":["Window.IsVisible(home)"]}}' \
       http://localhost:8090/jsonrpc 2>/dev/null | grep -q 'true' && break
     sleep 2
@@ -129,7 +132,7 @@ done
   unmute
   for _ in $(seq 12); do
     sleep 3
-    curl -s -m 2 -u kodi:$KODI_PASSWORD -H 'content-type: application/json' \
+    curl -s -m 2 -u "$AUTH" -H 'content-type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"Application.GetProperties","params":{"properties":["muted"]}}' \
       http://localhost:8090/jsonrpc 2>/dev/null | grep -q '"muted":false' || unmute
   done

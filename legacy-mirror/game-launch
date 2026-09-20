@@ -38,7 +38,7 @@ export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 MODE="${1:-}"
 APPID="${2:-}"
 JSON=http://localhost:8090/jsonrpc
-AUTH=kodi:$KODI_PASSWORD
+AUTH="${KODI_USER:-kodi}:${KODI_PASSWORD:?set KODI_PASSWORD, or source ~/couch/.env}"
 # Test seams, tools/curtain's pattern: unset in normal operation, the tests
 # point them under tmp_path (live /tmp is off limits to tests, hard rule).
 LOG="${GAME_LAUNCH_LOG:-/tmp/game-launch.log}"

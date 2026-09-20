@@ -59,3 +59,16 @@ shadow/
 
 # Vendored ReShade shader packs: upstream git repos, not ours to carry.
 data/ds3-reshade/
+
+# Your own service inventory; ships as services.example.json instead.
+data/services.json
+
+# Game files are not redistributable; see data/README.md
+data/bb-eboot/cmdtable.json
+data/bb-eboot/dbg_refs.json
+data/bb-eboot/translations.json
+data/bb-eboot/script_commands.md
+data/bb-eboot/lockdash/cave.bin
+data/bb-hks/*.hks
+data/bb-reborne-lighting-twin/
+data/shadps4-particles/staging/

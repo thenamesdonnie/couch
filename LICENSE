@@ -1,3 +1,10 @@
+Couch is MIT licensed, EXCEPT for the third-party work vendored inside it. See LICENSES.md
+for the full breakdown; the short version is that kodi-addons/skin.couch/ is a fork of the
+Copacetic skin and stays under GPLv3 (code) and CC BY-NC-SA 4.0 (designs), so that directory is
+NOT MIT and is not available for commercial use.
+
+----
+
 MIT License
 
 Copyright (c) 2026 thenamesdonnie
