@@ -1,6 +1,10 @@
 #!/bin/bash
 # couchd stage 2 - ROLLBACK. Gives the DualSense back to ds2000.
 #
+# Stops and DISABLES inputproc, disarms BOTH halves of the udev fence
+# (72 and 74 - see RULES below for why 72 alone is a dead pad), then
+# retriggers so the uaccess ACLs come back now rather than at replug.
+#
 # SR3: rollback must never need Donnie to find the sudo password at 11pm
 # with a dead pad in his hand. This script is root-owned and root-only
 # writable, and the sudoers drop-in (sudoers-couchd) lets ds2000 run THIS
@@ -30,7 +34,24 @@ UDEVADM=/usr/bin/udevadm
 MV=/usr/bin/mv
 SED=/usr/bin/sed
 
-RULE=/etc/udev/rules.d/72-couchd-own-dualsense.rules
+# BOTH halves of the fence, and it must stay both. 72 is the half that takes
+# the pad (OWNER/GROUP/MODE + TAG-="uaccess"); 74 is the half that was added
+# two days later, on 23 Aug 2026, when TAG-= turned out not to remove a node
+# from the uaccess builtin's queue at all (tags are STICKY). 74 therefore runs
+# AFTER 73-seat-late and strips the ACL the builtin just applied, matching the
+# DualSense on its own vid/pid/uniq and the hidraw node with it.
+#
+# Disarming 72 alone is what this script did until 20 Sep 2026, and it is a
+# rollback that LOOKS like it worked and leaves a DEAD PAD: the node is handed
+# back by 72's absence, then 74 fires `setfacl -b` and takes the ds2000 ACL
+# away again. Step 3's retrigger re-fires 74 every time, so even the verify
+# line this script prints could never have passed. The hidraw half is the
+# worse one - Steam's DualSense support rides hidraw, not evdev.
+#
+# Order matters within the list only in that both must be gone before the
+# retrigger in step 3; the loop below does them all first.
+RULES="/etc/udev/rules.d/72-couchd-own-dualsense.rules
+/etc/udev/rules.d/74-couchd-fence-late.rules"
 UNIT=inputproc.service
 
 log() { echo "couchd-input-release: $*"; }
@@ -80,14 +101,27 @@ fi
 # 2. Disarm the rule by renaming it. Declarative, crash-immune: no runtime
 #    chmod to leave behind (this is the InputPlumber #582/#586 failure mode
 #    we specifically designed out).
-if [ -f "$RULE" ]; then
-  if "$MV" -f "$RULE" "$RULE.off"; then
-    log "rule disarmed -> $RULE.off"
+disarmed=0
+while IFS= read -r rule; do
+  [ -n "$rule" ] || continue
+  if [ -f "$rule" ]; then
+    if "$MV" -f "$rule" "$rule.off"; then
+      log "rule disarmed -> $rule.off"
+      disarmed=$((disarmed + 1))
+    else
+      warn "could not rename $rule - THE PAD IS STILL OURS, fix this by hand"
+    fi
   else
-    warn "could not rename $RULE - THE PAD IS STILL OURS, fix this by hand"
+    log "no rule at $rule (already released)"
   fi
-else
-  log "no rule at $RULE (already released)"
+done <<EOF
+$RULES
+EOF
+
+# Nothing to disarm is a legitimate second run, not a fault. Saying so here
+# stops a re-run reading like it did the work twice.
+if [ "$disarmed" -eq 0 ]; then
+  log "no rules needed disarming (already released)"
 fi
 
 # 3. Reload and re-trigger so the ACLs come back NOW, not at next replug.

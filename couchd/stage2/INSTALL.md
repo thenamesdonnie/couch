@@ -28,6 +28,7 @@ this sitting).
 | `sudoers-couchd` | `/etc/sudoers.d/couchd` | NOPASSWD for exactly that script |
 | `inputproc.service` | `/etc/systemd/system/` | the system unit (SR1/SR6) |
 | `72-couchd-own-dualsense.rules` | `/etc/udev/rules.d/` | ownership (SR2) |
+| `74-couchd-fence-late.rules` | `/etc/udev/rules.d/` | the LATE half of the fence (added 23 Aug 2026) |
 | `INSTALL.md` | nowhere | this |
 
 ---
@@ -82,7 +83,8 @@ syntax error in `/etc/sudoers.d/` locks the box out of sudo entirely.
 Then, in a *new* terminal as ds2000, prove it works with no password:
 
     sudo -n /usr/local/sbin/couchd-input-release
-    # expect: "no rule at /etc/udev/rules.d/72-... (already released)" and
+    # expect: "no rule at /etc/udev/rules.d/72-... (already released)",
+    #         the same for 74-, then "no rules needed disarming", and
     #         exit 0, with no password prompt
 
 ## 4. The unit
@@ -188,22 +190,32 @@ irrelevant. It is three minutes and it is the difference between a calm
 evening and a bad one.
 
     sudo -n couchd-input-release
-    ls -l /etc/udev/rules.d/72-couchd-own-dualsense.rules*
-    # expect: only the .off file exists
+    ls -l /etc/udev/rules.d/7[24]-couchd-*.rules*
+    # expect: only .off files exist, for BOTH 72 and 74
 
 At this point the unit is installed but not enabled, so the script prints
 `inputproc.service already disabled` and moves on. That line is the visible
 half of something worth knowing before flag day: the script both stops
-**and disables** the unit, on purpose, because disarming the rule survives a
+**and disables** the unit, on purpose, because disarming the rules survives a
 reboot and a bare `stop` does not. So after any real rollback, re-arming is
-two things, not one — put the rule back *and* `sudo systemctl enable --now
+two things, not one — put the rules back *and* `sudo systemctl enable --now
 inputproc`.
 
-Put it back for E1:
+Put them back for E1 — **both**, or the pad comes back half-owned:
 
-    sudo mv /etc/udev/rules.d/72-couchd-own-dualsense.rules.off \
-            /etc/udev/rules.d/72-couchd-own-dualsense.rules
+    for r in 72-couchd-own-dualsense 74-couchd-fence-late; do
+      sudo mv "/etc/udev/rules.d/$r.rules.off" "/etc/udev/rules.d/$r.rules"
+    done
     sudo udevadm control --reload-rules && sudo udevadm trigger
+
+> **Why both, in both directions.** 74 matches the DualSense on its own
+> vid/pid/uniq (and the hidraw node with it), so it is not a dependent of 72:
+> leave 74 armed during a rollback and its `setfacl -b` strips the ds2000 ACL
+> straight back off a node 72 just stopped taking, which is a dead pad that
+> looks like a successful rollback. That was live from 23 Aug to 20 Sep 2026,
+> when `couchd-input-release` still knew about 72 only. Leave 74 disarmed
+> during a re-arm and the sticky-tag leak it exists to plug comes back: js1
+> reaches Kodi next to the vpad and every press lands twice.
 
 Add this line, verbatim, to the audit cheat sheet:
 
