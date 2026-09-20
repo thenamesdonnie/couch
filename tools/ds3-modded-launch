@@ -36,6 +36,25 @@ if [ -z "$game" ]; then
   exec "$@"
 fi
 [ -x "$LAUNCHER" ] || [ -f "$LAUNCHER" ] || { echo "launcher missing at $LAUNCHER; launching unmodified" >> "$LOG"; exec "$@"; }
+# ReShade (4 Sep 2026): opt-in by `touch data/ds3-reshade/ON`, vetoed by
+# data/ds3-reshade/OFF or DS3_RESHADE=0 (either turns it off). ModEngine2
+# only injects a DLL that sits beside the game exe, so when it is on the
+# game runs from the symlink farm data/ds3-mod/game (tools/ds3-farm), where
+# ReShade64.dll, ReShade.ini and the genuine d3dcompiler_47.dll sit beside a
+# link to the real DarkSoulsIII.exe. The Steam install is never written to;
+# the prefix and the save are the real ones as before. Kill switch:
+# `touch ~/couch/data/ds3-reshade/OFF`, or simply remove ON.
+RESHADE_DIR="$HOME/couch/data/ds3-reshade"
+FARM="$MOD_DIR/game"
+if [ -e "$RESHADE_DIR/ON" ] && [ ! -e "$RESHADE_DIR/OFF" ] && [ "${DS3_RESHADE-1}" != 0 ] \
+   && [ -f "$FARM/ReShade64.dll" ] && [ -e "$FARM/DarkSoulsIII.exe" ] \
+   && [ -f "$MOD_DIR/config_darksouls3_reshade.toml" ]; then
+  CONFIG="$MOD_DIR/config_darksouls3_reshade.toml"
+  game="$FARM/DarkSoulsIII.exe"
+  echo "reshade: ON (farm $FARM, $CONFIG)" >> "$LOG"
+else
+  echo "reshade: off" >> "$LOG"
+fi
 args+=(-t ds3 -c "$CONFIG" -p "$game")
 echo "modded launch (OFFLINE ONLY): exec ${args[*]}" >> "$LOG"
 # D-pad rotate for the ER-style pause menu (3 Sep 2026): when the menu-flag
@@ -47,6 +66,15 @@ echo "modded launch (OFFLINE ONLY): exec ${args[*]}" >> "$LOG"
 # for the LG C5; DS3_FPS=0 in the launch options disables it. With vsync on
 # and a 60 Hz mode the game still runs at 60, so the default is safe.
 export DS3_FPS="${DS3_FPS-120}"
+# Frame log (4 Sep 2026): touch /tmp/ds3-perflog before launching and MangoHud
+# logs every frame of the session to data/ds3-perf/raw-real/ with NO overlay
+# (tools/ds3-perf summarise <csv> reads it). Proton copies its environment
+# into the game, so exporting here is enough. Off unless the flag exists.
+if [ -e /tmp/ds3-perflog ]; then
+  export MANGOHUD=1
+  export MANGOHUD_CONFIGFILE="$HOME/couch/data/ds3-perf/mangohud-real.conf"
+  echo "frame log ON (/tmp/ds3-perflog present)" >> "$LOG"
+fi
 WATCH="$HOME/couch/tools/ds3-menu-watch"
 if [ -x "$WATCH" ] && [ -z "${DS3_NO_MENU_WATCH:-}" ]; then
   echo "running under ds3-menu-watch (screen mode)" >> "$LOG"

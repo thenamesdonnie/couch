@@ -74,7 +74,7 @@ if os.path.isdir(VENV) and sys.prefix != VENV:
 # The fake MAC. Locally-administered, unmistakably synthetic, and nothing
 # like the real pad's AA:BB:CC:DD:EE:FF at any prefix.
 FAKE_MAC = 'de:ad:be:ef:fa:ce'
-REAL_MAC = 'aa:bb:cc:dd:ee:ff'
+REAL_MAC = os.environ.get('COUCH_PAD_MAC', 'aa:bb:cc:dd:ee:ff')  # your own pad's Bluetooth MAC
 
 FIFO = '/tmp/fake-pad.fifo'
 PIDFILE = '/tmp/fake-pad.pid'

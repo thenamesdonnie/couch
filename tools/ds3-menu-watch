@@ -20,6 +20,7 @@ Nothing is ever written to the game.
     ds3-menu-watch --screen-probe                   # print the detector's reading twice a second
     ds3-menu-watch -- <game command ...>            # memory mode (needs menuflag.json; did not pan out)
     ds3-menu-watch --probe <pid>                    # memory mode, one reading
+    ds3-menu-watch --fps-only --fps <n> -- <cmd...> # apply_fps only, no :0/window needed (4 Sep sandbox)
 
 Failure is safe: no chain, no game, or an unreadable byte just means the
 flag file is never raised and the D-pad behaves as before.
@@ -82,7 +83,12 @@ def find_game(root):
             cmd = open(f"/proc/{p}/cmdline", "rb").read()
         except OSError:
             continue
-        if b"DarkSoulsIII.exe" in cmd and exe_base(p):
+        # argv[0] must BE the game. modengine2_launcher.exe carries
+        # "-p .../DarkSoulsIII.exe" in its cmdline and maps the exe while it
+        # injects, so a substring match picked the LAUNCHER on the first
+        # ReShade launch (4 Sep 2026) and the flipper pointer "stayed null".
+        argv0 = cmd.split(b"\0")[0]
+        if argv0.endswith(b"DarkSoulsIII.exe") and exe_base(p):
             return p
     return None
 
@@ -317,8 +323,11 @@ def screen_loop(child, fps_wanted=0):
         if fps_wanted and not fps_done:
             pid = find_game(os.getpid())
             if pid:
-                log(f"fps unlock: {apply_fps(pid, fps_wanted)}")
-                fps_done = True
+                result = apply_fps(pid, fps_wanted)
+                log(f"fps unlock: {result}")
+                # keep trying until it lands (a slow boot, e.g. ReShade
+                # compiling effects, can leave the pointer null past one try)
+                fps_done = result.startswith("fps cap")
         if win is None:
             win = find_game_window(disp)
             if win is None:
@@ -382,6 +391,35 @@ def apply_fps(pid, fps, tries=120):
         os.close(fd)
 
 
+# --- fps-only mode (4 Sep 2026, ds3-perf: measure real frame rate, not the
+# gpu_load proxy) --------------------------------------------------------
+# ds3-shot's sandbox has no :0 and DS3SHOT_FPS should not need one, so this
+# skips find_game_window/bar_visible entirely - no X import, no display
+# connection. Same exit test as screen_loop though, on purpose: this
+# watcher sets itself PR_SET_CHILD_SUBREAPER same as every mode here, so in
+# mod mode (modengine2_launcher injects and exits) the game gets reparented
+# to THIS process rather than orphaned, `descendants(os.getpid())` still
+# finds it, and the loop keeps running - it does not exit just because its
+# immediate child (the launcher) did. That is what keeps gamescope's
+# primary child alive for the launcher's whole lifetime plus the real game,
+# same rule ds3-shot's own INNER "run it, then idle" comment describes one
+# layer up.
+def fps_only_loop(child, fps_wanted):
+    fps_done = False
+    while True:
+        if child is not None and child.poll() is not None and not descendants(os.getpid()):
+            break
+        if fps_wanted and not fps_done:
+            pid = find_game(os.getpid())
+            if pid:
+                result = apply_fps(pid, fps_wanted)
+                log(f"fps unlock: {result}")
+                # keep trying until it lands (a slow boot, e.g. ReShade
+                # compiling effects, can leave the pointer null past one try)
+                fps_done = result.startswith("fps cap")
+        time.sleep(0.5)
+
+
 def set_flag(on):
     if on:
         Path(FLAG).touch()
@@ -416,6 +454,24 @@ def main():
             d, w, h = grab(win, LABEL_BOX, scale); c = bone_pixels(d)
             print(time.strftime("%H:%M:%S"), f"left {a:.2f} top {b:.2f} label {c}  -> {'BAR' if bar_visible(win, scale) else '-'}", flush=True)
             time.sleep(0.5)
+    if argv[:1] == ["--fps-only"]:
+        # apply_fps only - no screen detector, no :0. See fps_only_loop.
+        argv = argv[1:]
+        fps_wanted = 0
+        if argv[:1] == ["--fps"]:
+            fps_wanted, argv = float(argv[1]), argv[2:]
+        elif os.environ.get("DS3_FPS"):
+            fps_wanted = float(os.environ["DS3_FPS"])
+        if argv[:1] != ["--"] or len(argv) < 2:
+            sys.exit(__doc__)
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(36, 1, 0, 0, 0)              # PR_SET_CHILD_SUBREAPER
+        child = subprocess.Popen(argv[1:])
+        log(f"spawned {argv[1:3]} pid {child.pid} (fps-only mode, want {fps_wanted:g})")
+        signal.signal(signal.SIGTERM, lambda *_: (child.terminate(), sys.exit(0)))
+        fps_only_loop(child, fps_wanted)
+        log("game gone, exit")
+        return
     if argv[:1] == ["--screen"] or (argv[:1] == ["--"] and not CHAIN.exists()):
         # the shipping mode: run the game, watch the screen
         if argv[:1] == ["--screen"]:

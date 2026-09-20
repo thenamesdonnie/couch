@@ -46,7 +46,8 @@ except Exception as _e:  # noqa: BLE001
         except OSError:
             return None
 
-MAC = "AA:BB:CC:DD:EE:FF"
+import os
+MAC = os.environ.get("COUCH_PAD_MAC", "AA:BB:CC:DD:EE:FF")  # your pad's Bluetooth MAC
 TV = "/home/ds2000/.local/bin/tv"
 GAME_LAUNCH = "/home/ds2000/.local/bin/game-launch"
 # Movie night: cinema-watch plays trailers before library films while this

@@ -12,7 +12,7 @@ const BIN = path.join(HOME, '.local/bin');
 const LAUNCHER = path.join(BIN, 'game-launch');
 const SESSION = '/tmp/game-session';
 const SUSPENDED = '/tmp/game-suspended';
-const PAD_MAC = 'AA:BB:CC:DD:EE:FF';
+const PAD_MAC = process.env.COUCH_PAD_MAC || 'AA:BB:CC:DD:EE:FF'; // your pad's Bluetooth MAC
 
 function readIf(file) {
   try { return fs.readFileSync(file, 'utf8').trim(); } catch { return null; }

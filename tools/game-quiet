@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Silence the box's two ambush noises for the length of a game session.
 
-A game on this box does not get the machine to itself. Two things run in the
-background that can walk into the middle of a session and take the frame rate
-with them, and neither announces itself:
+A game on this box does not get the machine to itself. Three things run in
+the background that can walk into the middle of a session and take the frame
+rate with them, and none of them announces itself:
 
   * qBittorrent. It writes to the media disks over USB, and those disks have
     a history of dropping their link under sustained write load (twice now).
@@ -11,9 +11,14 @@ with them, and neither announces itself:
     own assets is stutter with no visible cause;
   * whisper-asr, Bazarr's local speech-to-text fallback. It transcribes on the
     GPU. It is the same GPU the game is drawing with, and a whisper job is
-    minutes of it, not seconds.
+    minutes of it, not seconds;
+  * Jellyfin's scheduled tasks. The media-segment sweep (Intro Skipper) runs
+    ffmpeg blackframe passes over the library on a daily trigger, and one 4K
+    episode is most of the CPU for minutes. Found live on 27 Aug 2026: the
+    midnight sweep still pinning the box the next afternoon.
 
-    game-quiet on       pause the torrents that are running, stop whisper-asr
+    game-quiet on       pause the torrents that are running, stop whisper-asr,
+                        stop any Jellyfin scheduled task that is mid-run
     game-quiet off      put back EXACTLY what `on` changed, nothing else
     game-quiet status   one line: what is currently quieted
 
@@ -22,6 +27,11 @@ of the torrents it paused, and `off` resumes that list rather than resuming
 everything - so a torrent Donnie paused by hand last week stays paused, and
 whisper-asr is only started again if it was running when we arrived. The state
 file IS the restore set; without it `off` has nothing to do and does nothing.
+Stopped Jellyfin tasks are restarted by `off` for the same reason whisper is:
+the sweep picks up where it left off after the session instead of waiting a
+day for its next trigger. A box with no JELLYFIN_API_KEY in .env is treated
+as not having Jellyfin to quiet, silently; a key that stops working is a
+loud failure like any other.
 
 FAILURE HONESTY IS THE POINT. This is meant to be called from game-launch, on
 the path between "Donnie pressed X" and "the game appears". So it has no
@@ -67,6 +77,7 @@ ENV_FILE = os.environ.get('GAME_QUIET_ENV') or os.path.join(HOME, 'couch', '.env
 UNIT = os.environ.get('GAME_QUIET_UNIT') or 'whisper-asr.service'
 
 DEFAULT_URL = 'http://localhost:8080'
+JF_DEFAULT_URL = 'http://localhost:8096'
 DEFAULT_USER = 'admin'
 TIMEOUT = 5.0            # every network and systemctl call, no exceptions
 
@@ -94,6 +105,11 @@ def say(msg):
 class QuietError(Exception):
     """Anything that means 'this half did not happen'. Always ends as a say()
     plus carrying on with the other half."""
+
+
+class NotConfigured(QuietError):
+    """This box simply does not have the thing to quiet. Logged, never flagged:
+    an absence is not a failure, and `status` should not cry wolf over it."""
 
 
 class HttpStatus(QuietError):
@@ -159,6 +175,42 @@ def qb_settings(env, environ=None):
                          'leaving the torrents alone')
     url = (pick('QBITTORRENT_URL', DEFAULT_URL) or DEFAULT_URL).rstrip('/')
     return url, pick('QBITTORRENT_USER', DEFAULT_USER), password
+
+
+def jf_settings(env, environ=None):
+    """(url, api key) for Jellyfin, or raise NotConfigured if this box has
+    no key. Same environment-beats-file rule as qb_settings."""
+    environ = os.environ if environ is None else environ
+
+    def pick(key, default=None):
+        return environ.get(key) or env.get(key) or default
+
+    key = pick('JELLYFIN_API_KEY')
+    if not key:
+        raise NotConfigured(f'JELLYFIN_API_KEY is not set (looked in {ENV_FILE}); '
+                            'leaving Jellyfin alone')
+    url = (pick('JELLYFIN_URL', JF_DEFAULT_URL) or JF_DEFAULT_URL).rstrip('/')
+    return url, key
+
+
+def running_tasks_from(payload):
+    """/ScheduledTasks JSON -> [{'id', 'name'}] for the tasks mid-run NOW.
+
+    Only Running tasks: an Idle task costs nothing, and stopping the schedule
+    itself is config surgery this tool must never do. Defensive about shape
+    for the same reason hashes_from_info is.
+    """
+    if not isinstance(payload, list):
+        raise QuietError(f'ScheduledTasks returned {type(payload).__name__}, not a list')
+    out = []
+    for item in payload:
+        if not isinstance(item, dict) or item.get('State') != 'Running':
+            continue
+        task_id = item.get('Id')
+        if isinstance(task_id, str) and task_id.strip():
+            out.append({'id': task_id.strip(),
+                        'name': str(item.get('Name') or 'unnamed task')})
+    return out
 
 
 def hashes_from_info(payload):
@@ -239,6 +291,13 @@ def describe(state):
         bits.append(f'{whisper.get("unit", UNIT)} stopped')
     if torrents.get('error'):
         bits.append(f'torrents NOT quieted ({torrents["error"]})')
+    jellyfin = state.get('jellyfin') or {}
+    stopped_tasks = jellyfin.get('stopped') or []
+    if stopped_tasks:
+        m = len(stopped_tasks)
+        bits.append(f'{m} Jellyfin task{"s" if m != 1 else ""} stopped')
+    if jellyfin.get('error'):
+        bits.append(f'Jellyfin NOT quieted ({jellyfin["error"]})')
     if not bits:
         bits.append('nothing needed quieting')
     since = state.get('when') or 'an unknown time'
@@ -405,6 +464,58 @@ def connect():
 
 
 # =========================================================================
+# jellyfin (API-key auth; no session, no cookies)
+# =========================================================================
+class Jellyfin:
+    """Stop and restart scheduled tasks. DELETE on the Running resource stops
+    a task in flight; POST starts it. Both answer 204."""
+
+    def __init__(self, url, key):
+        self.base = url.rstrip('/')
+        self.key = key
+
+    def request(self, path, method='GET'):
+        req = urllib.request.Request(
+            self.base + path, method=method,
+            headers={'Authorization': f'MediaBrowser Token="{self.key}"'})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                return resp.read().decode('utf-8', 'replace')
+        except urllib.error.HTTPError as e:
+            raise HttpStatus(e.code, path)
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            raise QuietError(f'{path}: {e}')
+
+    def running_tasks(self):
+        text = self.request('/ScheduledTasks')
+        try:
+            payload = json.loads(text)
+        except ValueError as e:
+            raise QuietError(f'ScheduledTasks is not JSON ({e})')
+        return running_tasks_from(payload)
+
+    def stop(self, task_id):
+        self.request(f'/ScheduledTasks/Running/{urllib.parse.quote(task_id)}',
+                     method='DELETE')
+
+    def start(self, task_id):
+        self.request(f'/ScheduledTasks/Running/{urllib.parse.quote(task_id)}',
+                     method='POST')
+
+
+def jf_connect():
+    """A keyed client, or raise NotConfigured/QuietError with the reason."""
+    env = {}
+    try:
+        with open(ENV_FILE) as f:
+            env = parse_env(f.read())
+    except OSError as e:
+        say(f'cannot read {ENV_FILE} ({e}); falling back to the environment')
+    url, key = jf_settings(env)
+    return Jellyfin(url, key)
+
+
+# =========================================================================
 # whisper-asr (a user unit, so every call is `systemctl --user`)
 # =========================================================================
 def systemctl(*args):
@@ -454,6 +565,7 @@ def cmd_on():
         'pid': os.getpid(),
         'torrents': {'hashes': [], 'vocab': None},
         'whisper': {'unit': UNIT, 'stopped': False},
+        'jellyfin': {'stopped': []},
     }
     try:
         try:
@@ -476,6 +588,24 @@ def cmd_on():
                 say(f'stopped {UNIT}')
         else:
             say(f'{UNIT} was not running, leaving it alone')
+
+        try:
+            jf = jf_connect()
+            tasks = jf.running_tasks()
+            if not tasks:
+                say('no Jellyfin tasks were running, nothing to stop')
+            for task in tasks:
+                try:
+                    jf.stop(task['id'])
+                    record['jellyfin']['stopped'].append(task)
+                    say(f'stopped Jellyfin task: {task["name"]}')
+                except QuietError as e:
+                    say(f'Jellyfin task {task["name"]} not stopped: {e}')
+        except NotConfigured as e:
+            say(str(e))
+        except QuietError as e:
+            record['jellyfin']['error'] = str(e)
+            say(f'Jellyfin not quieted: {e}')
     finally:
         write_state(record)
     return 0
@@ -513,6 +643,28 @@ def cmd_off():
                 say(f'started {whisper.get("unit", UNIT)}')
         else:
             say(f'{UNIT} was not ours to start')
+
+        jellyfin = (state or {}).get('jellyfin') or {}
+        tasks = [t for t in (jellyfin.get('stopped') or [])
+                 if isinstance(t, dict) and isinstance(t.get('id'), str)]
+        if tasks:
+            try:
+                jf = jf_connect()
+                for task in tasks:
+                    try:
+                        jf.start(task['id'])
+                        say(f'restarted Jellyfin task: {task.get("name", task["id"])}')
+                    except QuietError as e:
+                        # Not a disaster: a task we cannot restart runs itself
+                        # at its next trigger anyway. Unlike a paused torrent,
+                        # nothing is lost, only delayed.
+                        say(f'Jellyfin task {task.get("name")} NOT restarted: {e}; '
+                            'it will run at its next trigger')
+            except QuietError as e:
+                say(f'Jellyfin tasks NOT restarted: {e}; they will run at their '
+                    'next trigger')
+        else:
+            say('no Jellyfin tasks to restart')
     finally:
         remove_state()
     return 0

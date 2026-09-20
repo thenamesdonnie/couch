@@ -47,6 +47,11 @@ cp $B/01_common_menus.tpf.dcx ~/couch/data/ds3-shot/game/mod/menu/01_common.tpf.
 # er_pause_gfx.py for 02_000_ingametop. Outputs $B/<name>_er.gfx, deployed as $M/<name>.gfx.
 ```
 `DS3SHOT_PAUSE=1` adds a `pausemenu` shot to the inventory journey.
+Pause tiles: ER_CELLS in er_pause_menu.py are the FRAME's outer alpha edge in
+SB_In_GameTop (142x146 cells, 4-texel gutters), not an alpha bbox of the ink:
+a bbox that starts 13..16 rows high picks up the cell above's bottom frame and
+drops the cell's own (3 Sep, three of five tiles). Deployed = `01_common_pause3`.
+
 
 | script | element |
 |---|---|

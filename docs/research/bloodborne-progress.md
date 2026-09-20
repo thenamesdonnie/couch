@@ -430,3 +430,44 @@ Eileen's post-Rom beat still on me.
   never tested; cheap proof = the Doll shows the mod's extra menu (talk layer
   live since 3 Sep). Told him: he is probably right, DLC order is his choice,
   still ping before the tree.
+
+## 9 Sep 2026: endgame, ~2 bosses left, in Nightmare of Mensis
+- He is on the Mensis bridge (killed "a character-type NPC" there - asked if it
+  was "the frenzy guy / emote" one; told the bridge brides = frenzy enemies not
+  quest NPCs, and Make Contact is done at the Brain in the pit, not on them;
+  asked him to describe who he killed - no quest NPC lives on that bridge so
+  nothing broke, awaiting his detail). Also mixed up Mensis vs Nightmare Frontier.
+- ASKED THE BIG THREE (endgame). Answered directions+deadlines only:
+  1. **Bloody Crow (Eileen finale):** live now in the blood moon, NO hard
+     deadline at his remaining bosses, do before the ending. Grand Cathedral
+     steps, don't hit wounded Eileen. Combat tips: solo, parry->visceral,
+     Chikage rapid blood loss + Evelyn parry, red blade self-drains. He bounced
+     off it earlier; this is the retry nudge.
+  2. **Other quests:** told him Alfred / Vileblood+Queenly Flesh / clinic /
+     Gilbert / Adella / Upper Cathedral all DONE. Open: Eileen finale; Patches
+     forgiveness in the Lecture Building (2F, "give it", rune) - he is IN the
+     building now; Arianna cord C after Micolash.
+  3. **Third cord / ending 3:** told him he's guaranteed - holds A+B, D drops
+     unmissably from a remaining boss (= 3), C (Arianna, below Oedon Chapel
+     after Micolash) is a bonus. REAL risk = CONSUME 3 before Gehrman dies;
+     "ping me at the great tree" reminder set. Did NOT name Wet Nurse/Gehrman/
+     the ending or what cords do.
+- STILL ON ME: cords-consumed nudge at the tree; Arianna cord C after Micolash;
+  Patches forgiveness (he may hit it this session); Micolash->Arianna baby (C).
+- 9 Sep: **MICOLASH DEAD; CORD C TAKEN** (Arianna's newborn below the chapel;
+  he hit Arianna by accident, nothing hinges). Cords A+B+C held; D = Wet
+  Nurse. Told: her child is "one of them, not the one", the ritual's newborn is
+  what he has been hearing. His Oedon-fathered-it theory: told it is the read
+  the game's own text supports (Formless Oedon rune, the chapel, her blood).
+  Mensis tips given (gaze, lanterns, Blood Rock unnamed, Micolash chase, Wet
+  Nurse dark phase). NEXT ON ME: cords-consumed talk BEFORE the tree.
+- 9 Sep (late): Wet Nurse dead (first try), Eileen finished (Crow killed at 0
+  vials), cord D taken, Make Contact at the brain (Moon rune), the cords
+  "sentence" and the whole plot spelled out from his own text, endings
+  described by ACTION only (yes / no / no + 3 cords). Save snapshot
+  `save-backups/pre-ending-20260909-4cords` (verified). **He did an ending
+  and NG+ AUTO-STARTED: Enhanced's "Prevent Auto NG+" flag was ON with its
+  scripts loaded and it was NOT delivered** (set flag != delivered, again).
+  NG+ save kept as `save-backups/post-ending-ng+-20260909`; pre-ending
+  snapshot RESTORED (md5-verified) so he can do the other endings + DLC.
+  Which ending he took: not yet told.

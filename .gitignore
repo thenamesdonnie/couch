@@ -52,3 +52,10 @@ data/loading-cards/
 data/kodi-flavour
 data/kodi-flavour-active
 shadow/couchd.lock
+
+# Local working notes and shadow-mode traces: useful on the box, noise in the repo.
+todo.md
+shadow/
+
+# Vendored ReShade shader packs: upstream git repos, not ours to carry.
+data/ds3-reshade/

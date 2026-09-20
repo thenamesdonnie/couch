@@ -210,7 +210,35 @@ launch() {
       GAME_TARGET="$SANDBOX_GAME/modengine2_launcher.exe"
       # -p pins the game path so ME2 never searches Steam for it, which is
       # what makes this safe against the real-install escape.
-      GAME_ARGS="-t ds3 -c $SANDBOX_GAME/config_darksouls3.toml -p $SANDBOX_GAME/DarkSoulsIII.exe"
+      # DS3SHOT_ME2_CONFIG points -c at an alternative ME2 toml (absolute path),
+      # so a route that needs an extra external_dlls entry can be tried without
+      # editing the shared config_darksouls3.toml.
+      GAME_ARGS="-t ds3 -c ${DS3SHOT_ME2_CONFIG:-$SANDBOX_GAME/config_darksouls3.toml} -p $SANDBOX_GAME/DarkSoulsIII.exe"
+    fi
+    # DS3SHOT_RESHADE_DLL: run ReShade INSIDE the game as a D3D11/DXGI wrapper
+    # (not the same thing as DS3SHOT_RESHADE above, which is gamescope's own
+    # post-pass on the composited frame). 1 = the game dir's dxgi.dll wins over
+    # the builtin/DXVK one; 2 = the same for d3d11.dll. Proton appends its own
+    # overrides after ours and also asks for native there, so either way the
+    # copy of ReShade64.dll sitting in the game dir is the one that loads.
+    [ "${DS3SHOT_RESHADE_DLL:-}" = 1 ] && export WINEDLLOVERRIDES="dxgi=n,b"
+    [ "${DS3SHOT_RESHADE_DLL:-}" = 2 ] && export WINEDLLOVERRIDES="d3d11=n,b"
+    # A genuine Microsoft d3dcompiler_47.dll, native-loaded, so ReShade's HLSL
+    # codegen (which emits [loop]/[unroll] with a `fastopt` attribute) does not
+    # hit Wine's builtin vkd3d-shader compiler, which aborts on that attribute
+    # with E5017. Not copied into the game dir or the prefix: WINEDLLOVERRIDES
+    # marks the DLL name native-then-builtin (Wine tries a real file called
+    # d3dcompiler_47.dll before falling back to its own), and WINEPATH gets it
+    # onto the search path LoadLibrary walks. Wine appends WINEDLLOVERRIDES
+    # entries with ";" and WINEPATH with the platform's PATH separator, both
+    # handled by append_to_env_str the same way as the dxgi/d3d11 line above.
+    if [ -n "${DS3SHOT_RESHADE_DLL:-}" ] && [ -f "$HOME/couch/data/ds3-reshade/bin/d3dcompiler_47.dll" ]; then
+      if [ -n "${WINEDLLOVERRIDES:-}" ]; then
+        export WINEDLLOVERRIDES="${WINEDLLOVERRIDES};d3dcompiler_47=n,b"
+      else
+        export WINEDLLOVERRIDES="d3dcompiler_47=n,b"
+      fi
+      export WINEPATH="Z:\\home\\ds2000\\couch\\data\\ds3-reshade\\bin"
     fi
     # ME2's launcher INJECTS AND EXITS. gamescope tears down when its primary
     # child ends, which would kill the game we just started, so in mod mode the
@@ -247,9 +275,42 @@ launch() {
       export VKBASALT_LOG_LEVEL="${VKBASALT_LOG_LEVEL:-info}"
       export VKBASALT_LOG_FILE="${VKBASALT_LOG_FILE:-}"
     fi
-    exec "$GS_DIR/gamescope" --backend "$GS_BACKEND" -W "$OUT_W" -H "$OUT_H" -r 60 $RESHADE -- \
+    # ---- DS3SHOT_PERF: MangoHud CSV logging, no on-screen overlay --------
+    # For tools/ds3-perf (GPU ms/frame measurement). MANGOHUD_CONFIGFILE
+    # points at a conf ds3-perf writes (no_display + autostart_log=1 +
+    # log_interval=0, so every frame is logged with zero overlay draw cost
+    # and nothing shows up even on a presenting backend). Proton copies the
+    # whole environment into the game process on launch (proton script:
+    # `self.env = dict(os.environ)`), so MANGOHUD reaches DS3 the same way
+    # WINEDLLOVERRIDES does - no extra plumbing needed here.
+    if [ "${DS3SHOT_PERF:-}" = 1 ]; then
+      export MANGOHUD=1
+      export MANGOHUD_CONFIGFILE="${DS3SHOT_PERF_CONF:-$HOME/couch/data/ds3-perf/mangohud.conf}"
+    fi
+    # ---- end DS3SHOT_PERF -------------------------------------------------
+    # ---- DS3SHOT_FPS: unlock the frame rate above DS3's own 60 cap -------
+    # For tools/ds3-perf (measure real fps instead of the gpu_load proxy).
+    # Two gates, both need lifting: (1) gamescope's own -r 60, raised to
+    # DS3SHOT_FPS here; (2) DS3's internal SprjFlipper cap, which the real
+    # launch already unlocks via tools/ds3-menu-watch's apply_fps - same
+    # tool, --fps-only mode, no screen/window detector needed here since the
+    # sandbox has no :0. It has to wrap $PROTON (not run alongside it):
+    # ptrace_scope=1 means only an ancestor of DarkSoulsIII.exe can read/
+    # write its memory, and it must not exit when modengine2_launcher does
+    # (mod mode) - both are exactly what --fps-only's subreaper handling
+    # already does one layer up in ds3-menu-watch, so INNER's "run it, then
+    # idle" mod-mode rule stays intact underneath it unchanged.
+    # DXVK_CONFIG disables the swapchain's own vsync wait, in case that (and
+    # not just the internal cap) is also pinning presentation to 60.
+    FPSWATCH=""
+    if [ -n "${DS3SHOT_FPS:-}" ]; then
+      export DXVK_CONFIG="dxgi.syncInterval = 0"
+      FPSWATCH="$HOME/couch/tools/ds3-menu-watch --fps-only --fps $DS3SHOT_FPS --"
+    fi
+    # ---- end DS3SHOT_FPS ---------------------------------------------------
+    exec "$GS_DIR/gamescope" --backend "$GS_BACKEND" -W "$OUT_W" -H "$OUT_H" -r "${DS3SHOT_FPS:-60}" $RESHADE -- \
       sh -c "$INNER" \
-      "$DISPLAY_FILE" $TRACE "$PROTON" run "$GAME_TARGET" $GAME_ARGS
+      "$DISPLAY_FILE" $TRACE $FPSWATCH "$PROTON" run "$GAME_TARGET" $GAME_ARGS
   ) >>"$LOG" 2>&1 &
   echo $! > "$PIDFILE"
   local i

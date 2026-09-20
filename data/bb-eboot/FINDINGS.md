@@ -316,3 +316,35 @@ project named the whole chain (data/bb-eboot/crash-20260903-hud-race-ghidra.txt)
   object destroyed under a queued render command at a scene transition".
 
 Re-enabled both via `tools/bb-cheat on` (boot mode, next launch).
+
+## 4 Sep 2026: DYNAMIC size-scaled lock-on FOV (built, verified, NOT yet calibrated/enabled)
+
+Feature (Donnie): widen the FOV in proportion to the LOCKED-ON enemy's size, so
+bosses/big enemies breathe and normal enemies stay close. Full RE report:
+data/bb-eboot/fov-size-report.txt (Ghidra + the crash core).
+KEY: size != model scale (BB bosses are big meshes at scale 1.0). Use the
+lock-point HEIGHT H = CC+0x104 (published target Y) - playerRootY (CC+0x58
+->ChrIns +0xac). At the FOV hook 0x143af5e, **r15 = CC** (lock object, callee-
+saved, live) and r13 = camera-ease obj (FOV at +0x50); this was proven, not
+guessed. Guards (r15 null / CC+0xf8==0 not-locked / player null) all add ZERO,
+so it does nothing when free-roaming OR during cutscene cameras - which also
+closes the old FOV-cheat crash suspect #2.
+BUILT: `data/bb-eboot/fov/cave_fovdyn.s` -> cave_fovdyn.bin (150 bytes, cave at
+0x50db300), disassembly-verified (jmp back lands exactly on 0x143af64);
+`fovdyn.cheat.json` (hook E99D03CA0390, off C4C17A105550). Curve
+delta_deg = clamp(K*(H-H0), 0, 15) then *pi/180, added to xmm1 before the ease
+(the game's own easing gives a smooth zoom in/out).
+**CALIBRATED + ENABLED 4 Sep** (was placeholder). Live reads via bb-fov-calib
+(three enemies): bird on ground H~0.0, a BRUTE H~2.1, Church Giant H~3.0 (a plain
+human read ~1.8 est). Curve set H0=2.0, K=14, clamp 15deg -> human +0 (stock,
+close), brute +1.4, giant +14, taller boss +15. Cheat "FOV dynamic (size-scaled
+lock-on)" is ON (static "FOV +10 degrees" turned OFF, same hook); applies next
+launch. KNOWN LIMIT: the CC-only proxy H is contaminated by terrain height (an
+enemy on a ledge above the player reads "taller"); the terrain-free version needs
+the still-open target-ChrIns hop (report deliverable 2, Probe A). Re-tune by
+editing H0/K in cave_fovdyn.s + rebuild + bb-cheat add. OLD placeholder note: Calibrate with
+`tools/bb-fov-calib` (reads H live via /proc/pid/mem; needs
+`sudo sysctl kernel.yama.ptrace_scope=0`): lock a NORMAL enemy -> H0; lock a
+BIG one (a Church Giant works, no boss needed) -> set K = 15/(H_big - H0).
+Then edit the two constants in cave_fovdyn.s, re-run the builder, `bb-cheat add
+fovdyn.cheat.json`, and turn OFF the static "FOV +10 degrees" first (same hook).

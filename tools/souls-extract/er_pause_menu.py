@@ -65,10 +65,15 @@ BASE = 1024
 # correlation (match_icons: Equipment grid11 0.41, Inventory grid01 0.34,
 # Status col1 0.61, System col0 0.62; Messages by eye = the finger rows).
 ER_CELLS = {
-    "Equipment": (786, 1523, 928, 1669),
-    "Inventory": (786, 1370, 924, 1516),
+    # 3 Sep evening: the cell = the frame's outer alpha edge (142x146 with a
+    # 4-texel transparent gutter between cells, atlas_cells.py). The first
+    # crops were alpha bboxes that ran 13..16 rows high and 4 columns right for
+    # three of the five, so those tiles carried the cell ABOVE's bottom frame
+    # line and lost their own; Status and System were already exact.
+    "Equipment": (782, 1536, 924, 1682),
+    "Inventory": (782, 1386, 924, 1532),
     "Status": (744, 150, 886, 296),
-    "Message": (636, 1370, 778, 1516),
+    "Message": (636, 1386, 778, 1532),
     "System": (744, 0, 886, 146),
 }
 LABELS = ["Equipment", "Inventory", "Status", "Message", "System"]

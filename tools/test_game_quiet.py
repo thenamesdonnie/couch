@@ -199,6 +199,118 @@ def qb():
 
 
 # =========================================================================
+# the fake jellyfin
+# =========================================================================
+class JfHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, *_a):
+        pass
+
+    def _send(self, code, body=b''):
+        self.send_response(code)
+        if code != 204:
+            self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def _authed(self):
+        auth = self.headers.get('Authorization') or ''
+        if self.server.api_key and self.server.api_key in auth:
+            return True
+        self._send(401, b'Unauthorized')
+        return False
+
+    def do_GET(self):
+        s = self.server
+        s.calls.append(('GET', self.path))
+        if self.path == '/ScheduledTasks':
+            if not self._authed():
+                return
+            body = json.dumps(s.tasks).encode()
+            return self._send(200, body)
+        self._send(404, b'Not Found')
+
+    def _running(self, method):
+        s = self.server
+        s.calls.append((method, self.path))
+        prefix = '/ScheduledTasks/Running/'
+        if not self.path.startswith(prefix):
+            return self._send(404, b'Not Found')
+        if not self._authed():
+            return
+        task_id = urllib.parse.unquote(self.path[len(prefix):])
+        if method == 'DELETE':
+            s.stopped.append(task_id)
+            for t in s.tasks:
+                if t.get('Id') == task_id:
+                    t['State'] = 'Idle'
+        else:
+            s.started.append(task_id)
+            for t in s.tasks:
+                if t.get('Id') == task_id:
+                    t['State'] = 'Running'
+        self._send(204)
+
+    def do_DELETE(self):
+        self._running('DELETE')
+
+    def do_POST(self):
+        self._running('POST')
+
+
+class FakeJellyfin:
+    """A Jellyfin that has some tasks and remembers what it was told to do."""
+
+    def __init__(self, tasks=(), api_key='jf-key'):
+        self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), JfHandler)
+        self.httpd.tasks = [dict(t) for t in tasks]
+        self.httpd.api_key = api_key
+        self.httpd.calls = []
+        self.httpd.stopped = []
+        self.httpd.started = []
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       kwargs={'poll_interval': 0.05}, daemon=True)
+        self.thread.start()
+
+    @property
+    def url(self):
+        return 'http://127.0.0.1:%d' % self.httpd.server_address[1]
+
+    @property
+    def stopped(self):
+        return self.httpd.stopped
+
+    @property
+    def started(self):
+        return self.httpd.started
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+
+@pytest.fixture
+def jf():
+    made = []
+
+    def make(**kw):
+        s = FakeJellyfin(**kw)
+        made.append(s)
+        return s
+    yield make
+    for s in made:
+        s.close()
+
+
+RUNNING_TASK = {'Id': 'seg-1', 'Name': 'Detect and Analyze Media Segments',
+                'State': 'Running'}
+IDLE_TASK = {'Id': 'lib-1', 'Name': 'Scan Media Library', 'State': 'Idle'}
+
+
+# =========================================================================
 # the fake systemctl
 # =========================================================================
 STUB = """#!/usr/bin/env python3
@@ -226,7 +338,7 @@ class Box:
     """One isolated console: tmp paths, a PATH with our systemctl on it."""
 
     def __init__(self, tmp_path, url=None, password=PASSWORD, user=None,
-                 whisper='active', env_lines=None):
+                 whisper='active', env_lines=None, jf_url=None, jf_key='jf-key'):
         self.tmp = tmp_path
         self.state = tmp_path / 'game-quiet.state'
         self.log = tmp_path / 'game-quiet.log'
@@ -244,6 +356,9 @@ class Box:
                 env_lines.append(f'QBITTORRENT_USER={user}')
             if password is not None:
                 env_lines.append(f'QBITTORRENT_PASSWORD={password}')
+            if jf_url:
+                env_lines.append(f'JELLYFIN_URL={jf_url}')
+                env_lines.append(f'JELLYFIN_API_KEY={jf_key}')
         self.envfile.write_text('\n'.join(env_lines) + '\n')
 
         bindir = tmp_path / 'bin'
@@ -636,3 +751,73 @@ def test_help_exits_zero(box):
     r = b.run('--help')
     assert r.returncode == 0
     assert 'game-quiet on' in r.stdout
+
+
+# =========================================================================
+# jellyfin
+# =========================================================================
+def test_on_stops_running_jellyfin_tasks_and_records_them(tmp_path, qb, jf):
+    server = qb(running=HASHES)
+    media = jf(tasks=[RUNNING_TASK, IDLE_TASK])
+    box = Box(tmp_path, url=server.url, jf_url=media.url)
+    r = box.run('on')
+    assert r.returncode == 0
+    assert media.stopped == ['seg-1'], 'only the RUNNING task is stopped'
+    recorded = box.state_json()['jellyfin']['stopped']
+    assert [t['id'] for t in recorded] == ['seg-1']
+    assert recorded[0]['name'] == 'Detect and Analyze Media Segments'
+
+
+def test_off_restarts_exactly_the_recorded_tasks(tmp_path, qb, jf):
+    server = qb(running=HASHES)
+    media = jf(tasks=[RUNNING_TASK, IDLE_TASK])
+    box = Box(tmp_path, url=server.url, jf_url=media.url)
+    assert box.run('on').returncode == 0
+    assert box.run('off').returncode == 0
+    assert media.started == ['seg-1'], 'the stopped task is put back, nothing else'
+    assert not box.state.exists()
+
+
+def test_no_api_key_leaves_jellyfin_alone_and_still_exits_zero(tmp_path, qb, jf):
+    server = qb(running=HASHES)
+    media = jf(tasks=[RUNNING_TASK])
+    box = Box(tmp_path, url=server.url)          # no jf_url: no key in .env
+    r = box.run('on')
+    assert r.returncode == 0
+    assert media.stopped == []
+    state = box.state_json()
+    assert state['jellyfin'] == {'stopped': []}
+    assert 'error' not in state['jellyfin'], 'an unconfigured box is not a failure'
+    assert 'JELLYFIN_API_KEY is not set' in r.stderr
+
+
+def test_dead_jellyfin_is_a_recorded_error_and_torrents_still_pause(tmp_path, qb):
+    server = qb(running=HASHES)
+    box = Box(tmp_path, url=server.url, jf_url='http://127.0.0.1:1')
+    r = box.run('on')
+    assert r.returncode == 0
+    assert server.paused_hashes() == HASHES, 'a dead Jellyfin must not cost the torrents'
+    state = box.state_json()
+    assert state['jellyfin'].get('error'), 'a key that goes nowhere IS a failure'
+
+
+def test_status_mentions_stopped_jellyfin_tasks(tmp_path, qb, jf):
+    server = qb(running=HASHES)
+    media = jf(tasks=[RUNNING_TASK])
+    box = Box(tmp_path, url=server.url, jf_url=media.url)
+    assert box.run('on').returncode == 0
+    r = box.run('status')
+    assert '1 Jellyfin task stopped' in r.stdout
+
+
+def test_running_tasks_from_is_defensive(gq):
+    with pytest.raises(gq.QuietError):
+        gq.running_tasks_from({'not': 'a list'})
+    tasks = gq.running_tasks_from([
+        RUNNING_TASK, IDLE_TASK, 'garbage', {'State': 'Running'},   # no Id
+        {'Id': ' pad ', 'Name': None, 'State': 'Running'},
+    ])
+    assert tasks == [
+        {'id': 'seg-1', 'name': 'Detect and Analyze Media Segments'},
+        {'id': 'pad', 'name': 'unnamed task'},
+    ]
